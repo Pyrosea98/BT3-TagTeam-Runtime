@@ -18,6 +18,8 @@ namespace { std::atomic<uint32_t> g_boneScanTarget{0}; }
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "runtime/ps2_seamprobe.h"   // [seamprobe]
+#include "runtime/ps2_seammesh.h"    // [seam]
 extern std::vector<std::array<uint32_t, 3>> g_kickSrcMap; // see ps2_memory.cpp
 extern bool g_kickSrcMapEnabled();
 extern uint32_t g_vif1QwcSrcGuest; // qwc (non-chain) transfer source base
@@ -568,7 +570,11 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             if (m_vu1MscalCallback)
             {
                 const auto _m0 = g_vifTimeProf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-                m_vu1MscalCallback(startPC, runTop, runItop);
+                if (seamprobe::on()) seamprobe::beginMscal(startPC, false);
+                const bool seamOwned = seam::on() && seam::beforeRun(startPC, false, runTop, m_vu1Data, PS2_VU1_DATA_SIZE, this);
+                if (!seamOwned) m_vu1MscalCallback(startPC, runTop, runItop);
+                if (seam::on()) seam::afterRun();
+                if (seamprobe::on()) { extern thread_local uint32_t g_vu1CensusProg; seamprobe::noteMscal(startPC, g_vu1CensusProg, false); }
                 if (g_vifTimeProf)
                 {
                     g_vifMscalNs.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - _m0).count(), std::memory_order_relaxed);
@@ -605,7 +611,10 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             if (m_vu1MscntCallback)
             {
                 const auto _m0 = g_vifTimeProf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-                m_vu1MscntCallback(runTop, runItop);
+                const bool seamOwned = seam::on() && seam::beforeRun(0u, true, runTop, m_vu1Data, PS2_VU1_DATA_SIZE, this);
+                if (!seamOwned) m_vu1MscntCallback(runTop, runItop);
+                if (seam::on()) seam::afterRun();
+                if (seamprobe::on()) { extern thread_local uint32_t g_vu1CensusProg; seamprobe::noteMscal(0u, g_vu1CensusProg, true); }
                 if (g_vifTimeProf)
                 {
                     g_vifMscntNs.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - _m0).count(), std::memory_order_relaxed);
@@ -1500,6 +1509,11 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                     }
                 }
             }
+            // [seamprobe] an unmasked V4-32 unpack to VU1 address 0 is a batch constant block:
+            // hash the payload and pair it with the EE builder that produced it.
+            if (seamprobe::on() && vn == 3u && vl == 0u && vuAddr == 0u && !maskEnable &&
+                pos + (size_t)writeVectorCount * 16u <= sizeBytes)
+                seamprobe::noteUnpack0(data + pos, writeVectorCount);
             // PS2X_MVPCHK: validate what actually LANDED in VU1 memory (post-mask/mode) for the
             // two packet families that drive characters: the constants block (vuAddr=0, >=12qw:
             // MVP at qw0-3) and the bone-matrix block (34 vectors). Logs frame + EE source, so

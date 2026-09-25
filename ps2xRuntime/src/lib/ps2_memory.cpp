@@ -32,6 +32,7 @@ bool g_kickSrcMapEnabled()
 #include <stdexcept>
 #include <algorithm>
 #include "ps2_compat.h"
+#include "runtime/ps2_seammesh.h"   // [seam]
 #include <string>
 #include <vector>
 #include <map>
@@ -2208,6 +2209,13 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                             break;
                         case 5:
                             dataAddr = tagAddr + 16;
+                            // [seam] a CALL into a mesh list the host owns: keep this tag's data (the
+                            // constant block and the MSCALF), never unpack the list.
+                            if (channelBase == 0x10009000u && seam::on() && seam::dmaCallSkip(m_rdram, addr))
+                            {
+                                tagAddr = dataAddr + static_cast<uint32_t>(tagQwc) * 16u;
+                                break;
+                            }
                             {
                                 const uint32_t retAddr = dataAddr + static_cast<uint32_t>(tagQwc) * 16u;
                                 if (asp == 0u)

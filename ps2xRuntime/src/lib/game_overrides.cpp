@@ -45,6 +45,7 @@ extern "C" unsigned long long ps2xWinThreadCpuNs();
 #include "runtime/pad_config.h"
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_netplay.h"   // [netplay]
+#include "runtime/ps2_seamprobe.h"  // [seamprobe]
 
 // [netjump] Frames of display HOLD remaining. While non-zero, GsGpuRenderer::swapFrame() returns
 // immediately, so the screen keeps showing the last presented frame. The menu transition needs a
@@ -4449,6 +4450,40 @@ namespace
                          rh(0x120),rh(0x122),rh(0x124),rh(0x126));
     }
 
+    // [seamprobe] PS2X_SEAMPROBE=1 -- Phase 0 of docs/NATIVE-RENDER-SEAM.md. Taps, never edits:
+    //   sub_00111358  the per-model draw loop (actor, entity, mode, TEX0 in a3)
+    //   sub_00123278 and siblings  the "begin batch" builders; v0 = the header packet
+    //   sub_00100798  end of display list; every pending block is filled by now
+    // The probe hashes each finished constant block and matches it to the VIF unpack that later
+    // delivers it, then charges the MSCAL/MSCNT that follow to that batch (ps2_seamprobe.cpp).
+    PS2Runtime::RecompiledFunction g_origSeamDraw = nullptr;
+    void bt3SeamDrawHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // sub_00111358
+    {
+        const uint64_t a3 = GPR_U64(ctx, 7);
+        seamprobe::noteDrawEnter(getRegU32(ctx, 4), getRegU32(ctx, 5), getRegU32(ctx, 6),
+                                 (uint32_t)a3, (uint32_t)(a3 >> 32), getRegU32(ctx, 31));
+        if (g_origSeamDraw) g_origSeamDraw(rdram, ctx, runtime);
+        seamprobe::noteDrawExit();
+    }
+    struct SeamBuilderHook { uint32_t addr; PS2Runtime::RecompiledFunction orig; };
+    SeamBuilderHook g_seamBuilders[] = {
+        {0x00123278u, nullptr}, {0x00123370u, nullptr}, {0x00123468u, nullptr}, {0x00123130u, nullptr},
+        {0x001236b0u, nullptr}, {0x00123cd0u, nullptr}, {0x00123588u, nullptr}, {0x00123dc8u, nullptr},
+    };
+    template <int I>
+    void bt3SeamBuilderHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t a0 = getRegU32(ctx, 4), ra = getRegU32(ctx, 31);
+        if (g_seamBuilders[I].orig) g_seamBuilders[I].orig(rdram, ctx, runtime);
+        seamprobe::noteBuilder(g_seamBuilders[I].addr, getRegU32(ctx, 2), a0, ra);
+    }
+    PS2Runtime::RecompiledFunction g_origSeamListEnd = nullptr;
+    void bt3SeamListEndHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // sub_00100798
+    {
+        seamprobe::finalizeList(rdram);
+        if (g_origSeamListEnd) g_origSeamListEnd(rdram, ctx, runtime);
+    }
+
     // Camera matrix-multiply probe (PS2X_CAMPROBE). sub_001201B8 concatenates $a0 = A($a1) x B($a2).
     // The gameplay-camera update (FUN_0023d510) calls it at ra=0x23d9bc to build the camera WORLD
     // matrix = localRot(BASE+0x260) x parent(BASE+0x40). Dump A and B ONLY for that caller so we
@@ -6544,6 +6579,24 @@ namespace
             g_orig131a20 = runtime.lookupFunction(0x00131a20u);
             if (g_orig131a20) runtime.replaceFunction(0x00131a20u, &bt3QuadEmitHook);
             std::fprintf(stderr, "[wisphook] installed=%d\n", g_orig131a20 ? 1 : 0);
+        }
+        if (seamprobe::on())
+        {   // [seamprobe] see bt3SeamDrawHook
+            g_origSeamDraw = runtime.lookupFunction(0x00111358u);
+            if (g_origSeamDraw) runtime.replaceFunction(0x00111358u, &bt3SeamDrawHook);
+            g_origSeamListEnd = runtime.lookupFunction(0x00100798u);
+            if (g_origSeamListEnd) runtime.replaceFunction(0x00100798u, &bt3SeamListEndHook);
+            PS2Runtime::RecompiledFunction fns[] = {
+                &bt3SeamBuilderHook<0>, &bt3SeamBuilderHook<1>, &bt3SeamBuilderHook<2>, &bt3SeamBuilderHook<3>,
+                &bt3SeamBuilderHook<4>, &bt3SeamBuilderHook<5>, &bt3SeamBuilderHook<6>, &bt3SeamBuilderHook<7>};
+            int nb = 0;
+            for (int i = 0; i < 8; ++i)
+            {
+                g_seamBuilders[i].orig = runtime.lookupFunction(g_seamBuilders[i].addr);
+                if (g_seamBuilders[i].orig) { runtime.replaceFunction(g_seamBuilders[i].addr, fns[i]); ++nb; }
+            }
+            std::fprintf(stderr, "[seamprobe] installed draw=%d listend=%d builders=%d/8\n",
+                         g_origSeamDraw ? 1 : 0, g_origSeamListEnd ? 1 : 0, nb);
         }
         // [se] sound effects: service the RPC the IOP would have handled. DEFAULT ON alongside
         // the rest of audio; PS2X_SEPLAY=0 opts out. Gated on sndAudioOn too, so silencing audio

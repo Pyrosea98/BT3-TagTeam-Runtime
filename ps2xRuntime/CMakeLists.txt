@@ -493,6 +493,8 @@ add_library(ps2_runtime STATIC
     src/lib/game_overrides.cpp
     src/lib/ps2_eeprof.cpp
     src/lib/ps2_stepcensus.cpp
+    src/lib/ps2_seamprobe.cpp   # [seamprobe] Phase 0 of docs/NATIVE-RENDER-SEAM.md
+    src/lib/ps2_seammesh.cpp    # [seam] Phases 1-3: importer, host transform, verify/skip
     src/lib/ps2_fiber.cpp
     src/lib/ps2_gif_arbiter.cpp
     src/lib/ps2_audio.cpp

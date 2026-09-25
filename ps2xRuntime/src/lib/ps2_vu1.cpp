@@ -5,6 +5,7 @@
 #include "ps2_compat.h"
 #include "runtime/ps2_vu1.h"
 #include "runtime/ps2_vu1_native.h"   // [vunative]
+#include "runtime/ps2_seammesh.h"     // [seam]
 #include "runtime/ps2_coverage.h"     // [coverage]
 extern std::atomic<uint64_t> g_vu1PairCount;   // defined below; the [vunative] hook binds it before that point
 thread_local uint32_t g_vu1CensusProg = 0;    // [gifcensus] low 32 bits of the hash of the program this thread last selected (read by the arbiter for PATH1)
@@ -1085,10 +1086,26 @@ void VU1Interpreter::resume(uint8_t *vuCode, uint32_t codeSize,
 
 static bool execLowerFast(VU1State &st, const VuDecodeEntry &e, uint8_t *vuData, uint32_t dataSize);   // [vulower] defined below
 
+// [seam] the effective CLIP register of the interpreter that last ran on this thread: what a
+// program starting now would see. The host transforms seed their clip-flag history from it.
+static thread_local VU1Interpreter *t_seamLastVu1 = nullptr;
+extern "C" void ps2xSeamVu1Q(float *q, float *pendingQ, uint32_t *qWait)
+{
+    if (!t_seamLastVu1) { *q = *pendingQ = 0.0f; *qWait = 0u; return; }
+    const VU1State &st = t_seamLastVu1->state();
+    *q = st.q; *pendingQ = st.pendingQ; *qWait = st.qWait;
+}
+extern "C" uint32_t ps2xSeamVu1Clip()
+{
+    if (!t_seamLastVu1) return 0u;
+    return (g_clipWait > 0u) ? g_pendingClip : t_seamLastVu1->state().clip;
+}
+
 void VU1Interpreter::run(uint8_t *vuCode, uint32_t codeSize,
                          uint8_t *vuData, uint32_t dataSize,
                          GS &gs, PS2Memory *memory, uint32_t maxCycles)
 {
+    t_seamLastVu1 = this;   // [seam]
     gprof::Scope gpScope(gprof::VU1);   // [guestprof]
     // [vumicro] PS2X_VUMICRO=1: microprogram population -- how many distinct microcodes run, from which entry pcs,
     // how far they reach, and how many ops each burns. Dumps each distinct 16 KB image once to
@@ -4282,6 +4299,7 @@ void VU1Interpreter::xgkickImpl(uint32_t viS, uint8_t *vuData, uint32_t dataSize
     {
         gifCmpFold(vuData + addr, totalBytes);   // [gifcmp]
         vu1CapPacket(vuData + addr, totalBytes);  // [vu1cap]
+        if (seam::on()) seam::onKick(vuData + addr, totalBytes);   // [seam]
         {   // [kickbatch] does this kick share its constant block with the previous one?
             const uint64_t t0k = read64Wrap(addr);
             kickBatchNote(vuData, dataSize, g_curStartPc, (uint32_t)(t0k & 0x7FFFu));
@@ -4304,6 +4322,7 @@ void VU1Interpreter::xgkickImpl(uint32_t viS, uint8_t *vuData, uint32_t dataSize
 
         gifCmpFold(wrappedPacket.data(), totalBytes);   // [gifcmp]
         vu1CapPacket(wrappedPacket.data(), totalBytes);  // [vu1cap]
+        if (seam::on()) seam::onKick(wrappedPacket.data(), totalBytes);   // [seam]
         if (!m_dryKick)
         {
             if (memory)
