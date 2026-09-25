@@ -12,6 +12,7 @@ enum class GifPathId : uint8_t
     Path1 = 1,
     Path2 = 2,
     Path3 = 3,
+    HostDraw = 4,   // [seamvk] a native draw record travelling the stream in order; never reaches the GS
 };
 
 // [gifarena] A packet is a VIEW into an arena the batch owns, not its own heap block. submit() used to

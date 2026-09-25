@@ -1,5 +1,8 @@
 #include "runtime/ps2_gif_arbiter.h"
+#include "runtime/ps2_seamvk.h"   // [seamvk]
 #include "runtime/ps2_gs_pgs.h"   // [pgs]
+#include <cstdlib>
+extern "C" void ps2xGsRecordPacket(uint8_t path, const uint8_t *data, uint32_t sizeBytes);   // [recpgs] ps2_gs_gpu.cpp
 #include <algorithm>
 #include <map>
 #include <chrono>
@@ -139,7 +142,7 @@ void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeByte
 {
     if (!data || sizeBytes < 16 || !m_processFn)
         return;
-    if (censusOn()) censusWalk(pathId, data, sizeBytes);   // [gifcensus]
+    if (censusOn() && pathId != GifPathId::HostDraw) censusWalk(pathId, data, sizeBytes);   // [gifcensus]
 
     GifArbiterPacket pkt;
     pkt.pathId = pathId;
@@ -205,22 +208,46 @@ void GifArbiter::takeQueue(GifArbiterBatch &out)
 void GifArbiter::process(const GifArbiterPacket &pkt)
 {
     if (!m_processFn || !pkt.data || pkt.size == 0u) return;
+    uint8_t pathId = static_cast<uint8_t>(pkt.pathId);
+    const uint8_t *data = pkt.data; uint32_t size = pkt.size;
+    if (pkt.pathId == GifPathId::HostDraw)
+    {   // [seamvk] the seam's packets, consumed here in stream order
+#ifdef PS2X_HAVE_PGS
+        uint32_t magic = 0; if (size >= 4u) std::memcpy(&magic, data, 4);
+        if (magic == seamvk::kHostGifMagic && size >= sizeof(seamvk::HostGifHeader))
+        {   // 'SVKG': the host-transformed GIF packet -> the native front-end (registers only) and the GS backend as PATH1
+            data += sizeof(seamvk::HostGifHeader); size -= sizeof(seamvk::HostGifHeader); pathId = 1u;
+            seamvk::onGifPacket(pathId, data, size, true);
+        }
+        else { seamvk::onHostDraw(data, size); return; }
+#else
+        return;
+#endif
+    }
+#ifdef PS2X_HAVE_PGS
+    else if (seamvk::on()) seamvk::onGifPacket(pathId, data, size, false);
+#endif
+    if (ps2x_pgs::enabled() && ps2x_pgs::exclusive())
+    {   // [recpgs] PS2X_GS_RECORD: our parser will not see this packet, so record it here
+        static const bool s_rec = [](){ const char *v = std::getenv("PS2X_GS_RECORD"); return v && v[0]; }();
+        if (s_rec) { ps2xGsRecordPacket(pathId, data, size); }
+    }
     if (ps2x_pgs::enabled())
     {   // [pgs] the paraLLEl-GS backend consumes the same packet, on its own path index. Pack mode: OUR parse first, so the
         // VRAM and palettes its replacement hook hashes already include this packet's uploads.
         if (ps2x_pgs::packMode())
         {
-            g_gifArbCurPath = static_cast<uint8_t>(pkt.pathId);
-            m_processFn(pkt.data, pkt.size);
+            g_gifArbCurPath = pathId;
+            m_processFn(data, size);
             g_gifArbCurPath = 0;
-            ps2x_pgs::gifTransfer(static_cast<uint8_t>(pkt.pathId), pkt.data, pkt.size);
+            ps2x_pgs::gifTransfer(pathId, data, size);
             return;
         }
-        const bool consumed = ps2x_pgs::gifTransfer(static_cast<uint8_t>(pkt.pathId), pkt.data, pkt.size);
+        const bool consumed = ps2x_pgs::gifTransfer(pathId, data, size);
         if (consumed && ps2x_pgs::exclusive()) return;   // not consumed (backend unavailable): our parse takes it
     }
-    g_gifArbCurPath = static_cast<uint8_t>(pkt.pathId);
-    m_processFn(pkt.data, pkt.size);
+    g_gifArbCurPath = pathId;
+    m_processFn(data, size);
     g_gifArbCurPath = 0;
 }
 void GifArbiter::drain()

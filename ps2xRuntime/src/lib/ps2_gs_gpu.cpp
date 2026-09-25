@@ -2362,6 +2362,15 @@ void GS::setPrivRegsFromRecord(uint64_t pmode, uint64_t dispfb1, uint64_t displa
 // build. Declare it out here, at C++ linkage, and just use it in the function.
 extern GS *g_gsWb;
 
+// [recpgs] PS2X_GS_RECORD under the paraLLEl-GS EXCLUSIVE backend: our GS parser never sees the packets, so the
+// arbiter records them here on their way to the backend (same record layout as processGIFPacket's tap).
+extern "C" void ps2xGsRecordPacket(uint8_t path, const uint8_t *data, uint32_t sizeBytes)
+{
+    if (!data || sizeBytes == 0u) return;
+    uint8_t hdr[6] = {0u, path, 0u, 0u, 0u, 0u};
+    std::memcpy(hdr + 2, &sizeBytes, 4);
+    gsRecPush(hdr, 6, data, sizeBytes);
+}
 extern "C" void ps2xGsRecordVsync()
 {
     {   // [recpriv] record type 4: the CRTC state, once per vsync, BEFORE the vsync marker.

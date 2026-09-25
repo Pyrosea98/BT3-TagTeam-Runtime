@@ -3,6 +3,7 @@
 #include "runtime/ps2_seamprobe.h"
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_gif_arbiter.h"
+#include "runtime/ps2_seamvk.h"   // [seamvk]
 
 #include <algorithm>
 #include <atomic>
@@ -879,6 +880,49 @@ namespace seam
 
     // Emits one chunk of the current batch: fills t_run, and in skip mode submits it.
     static void afterRunOwned();
+    // [seamvk] hand the chunk to the native renderer with the program's constants laid out for the shader.
+    static void recordForVk(const seammesh::Chunk &c, bool isStage, bool isFx, bool isChar2, bool isChar1, const uint8_t *vuData, PS2Memory *mem)
+    {
+        seamvk::DrawPacket k; std::memset(&k, 0, sizeof(k));
+        k.magic = seamvk::kDrawMagic;
+        uint32_t stride = 48, count = 0; uint8_t prog = 0; uint32_t tagOff = 32;
+        auto row = [](float (*dst)[4], const __m128 *m) { for (int i = 0; i < 4; ++i) _mm_storeu_ps(dst[i], m[i]); };
+        auto rowb = [](float (*dst)[4], const uint8_t *m) { std::memcpy(dst, m, 64); };
+        if (isStage || isFx)
+        {
+            const uint8_t *cs = isStage ? vuData : t_stageConsts;
+            rowb(k.c.A, cs); rowb(k.c.B, cs + 64);
+            if (isFx) { rowb(k.c.C, cs + 192); std::memcpy(&k.c.misc[2], cs + 256, 4); stride = 64; prog = 1; }
+            else prog = 0;
+            tagOff = 32;
+        }
+        else if (isChar2 || isChar1)
+        {
+            row(k.c.A, t_cc.A); row(k.c.B, t_cc.B); row(k.c.E, t_cc.E); row(k.c.F, t_cc.F); row(k.c.C, t_cc.C); row(k.c.D, t_cc.D);
+            _mm_storeu_ps(k.c.pivA, t_cc.pivA); _mm_storeu_ps(k.c.pivB, t_cc.pivB);
+            _mm_storeu_ps(k.c.colA, _mm_cvtepi32_ps(t_cc.rgbaA)); _mm_storeu_ps(k.c.colB, _mm_cvtepi32_ps(t_cc.rgbaB));
+            tagOff = isChar2 ? 48 : 64;
+            prog = isChar2 ? 2 : 3;
+        }
+        else
+        {
+            row(k.c.A, t_c3.A); row(k.c.B, t_c3.B); row(k.c.E, t_c3.E); row(k.c.F, t_c3.F); row(k.c.D, t_c3.L);
+            _mm_storeu_ps(k.c.pivA, t_c3.pivA); _mm_storeu_ps(k.c.pivB, t_c3.pivB);
+            _mm_storeu_ps(k.c.colA, _mm_cvtepi32_ps(t_c3.rgbaA)); _mm_storeu_ps(k.c.colB, _mm_cvtepi32_ps(t_c3.rgbaB));
+            tagOff = 48;
+            prog = 4;
+        }
+        uint32_t countRaw, tagW1; std::memcpy(&countRaw, c.hdr + tagOff, 4); std::memcpy(&tagW1, c.hdr + tagOff + 4, 4);
+        count = countRaw & 0x7FFFu;
+        k.prog = prog; k.stride = stride; k.count = count; k.gifTagWord1 = tagW1;
+        k.c.misc[0] = float(prog); k.c.misc[1] = float(stride);
+        if (count < 3u || count * stride > c.nvec * 16u || !mem) return;
+        static thread_local std::vector<uint8_t> buf;
+        buf.resize(sizeof(k) + size_t(count) * stride);
+        std::memcpy(buf.data(), &k, sizeof(k));
+        std::memcpy(buf.data() + sizeof(k), c.verts.data(), size_t(count) * stride);
+        mem->submitGifPacket(GifPathId::HostDraw, buf.data(), (uint32_t)buf.size());
+    }
     static bool emitChunk(uint32_t chunkIdx, uint32_t top, uint8_t *vuData, uint32_t dataSize, void *memory, bool verifyCheck)
     {
         std::lock_guard<std::mutex> lk(g_mtx);
@@ -934,13 +978,28 @@ namespace seam
             if (ok) { t_run.kicks.push_back(seamxform::Kick{0u, (uint32_t)t_run.expect.size()}); t_run.clipOut = clip; t_run.hasClipOut = true; }
         }
         if (!ok) return false;
+        if (seamvk::on()) recordForVk(c, isStage, isFx, isChar2, isChar1, vuData, static_cast<PS2Memory *>(memory));
         t_run.active = true;
         if (skipOn())
         {   // PS2X_SEAMSKIP=2: bisect mode, skip VU1 but submit nothing.
             static const bool s_noSubmit = [](){ const char *v = std::getenv("PS2X_SEAMSKIP"); return v && v[0] == '2'; }();
             PS2Memory *mem = static_cast<PS2Memory *>(memory);
             if (!s_noSubmit)
-                for (const seamxform::Kick &k : t_run.kicks) mem->submitGifPacket(GifPathId::Path1, t_run.expect.data() + k.off, k.len);
+            {
+                if (seamvk::on())
+                {   // [seamvk] 'SVKG': the arbiter hands the payload to the GS backend as PATH1 and to the native front-end in order
+                    static thread_local std::vector<uint8_t> hbuf;
+                    for (const seamxform::Kick &k : t_run.kicks)
+                    {
+                        seamvk::HostGifHeader h; h.magic = seamvk::kHostGifMagic; h.size = k.len;
+                        hbuf.resize(sizeof(h) + k.len);
+                        std::memcpy(hbuf.data(), &h, sizeof(h)); std::memcpy(hbuf.data() + sizeof(h), t_run.expect.data() + k.off, k.len);
+                        mem->submitGifPacket(GifPathId::HostDraw, hbuf.data(), (uint32_t)hbuf.size());
+                    }
+                }
+                else
+                    for (const seamxform::Kick &k : t_run.kicks) mem->submitGifPacket(GifPathId::Path1, t_run.expect.data() + k.off, k.len);
+            }
             ++g_st.skipped;
             t_run.owned = true;
             return true;

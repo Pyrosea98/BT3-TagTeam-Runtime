@@ -5,6 +5,7 @@
 //   * at the swap: flush + vsync, then a synchronous readback of the scanout to an RGBA8 buffer that the present
 //     thread uploads as a texture. The readback is a full GPU sync per frame -- fine for first light, not for perf.
 #include "runtime/ps2_gs_pgs.h"
+#include "runtime/ps2_seamvk.h"   // [seamvk]
 #include "runtime/ps2_netplay.h"   // [vpdrop] follow the netplay player
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_gs_gpu.h"        // [pgs-texreplace] GS (VRAM, palettes), register structs
@@ -1821,6 +1822,14 @@ void onSwap()
     s.iface.flush();
     { const FlushStats fs = s.iface.consume_flush_stats(); s.fsPrims += fs.num_primitives; s.fsPasses += fs.num_render_passes; s.fsCopies += fs.num_copies; s.fsPal += fs.num_palette_updates; }
     copyPrivLocked(s);
+    if (seamvk::on())
+    {   // [seamvk] the native frame, composed from the same CRTC registers the backend scans out
+        const auto &p = s.iface.get_priv_register_state();
+        seamvk::PrivRegs pr;
+        std::memcpy(&pr.pmode, &p.pmode, 8); std::memcpy(&pr.dispfb1, &p.dispfb1, 8); std::memcpy(&pr.display1, &p.display1, 8);
+        std::memcpy(&pr.dispfb2, &p.dispfb2, 8); std::memcpy(&pr.display2, &p.display2, 8); std::memcpy(&pr.bgcolor, &p.bgcolor, 8);
+        seamvk::renderFrame(s.device, pr);
+    }
     VSyncInfo info = {};
     info.phase = s.field ^= 1u;
     info.dst_layout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
@@ -1913,8 +1922,11 @@ void setPresentSize(uint32_t w, uint32_t h)
     g_presentW.store(w, std::memory_order_relaxed); g_presentH.store(h, std::memory_order_relaxed);
 }
 
+// [seamvk] GS thread: the context registers as they stand at this point of the stream.
+
 bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h)
 {
+    if (seamvk::on()) return seamvk::takeFrame(rgba, w, h);   // [seamvk] the native view replaces the scanout
     State &s = st();
     std::lock_guard<std::mutex> lk(s.mtx);
     if (!s.frameFresh) return false;

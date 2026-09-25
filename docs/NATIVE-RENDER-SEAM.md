@@ -320,6 +320,51 @@ Effects, shadows, HUD, movies: each either gets a native path or is proven to
 be fine on the emulated one. **Exit:** nothing in a fight, a story cutscene, or
 the menus renders differently from the control at scale 1.
 
+### Phase 4 as built (2026-09-26): a native GS front-end, not a second GS
+
+The decision after Phase 3 was "stand up a renderer beside paraLLEl-GS"
+(`PS2X_SEAMVK=1`, `ps2xRuntime/src/lib/ps2_seamvk.cpp`, `ps2_seamgs.cpp`,
+shaders in `src/lib/seamvk/`). What it is and is not:
+
+- **Everything the EE builds itself is interpreted natively.** `ps2_seamgs.cpp`
+  is a stateful GIF interpreter fed by the arbiter with every packet on every
+  path in stream order (tag state persists across DIRECT packets). It keeps
+  both GS contexts, a 4 MB VRAM mirror for host-to-local uploads and local
+  copies, decodes palettes and textures from that mirror (cache keyed by TEX0
+  plus the write stamps of the pages read; a stale entry gets a fresh slot,
+  because BT3 uploads several border pieces to one address between sprites),
+  and assembles vertex kicks (sprite, strip, fan, list; flat = last vertex)
+  into a per-frame draw list. Menus, HUD, boot popups and text come this way.
+- **The seam's meshes ride the same stream.** `'SVKD'` carries mesh plus
+  constants; the host-transformed packet follows as `'SVKG'`, whose register
+  writes (TEX0 per chunk) are applied before the draw is emitted with the state
+  of that moment. The GS backend still receives that packet as PATH1.
+- **Renderer.** One RGBA8 target per FRAME base, one D32 per ZBUF base, fixed
+  logical 1024x512 GS pixels at `PS2X_SEAMVK_SCALE`. Alpha is stored as
+  As/128 so the fixed-function blend factors are the GS's without dual-source
+  blending (Granite does not enable it). CRTC compose from PMODE/DISPFB/DISPLAY
+  at the swap; two circuits on one frame is one opaque blit.
+- **Measured GS feature set** (tools/gscensus.py over `PS2X_GS_RECORD`
+  streams, which the arbiter now records under the exclusive backend):
+  menus are ~870 textured sprites/frame, T4/T8 CLUT (CSM1), CT32 uploads,
+  blend (0,1,0,1), clamp/repeat, bilinear; no feedback. The fight adds ~47k
+  PATH1 vertices/frame (owned by the seam), HUD sprites, and a post chain that
+  reads render targets in other formats: Z24 at 0x1c00 as PSMT8H/PSMT8,
+  rendered palettes at 0x2a00/0x3c00 used as CLUTs, CT32 re-viewed as CT16.
+- **What it deliberately does not do:** emulate that post chain by aliasing
+  render targets. The old GL renderer tried exactly that (per-fbp FBOs with
+  view relocation and VRAM writeback) and was replaced by paraLLEl-GS because
+  it could not be made exact (README.md, docs/ALTGL-RAYLIB-REMOVAL.md). The
+  cel outline, depth-of-field and glow passes are BT3 effects, so the plan is
+  to implement them as native passes over our own colour and depth targets,
+  the same way the geometry was taken at the engine seam rather than re-drawn
+  from GS packets. Until then paraLLEl-GS keeps running as the VRAM-exact
+  reference, and `PS2X_SEAMVK` unset presents its frame.
+- **Known gaps at this commit:** DATE (destination alpha test, the HUD bars),
+  AFAIL modes other than KEEP, points/lines, PMODE alpha with two different
+  frames, mipmaps, TEXCLUT/CSM2, dithering, wrap of draws past FBW, and any
+  texture read from pages the game drew (counted as "from drawn pages").
+
 ## Rules that hold every session
 
 - Measurement before theory. Profile with `PS2X_EEPROF=50 PS2X_FRAMEPROF=1`
