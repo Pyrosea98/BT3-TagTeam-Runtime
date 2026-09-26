@@ -242,16 +242,16 @@ namespace
 // the packets those steps built are dropped and the host pass runs at the position of the first one.
 namespace
 {
-    struct NativeStep { uint32_t lo, hi; int id; bool inRun; };
+    struct NativeStep { uint32_t lo, hi; int id; bool inRun; bool marked = false; };
     NativeStep g_nativeSteps[] = { {0x109848u, 0x109938u, 0, false}, {0x106ba8u, 0x106c5cu, 1, false}, {0x24b118u, 0x24b1dcu, 2, false}, {0x245a50u, 0x245de4u, 3, false}, {0x103070u, 0x103254u, 4, false}, {0x105cd8u, 0x105f28u, 5, false} };   // 5: outline mask, native renderer only
     const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u; }();
     // The step's packets are not dropped: their register writes (FRAME/ZBUF/SCISSOR/TEST... which the game's later draws
     // inherit) still reach the backend; only their DRAW kicks are neutralised, XYZ2/XYZF2 -> XYZ3/XYZF3 (no kick), by
     // rewriting the GIF tags' register descriptors and A+D addresses in place. Tag state persists across PATH2 payloads.
     struct P2Scan { uint32_t nloop = 0, nreg = 0, ri = 0; uint8_t flg = 0; uint64_t regs = 0; } g_p2scan;
-    void neutralizeKicks(uint8_t *d, uint32_t n)
+    bool neutralizeKicks(uint8_t *d, uint32_t n)   // true when the payload carried a draw kick (now neutralised)
     {
-        P2Scan &p = g_p2scan; uint32_t off = 0;
+        P2Scan &p = g_p2scan; uint32_t off = 0; bool kick = false;
         while (off < n)
         {
             if (p.nloop == 0u)
@@ -263,7 +263,7 @@ namespace
                 if (p.flg != 2u)
                 {   // XYZ2 (5) -> XYZ3 (d), XYZF2 (4) -> XYZF3 (c) in the descriptors
                     uint64_t r2 = 0;
-                    for (uint32_t i = 0; i < 16; ++i) { uint64_t nib = (hi >> (4 * i)) & 0xFu; if (nib == 5u) nib = 0xDu; else if (nib == 4u) nib = 0xCu; r2 |= nib << (4 * i); }
+                    for (uint32_t i = 0; i < 16; ++i) { uint64_t nib = (hi >> (4 * i)) & 0xFu; if (i < p.nreg && (nib == 5u || nib == 4u)) kick = true; if (nib == 5u) nib = 0xDu; else if (nib == 4u) nib = 0xCu; r2 |= nib << (4 * i); }
                     hi = r2; std::memcpy(d + off + 8, &hi, 8);
                 }
                 p.regs = hi; off += 16;
@@ -278,9 +278,10 @@ namespace
             }
             if (off + 16u > n) break;
             const uint32_t desc = (uint32_t)((p.regs >> (4u * p.ri)) & 0xFu);
-            if (desc == 0xEu) { uint8_t &addr = d[off + 8]; if (addr == 0x05u) addr = 0x0Du; else if (addr == 0x04u) addr = 0x0Cu; }
+            if (desc == 0xEu) { uint8_t &addr = d[off + 8]; if (addr == 0x05u || addr == 0x04u) kick = true; if (addr == 0x05u) addr = 0x0Du; else if (addr == 0x04u) addr = 0x0Cu; }
             off += 16; if (++p.ri == p.nreg) { p.ri = 0; --p.nloop; }
         }
+        return kick;
     }
     bool nativeIntercept(const GifArbiterPacket &pkt)
     {
@@ -290,9 +291,8 @@ namespace
             const bool in = pkt.owner >= st.lo && pkt.owner < st.hi;
             if (in && !st.inRun)
             {
-                st.inRun = true;
-                if (st.id >= 5) { if (!seamvk::on()) { st.inRun = false; continue; } seamvk::onNativeStep(st.id); }   // engine-seam steps of the native renderer
-                else if (seamvk::on() && st.id == 0) seamvk::onNativeStep(st.id);   // the native renderer's own pass (the backend keeps its host pass below as the reference)
+                st.inRun = true; st.marked = false;
+                if (st.id >= 5 && !seamvk::on()) { st.inRun = false; continue; }
 #ifdef PS2X_HAVE_PGS
                 if (st.id < 5)
                 {
@@ -302,7 +302,15 @@ namespace
 #endif
             }
             else if (!in && st.inRun) st.inRun = false;
-            if (in) { neutralizeKicks(const_cast<uint8_t *>(pkt.data), pkt.size); return true; }
+            if (in)
+            {
+                const bool kick = neutralizeKicks(const_cast<uint8_t *>(pkt.data), pkt.size);
+                // The native renderer's pass goes at the step's first DRAW packet, not its first attributed packet: uploads
+                // and palette writes the step does earlier (between other owners' draws) would place it too early, and
+                // draws in between (the characters) would overwrite what it wrote (the outline vanished that way).
+                if (kick && !st.marked && seamvk::on() && (st.id >= 5 || st.id == 0)) { st.marked = true; seamvk::onNativeStep(st.id); }
+                return true;
+            }
         }
         return false;
     }

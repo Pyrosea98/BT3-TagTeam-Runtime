@@ -1069,9 +1069,9 @@ namespace seamgs
         if (g_list.draws.size() > 1500u) ++g_busyFrames;
         evictTextures();
         g_list.frame = g_frame;
-        out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees); out.rtDecodes.swap(g_list.rtDecodes); out.regEvents.swap(g_list.regEvents);
+        out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees); out.rtDecodes.swap(g_list.rtDecodes); out.stepCluts.swap(g_list.stepCluts); out.regEvents.swap(g_list.regEvents);
         out.frame = g_frame;
-        g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear(); g_list.rtDecodes.clear(); g_list.regEvents.clear();
+        g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear(); g_list.rtDecodes.clear(); g_list.stepCluts.clear(); g_list.regEvents.clear();
         g_texFree.insert(g_texFree.end(), g_retired.begin(), g_retired.end()); g_retired.clear();
         g_texDirty = true;   // a new frame: re-resolve (the renderer may have dropped slots)
         report();
@@ -1104,11 +1104,19 @@ namespace seamvk
         if (!on()) return;
         std::lock_guard<std::mutex> lk(seamgs::g_mtx);
         static uint64_t s_lastFrame[8] = {};   // once per frame: the step's packets interleave with other owners' (uploads, decodes), so the arbiter sees several runs
-        if (step >= 0 && step < 8 && s_lastFrame[step] == seamgs::g_frame + 1u) return;
+        // Step 5 (outline) runs at EVERY run of its packets: the game's alpha clear (FUN_00106ba8) sits between the mask
+        // write and the read-backs, so only a pass placed at the second run survives to the ink draw.
+        if (step != 5 && step >= 0 && step < 8 && s_lastFrame[step] == seamgs::g_frame + 1u) return;
         if (step >= 0 && step < 8) s_lastFrame[step] = seamgs::g_frame + 1u;
         seamgs::Draw d; d.kind = 3; d.prog = (uint8_t)step;
         d.st.fbp = (uint32_t)(seamgs::g_r.ctx[0].frame & 0x1FFu) << 5; d.st.fbw = (uint32_t)((seamgs::g_r.ctx[0].frame >> 16) & 0x3Fu);
         d.st.zbp = (uint32_t)(seamgs::g_r.ctx[0].zbuf & 0x1FFu) << 5;
+        if (step == 5)
+        {   // the depth ramp palette (CLUT 0x3e8c) as it is NOW: the GPU thread runs the pass later, when the mirror may hold another frame's palette
+            std::array<uint32_t, 256> cl{}; uint32_t bits[16] = {};
+            seamgs::readClut(0x3e8cu, 0u, 0u, seamgs::g_r.texa, cl.data(), bits);
+            d.rt = (int32_t)seamgs::g_list.stepCluts.size(); seamgs::g_list.stepCluts.push_back(cl);
+        }
         seamgs::g_list.draws.push_back(d);
     }
     void onHostDraw(const uint8_t *data, uint32_t size)

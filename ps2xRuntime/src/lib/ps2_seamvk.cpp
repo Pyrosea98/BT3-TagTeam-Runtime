@@ -388,7 +388,7 @@ namespace seamvk
         }
 
         // [postnative] step 5: the outline mask, written straight into the frame's alpha from the Z top-byte plane
-        void runNativeStep(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::Draw &d)
+        void runNativeStep(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::FrameList &f, const seamgs::Draw &d)
         {
             if (d.prog == 0)
             {   // depth mask: frame.A := Z24[15:8]
@@ -438,7 +438,7 @@ namespace seamvk
             VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = h; cmd.set_scissor(sr);
             cmd.set_texture(0, 1, zt.img->get_view(), Vulkan::StockSampler::NearestClamp);
             uint32_t *cl = static_cast<uint32_t *>(cmd.allocate_constant_data(0, 0, 256u * 4u));
-            if (!seamgs::peekClut(0x3e8cu, 0u, cl)) std::memset(cl, 0, 1024);
+            if (d.rt >= 0 && (size_t)d.rt < f.stepCluts.size()) std::memcpy(cl, f.stepCluts[d.rt].data(), 1024); else std::memset(cl, 0, 1024);
             static const uint32_t s_core = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); return v && v[0] ? (uint32_t)std::atoi(v) : 2u; }();
             static const uint32_t s_fringe = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); if (v) if (const char *c = std::strchr(v, ',')) return (uint32_t)std::atoi(c + 1); return 3u; }();
             const uint32_t pcv[4] = { g_gpu.scale, s_core, s_fringe, 0u };
@@ -789,7 +789,7 @@ namespace seamvk
             if (d.kind == 3)
             {   // [postnative] an engine-seam step at its stream position
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
-                runNativeStep(*cmd, dev, d);
+                runNativeStep(*cmd, dev, f, d);
                 curFbp = ~0u;
                 continue;
             }

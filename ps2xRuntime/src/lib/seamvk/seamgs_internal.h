@@ -4,6 +4,7 @@
 #include "runtime/ps2_seamvk.h"
 #include <cstdint>
 #include <vector>
+#include <array>
 
 namespace seamgs
 {
@@ -79,6 +80,7 @@ namespace seamgs
         std::vector<uint8_t> verts;
         std::vector<TexUpload> texUploads;
         std::vector<RtDecode> rtDecodes;
+        std::vector<std::array<uint32_t, 256>> stepCluts;   // kind 3 draws: the palette a native step needs, captured at the marker (the mirror moves on)
         std::vector<int32_t> texFrees;
         struct RegEvent { uint32_t drawIndex; uint8_t path, hostGif, addr; uint64_t value; };   // FRAME/SCISSOR writes in stream order (diagnostics)
         std::vector<RegEvent> regEvents;
