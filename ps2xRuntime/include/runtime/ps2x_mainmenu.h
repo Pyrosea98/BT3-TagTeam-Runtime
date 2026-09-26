@@ -156,4 +156,73 @@ namespace ps2x::mainmenu
     // `buf` must hold at least 320 bytes.
     void format(const Snapshot &s, char *buf, std::size_t n);
 
+    // ---- the differential dumper ----------------------------------------------------------------
+    //
+    // The goal is the hidden entry (index 4) -- the "Network Battle" plate -- and only its icon
+    // and its animation. The game hides it by skipping it in the build loop, which means it can be
+    // isolated by differencing instead of by reverse-engineering:
+    //
+    //   run A: PS2X_MENU_DUMP=a                                  -> 9 rows, no index 4
+    //   run B: PS2X_MENU_DUMP=b PS2X_REVEAL_HIDDEN_MENU_ENTRY=1 -> 10 rows, index 4 present
+    //
+    // What differs between A and B at the same sample index IS entry 4: its slot in the table, its
+    // structure, and whatever it points at. The table also SHIFTS (index 4 lands at position 4, so
+    // 5..9 move down one), which is a second and independent confirmation that the diff landed on
+    // the right thing.
+    //
+    // Sampling over time is what makes the animation visible too: WITHIN one run, the bytes that
+    // differ between sample 0 and sample 1 are the ones that move per frame. One dump is a still,
+    // eight is a loop.
+    //
+    // menuObj lands at the same address in both runs (0xa3db40, measured), so the windows are
+    // byte-comparable without relocating anything -- which is why the dump is anchored to menuObj
+    // and not to a fixed address.
+    class Dumper
+    {
+    public:
+        // The window, relative to menuObj. This holds the menu object, the row table and the plate
+        // structures: pointers and small fields, NOT pixels. 96 KB per sample.
+        static constexpr uint32_t kPre    = 0x4000u;
+        static constexpr uint32_t kPost   = 0x14000u;
+        static constexpr uint32_t kWindow = kPre + kPost;
+        static constexpr int kMaxSamples = 8;
+
+        // Full RDRAM, for when the window is too small to hold what is being looked for. The plate
+        // icons are decoded textures and their animations are multi-frame, so the payload is
+        // orders of magnitude larger than a structure block: 96 KB cannot contain it. 32 MB per
+        // sample, so this mode defaults to few of them -- the A-vs-B diff is what isolates entry 4
+        // and it needs one aligned pair, not a loop. The animation is read from the window mode's
+        // samples instead, which are small and can be taken many times over.
+        enum class Mode { Window, FullRdram };
+        static constexpr int kMaxSamplesFull = 2;
+
+        // False when PS2X_MENU_DUMP is unset, so the caller can skip the work entirely.
+        bool configure(uint64_t sampleEvery);
+        bool enabled() const { return m_prefix != nullptr; }
+        Mode mode() const { return m_mode; }
+
+        // Call once per frame. Samples while the gate is SHOWN; writes the set when the menu goes
+        // away or when kMaxSamples is reached.
+        void tick(const Snapshot &s, const uint8_t *rdram, uint32_t ramMask);
+
+        bool wrote() const { return m_wrote; }
+        int  sampleCount() const { return m_count; }
+        const char *prefix() const { return m_prefix ? m_prefix : ""; }
+
+    private:
+        void flush();
+
+        const char *m_prefix = nullptr;
+        Mode m_mode = Mode::Window;
+        int  m_maxSamples = kMaxSamples;
+        uint64_t m_every = 0u;          // frames between samples
+        uint64_t m_sinceLast = 0u;
+        int      m_count = 0;
+        bool     m_wrote = false;
+        bool     m_sampling = false;
+        uint8_t *m_buf = nullptr;       // one sample's worth, allocated on the first tick
+        Snapshot m_last{};
+        uint64_t m_firstFrame = 0u;
+    };
+
 }   // namespace ps2x::mainmenu

@@ -8,7 +8,9 @@
 #include "runtime/ps2x_mainmenu.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <new>
 
 namespace ps2x::mainmenu
 {
@@ -205,6 +207,137 @@ namespace ps2x::mainmenu
                       : s.menuState == kMenuStateTransitioning ? "TRANSITIONING"
                       : s.menuState == 0xFFFFFFFFu            ? "(no chain)"
                                                                 : "?");
+    }
+
+    // ---- the differential dumper ----------------------------------------------------------------
+
+    bool Dumper::configure(uint64_t sampleEvery)
+    {
+        const char *p = std::getenv("PS2X_MENU_DUMP");
+        if (!p || !p[0] || p[0] == '0')
+            return false;
+        m_prefix = p;
+        m_every = sampleEvery ? sampleEvery : 1u;
+
+        // PS2X_MENU_DUMP_FULL=1 switches to whole-RDRAM. The window holds structures, not pixels,
+        // and the icons this is after are textures.
+        const char *full = std::getenv("PS2X_MENU_DUMP_FULL");
+        m_mode = (full && full[0] && full[0] != '0') ? Mode::FullRdram : Mode::Window;
+        m_maxSamples = kMaxSamples;
+        if (m_mode == Mode::FullRdram)
+        {
+            const char *n = std::getenv("PS2X_MENU_DUMP_SAMPLES");
+            m_maxSamples = (n && n[0]) ? (int)std::atoi(n) : kMaxSamplesFull;
+            if (m_maxSamples < 1)
+                m_maxSamples = 1;
+            // A full dump is 32 MB; sampling it every 30 frames for 8 samples is 256 MB of
+            // scratch for no extra information. One sample is the A-vs-B pair; more only if asked.
+            if (m_every < 30u)
+                m_every = 30u;
+        }
+        return true;
+    }
+
+    void Dumper::tick(const Snapshot &s, const uint8_t *rdram, uint32_t ramMask)
+    {
+        if (!m_prefix || m_wrote || !rdram)
+            return;
+        const Phase ph = phase(s);
+
+        // Samples only while the menu is actually up. Sampling during the build would capture a
+        // half-populated structure and the diff would be against garbage.
+        if (ph != Phase::Shown || !s.menuObj)
+        {
+            if (m_sampling)
+                flush();   // the menu went away: write what we have
+            return;
+        }
+        const uint32_t bytes = (m_mode == Mode::FullRdram) ? (ramMask + 1u) : kWindow;
+        if (!m_buf)
+        {
+            m_buf = new (std::nothrow) uint8_t[bytes];
+            if (!m_buf)
+            {
+                std::fprintf(stderr, "[menudump] out of memory (%u bytes), disabled\n", bytes);
+                m_prefix = nullptr;
+                return;
+            }
+        }
+        if (!m_sampling)
+        {
+            m_sampling = true;
+            m_count = 0;
+            m_sinceLast = 0;
+            m_firstFrame = s.frame;
+        }
+        if (m_sinceLast++ < m_every)
+            return;
+
+        // Window mode is anchored to menuObj so the two runs line up; full mode is the whole of
+        // RDRAM, which is aligned with itself by definition.
+        const uint8_t *src = rdram;
+        if (m_mode == Mode::Window)
+            src = rdram + ((s.menuObj - kPre) & ramMask);
+        std::memcpy(m_buf, src, bytes);
+        m_last = s;
+
+        char name[512];
+        std::snprintf(name, sizeof name, "%s.s%d.bin", m_prefix, m_count);
+        if (FILE *f = std::fopen(name, "wb"))
+        {
+            std::fwrite(m_buf, 1, bytes, f);
+            std::fclose(f);
+        }
+        else
+        {
+            std::fprintf(stderr, "[menudump] cannot write %s\n", name);
+        }
+        m_count++;
+
+        if (m_count >= m_maxSamples)
+            flush();
+    }
+
+    void Dumper::flush()
+    {
+        if (!m_sampling)
+            return;
+        m_sampling = false;
+        m_wrote = true;
+
+        // The manifest is what makes the two runs comparable: it records the window's absolute
+        // address and the gate readings, so the diff does not have to assume menuObj landed in the
+        // same place (it did in every run measured, but "did" is not "must").
+        char name[512];
+        std::snprintf(name, sizeof name, "%s.manifest.txt", m_prefix);
+        if (FILE *f = std::fopen(name, "w"))
+        {
+            std::fprintf(f, "prefix        %s\n", m_prefix);
+            std::fprintf(f, "mode          %s\n",
+                         m_mode == Mode::FullRdram ? "full-rdram" : "menu-window");
+            std::fprintf(f, "samples       %d (max %d)\n", m_count, m_maxSamples);
+            std::fprintf(f, "sample_every  %llu frames\n", (unsigned long long)m_every);
+            std::fprintf(f, "first_frame   %llu\n", (unsigned long long)m_firstFrame);
+            std::fprintf(f, "menuObj       0x%x\n", m_last.menuObj);
+            if (m_mode == Mode::Window)
+                std::fprintf(f, "window        0x%08x..0x%08x  (%u bytes, menuObj-0x%x .. +0x%x)\n",
+                             m_last.menuObj - kPre, m_last.menuObj - kPre + kWindow,
+                             kWindow, kPre, kPost);
+            else
+                std::fprintf(f, "window        0x00000000..0x%08x  (all of RDRAM)\n", kWindow);
+            std::fprintf(f, "plates        %u (complete at %u)\n", m_last.plates, kRowCount);
+            std::fprintf(f, "row           %d\n", m_last.row);
+            std::fprintf(f, "rowIndex      %d\n", m_last.rowIndex);
+            std::fclose(f);
+        }
+
+        char line[384];
+        format(m_last, line, sizeof line);
+        std::fprintf(stderr, "[menudump] wrote %d %s sample(s) to %s.s*.bin  (%s)\n",
+                     m_count, m_mode == Mode::FullRdram ? "full-rdram" : "window",
+                     m_prefix, line);
+        delete[] m_buf;
+        m_buf = nullptr;
     }
 
 }   // namespace ps2x::mainmenu
