@@ -10,7 +10,7 @@ layout(location = 1) INTERP in vec3 vTex;
 layout(location = 2) INTERP in float vLit;
 layout(location = 3) INTERP in float vFog;
 layout(set = 0, binding = 1) uniform sampler2D uTex;   // RGBA8, raw GS alpha bytes / 255
-layout(set = 0, binding = 2) uniform sampler2D uDst;   // snapshot of the destination (DATE), alpha stored as A/128
+layout(input_attachment_index = 0, set = 0, binding = 2) uniform subpassInput uDst;   // the destination itself (DATE), alpha stored as A/128
 #include "pc.glsl"
 layout(location = 0, index = 0) out vec4 outColor;   // stored: exact GS bytes / 255
 layout(location = 0, index = 1) out vec4 outBlend;   // dual-source: alpha = As / 128 for the blend factors
@@ -36,7 +36,7 @@ void main()
     int flags = pc.fA.x;
     if ((flags & 512) != 0)
     {   // DATE: draw only where the destination alpha's bit 7 equals DATM (stored A/128 saturates at 1.0 for A >= 128)
-        float da = texelFetch(uDst, ivec2(gl_FragCoord.xy), 0).a;
+        float da = subpassLoad(uDst).a;
         bool bit7 = da >= (127.5 / 255.0);
         if (bit7 != ((flags & 1024) != 0)) discard;
     }

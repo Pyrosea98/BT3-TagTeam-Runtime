@@ -153,7 +153,7 @@ namespace seamvk
             if (!t.img)
             {
                 auto ci = Vulkan::ImageCreateInfo::render_target(w, kLogicalH * g_gpu.scale, VK_FORMAT_R8G8B8A8_UNORM);
-                ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+                ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;   // [date] read back in-pass
                 t.img = dev.create_image(ci);
                 t.layout = VK_IMAGE_LAYOUT_UNDEFINED; t.cleared = false;
             }
@@ -336,7 +336,7 @@ namespace seamvk
             pc.fogcol[0] = (t.fogcol & 0xFFu) / 255.0f; pc.fogcol[1] = ((t.fogcol >> 8) & 0xFFu) / 255.0f; pc.fogcol[2] = ((t.fogcol >> 16) & 0xFFu) / 255.0f; pc.fogcol[3] = 1.0f;
             cmd.push_constants(&pc, 0, sizeof(pc));
             cmd.set_texture(0, 1, tex ? g_gpu.tex[t.tex]->get_view() : g_gpu.white->get_view(), Vulkan::StockSampler::NearestClamp);
-            cmd.set_texture(0, 2, (t.date && g_gpu.snap) ? g_gpu.snap->get_view() : g_gpu.white->get_view(), Vulkan::StockSampler::NearestClamp);
+            cmd.set_input_attachments(0, 2);   // [date] binding 2 = the pass's colour attachment as input (self-dependent subpass)
             if (t.date) ++g_gpu.dateDraws;
         }
 
@@ -501,38 +501,7 @@ namespace seamvk
                 if (s_only && d.kind == 0 && (((uint64_t)t.tex0hi << 32) | t.tex0lo) != s_only) continue;
             }
             const uint32_t zbp = (t.zte ? t.zbp : ~1u) ^ (t.fbw << 24);   // the pass key also changes with the row width
-            if (t.date && !s_noDate)
-            {   // DATE reads the destination: snapshot the target between passes (the scissor would do; whole image for now)
-                if (inPass) { cmd->end_render_pass(); inPass = false; }
-                Target &ct = target(dev, t.fbp, t.fbw);
-                toAttachment(*cmd, ct, false);   // a target never drawn yet still needs a defined layout for the copy
-                if (g_gpu.snap && g_gpu.snap->get_width() != ct.img->get_width()) g_gpu.snap.reset();
-                if (!g_gpu.snap)
-                {
-                    auto ci = Vulkan::ImageCreateInfo::render_target(ct.img->get_width(), kLogicalH * g_gpu.scale, VK_FORMAT_R8G8B8A8_UNORM);
-                    ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT; ci.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-                    g_gpu.snap = dev.create_image(ci);
-                }
-                cmd->image_barrier(*ct.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-                cmd->image_barrier(*g_gpu.snap, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-                {   // only the scissor region (the HUD's DATE draws are small)
-                    const uint32_t sc2 = g_gpu.scale, rowW = (t.fbw ? t.fbw : 1u) * 64u;
-                    uint32_t x0 = std::min<uint32_t>(t.scax0, rowW), x1 = std::min<uint32_t>(t.scax1 + 1u, rowW), y0 = std::min<uint32_t>(t.scay0, kLogicalH), y1 = std::min<uint32_t>(t.scay1 + 1u, kLogicalH);
-                    if (x1 > x0 && y1 > y0)
-                    {
-                        VkOffset3D off = { int32_t(x0 * sc2), int32_t(y0 * sc2), 0 };
-                        VkExtent3D ext = { (x1 - x0) * sc2, (y1 - y0) * sc2, 1 };
-                        cmd->copy_image(*g_gpu.snap, *ct.img, off, off, ext, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
-                    }
-                }
-                cmd->image_barrier(*g_gpu.snap, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-                cmd->image_barrier(*ct.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
-                curFbp = ~0u;   // re-open the pass below (load)
-            }
+            const bool dateBarrier = t.date && !s_noDate;   // [date] handled in-pass: a by-region barrier before the draw (below)
             if (t.fbp != curFbp || zbp != curZbp)
             {
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
@@ -550,11 +519,24 @@ namespace seamvk
                 rp.op_flags = Vulkan::RENDER_PASS_OP_STORE_DEPTH_STENCIL_BIT | (dt.cleared ? Vulkan::RENDER_PASS_OP_LOAD_DEPTH_STENCIL_BIT : Vulkan::RENDER_PASS_OP_CLEAR_DEPTH_STENCIL_BIT);
                 dt.cleared = true;
                 rp.clear_depth_stencil.depth = 0.0f;
+                // [date] one subpass whose colour attachment is also its input attachment: Granite emits the colour
+                // self-dependency, so a DATE draw can read the destination pixel it is about to blend into after a
+                // by-region barrier, with no pass break and no copy.
+                static Vulkan::RenderPassInfo::Subpass s_sub = [](){ Vulkan::RenderPassInfo::Subpass sp; sp.num_color_attachments = 1; sp.color_attachments[0] = 0; sp.num_input_attachments = 1; sp.input_attachments[0] = 0; sp.depth_stencil_mode = Vulkan::RenderPassInfo::DepthStencil::ReadWrite; return sp; }();
+                rp.subpasses = &s_sub; rp.num_subpasses = 1;
                 cmd->begin_render_pass(rp);
                 cmd->set_opaque_state();   // Granite's fresh state has a zero colour write mask
                 cmd->set_cull_mode(VK_CULL_MODE_NONE);
                 inPass = true; ++g_gpu.passes;
                 curFbp = t.fbp; curZbp = zbp;
+            }
+            if (dateBarrier)
+            {
+                VkDependencyInfo dep = { VK_STRUCTURE_TYPE_DEPENDENCY_INFO }; VkMemoryBarrier2 mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+                mb.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT; mb.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                mb.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT; mb.dstAccessMask = VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT;
+                dep.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT; dep.memoryBarrierCount = 1; dep.pMemoryBarriers = &mb;
+                cmd->barrier(dep);
             }
             bindDraw(*cmd, d, sc);
             if (d.kind == 0)
