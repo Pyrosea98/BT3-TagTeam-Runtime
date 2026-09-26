@@ -6334,6 +6334,10 @@ std::atomic<uint32_t> g_bt3MenuPhase{0u};
 // real number instead of a hardcoded one. It climbs 0 -> 9 as the menu is built (9, not 11: the
 // loop skips the hidden entry and routes index 10 elsewhere; see ps2x_mainmenu.h).
 std::atomic<uint32_t> g_bt3MenuPlates{0u};
+
+// [vram-dump] Defined in ps2_gs_gpu.cpp next to the VRAM pointer it writes. Not in a public header
+// on purpose: it is a diagnostic with one caller, and the gate is what decides when it fires.
+extern bool ps2xVramDumpTo(const char *path);
 static PS2Runtime *g_waitHookRuntime = nullptr;   // [barblock]
 void *PS2Runtime::guestWaitBegin()
 {
@@ -7542,6 +7546,55 @@ void PS2Runtime::run()
                     g_bt3MenuShown.store(ps2x::mainmenu::popupVisible(snap) ? 1u : 0u,
                                          std::memory_order_relaxed);
                     g_bt3MenuPlates.store(snap.plates, std::memory_order_relaxed);
+                    // [menudump] The differential dumper, ticked from the same place as the gate so
+                    // a sample can never be taken from a frame the gate did not consider. Off unless
+                    // PS2X_MENU_DUMP is set; PS2X_MENU_DUMP_EVERY sets the frames between samples.
+                    static ps2x::mainmenu::Dumper s_dumper;
+                    static const bool s_dumpOn = s_dumper.configure([](){
+                        const char *v = std::getenv("PS2X_MENU_DUMP_EVERY");
+                        return v && v[0] ? (uint64_t)std::atoll(v) : 30u;
+                    }());
+                    // [vram-dump] Same env var as the at-exit hook, so arming it is one thing: if
+                    // set, the GS has the VRAM pointer and this is where it gets written.
+                    static const char *g_vramDumpArmed = [](){
+                        const char *v = std::getenv("PS2X_VRAM_DUMP");
+                        return (v && v[0] && v[0] != '0') ? v : nullptr;
+                    }();
+                    if (s_dumpOn)
+                        s_dumper.tick(snap, rd, PS2_RAM_MASK);
+                    // [vram-dump] Take VRAM the moment the menu is up, once. The plate icons are
+                    // assembled and colour-converted by the game before they reach VRAM, so this is
+                    // the only place the finished pixels exist -- RDRAM holds the compressed source
+                    // and the game never writes the decoded form back. Differencing VRAM between a
+                    // stock run and one with PS2X_REVEAL_HIDDEN_MENU_ENTRY=1 isolates the hidden
+                    // plate's icon.
+                    // [vram-dump] Take VRAM while the menu is up, on the Dumper's own sample cadence.
+                    //
+                    // One sample per run is not enough, and the reason is the animation: the
+                    // plates pulse, so a single A-vs-B diff is dominated by the whole menu being
+                    // caught in a different phase. Measured, a one-shot diff of two VRAM dumps has
+                    // 23% of 4 MB differing and only 0.1% of the differing runs start on a 2048-byte
+                    // page -- the signature of noise, since a texture the game uploaded would be
+                    // page-aligned. Sampling several times per run gives the within-run baseline,
+                    // and resident-minus-moving is what isolates the hidden plate's icon.
+                    if (ps2x::mainmenu::popupVisible(snap) && g_vramDumpArmed)
+                    {
+                        static uint64_t s_vramNext = 0;
+                        static int s_vramSample = 0;
+                        const int vramSamples = [](){
+                            const char *v = std::getenv("PS2X_VRAM_DUMP_SAMPLES");
+                            return (v && v[0]) ? (int)std::atoi(v) : 4;
+                        }();
+                        if (s_vramSample < vramSamples && snap.frame >= s_vramNext)
+                        {
+                            char path[512];
+                            std::snprintf(path, sizeof path, "%s.s%d.bin", g_vramDumpArmed,
+                                          s_vramSample);
+                            if (ps2xVramDumpTo(path))
+                                ++s_vramSample;
+                            s_vramNext = snap.frame + 30u;   // matches the RDRAM sample cadence
+                        }
+                    }
                     if (s_lifecycle)
                     {
                         static ps2x::mainmenu::Phase s_prevPh = ps2x::mainmenu::Phase::Absent;
