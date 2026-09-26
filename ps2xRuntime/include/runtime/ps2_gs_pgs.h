@@ -11,6 +11,14 @@ struct GSRegisters;
 class GS;
 namespace ps2x_pgs
 {
+    // [seamvk] diagnostics: when set, the next transfer writes the backend's VRAM view of a target as PPM (rgb) + PGM (alpha)
+    // into the directory, then clears the request. fbp = block address, fbw = width/64, CT32.
+    struct TargetDumpReq { uint32_t fbp = 0, fbw = 0, w = 0, h = 0; const char *dir = nullptr; };
+    void requestTargetDump(const TargetDumpReq &r);
+    // [steporacle] the whole 4 MB VRAM as the backend holds it now (flushes first), plus its register state as text.
+    // Caller must have the GS stream drained to this point (PS2Memory::drainKickQueue). Game thread.
+    bool dumpVramRaw(const char *binPath, const char *regsPath);
+
 #if defined(PS2X_HAVE_PGS)
 bool enabled();
 bool exclusive();
@@ -44,6 +52,7 @@ void onSwap();
 // shift that covers it (PS2X_PGS_HIRES unset); an explicit PS2X_PGS_HIRES=0|1|2 overrides.
 void setPresentSize(uint32_t w, uint32_t h);
 // Present thread: moves the newest scanout into `rgba` (w x h, RGBA8). False when nothing new arrived.
+bool takeRefFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h);   // [seamvk] the backend's own frame while the native view is presented (same swap)
 bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h);
 void shutdown();
 #else

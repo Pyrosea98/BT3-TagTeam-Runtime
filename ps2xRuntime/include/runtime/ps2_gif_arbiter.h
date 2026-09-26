@@ -28,6 +28,7 @@ struct GifArbiterPacket
     uint32_t offset = 0;              // into the arena it was submitted to
     uint32_t size = 0;
     const uint8_t *data = nullptr;    // resolved by takeQueue()
+    uint32_t owner = 0;               // [kickprobe] the guest code that built a PATH2 DIRECT packet (0 unknown)
 };
 
 struct GifArbiterBatch

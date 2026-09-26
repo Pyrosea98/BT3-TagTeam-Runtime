@@ -39,6 +39,7 @@ namespace seamgs
         uint8_t cpuRastered = 0;    // also rasterised into the VRAM mirror (small scratch target)
         uint8_t texFromDrawn = 0;   // the texture read VRAM pages the game had drawn into (mirror is stale there)
         uint32_t tex0lo = 0, tex0hi = 0;   // raw TEX0 for diagnostics
+        uint64_t dbgPrim = 0, dbgPrmode = 0, dbgSc[2] = {}; uint8_t dbgPrmodecont = 0;   // raw PRIM / PRMODE / both SCISSORs for diagnostics
         // SCISSOR / XYOFFSET
         uint16_t scax0 = 0, scax1 = 639, scay0 = 0, scay1 = 447;
         uint16_t ofx = 0, ofy = 0;
@@ -62,6 +63,7 @@ namespace seamgs
     {
         uint8_t kind = 0;     // 0: GS triangle list of Vtx; 1: seam host mesh (DrawPacket verts, strip); 2: RtDecode op
         uint8_t prog = 0;     // kind 1: the vertex program
+        uint8_t hostPass = 0; // kind 1: which of the packet's passes this draw is (the two-pass character program: 0 = textured, 1 = toon ramp)
         State st;
         uint32_t vertOff = 0, count = 0, stride = sizeof(Vtx);
         int32_t rt = -1;      // kind 2: index into FrameList::rtDecodes
@@ -78,6 +80,8 @@ namespace seamgs
         std::vector<TexUpload> texUploads;
         std::vector<RtDecode> rtDecodes;
         std::vector<int32_t> texFrees;
+        struct RegEvent { uint32_t drawIndex; uint8_t path, hostGif, addr; uint64_t value; };   // FRAME/SCISSOR writes in stream order (diagnostics)
+        std::vector<RegEvent> regEvents;
         uint64_t frame = 0;
     };
 

@@ -657,6 +657,7 @@ namespace seamprobe
         if (it != g_chainMaps.end()) { t_chainMap = it->second; g_chainMaps.erase(it); }
         else t_chainMap.clear();
     }
+    uint32_t lastDirectOwner() { return t_lastOwner; }
     void noteDirect(uint32_t pos, const uint8_t *gif, uint32_t bytes)
     {
         {   // PS2X_KICKPROBE_DUMP=1: transcript of one busy frame (armed by the first window with > 50 callers)

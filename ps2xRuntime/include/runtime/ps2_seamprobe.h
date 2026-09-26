@@ -46,4 +46,5 @@ namespace seamprobe
     // Kick thread: bind the map for the chain being interpreted, then tally each DIRECT payload by its guest owner.
     void beginChain(const void *chainData);
     void noteDirect(uint32_t pos, const uint8_t *gif, uint32_t bytes);
+    uint32_t lastDirectOwner();   // the owner noteDirect resolved on this thread (0 when unknown / probe off)
 }

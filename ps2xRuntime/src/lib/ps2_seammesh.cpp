@@ -978,7 +978,7 @@ namespace seam
             if (ok) { t_run.kicks.push_back(seamxform::Kick{0u, (uint32_t)t_run.expect.size()}); t_run.clipOut = clip; t_run.hasClipOut = true; }
         }
         if (!ok) return false;
-        if (seamvk::on()) recordForVk(c, isStage, isFx, isChar2, isChar1, vuData, static_cast<PS2Memory *>(memory));
+        if (seamvk::on() && !t_run.kicks.empty()) recordForVk(c, isStage, isFx, isChar2, isChar1, vuData, static_cast<PS2Memory *>(memory));
         t_run.active = true;
         if (skipOn())
         {   // PS2X_SEAMSKIP=2: bisect mode, skip VU1 but submit nothing.

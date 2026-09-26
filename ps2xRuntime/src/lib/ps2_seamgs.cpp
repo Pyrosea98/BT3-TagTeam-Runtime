@@ -139,6 +139,21 @@ namespace seamgs
         std::mutex g_mtx;
         FrameList g_list;
         bool g_haveHost = false; seamvk::DrawPacket g_host; std::vector<uint8_t> g_hostVerts;
+        // The mesh is drawn once per DISTINCT draw state the seam's packets kick it with: the two-pass character program
+        // kicks the same geometry twice (an outline pass in context 1, which the game hides under a 64x64 SCISSOR_1 while
+        // its palette target is live, then the lit pass in context 2), while a stage chunk's clipper fans and strip all
+        // share one state and must draw it once.
+        bool g_hostDrawn = false; State g_hostLast; uint8_t g_hostPassN = 0;
+        bool sameDrawState(const State &a, const State &b)
+        {
+            return a.fbp == b.fbp && a.fbw == b.fbw && a.fpsm == b.fpsm && a.fbmsk == b.fbmsk && a.zbp == b.zbp && a.zpsm == b.zpsm && a.zmsk == b.zmsk
+                && a.ate == b.ate && a.atst == b.atst && a.aref == b.aref && a.afail == b.afail && a.date == b.date && a.datm == b.datm && a.zte == b.zte && a.ztst == b.ztst
+                && a.abe == b.abe && a.aA == b.aA && a.aB == b.aB && a.aC == b.aC && a.aD == b.aD && a.fix == b.fix && a.pabe == b.pabe && a.fba == b.fba && a.colclamp == b.colclamp
+                && a.prim == b.prim && a.iip == b.iip && a.tme == b.tme && a.fge == b.fge && a.fst == b.fst && a.ctxt == b.ctxt
+                && a.tfx == b.tfx && a.tcc == b.tcc && a.wms == b.wms && a.wmt == b.wmt && a.tex0lo == b.tex0lo && a.tex0hi == b.tex0hi
+                && a.scax0 == b.scax0 && a.scax1 == b.scax1 && a.scay0 == b.scay0 && a.scay1 == b.scay1 && a.ofx == b.ofx && a.ofy == b.ofy && a.fogcol == b.fogcol;
+        }
+        uint8_t g_curPath = 0;
         bool g_inHostGif = false;
 
         // [rtdecode] what the GPU targets hold: per FRAME base the row width / format / rows drawn and a draw stamp;
@@ -444,6 +459,7 @@ namespace seamgs
             s.prim = (uint8_t)(pr & 7u); s.iip = (pr >> 3) & 1u; s.tme = (pr >> 4) & 1u; s.fge = (pr >> 5) & 1u;
             s.abe = (pr >> 6) & 1u; s.aa1 = (pr >> 7) & 1u; s.fst = (pr >> 8) & 1u; s.ctxt = (pr >> 9) & 1u;
             const Ctx &c = g_r.ctx[s.ctxt];
+            s.dbgPrim = g_r.prim; s.dbgPrmode = g_r.prmode; s.dbgPrmodecont = g_r.prmodecont ? 1 : 0; s.dbgSc[0] = g_r.ctx[0].scissor; s.dbgSc[1] = g_r.ctx[1].scissor;
             s.fbp = (uint32_t)(c.frame & 0x1FFu) * 32u; s.fbw = (uint32_t)((c.frame >> 16) & 0x3Fu); s.fpsm = (uint32_t)((c.frame >> 24) & 0x3Fu); s.fbmsk = (uint32_t)(c.frame >> 32);
             s.zbp = (uint32_t)(c.zbuf & 0x1FFu) * 32u; s.zpsm = (uint32_t)((c.zbuf >> 24) & 0xFu); s.zmsk = (uint8_t)((c.zbuf >> 32) & 1u);
             s.ate = (uint8_t)(c.test & 1u); s.atst = (uint8_t)((c.test >> 1) & 7u); s.aref = (uint8_t)((c.test >> 4) & 0xFFu); s.afail = (uint8_t)((c.test >> 12) & 3u);
@@ -563,12 +579,12 @@ namespace seamgs
         {
             ++g_hostOut[g_host.prog & 7u];
             noteTargetHist(1, g_host.prog, s);
-            Draw d; d.kind = 1; d.prog = g_host.prog; d.st = s; d.c = g_host.c;
+            Draw d; d.kind = 1; d.prog = g_host.prog; d.hostPass = g_hostPassN++; d.st = s; d.c = g_host.c;
             d.vertOff = (uint32_t)g_list.verts.size(); d.count = g_host.count; d.stride = g_host.stride;
             g_list.verts.insert(g_list.verts.end(), g_hostVerts.begin(), g_hostVerts.end());
             g_list.draws.push_back(d);
             noteDrawPages(s);
-            g_haveHost = false;
+            g_hostDrawn = true; g_hostLast = s;
         }
 
         // [scratchraster] Sprites into small scratch targets (rendered palettes, lighting ramps) are rasterised into the
@@ -750,8 +766,12 @@ namespace seamgs
             if (draw)
             {
                 if (g_inHostGif)
-                {   // the seam's packet: its first kick draws the pending host mesh with this state; its own vertices are not drawn
-                    if (g_haveHost) emitHostDraw(currentState(true));
+                {   // the seam's packet: its kicks draw the pending host mesh, once per distinct state; its own vertices are not drawn
+                    if (g_haveHost)
+                    {
+                        const State s = currentState(true);
+                        if (!g_hostDrawn || !sameDrawState(s, g_hostLast)) emitHostDraw(s);
+                    }
                 }
                 else
                 {
@@ -867,6 +887,8 @@ namespace seamgs
         // ---- registers ---------------------------------------------------------------------
         void writeReg(uint32_t addr, uint64_t v)
         {
+            if ((addr >= 0x40u && addr <= 0x41u) || (addr >= 0x4cu && addr <= 0x4du))
+                if (g_list.regEvents.size() < 4096u) g_list.regEvents.push_back(FrameList::RegEvent{(uint32_t)g_list.draws.size(), g_curPath, (uint8_t)(g_inHostGif ? 1 : 0), (uint8_t)addr, v});
             switch (addr & 0xFFu)
             {
             case 0x00: g_r.prim = v; g_vn = 0; break;
@@ -945,6 +967,7 @@ namespace seamgs
         void parse(uint8_t path, const uint8_t *d, uint32_t n)
         {
             PathParse &p = g_path[path & 3u];
+            g_curPath = path;
             uint32_t off = 0;
             while (off < n)
             {
@@ -1008,9 +1031,9 @@ namespace seamgs
         if (g_list.draws.size() > 1500u) ++g_busyFrames;
         evictTextures();
         g_list.frame = g_frame;
-        out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees); out.rtDecodes.swap(g_list.rtDecodes);
+        out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees); out.rtDecodes.swap(g_list.rtDecodes); out.regEvents.swap(g_list.regEvents);
         out.frame = g_frame;
-        g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear(); g_list.rtDecodes.clear();
+        g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear(); g_list.rtDecodes.clear(); g_list.regEvents.clear();
         g_texFree.insert(g_texFree.end(), g_retired.begin(), g_retired.end()); g_retired.clear();
         g_texDirty = true;   // a new frame: re-resolve (the renderer may have dropped slots)
         report();
@@ -1034,7 +1057,8 @@ namespace seamvk
         seamgs::parse(path, data, size);
         seamgs::g_inHostGif = false;
         seamgs::g_msParse += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        if (!hostGif && seamgs::g_haveHost) { ++seamgs::g_hostDropped[seamgs::g_host.prog & 7u]; seamgs::g_haveHost = false; }   // the seam's packets are contiguous: anything else ends the pairing
+        // The seam submits 'SVKD' and its 'SVKG' packets back to back from the kick thread, but the game thread's PATH3
+        // uploads can land between them in the arbiter queue: they do not end the pairing. Only a new 'SVKD' does.
     }
 
     void onHostDraw(const uint8_t *data, uint32_t size)
@@ -1045,9 +1069,9 @@ namespace seamvk
         std::lock_guard<std::mutex> lk(seamgs::g_mtx);
         const auto t0 = std::chrono::steady_clock::now();
         struct T { std::chrono::steady_clock::time_point t; ~T() { seamgs::g_msHost += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); } } tt{t0};
-        if (seamgs::g_haveHost) ++seamgs::g_hostDropped[seamgs::g_host.prog & 7u];
+        if (seamgs::g_haveHost && !seamgs::g_hostDrawn) ++seamgs::g_hostDropped[seamgs::g_host.prog & 7u];
         ++seamgs::g_hostIn[k.prog & 7u];
-        seamgs::g_host = k; seamgs::g_haveHost = true;
+        seamgs::g_host = k; seamgs::g_haveHost = true; seamgs::g_hostDrawn = false; seamgs::g_hostPassN = 0;
         seamgs::g_hostVerts.assign(data + sizeof(DrawPacket), data + sizeof(DrawPacket) + size_t(k.count) * k.stride);
     }
 }

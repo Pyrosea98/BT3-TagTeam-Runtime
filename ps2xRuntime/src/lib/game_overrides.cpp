@@ -65,6 +65,7 @@ std::atomic<int> g_netJumpHold{0};
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include "runtime/ps2_gs_pgs.h"   // [steporacle]
 #include <map>
 #include <set>
 #include <atomic>
@@ -492,11 +493,28 @@ namespace
         static const bool s_autostart = [](){ const char *v = std::getenv("PS2X_AUTOSTART"); return v && v[0] && v[0] != '0'; }();
         if (s_autostart)
         {
+            // In a fight START would only pause it: tap attacks and directions in bursts instead, so the fight stays live and busy (effects, blur,
+            // glow) for unattended captures and the packet oracle.
+            // The fight is on when the game's state object reads 0x8 (g_bt3StateLive, ps2_runtime.cpp status line); every
+            // other state (menus 0x7, fight-load 0x27, ...) still gets the START+CROSS taps that drive the flow.
             static std::atomic<uint32_t> s_n{0};
-            if ((s_n.fetch_add(1) % 180u) < 12u)
+            const uint32_t n = s_n.fetch_add(1);
+            if (g_bt3StateLive.load(std::memory_order_relaxed) != 0x8u)
             {
-                b0 = static_cast<uint8_t>(b0 & ~0x08u); // START
-                b1 = static_cast<uint8_t>(b1 & ~0x40u); // CROSS
+                if ((n % 180u) < 12u)
+                {
+                    b0 = static_cast<uint8_t>(b0 & ~0x08u); // START
+                    b1 = static_cast<uint8_t>(b1 & ~0x40u); // CROSS
+                }
+            }
+            else
+            {
+                const uint32_t phase = (n / 30u) % 8u;   // half-second bursts
+                if (phase == 0u || phase == 4u) b1 = static_cast<uint8_t>(b1 & ~0x80u);   // SQUARE (attack)
+                if (phase == 1u) b1 = static_cast<uint8_t>(b1 & ~0x10u);                  // TRIANGLE
+                if (phase == 2u) b0 = static_cast<uint8_t>(b0 & ~0x20u);                  // LEFT
+                if (phase == 5u) b0 = static_cast<uint8_t>(b0 & ~0x80u);                  // RIGHT
+                if (phase == 6u) { b1 = static_cast<uint8_t>(b1 & ~0x40u); b1 = static_cast<uint8_t>(b1 & ~0x80u); }   // CROSS+SQUARE (ki blast / rush)
             }
         }
         // [skipforce] Force the skip button. Either PS2X_FORCE_SKIP=<n> (holds while the FMV is
@@ -4529,7 +4547,73 @@ namespace
     // [postskip] PS2X_POSTSKIP=1: the three post-processing orchestrators of the fight frame do nothing
     // (sub_00247578: depth mask / ink / glow composite; FUN_0010ff40: downscales, DoF masks, Z top-byte plane;
     // FUN_00247660). Step one of replacing them natively (docs/SEAM-POSTCHAIN.md).
-    void bt3PostSkipHook(uint8_t *, R5900Context *, PS2Runtime *) {}
+    // [steporacle] PS2X_STEPORACLE=<hex addr>[:<nth call>] (default 200th): around that call of the step, with the GS stream
+    // drained, dump the backend's VRAM and registers before and after into PS2X_STEPORACLE_DIR (default /tmp) as
+    // oracle_before.bin/.txt and oracle_after.bin/.txt. The step itself runs as the game wrote it. Pins a pass's semantics.
+    PS2Runtime::RecompiledFunction g_origOracleStep = nullptr; uint32_t g_oracleAddr = 0, g_oracleNth = 200;
+    void bt3StepOracleHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static uint32_t s_calls = 0; static bool s_done = false;
+        const bool fire = !s_done && ++s_calls == g_oracleNth;
+        static const char *s_dir = [](){ const char *v = std::getenv("PS2X_STEPORACLE_DIR"); return v && v[0] ? v : "/tmp"; }();
+        char b[512], t[512];
+        if (fire)
+        {
+            runtime->memory().drainKickQueue(false);
+            std::snprintf(b, sizeof(b), "%s/oracle_before.bin", s_dir); std::snprintf(t, sizeof(t), "%s/oracle_before.txt", s_dir);
+            const bool ok = ps2x_pgs::dumpVramRaw(b, t);
+            std::fprintf(stderr, "[steporacle] step 0x%x call %u frame %llu: before dump %s\n", g_oracleAddr, s_calls, (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed), ok ? "ok" : "FAILED");
+        }
+        if (g_origOracleStep) g_origOracleStep(rdram, ctx, runtime);
+        if (fire)
+        {
+            runtime->memory().drainKickQueue(false);
+            std::snprintf(b, sizeof(b), "%s/oracle_after.bin", s_dir); std::snprintf(t, sizeof(t), "%s/oracle_after.txt", s_dir);
+            const bool ok = ps2x_pgs::dumpVramRaw(b, t);
+            std::fprintf(stderr, "[steporacle] after dump %s\n", ok ? "ok" : "FAILED");
+            s_done = true;
+        }
+    }
+    // A replaced function must end like `jr $ra`: some of these are reached by a tail jump (FUN_0010ff40 -> func_111E50), and
+    // a hook that leaves ctx->pc at its own entry makes the dispatcher unwind the caller chain with $sp out of step.
+    void bt3PostSkipHook(uint8_t *, R5900Context *ctx, PS2Runtime *) { ctx->pc = getRegU32(ctx, 31); }
+    // [postskip] sub_0010A218(ctxTable, slot, id, flag): the game's frame-context switch (FRAME/ZBUF/... packet from the
+    // context table). Census of (id, caller) per 300 frames, to learn which targets each pass draws into.
+    PS2Runtime::RecompiledFunction g_origCtxSwitch = nullptr;
+    void bt3CtxSwitchHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static std::mutex mtx; static std::map<std::pair<uint32_t, uint32_t>, uint32_t> hist; static uint32_t lastPrint = 0;
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            ++hist[{getRegU32(ctx, 6), getRegU32(ctx, 31)}];
+            const uint32_t fc = (uint32_t)g_bt3FrameCount.load(std::memory_order_relaxed);
+            if (fc >= lastPrint + 300u && !hist.empty())
+            {
+                lastPrint = fc;
+                std::fprintf(stderr, "[ctxswitch] frame %u: id(a2) x caller(ra) -> calls since last print\n", fc);
+                for (const auto &kv : hist) std::fprintf(stderr, "[ctxswitch]   id 0x%x ra 0x%x : %u\n", kv.first.first, kv.first.second, kv.second);
+                hist.clear();
+            }
+        }
+        if (g_origCtxSwitch) g_origCtxSwitch(rdram, ctx, runtime);
+    }
+    // FUN_0010ff40 also renders the characters: replay only that part of it.
+    //   s0 = func_248FC0()->[8]; if (func_2490F8(2)) { 102120; 2493A0; func_10FB80(s0); 24B118; if (func_2490F8(8)) func_10FC50(s0); 10FD98; 111E50 }
+    void bt3PostBCharsOnlyHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        auto f248fc0 = runtime->lookupFunction(0x00248fc0u), f2490f8 = runtime->lookupFunction(0x002490f8u);
+        auto f10fb80 = runtime->lookupFunction(0x0010fb80u), f10fc50 = runtime->lookupFunction(0x0010fc50u);
+        const uint32_t ra = getRegU32(ctx, 31);
+        struct Ret { R5900Context *c; uint32_t ra; ~Ret() { c->pc = ra; SET_GPR_U32(c, 31, ra); } } ret{ctx, ra};
+        if (!f248fc0 || !f2490f8 || !f10fb80 || !f10fc50) return;
+        f248fc0(rdram, ctx, runtime);
+        uint32_t v0 = getRegU32(ctx, 2), s0 = 0; std::memcpy(&s0, rdram + ((v0 + 8u) & 0x1FFFFFFu), 4);
+        SET_GPR_U32(ctx, 4, 2u); f2490f8(rdram, ctx, runtime);
+        if (!getRegU32(ctx, 2)) return;
+        SET_GPR_U32(ctx, 4, s0); f10fb80(rdram, ctx, runtime);
+        SET_GPR_U32(ctx, 4, 8u); f2490f8(rdram, ctx, runtime);
+        if (getRegU32(ctx, 2)) { SET_GPR_U32(ctx, 4, s0); f10fc50(rdram, ctx, runtime); }
+    }
 
     // Camera matrix-multiply probe (PS2X_CAMPROBE). sub_001201B8 concatenates $a0 = A($a1) x B($a2).
     // The gameplay-camera update (FUN_0023d510) calls it at ra=0x23d9bc to build the camera WORLD
@@ -6628,13 +6712,36 @@ namespace
             std::fprintf(stderr, "[wisphook] installed=%d\n", g_orig131a20 ? 1 : 0);
         }
         {   // [postskip]
+            {   // [steporacle] installed on its own, with or without the skips (the oracle address is never skipped)
+                if (const char *v = std::getenv("PS2X_STEPORACLE"); v && v[0])
+                {
+                    g_oracleAddr = (uint32_t)std::strtoul(v, nullptr, 16);
+                    if (const char *c = std::strchr(v, ':')) g_oracleNth = (uint32_t)std::atoi(c + 1);
+                    g_origOracleStep = runtime.lookupFunction(g_oracleAddr);
+                    if (g_origOracleStep) { runtime.replaceFunction(g_oracleAddr, &bt3StepOracleHook); std::fprintf(stderr, "[steporacle] step 0x%x, call %u\n", g_oracleAddr, g_oracleNth); }
+                }
+            }
             static const bool s_postSkip = [](){ const char *v = std::getenv("PS2X_POSTSKIP"); return v && v[0] && v[0] != '0'; }();
             if (s_postSkip)
             {
                 int n = 0;
-                for (uint32_t a : { 0x00247578u, 0x0010ff40u, 0x00247660u })
-                    if (runtime.lookupFunction(a)) { runtime.replaceFunction(a, &bt3PostSkipHook); ++n; }
-                std::fprintf(stderr, "[postskip] %d/3 post orchestrators skipped\n", n);
+                // The STEP functions, not the orchestrators: FUN_0010ff40 also renders the characters (0x10fb80 / 0x10fc50
+                // call the per-model draw loop). Steps: depth mask, ink, glow composite, downscale + material tints,
+                // Z top-byte plane + tint, 16-bit mask work, Z-plane writer, mask clear, blur.
+                // PS2X_POSTSKIP=1: the nine steps; =2: + func_111E50 and the context census; =3: + sub_002493A0 (see below)
+                const int lvl = std::atoi(std::getenv("PS2X_POSTSKIP"));
+                for (uint32_t a : { 0x00109848u, 0x00245a50u, 0x00103070u, 0x00102120u, 0x0024b118u, 0x00105cd8u, 0x00108750u, 0x00106ba8u, 0x00111e68u })
+                    if (a != g_oracleAddr && runtime.lookupFunction(a)) { runtime.replaceFunction(a, &bt3PostSkipHook); ++n; }
+                if (lvl >= 2)
+                {
+                    if (runtime.lookupFunction(0x00111e50u)) { runtime.replaceFunction(0x00111e50u, &bt3PostSkipHook); ++n; }
+                    g_origCtxSwitch = runtime.lookupFunction(0x0010a218u);
+                    if (g_origCtxSwitch) runtime.replaceFunction(0x0010a218u, &bt3CtxSwitchHook);
+                }
+                // level 3: sub_002493A0 (post B's frame-context switch before its character passes) does nothing, so those
+                // passes draw the characters into the frame in force instead of the post chain's own target.
+                if (lvl >= 3 && runtime.lookupFunction(0x002493a0u)) { runtime.replaceFunction(0x002493a0u, &bt3PostSkipHook); ++n; }
+                std::fprintf(stderr, "[postskip] level %d: %d post-chain steps skipped\n", lvl, n);
             }
         }
         if (seamprobe::kickProbeOn())

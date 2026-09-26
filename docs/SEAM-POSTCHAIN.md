@@ -8,6 +8,16 @@ text, uploads) is a separate decision.
 
 ## Tooling
 
+**The packet oracle** (`PS2X_KICKPROBE=1 PS2X_PKTORACLE=<lo>-<hi>[:<nth>][,...] PS2X_STEPORACLE_DIR=<dir>`,
+ps2_gif_arbiter.cpp [pktoracle]): the run of consecutive DIRECT packets built by code in `[lo, hi)`
+(a step function's extent) is bracketed, in stream order, by dumps of paraLLEl-GS's whole VRAM and
+register state (`oracle_<lo>_before/after.bin/.txt`, `ps2x_pgs::dumpVramRaw`). `tools/gsvram.py`
+reads a dump through the GS swizzles (CT32, Z32, CT16/Z16 views, PSMT8H) and `tools/oracle_diff.py`
+diffs a pair and tests bit-level hypotheses. This is how a pass's semantics are pinned before a
+native version is written, and how the native version is verified (same bracket, same diff).
+Bracketing the step's *function call* on the game thread sees nothing: the step only appends to
+the display list, the whole frame goes out as one DMA chain later.
+
 `PS2X_KICKPROBE=1` (ps2_seamprobe.cpp, [kickprobe]) attributes every DIRECT packet of the
 frame's VIF1 chain to the EE code that built it:
 
@@ -91,7 +101,8 @@ over the whole 512x448 frame unless noted. Palettes are the VRAM mirror's conten
 
 | step | writes | reads | operation |
 |---|---|---|---|
-| depth mask (sub_00109848, in sub_00247578) | FRAME 0xe00 as **CT16** (psm 2, fbw 8, 512x896 view), fbmsk 0x3fff: only bits 14..15 of each 16-bit half | TEX0 Z buffer 0x1c00 as **PSMZ16** 1024x1024, decal, TEXA ta0=0 ta1=0x80 | 32 strips 8 px wide at x = 8+16k, u = 16k: copies bits 14..15 of every 16-bit half of Z into bits 14..15 of the frame halves. For the high half that is frame alpha[7:6] := Z[15:14] or Z[31:30] depending on which half lands where; needs the Z32/CT32 block tables to pin. Intent: a depth threshold into the alpha MSB (the DoF/blur mask). |
+| depth mask (sub_00109848, in sub_00247578) | FRAME 0xe00 as **CT16** (psm 2, fbw 8, 512x896 view), fbmsk 0x3fff: only bits 14..15 of each 16-bit half | TEX0 Z buffer 0x1c00 as **PSMZ16** 1024x1024, decal, TEXA ta0=0 ta1=0x80 | **PINNED by the packet oracle (2026-09-26, tools/oracle_diff.py on a PS2X_PKTORACLE=109848-109938 pair): over the whole frame, frame.A := Z24[15:8], RGB and Z untouched, every pixel exact.** The 16-bit-view strips are only the GS mechanism for that byte copy. Native pass: alpha plane := middle byte of Z. |
+| **Pinned by the packet oracle (2026-09-26, live fight, tools/oracle_diff.py; "exact" = every pixel of the frame):** sub_00109848 depth mask: frame.A := Z24[15:8] (exact). FUN_00106ba8: frame.A := 0 (exact). sub_0024B118: Ztop := frame.A, where Ztop is byte 3 of the Z buffer READ THROUGH THE CT32/PSMT8H LAYOUT at 0x1c00 (exact; through the Z32 layout it looks permuted per page, which is what "needs the block tables" meant). FUN_00245a50: frame.A := CLUT_0x3e84[Ztop].A, the depth->blur-weight ramp (exact on both runs); nothing else changes, there is no RGB ink here. FUN_00103070: (1) 0x2a00 (fbw 4, 256x224) := 2:1 downscale of the scene frame (32 strips, u=2x, v=2y, bilinear; visually identical to a 2x2 box, GS filter rounding still to pin: MAD 2.2), alpha 0x80; (2) frame.rgb := floor(frame + (round(U) - frame) * frame.A / 128) with U = 0x2a00 sampled bilinearly at (x/2, y/2) (exact on all three channels). FUN_00105cd8: alpha-only writes of 0x80 / 0x30 (TEXA ta1/ta0 of a CT16 view of 0x2a00, ATE) on ~11k px; mapping not yet pinned (93% with (x/2,y/2), the changed pixels themselves mostly wrong). FUN_00102120, FUN_00111e68, FUN_00108750 emitted nothing in the live fights captured: they need their trigger (aura / special move) first. | | | |
 | Z top-byte plane (sub_0024B118 first part, in FUN_0010ff40) | FRAME 0x1c00 (the Z buffer as CT32), fbmsk 0x00ffffff: alpha only | TEX0 frame 0xe00 CT32 512x512, decal, ALPHA (0,1,0,1) FIX 0x80 | Ztop(x,y) := frame.A(x,y): the scene's per-material alpha becomes an 8-bit id plane. |
 | material tint (sub_0024B118 second part) | FRAME 0xe00 RGB(A) | TEX0 **PSMT8H** at 0x1c00 (Ztop) through CLUT 0x3e94; ALPHA (0,1,0,1) | frame := mix(frame, CLUT[Ztop].rgb, CLUT[Ztop].a/128). CLUT 0x3e94: entries 0..243 = 0; 244..254 = bright colours with alpha 0x30 (ki / aura material ids). |
 | ink (FUN_00245a50 at 0x245ab8) | FRAME 0xe00 | PSMT8H Ztop through CLUT 0x3e64; ALPHA 0x48 = (0,2,0,1): Cs*As + Cd | frame.rgb += CLUT[Ztop].rgb; CLUT 0x3e64: 0..199 black (alpha 0x80), 200..255 a rising blue ramp. |

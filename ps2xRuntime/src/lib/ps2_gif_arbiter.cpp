@@ -1,4 +1,5 @@
 #include "runtime/ps2_gif_arbiter.h"
+#include "runtime/ps2_seamprobe.h"   // [pktoracle]
 #include "runtime/ps2_seamvk.h"   // [seamvk]
 #include "runtime/ps2_gs_pgs.h"   // [pgs]
 #include <cstdlib>
@@ -149,6 +150,7 @@ void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeByte
     pkt.path2DirectHl = (pathId == GifPathId::Path2) && path2DirectHl;
     pkt.path3Image = (pathId == GifPathId::Path3) && isImagePacket(data, sizeBytes);
     pkt.size = sizeBytes;
+    if (pathId == GifPathId::Path2 && seamprobe::kickProbeOn()) pkt.owner = seamprobe::lastDirectOwner();   // [pktoracle]
     Lane &ln = lane();
     CountedLock lk(m_qMtx, m_lockWaits, m_lockWaitNs);
     pkt.offset = static_cast<uint32_t>(ln.arena.size());   // [gifarena] append, no per-packet block
@@ -205,9 +207,48 @@ void GifArbiter::takeQueue(GifArbiterBatch &out)
         }
     }
 }
+// [pktoracle] PS2X_PKTORACLE=<lo>-<hi>[:<nth>][,<lo>-<hi>[:<nth>]...] (hex guest addresses, default the 200th entry): the run
+// of consecutive packets whose owner (the code that built them, PS2X_KICKPROBE=1) lies in [lo, hi) is bracketed with VRAM
+// dumps of the backend in stream order: oracle_<lo>_before.bin/.txt before its first packet, oracle_<lo>_after.bin/.txt
+// after its last, into PS2X_STEPORACLE_DIR (default /tmp). The pass's exact semantics can then be read off the two dumps
+// offline (tools/gsvram.py, tools/oracle_diff.py). The packets themselves are processed unchanged.
+namespace
+{
+    struct PktOracle { uint32_t lo = 0, hi = 0, nth = 200, entries = 0; bool inRun = false, done = false; };
+    std::vector<PktOracle> g_pktOracles = [](){ std::vector<PktOracle> out; const char *v = std::getenv("PS2X_PKTORACLE"); if (!v || !v[0]) return out;
+        for (const char *p = v; p && *p; )
+        {
+            PktOracle o; o.lo = (uint32_t)std::strtoul(p, nullptr, 16);
+            if (const char *d = std::strchr(p, '-')) o.hi = (uint32_t)std::strtoul(d + 1, nullptr, 16);
+            const char *comma = std::strchr(p, ',');
+            if (const char *c = std::strchr(p, ':'); c && (!comma || c < comma)) o.nth = (uint32_t)std::atoi(c + 1);
+            if (o.hi > o.lo) out.push_back(o);
+            p = comma ? comma + 1 : nullptr;
+        }
+        return out; }();
+    void pktOracleDump(uint32_t lo, const char *what)
+    {
+        static const char *s_dir = [](){ const char *v = std::getenv("PS2X_STEPORACLE_DIR"); return v && v[0] ? v : "/tmp"; }();
+        char b[512], t[512]; std::snprintf(b, sizeof(b), "%s/oracle_%x_%s.bin", s_dir, lo, what); std::snprintf(t, sizeof(t), "%s/oracle_%x_%s.txt", s_dir, lo, what);
+#ifdef PS2X_HAVE_PGS
+        const bool ok = ps2x_pgs::dumpVramRaw(b, t);
+#else
+        const bool ok = false;
+#endif
+        std::fprintf(stderr, "[pktoracle] %x %s dump %s (%s)\n", lo, what, ok ? "ok" : "FAILED", b);
+    }
+}
 void GifArbiter::process(const GifArbiterPacket &pkt)
 {
     if (!m_processFn || !pkt.data || pkt.size == 0u) return;
+    if (!g_pktOracles.empty() && pkt.pathId == GifPathId::Path2)
+        for (PktOracle &o : g_pktOracles)
+        {
+            if (o.done) continue;
+            const bool in = pkt.owner >= o.lo && pkt.owner < o.hi;
+            if (in && !o.inRun) { o.inRun = true; if (++o.entries == o.nth) pktOracleDump(o.lo, "before"); }
+            else if (!in && o.inRun) { o.inRun = false; if (o.entries == o.nth) { pktOracleDump(o.lo, "after"); o.done = true; } }
+        }
     uint8_t pathId = static_cast<uint8_t>(pkt.pathId);
     const uint8_t *data = pkt.data; uint32_t size = pkt.size;
     if (pkt.pathId == GifPathId::HostDraw)

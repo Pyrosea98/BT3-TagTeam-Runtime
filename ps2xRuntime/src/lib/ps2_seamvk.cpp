@@ -9,6 +9,7 @@
 // At the swap the CRTC circuits (DISPFB/DISPLAY) are composed into a 640x448*scale frame,
 // read back and handed to the present thread.
 #include "runtime/ps2_seamvk.h"
+#include "runtime/ps2_gs_pgs.h"   // [targetdump] the backend's view of a target
 #include "seamvk/seamgs_internal.h"
 
 #include "device.hpp"
@@ -285,8 +286,12 @@ namespace seamvk
             return false;
         }
 
-        void bindDraw(Vulkan::CommandBuffer &cmd, const seamgs::Draw &d, uint32_t sc)
+        void bindDraw(Vulkan::CommandBuffer &cmd, const seamgs::Draw &d0, uint32_t sc)
         {
+            static const bool s_flat = [](){ const char *v = std::getenv("PS2X_SEAMVK_FLAT"); return v && v[0] && v[0] != '0'; }();
+            seamgs::Draw dFlat; const seamgs::Draw *dp = &d0;
+            if (s_flat && d0.kind == 1) { dFlat = d0; dFlat.st.tme = 0; dFlat.st.abe = 0; dFlat.st.ate = 0; dp = &dFlat; }
+            const seamgs::Draw &d = *dp;
             const seamgs::State &t = d.st;
             static const VkCompareOp ops[4] = { VK_COMPARE_OP_NEVER, VK_COMPARE_OP_ALWAYS, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_COMPARE_OP_GREATER };
             cmd.set_depth_test(true, t.zmsk == 0u);
@@ -388,8 +393,14 @@ namespace seamvk
 
         static const uint64_t s_dumpFrame = [](){ const char *v = std::getenv("PS2X_SEAMVK_DUMPFRAME"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
         static bool s_dumped = false;
-        if (s_dumpFrame && !s_dumped && ((s_dumpFrame != 1u && g_gpu.frames == s_dumpFrame) || (s_dumpFrame == 1u && f.draws.size() > 1500u)))
-        {   // PS2X_SEAMVK_DUMPFRAME=<n>: what the front-end produced for that frame (=1: the first frame with > 1500 draws, i.e. a fight)
+        auto busyFight = [&]() { size_t host = 0; for (const seamgs::Draw &d : f.draws) if (d.kind == 1) ++host; return host > 200u; };
+        if (s_dumpFrame && !s_dumped && ((s_dumpFrame != 1u && g_gpu.frames == s_dumpFrame) || (s_dumpFrame == 1u && busyFight())))
+        {
+            if (const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP"))
+            {   // the backend's view of the targets this frame decodes from, for comparison with rt_*.ppm
+                g_gpu.dumpRt = true;
+                for (const seamgs::RtDecode &r : f.rtDecodes) { ps2x_pgs::TargetDumpReq q; q.fbp = r.srcFbp; q.fbw = r.srcFbw; q.w = r.srcFbw * 64u; q.h = r.srcRows * 32u; q.dir = dir; ps2x_pgs::requestTargetDump(q); }
+            }   // PS2X_SEAMVK_DUMPFRAME=<n>: what the front-end produced for that frame (=1: the first frame with > 200 seam meshes, i.e. a fight)
             s_dumped = true;
             if (const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP"))
                 for (const seamgs::TexUpload &u : f.texUploads)
@@ -398,10 +409,55 @@ namespace seamvk
                     if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P6\n%u %u\n255\n", u.w, u.h); for (size_t i = 0; i < size_t(u.w) * u.h; ++i) std::fwrite(u.rgba.data() + i * 4u, 1, 3, fp); std::fclose(fp); }
                 }
             std::fprintf(stderr, "[seamvk] frame %llu: %zu draws, %zu vertex bytes, %zu tex uploads\n", (unsigned long long)g_gpu.frames, f.draws.size(), f.verts.size(), f.texUploads.size());
+            for (const seamgs::FrameList::RegEvent &e : f.regEvents)
+                std::fprintf(stderr, "[seamvk]  reg before draw %u path %u%s %s %016llx\n", e.drawIndex, e.path, e.hostGif ? " (host)" : "",
+                             e.addr == 0x40 ? "SCISSOR_1" : e.addr == 0x41 ? "SCISSOR_2" : e.addr == 0x4c ? "FRAME_1" : "FRAME_2", (unsigned long long)e.value);
             for (size_t i = 0; i < f.draws.size(); ++i)
             {
                 const seamgs::Draw &d = f.draws[i]; const seamgs::State &t = d.st;
-                if (d.kind != 0) continue;   // the seam's draws are known; list the GS ones
+                if (d.kind == 1)
+                {   // the seam's mesh: state, and the projection the vertex shader will compute (w sign, GS z range)
+                    const seamvk::Consts &c = d.c; const uint32_t n = d.count;
+                    uint32_t neg = 0, pos = 0; float wmin = 1e30f, wmax = -1e30f, zqmin = 1e30f, zqmax = -1e30f;
+                    for (uint32_t v = 0; v < n; ++v)
+                    {
+                        const float *P = reinterpret_cast<const float *>(f.verts.data() + d.vertOff + size_t(v) * d.stride);
+                        float scr[4];
+                        if (d.prog <= 1)
+                        {
+                            const float pw = d.prog == 0 ? P[3] : 1.0f;
+                            for (int k = 0; k < 4; ++k) scr[k] = c.A[0][k] * P[0] + c.A[1][k] * P[1] + c.A[2][k] * P[2] + c.A[3][k] * pw;
+                        }
+                        else
+                        {
+                            float pa[3], pb[3], sk[3];
+                            for (int k = 0; k < 3; ++k)
+                            {
+                                const float x = P[0] - c.pivA[0], y = P[1] - c.pivA[1], z = P[2] - c.pivA[2];
+                                pa[k] = c.A[0][k] * x + c.A[1][k] * y + c.A[2][k] * z + c.A[3][k];
+                                const float x2 = P[0] - c.pivB[0], y2 = P[1] - c.pivB[1], z2 = P[2] - c.pivB[2];
+                                pb[k] = c.B[0][k] * x2 + c.B[1][k] * y2 + c.B[2][k] * z2 + c.B[3][k];
+                            }
+                            for (int k = 0; k < 3; ++k) sk[k] = pb[k] + (pa[k] - pb[k]) * P[3];
+                            for (int k = 0; k < 4; ++k) scr[k] = c.E[0][k] * sk[0] + c.E[1][k] * sk[1] + c.E[2][k] * sk[2] + c.E[3][k];
+                        }
+                        const float w = -scr[3];
+                        if (w < 0.0f) ++neg; else ++pos;
+                        wmin = std::min(wmin, w); wmax = std::max(wmax, w);
+                        if (w != 0.0f) { const float zq = scr[2] / scr[3]; zqmin = std::min(zqmin, zq); zqmax = std::max(zqmax, zq); }
+                    }
+                    std::fprintf(stderr, "[seamvk]  draw %zu HOST prog %u count %u w[%g..%g] neg %u pos %u zq[%g..%g] fbp 0x%x fbw %u psm %u msk %08x zbp 0x%x zte %u ztst %u zmsk %u tme %u tex %d%s abe %u (%u,%u,%u,%u) ate %u atst %u aref %u afail %u ctxt %u sc %u..%u %u..%u tex0 %08x%08x fst %u tfx %u tcc %u wms %u wmt %u %ux%u prim %03llx prmode %03llx cont %u sc1 %016llx sc2 %016llx\n",
+                                 i, d.prog, n, wmin, wmax, neg, pos, zqmin, zqmax, t.fbp, t.fbw, t.fpsm, t.fbmsk, t.zbp, t.zte, t.ztst, t.zmsk, t.tme, t.tex, t.texFromDrawn ? "(DRAWN)" : "", t.abe, t.aA, t.aB, t.aC, t.aD, t.ate, t.atst, t.aref, t.afail, t.ctxt, t.scax0, t.scax1, t.scay0, t.scay1, t.tex0hi, t.tex0lo, t.fst, t.tfx, t.tcc, t.wms, t.wmt, t.texW, t.texH, (unsigned long long)t.dbgPrim, (unsigned long long)t.dbgPrmode, t.dbgPrmodecont, (unsigned long long)t.dbgSc[0], (unsigned long long)t.dbgSc[1]);
+                    continue;
+                }
+                if (d.kind == 2 && d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size())
+                {
+                    const seamgs::RtDecode &r = f.rtDecodes[d.rt];
+                    std::fprintf(stderr, "[seamvk]  draw %zu RTDECODE slot %d %ux%u tbp 0x%x tbw %u psm %u cbp 0x%x src fbp 0x%x fbw %u rows %u depthSrc %u clutFromTarget %u\n",
+                                 i, r.slot, r.w, r.h, r.tbp, r.tbw, r.psm, r.cbp, r.srcFbp, r.srcFbw, r.srcRows, r.depthSrc, r.clutFromTarget);
+                    continue;
+                }
+                if (d.kind != 0) continue;   // list the GS draws
                 std::fprintf(stderr, "[seamvk]  draw %zu kind %u prog %u count %u fbp 0x%x fbw %u psm %u msk %08x zbp 0x%x zte %u ztst %u zmsk %u tme %u fst %u tex %d%s %ux%u tex0 %08x%08x tfx %u tcc %u wms %u wmt %u abe %u (%u,%u,%u,%u) fix %u ate %u atst %u aref %u afail %u date %u sc %u..%u %u..%u\n",
                              i, d.kind, d.prog, d.count, t.fbp, t.fbw, t.fpsm, t.fbmsk, t.zbp, t.zte, t.ztst, t.zmsk, t.tme, t.fst, t.tex, t.texFromDrawn ? "(DRAWN)" : "", t.texW, t.texH, t.tex0hi, t.tex0lo, t.tfx, t.tcc, t.wms, t.wmt, t.abe, t.aA, t.aB, t.aC, t.aD, t.fix, t.ate, t.atst, t.aref, t.afail, t.date, t.scax0, t.scax1, t.scay0, t.scay1);
                 if (d.kind == 0)
@@ -412,7 +468,7 @@ namespace seamvk
                     }
             }
         }
-        g_gpu.dumpRt = s_dumpFrame && !s_dumped && std::getenv("PS2X_SEAMVK_TEXDUMP") && ((s_dumpFrame != 1u && g_gpu.frames + 1u == s_dumpFrame) || (s_dumpFrame == 1u && f.draws.size() > 1500u));
+        if (!g_gpu.dumpRt) g_gpu.dumpRt = s_dumpFrame && !s_dumped && std::getenv("PS2X_SEAMVK_TEXDUMP") && (s_dumpFrame != 1u && g_gpu.frames + 1u == s_dumpFrame);
         g_gpu.rtDumps.clear();
         auto cmd = dev.request_command_buffer();
         // ---- the ordered draws, into their FRAME / ZBUF targets ----
@@ -524,6 +580,9 @@ namespace seamvk
                 cmd->set_vertex_attrib(3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 48);
                 Consts *c = static_cast<Consts *>(cmd->allocate_constant_data(0, 0, sizeof(Consts)));
                 std::memcpy(c, &d.c, sizeof(Consts));
+                c->misc[1] = float(d.hostPass);
+                static const bool s_flat = [](){ const char *v = std::getenv("PS2X_SEAMVK_FLAT"); return v && v[0] && v[0] != '0'; }();
+                if (s_flat) c->misc[3] = 1.0f;   // PS2X_SEAMVK_FLAT=1: the seam's meshes in a flat colour per program (coverage diagnostics)
                 void *vb = cmd->allocate_vertex_data(0, VkDeviceSize(64) * d.count, 64);
                 uint8_t *dst = static_cast<uint8_t *>(vb);
                 const uint8_t *src = f.verts.data() + d.vertOff;

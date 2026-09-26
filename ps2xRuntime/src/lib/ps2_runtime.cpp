@@ -7984,6 +7984,15 @@ void PS2Runtime::run()
                         bt3Image im{}; im.data = s_pgsBuf.data(); im.width = (int)pw; im.height = (int)ph; im.mipmaps = 1; im.format = BT3_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
                         char path[512]; std::snprintf(path, sizeof(path), "%s/pgs_%05u.png", s_dumpDir, s_dumpN - 1u);
                         bt3ExportImage(im, path);
+                        {   // [seamvk] the reference backend's frame of the same swap, next to the native one
+                            static std::vector<uint8_t> s_ref; uint32_t rw = 0, rh = 0;
+                            if (ps2x_pgs::takeRefFrame(s_ref, rw, rh) && rw && rh && s_ref.size() >= size_t(rw) * rh * 4u)
+                            {
+                                bt3Image ri{}; ri.data = s_ref.data(); ri.width = (int)rw; ri.height = (int)rh; ri.mipmaps = 1; ri.format = BT3_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+                                std::snprintf(path, sizeof(path), "%s/ref_%05u.png", s_dumpDir, s_dumpN - 1u);
+                                bt3ExportImage(ri, path);
+                            }
+                        }
                     }
                 }
                 if (pw != s_pw || ph != s_ph)

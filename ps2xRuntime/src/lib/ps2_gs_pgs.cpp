@@ -8,7 +8,8 @@
 #include "runtime/ps2_seamvk.h"   // [seamvk]
 #include "runtime/ps2_netplay.h"   // [vpdrop] follow the netplay player
 #include "runtime/ps2_memory.h"
-#include "runtime/ps2_gs_gpu.h"        // [pgs-texreplace] GS (VRAM, palettes), register structs
+#include "runtime/ps2_gs_gpu.h"
+#include "runtime/ps2_gs_psmct32.h"   // [targetdump]        // [pgs-texreplace] GS (VRAM, palettes), register structs
 #include "runtime/ps2_gs_gpu_renderer.h"   // [pgsink] the overlay's Cel Outline / ink strength (static getters)
 #include "runtime/ps2_gs_rasterizer.h" // GSRasterizer::fillClutFrom
 #include "runtime/ps2_texreplace.h"    // ps2tex::identify / loadReplacement
@@ -1693,6 +1694,32 @@ static thread_local bool t_suppressed = false;
 void setSuppressed(bool on) { t_suppressed = on; }
 bool exclusive() { static const bool ex = envOn("PS2X_PGS_EXCLUSIVE") && !packMode(); return ex; }   // pack mode keeps our (state-only) parse
 
+bool dumpVramRaw(const char *binPath, const char *regsPath)
+{
+    State &s = st();
+    std::lock_guard<std::mutex> lk(s.mtx);
+    if (!initLocked(s)) return false;
+    s.iface.flush();
+    const uint8_t *v = static_cast<const uint8_t *>(s.iface.map_vram_read(0, 4u * 1024u * 1024u));
+    if (!v) return false;
+    if (FILE *f = std::fopen(binPath, "wb")) { std::fwrite(v, 1, 4u * 1024u * 1024u, f); std::fclose(f); } else return false;
+    if (FILE *f = std::fopen(regsPath, "w"))
+    {
+        const auto &r = s.iface.get_register_state();
+        for (int c = 0; c < 2; ++c)
+            std::fprintf(f, "ctx%d frame %016llx zbuf %016llx scissor %016llx xyoffset %016llx tex0 %016llx tex1 %016llx clamp %016llx alpha %016llx test %016llx fba %016llx\n", c + 1,
+                         (unsigned long long)r.ctx[c].frame.bits, (unsigned long long)r.ctx[c].zbuf.bits, (unsigned long long)r.ctx[c].scissor.bits, (unsigned long long)r.ctx[c].xyoffset.bits,
+                         (unsigned long long)r.ctx[c].tex0.bits, (unsigned long long)r.ctx[c].tex1.bits, (unsigned long long)r.ctx[c].clamp.bits, (unsigned long long)r.ctx[c].alpha.bits,
+                         (unsigned long long)r.ctx[c].test.bits, (unsigned long long)r.ctx[c].fba.bits);
+        std::fprintf(f, "prim %016llx prmodecont %016llx texa %016llx fogcol %016llx pabe %016llx colclamp %016llx texclut %016llx\n",
+                     (unsigned long long)r.prim.bits, (unsigned long long)r.prmodecont.bits, (unsigned long long)r.texa.bits, (unsigned long long)r.fogcol.bits,
+                     (unsigned long long)r.pabe.bits, (unsigned long long)r.colclamp.bits, (unsigned long long)r.texclut.bits);
+        std::fclose(f);
+    }
+    return true;
+}
+static std::mutex g_tdMtx; static std::vector<TargetDumpReq> g_tdReqs;
+void requestTargetDump(const TargetDumpReq &r) { std::lock_guard<std::mutex> lk(g_tdMtx); g_tdReqs.push_back(r); }
 bool gifTransfer(uint8_t pathId, const uint8_t *data, size_t size)
 {
     if (!data || size < 16 || pathId < 1 || pathId > 3 || t_suppressed) return false;
@@ -1718,6 +1745,48 @@ bool gifTransfer(uint8_t pathId, const uint8_t *data, size_t size)
         }
     }
     s.iface.gif_transfer(pathId - 1u, data, size);
+    {   // [targetdump] the oracle image of a target as the backend holds it now
+        std::vector<TargetDumpReq> reqs; { std::lock_guard<std::mutex> lk(g_tdMtx); reqs.swap(g_tdReqs); }
+        if (!reqs.empty())
+        {
+            s.iface.flush();
+            const uint8_t *v = static_cast<const uint8_t *>(s.iface.map_vram_read(0, 4u * 1024u * 1024u));
+            for (const TargetDumpReq &r : reqs)
+            {
+                if (!v || !r.dir) continue;
+                char path[512]; std::snprintf(path, sizeof(path), "%s/pgs_target_%04x_%ux%u.ppm", r.dir, r.fbp, r.w, r.h);
+                char patha[512]; std::snprintf(patha, sizeof(patha), "%s/pgs_target_%04x_%ux%u.pgm", r.dir, r.fbp, r.w, r.h);
+                FILE *fp = std::fopen(path, "wb"), *fa = std::fopen(patha, "wb");
+                if (fp) std::fprintf(fp, "P6\n%u %u\n255\n", r.w, r.h);
+                if (fa) std::fprintf(fa, "P5\n%u %u\n255\n", r.w, r.h);
+                for (uint32_t y = 0; y < r.h; ++y) for (uint32_t x = 0; x < r.w; ++x)
+                {
+                    const uint32_t a = GSPSMCT32::addrPSMCT32(r.fbp, r.fbw, x, y) & ((4u << 20) - 1u);
+                    uint32_t px; std::memcpy(&px, v + a, 4);
+                    if (fp) { std::fputc(px & 0xFF, fp); std::fputc((px >> 8) & 0xFF, fp); std::fputc((px >> 16) & 0xFF, fp); }
+                    if (fa) std::fputc((px >> 24) & 0xFF, fa);
+                }
+                if (fp) std::fclose(fp); if (fa) std::fclose(fa);
+                std::fprintf(stderr, "[targetdump] %s\n", path);
+            }
+        }
+    }
+    {   // [regtrace] PS2X_PGS_REGTRACE=1: the backend's own register state after each PATH1 transfer that lands under a tight
+        // SCISSOR_1 (the oracle for the native front-end's state at the seam's character packets)
+        static const bool s_rt = envOn("PS2X_PGS_REGTRACE"); static unsigned s_rtN = 0;
+        if (s_rt && pathId == 1u && s_rtN < 60u)
+        {
+            const auto &r = s.iface.get_register_state();
+            const uint64_t sc1 = r.ctx[0].scissor.bits;
+            if ((sc1 & 0x7ff0000ull) >> 16 < 100u)
+            {
+                ++s_rtN;
+                std::fprintf(stderr, "[regtrace] path1 %zu bytes: prim %03llx prmodecont %u sc1 %016llx sc2 %016llx frame1 %016llx frame2 %016llx\n", size,
+                             (unsigned long long)(r.prim.bits & 0x7ffu), (unsigned)(r.prmodecont.bits & 1u), (unsigned long long)sc1, (unsigned long long)r.ctx[1].scissor.bits,
+                             (unsigned long long)r.ctx[0].frame.bits, (unsigned long long)r.ctx[1].frame.bits);
+            }
+        }
+    }
     {   // [vramprobe] PS2X_PGS_VRAMPROBE=1: after the depth-mask pass, print the frame's alpha per column and the Z top bytes
         static const bool s_probe = envOn("PS2X_PGS_VRAMPROBE"); static unsigned s_n = 0;
         if (s_probe && s_n < 4 && g_pgsProbeReq.exchange(0) != 0)
@@ -1924,6 +1993,14 @@ void setPresentSize(uint32_t w, uint32_t h)
 
 // [seamvk] GS thread: the context registers as they stand at this point of the stream.
 
+bool takeRefFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h)
+{
+    State &s = st();
+    std::lock_guard<std::mutex> lk(s.mtx);
+    if (!s.frameFresh) return false;
+    rgba = s.frame; w = s.frameW; h = s.frameH; s.frameFresh = false;
+    return true;
+}
 bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h)
 {
     if (seamvk::on()) return seamvk::takeFrame(rgba, w, h);   // [seamvk] the native view replaces the scanout
