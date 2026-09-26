@@ -5816,8 +5816,9 @@ namespace
                 static uint64_t s_lastChunks = 0;
                 const uint64_t chunks = g_seamHostChunks.load(std::memory_order_relaxed);
                 const uint64_t dChunks = chunks - s_lastChunks; s_lastChunks = chunks;
+                static const bool s_seamLatch = [](){ const char *v = std::getenv("PS2X_FRAMEGATE_SEAMLATCH"); return v && v[0] == '1'; }();   // off: with it the seam path dropped to 5 fps (the gate's pacing branch misbehaves there; open item); fights in 30 fps mode may run ungated on the native path
                 if (!fightState) s_fightRendering = false;
-                else if (delta > 200000ull || dChunks > 50ull) s_fightRendering = true;   // seam path: the meshes it emits are the fight's VU1 work
+                else if (delta > 200000ull || (s_seamLatch && dChunks > 50ull)) s_fightRendering = true;   // seam path: the meshes it emits are the fight's VU1 work
             }
             const bool inFight = s_fightGate && fightState && s_fightRendering;
             g_ps2xFrameGateHeavy.store(s_gate && heavy && PS2Memory::asyncKickEnabled(), std::memory_order_relaxed);   // [syncrelax]

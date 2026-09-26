@@ -6,6 +6,8 @@
 layout(set = 0, binding = 1) uniform sampler2D uZtop;                     // the Z top-byte plane (alpha of the 0x1c00 colour view)
 layout(set = 0, binding = 0, std140) uniform Clut { uvec4 clut[64]; } uClut;   // CLUT 0x3e8c: Ztop -> depth ramp
 layout(push_constant) uniform PC { uvec4 p; } pc;                         // scale, core radius (native px), fringe radius, 0
+#extension GL_ARB_shader_stencil_export : require
+out int gl_FragStencilRefARB;   // [stencildate]
 layout(location = 0) out vec4 outColor;
 
 uint clutEntry(uint i) { uvec4 v = uClut.clut[i >> 2]; return (i & 3u) == 0u ? v.x : (i & 3u) == 1u ? v.y : (i & 3u) == 2u ? v.z : v.w; }
@@ -33,5 +35,6 @@ void main()
             }
         }
     if (!onFringe) discard;
+    gl_FragStencilRefARB = onCore ? 1 : 0;
     outColor = vec4(0.0, 0.0, 0.0, onCore ? 128.0 / 255.0 : 48.0 / 255.0);
 }

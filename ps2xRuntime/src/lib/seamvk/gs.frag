@@ -5,6 +5,15 @@
 #else
 #define INTERP
 #endif
+#ifdef STENCIL_EXPORT
+// [stencildate] the stencil buffer mirrors bit 7 of the STORED alpha of every pixel: a draw that writes alpha exports it here
+// (REPLACE), so a DATE draw is a plain stencil test instead of an in-pass barrier + destination read per draw.
+#extension GL_ARB_shader_stencil_export : require
+out int gl_FragStencilRefARB;
+#define STENCIL_OUT(a) gl_FragStencilRefARB = ((a) >= 128.0) ? 1 : 0
+#else
+#define STENCIL_OUT(a)
+#endif
 layout(location = 0) INTERP in vec4 vColor;
 layout(location = 1) INTERP in vec3 vTex;
 layout(location = 2) INTERP in float vLit;
@@ -39,9 +48,9 @@ void main()
         float da = subpassLoad(uDst).a;
         bool bit7 = da >= (127.5 / 255.0);
         bool datePass = bit7 == ((flags & 1024) != 0);
-        if ((flags & 4096) != 0) { if (datePass) discard; outColor = vec4(1.0, 0.0, 0.0, 1.0); outBlend = vec4(0.0, 0.0, 0.0, 1.0); return; }   // PS2X_SEAMVK_DATEDBG=2: paint where the test FAILS
+        if ((flags & 4096) != 0) { if (datePass) discard; outColor = vec4(1.0, 0.0, 0.0, 1.0); outBlend = vec4(0.0, 0.0, 0.0, 1.0); STENCIL_OUT(255.0); return; }   // PS2X_SEAMVK_DATEDBG=2: paint where the test FAILS
         if (!datePass) discard;
-        if ((flags & 2048) != 0) { outColor = vec4(0.0, 1.0, 0.0, 1.0); outBlend = vec4(0.0, 0.0, 0.0, 1.0); return; }   // PS2X_SEAMVK_DATEDBG=1: paint where the test passes
+        if ((flags & 2048) != 0) { outColor = vec4(0.0, 1.0, 0.0, 1.0); outBlend = vec4(0.0, 0.0, 0.0, 1.0); STENCIL_OUT(255.0); return; }   // PS2X_SEAMVK_DATEDBG=1: paint where the test passes
     }
     vec4 cf = vColor;
     vec4 c = cf;
@@ -71,7 +80,7 @@ void main()
     c.rgb *= mix(0.55, 1.0, clamp(vLit, 0.0, 1.0));
     if ((flags & 256) != 0) c.rgb = mix(pc.fogcol.rgb, c.rgb, vFog);
     float a255 = c.a * 255.0;
-    if ((flags & 8192) != 0) { outColor = vec4(vec3(a255 / 255.0), 1.0); outBlend = vec4(0.0, 0.0, 0.0, 1.0); return; }   // PS2X_SEAMVK_DATEDBG=3: the sampled alpha as grey, opaque
+    if ((flags & 8192) != 0) { outColor = vec4(vec3(a255 / 255.0), 1.0); outBlend = vec4(0.0, 0.0, 0.0, 1.0); STENCIL_OUT(255.0); return; }   // PS2X_SEAMVK_DATEDBG=3: the sampled alpha as grey, opaque
     if ((flags & 16) != 0)
     {   // alpha test on the GS byte alpha
         int atst = pc.fA.w & 7, aref = (pc.fA.w >> 3) & 0xFF, afail = (pc.fA.w >> 11) & 3;
@@ -89,6 +98,7 @@ void main()
     // FBA forces bit 7 of the alpha WRITTEN to the frame; the blend factor As is the source alpha before that (the HUD's
     // additive flashes carry vertex alpha 0 with FBA set: they add nothing but leave the mask bit behind).
     float aStored = ((flags & 32) != 0 && a255 < 128.0) ? a255 + 128.0 : a255;
+    STENCIL_OUT(aStored);
     outColor = vec4(c.rgb, aStored / 255.0);
     float fac = a255 / 128.0;
     if ((flags & 16384) != 0) fac = subpassLoad(uDst).a * (255.0 / 128.0);   // Ad: the destination alpha, read in-pass like DATE (was Ad/255)

@@ -4,6 +4,8 @@
 // coordinate, tested against the draw's sprites, shaded (texture / flat colour, TFX, ATE), blended in 8-bit against
 // the pixel's own expanded 16-bit value and packed back with the 16-bit FBMSK. The post chain's outline mask and the
 // depth-mask pass are such draws (they were skipped before, leaving stale bytes for the read-back).
+#extension GL_ARB_shader_stencil_export : require
+out int gl_FragStencilRefARB;   // [stencildate] bit 7 of the stored alpha byte
 #include "gs_tables.glsl"
 layout(input_attachment_index = 0, set = 0, binding = 2) uniform subpassInput uDst;
 layout(set = 0, binding = 1) uniform sampler2D uTex;
@@ -145,5 +147,6 @@ void main()
         }
     }
     if (!touched) discard;
+    gl_FragStencilRefARB = int(o >> 31);
     outColor = unpackUnorm4x8(o);
 }

@@ -49,6 +49,12 @@ namespace seamvk
         const uint32_t kPresentVert[] = {
 #include "seamvk/present.vert.inc"
         };
+        const uint32_t kGsFragSt[] = {
+#include "seamvk/gs_st.frag.inc"
+        };
+        const uint32_t kGsFragNpSt[] = {
+#include "seamvk/gs_np_st.frag.inc"
+        };
         const uint32_t kPresentFrag[] = {
 #include "seamvk/present.frag.inc"
         };
@@ -88,26 +94,44 @@ namespace seamvk
         struct Target { Vulkan::ImageHandle img; VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; bool cleared = false; bool aliasedDirty = false; };   // aliasedDirty: a draw through the other pixel format was skipped since the last draw of its own
         struct Gpu
         {
-            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progVram = nullptr;
+            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progSeamSt = nullptr, *progGsSt = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progVram = nullptr;
             Vulkan::BufferHandle vram;          // [gpudecode] the GPU copy of GS VRAM (4 MB), pages uploaded in stream order
             Vulkan::ImageHandle out;            // the composed frame
             Vulkan::ImageHandle white;          // 1x1 for untextured draws
             Vulkan::ImageHandle snap;           // destination snapshot for DATE draws
             Vulkan::BufferHandle readback;
-            struct Pending { Vulkan::BufferHandle buf; Vulkan::Fence fence; uint32_t w = 0, h = 0; bool live = false; };
+            struct TsMark { uint8_t cat; Vulkan::QueryPoolHandle q; };   // [gputime] GPU timestamps: cat = the category that STARTS at this mark
+            struct Pending { Vulkan::BufferHandle buf; Vulkan::Fence fence; uint32_t w = 0, h = 0; bool live = false; std::vector<TsMark> ts; };
+            std::vector<TsMark> tsCur; double gpuMs[8] = {}; uint32_t gpuFrames = 0;   // [gputime] per category, ms; 0 main draws, 1 rt decodes, 2 alias16, 3 native steps, 4 compose, 5 uploads
             Pending ring[3]; uint32_t ringNext = 0;
             std::map<uint32_t, Target> targets; // by fbp
-            std::map<uint32_t, Target> depths;  // by zbp
+            std::map<uint64_t, Target> depths;  // [stencildate] by (zbp | width<<16) and the COLOUR target it pairs with: the stencil mirrors that target's alpha, so double-buffered frames sharing one Z buffer each get their own image
+            std::map<uint32_t, uint64_t> depthOfZbp;   // zbp | width<<16 -> the key last drawn with (Z reads resolve through it)
             std::map<uint32_t, uint32_t> targetPsm;   // 16 or 32: the format class a target was first drawn with
             bool dumpRt = false;                      // this frame: read decoded textures back and write them as PPM
             std::vector<std::pair<Vulkan::ImageHandle, seamgs::RtDecode>> rtDumps;
             std::vector<Vulkan::ImageHandle> tex;
             uint32_t w = 0, h = 0, scale = 1;
             bool failed = false;
-            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0, nativeSteps = 0, vramPagesUp = 0;
+            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0, nativeSteps = 0, vramPagesUp = 0, dateHost = 0;
             double msTake = 0, msRecord = 0, msSubmit = 0, msWait = 0;
         };
         Gpu g_gpu;
+        bool gpuTime()
+        {
+            static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUTIME"); return v && v[0] == '1'; }();   // =1: per-category GPU timestamps (costs ~10 ms/frame of recording; off by default)
+            return s;
+        }
+        void tsMark(Vulkan::CommandBuffer &cmd, uint8_t cat)
+        {
+            if (!gpuTime()) return;
+            g_gpu.tsCur.push_back({ cat, cmd.write_timestamp(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) });
+        }
+        bool stencilDate()
+        {
+            static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_STENCILDATE"); return v && v[0] == '1'; }();   // =1 (experimental, wrong on the terrain's DATE draws and no faster): stencil mirrors the stored alpha bit; default: the in-pass barrier + destination read per DATE draw
+            return s;
+        }
 
         uint32_t scale()
         {
@@ -130,6 +154,8 @@ namespace seamvk
                 Vulkan::ResourceLayout gl = {};
                 gl.input_mask = 0xFu; gl.output_mask = 0xFu; gl.push_constant_size = sizeof(PC);
                 g_gpu.progGs = dev.request_program(kGsVert, sizeof(kGsVert), kGsFragNp, sizeof(kGsFragNp), &gl, &fl);
+                g_gpu.progSeamSt = dev.request_program(kSeamVert, sizeof(kSeamVert), kGsFragSt, sizeof(kGsFragSt), &vl, &fl);   // [stencildate] variants exporting the stored alpha bit to stencil
+                g_gpu.progGsSt = dev.request_program(kGsVert, sizeof(kGsVert), kGsFragNpSt, sizeof(kGsFragNpSt), &gl, &fl);
                 Vulkan::ResourceLayout pv = {}, pf = {};
                 pv.output_mask = 0x1u; pv.push_constant_size = sizeof(PresentPC);
                 pf.sets[0].sampled_image_mask = 1u << 0; pf.sets[0].meta[0].array_size = 1;
@@ -164,7 +190,7 @@ namespace seamvk
                 Vulkan::ResourceLayout dv = {}, df = {};   // depth mask: fullscreen triangle, depth image (1)
                 dv.output_mask = 0x0u; df.sets[0].sampled_image_mask = 1u << 1; df.sets[0].meta[1].array_size = 1; df.output_mask = 0x1u;
                 g_gpu.progDepthMask = dev.request_program(kRtVert, sizeof(kRtVert), kDepthMaskFrag, sizeof(kDepthMaskFrag), &dv, &df);
-                if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progPresent || !g_gpu.progRt || !g_gpu.progAlias || !g_gpu.progOutline || !g_gpu.progDepthMask || !g_gpu.progVram || !g_gpu.vram) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
+                if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progSeamSt || !g_gpu.progGsSt || !g_gpu.progPresent || !g_gpu.progRt || !g_gpu.progAlias || !g_gpu.progOutline || !g_gpu.progDepthMask || !g_gpu.progVram || !g_gpu.vram) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
                 const uint32_t whitePx = 0xFFFFFFFFu;
                 Vulkan::ImageInitialData init = { &whitePx, 0, 0 };
                 g_gpu.white = dev.create_image(Vulkan::ImageCreateInfo::immutable_2d_image(1, 1, VK_FORMAT_R8G8B8A8_UNORM), &init);
@@ -200,12 +226,26 @@ namespace seamvk
             }
             return t;
         }
-        Target &depth(Vulkan::Device &dev, uint32_t zbp, uint32_t fbw)
+        // [stencildate] one depth-stencil image per COLOUR target (and row width): the stencil mirrors that target's stored alpha,
+        // whatever Z buffer (or none) a draw uses; a target pairs with one Z buffer in practice, and Z reads resolve through
+        // depthOfZbp (the last colour target drawn with that Z buffer).
+        uint64_t depthKey(uint32_t zbp, uint32_t fbw, uint32_t fbp)
+        {   // default: one Z image per (Z buffer, width) as the GS has; the experimental stencil path keys per colour target instead
+            return stencilDate() ? ((uint64_t(targetW(fbw) << 16) << 32) | fbp) : uint64_t(zbp | (targetW(fbw) << 16));
+        }
+        Target *depthFor(uint32_t zbp, uint32_t width)   // the depth image last drawn with this Z buffer (any colour target)
         {
-            Target &t = g_gpu.depths[zbp | (targetW(fbw) << 16)];   // attachments of one pass share a size: one Z image per (base, width)
+            auto k = g_gpu.depthOfZbp.find(zbp | (width << 16)); if (k == g_gpu.depthOfZbp.end()) return nullptr;
+            auto it = g_gpu.depths.find(k->second); return (it != g_gpu.depths.end() && it->second.img) ? &it->second : nullptr;
+        }
+        Target &depth(Vulkan::Device &dev, uint32_t zbp, uint32_t fbw, uint32_t fbp)
+        {
+            const uint64_t key = depthKey(zbp, fbw, fbp);
+            if (zbp != 0u) g_gpu.depthOfZbp[zbp | (targetW(fbw) << 16)] = key;
+            Target &t = g_gpu.depths[key];   // attachments of one pass share a size: one Z image per (base, width, colour target)
             if (!t.img)
             {
-                auto ci = Vulkan::ImageCreateInfo::render_target(targetW(fbw) * g_gpu.scale, kLogicalH * g_gpu.scale, VK_FORMAT_D32_SFLOAT);
+                auto ci = Vulkan::ImageCreateInfo::render_target(targetW(fbw) * g_gpu.scale, kLogicalH * g_gpu.scale, stencilDate() ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_D32_SFLOAT);   // [stencildate] stencil = bit 7 of the stored alpha (experimental)
                 ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
                 t.img = dev.create_image(ci);
                 t.layout = VK_IMAGE_LAYOUT_UNDEFINED; t.cleared = false;
@@ -277,7 +317,7 @@ namespace seamvk
                 if (it == g_gpu.targets.end() || !it->second.img) return;
                 srcp = &it->second;
                 toSampled(cmd, *srcp);
-                if (r.depthSrc) { auto zi = g_gpu.depths.find(r.srcFbp | ((srcp->img->get_width() / g_gpu.scale) << 16)); if (zi != g_gpu.depths.end() && zi->second.img) { dz = &zi->second; depthToSampled(cmd, *dz); } }
+                if (r.depthSrc) { dz = depthFor(r.srcFbp, srcp->img->get_width() / g_gpu.scale); if (dz) depthToSampled(cmd, *dz); }
             }
             if ((size_t)r.slot >= g_gpu.tex.size()) g_gpu.tex.resize(size_t(r.slot) + 1u);
             Vulkan::ImageHandle &img = g_gpu.tex[r.slot];
@@ -340,6 +380,7 @@ namespace seamvk
             cmd.set_depth_test(false, false);
             cmd.set_blend_enable(false);
             cmd.set_color_write_mask(0xFu);
+            if (stencilDate()) { cmd.set_stencil_test(true); cmd.set_stencil_ops(VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP); cmd.set_stencil_reference(0xFFu, 0xFFu, 0u); } else cmd.set_stencil_test(false);
             cmd.set_cull_mode(VK_CULL_MODE_NONE);
             VkViewport vp = {}; vp.width = float(imgW); vp.height = float(imgH); vp.minDepth = 0.0f; vp.maxDepth = 1.0f; cmd.set_viewport(vp);
             VkRect2D sr = {}; sr.extent.width = imgW; sr.extent.height = imgH; cmd.set_scissor(sr);
@@ -429,14 +470,17 @@ namespace seamvk
             {   // depth mask: frame.A := Z24[15:8]
                 auto fi = g_gpu.targets.find(d.st.fbp); if (fi == g_gpu.targets.end() || !fi->second.img) return;
                 Target &ft = fi->second;
-                auto zi = g_gpu.depths.find(d.st.zbp | (targetW(d.st.fbw) << 16)); if (zi == g_gpu.depths.end() || !zi->second.img) return;
-                Target &zt = zi->second;
+                Target *zp = depthFor(d.st.zbp, targetW(d.st.fbw)); if (!zp) return;
+                Target &zt = *zp;
                 depthToSampled(cmd, zt);
                 toAttachment(cmd, ft, false);
                 Vulkan::RenderPassInfo rp = {};
                 rp.num_color_attachments = 1; rp.color_attachments[0] = &ft.img->get_view(); rp.load_attachments = 1u << 0; rp.store_attachments = 1u << 0;
+                Target &dsA = depth(dev, d.st.zbp, d.st.fbw, d.st.fbp); toAttachment(cmd, dsA, true);   // [stencildate] the pass writes alpha: stencil follows
+                rp.depth_stencil = &dsA.img->get_view(); rp.op_flags = Vulkan::RENDER_PASS_OP_LOAD_DEPTH_STENCIL_BIT | Vulkan::RENDER_PASS_OP_STORE_DEPTH_STENCIL_BIT;
                 cmd.begin_render_pass(rp);
                 cmd.set_opaque_state();
+                if (stencilDate()) { cmd.set_stencil_test(true); cmd.set_stencil_ops(VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP); cmd.set_stencil_reference(0xFFu, 0xFFu, 0u); }
                 cmd.set_program(g_gpu.progDepthMask);
                 cmd.set_cull_mode(VK_CULL_MODE_NONE);
                 cmd.set_depth_test(false, false);
@@ -460,8 +504,11 @@ namespace seamvk
             toAttachment(cmd, ft, false);
             Vulkan::RenderPassInfo rp = {};
             rp.num_color_attachments = 1; rp.color_attachments[0] = &ft.img->get_view(); rp.load_attachments = 1u << 0; rp.store_attachments = 1u << 0;
+            Target &dsA = depth(dev, d.st.zbp, d.st.fbw, d.st.fbp); toAttachment(cmd, dsA, true);   // [stencildate]
+            rp.depth_stencil = &dsA.img->get_view(); rp.op_flags = Vulkan::RENDER_PASS_OP_LOAD_DEPTH_STENCIL_BIT | Vulkan::RENDER_PASS_OP_STORE_DEPTH_STENCIL_BIT;
             cmd.begin_render_pass(rp);
             cmd.set_opaque_state();
+            if (stencilDate()) { cmd.set_stencil_test(true); cmd.set_stencil_ops(VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP); cmd.set_stencil_reference(0xFFu, 0xFFu, 0u); }
             cmd.set_program(g_gpu.progOutline);
             cmd.set_cull_mode(VK_CULL_MODE_NONE);
             cmd.set_depth_test(false, false);
@@ -515,7 +562,7 @@ namespace seamvk
         }
 
         static const int s_dateDbg = [](){ const char *v = std::getenv("PS2X_SEAMVK_DATEDBG"); return v && v[0] ? std::atoi(v) : 0; }();
-        void bindDraw(Vulkan::CommandBuffer &cmd, const seamgs::Draw &d0, uint32_t sc)
+        void bindDraw(Vulkan::CommandBuffer &cmd, const seamgs::Draw &d0, uint32_t sc, int mode = 0)
         {
             static const bool s_flat = [](){ const char *v = std::getenv("PS2X_SEAMVK_FLAT"); return v && v[0] && v[0] != '0'; }();
             seamgs::Draw dFlat; const seamgs::Draw *dp = &d0;
@@ -541,7 +588,18 @@ namespace seamvk
             if ((t.fbmsk & 0x0000FF00u) != 0x0000FF00u) mask |= VK_COLOR_COMPONENT_G_BIT;
             if ((t.fbmsk & 0x00FF0000u) != 0x00FF0000u) mask |= VK_COLOR_COMPONENT_B_BIT;
             if ((t.fbmsk & 0xFF000000u) != 0xFF000000u) mask |= VK_COLOR_COMPONENT_A_BIT;
+            const bool alphaWritten = (mask & VK_COLOR_COMPONENT_A_BIT) != 0u;
+            if (mode == 2) mask = 0;   // the DATE stencil pass writes stencil only
             cmd.set_color_write_mask(mask);
+            if (stencilDate())
+            {   // [stencildate] stencil := bit 7 of the alpha this draw stores (exported by the shader); DATE = stencil test
+                cmd.set_stencil_test(true);
+                if (mode == 1)      { cmd.set_stencil_ops(VK_COMPARE_OP_EQUAL, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP); cmd.set_stencil_reference(0x01u, 0x00u, t.datm ? 1u : 0u); }
+                else if (mode == 2) { cmd.set_stencil_ops(VK_COMPARE_OP_EQUAL, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP); cmd.set_stencil_reference(0x01u, 0xFFu, t.datm ? 1u : 0u);
+                                      if (t.zte && t.zmsk == 0u) cmd.set_depth_compare(VK_COMPARE_OP_EQUAL); cmd.set_depth_test(true, false); }   // exactly where the colour pass wrote (same geometry)
+                else                { cmd.set_stencil_ops(VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP); cmd.set_stencil_reference(0xFFu, alphaWritten ? 0xFFu : 0x00u, 0u); }
+            }
+            else cmd.set_stencil_test(false);
             // PS2X_SEAMVK_MASKDBG=1 (diagnostic): an alpha-only write also gets colour blend factors (0, 1), so the colour
             // channels stay put even if the write mask were not honoured
             static const bool s_maskDbg = [](){ const char *v = std::getenv("PS2X_SEAMVK_MASKDBG"); return v && v[0] && v[0] != '0'; }();
@@ -568,14 +626,14 @@ namespace seamvk
             else if (tex && (g_gpu.tex[t.tex]->get_width() != t.texW || g_gpu.tex[t.tex]->get_height() != t.texH)) ++g_gpu.texMismatch;
             pc.texInfo[0] = float(t.texW ? t.texW : 1u); pc.texInfo[1] = float(t.texH ? t.texH : 1u);
             pc.fA[0] = (tex ? 1 : 0) | (t.fst ? 2 : 0) | (t.mmag ? 8 : 0) | (t.ate ? 16 : 0) | (t.fba ? 32 : 0) | (t.tcc ? 128 : 0) | (t.fge ? 256 : 0)
-                     | (t.date ? 512 : 0) | (t.datm ? 1024 : 0) | ((t.abe && t.aC == 1u) ? 16384 : 0) | ((s_dateDbg == 1 && t.date) ? 2048 : 0) | ((s_dateDbg == 2 && t.date) ? 4096 : 0) | (((s_dateDbg == 3 || (s_dateDbg == 4 && ((g_gpu.frames / 300u) & 1u))) && t.date) ? 8192 : 0);   // =4: alternate with normal rendering every 300 frames (the capture cadence)
+                     | ((t.date && !stencilDate()) ? 512 : 0) | (t.datm ? 1024 : 0) | ((t.abe && t.aC == 1u) ? 16384 : 0) | ((s_dateDbg == 1 && t.date) ? 2048 : 0) | ((s_dateDbg == 2 && t.date) ? 4096 : 0) | (((s_dateDbg == 3 || (s_dateDbg == 4 && ((g_gpu.frames / 300u) & 1u))) && t.date) ? 8192 : 0);   // =4: alternate with normal rendering every 300 frames (the capture cadence)
             pc.fA[1] = t.tfx; pc.fA[2] = t.wms | (t.wmt << 2); pc.fA[3] = t.atst | (t.aref << 3) | (t.afail << 11);
             pc.fB[0] = t.minu; pc.fB[1] = t.maxu; pc.fB[2] = t.minv; pc.fB[3] = t.maxv;
             pc.fogcol[0] = (t.fogcol & 0xFFu) / 255.0f; pc.fogcol[1] = ((t.fogcol >> 8) & 0xFFu) / 255.0f; pc.fogcol[2] = ((t.fogcol >> 16) & 0xFFu) / 255.0f; pc.fogcol[3] = 1.0f;
             cmd.push_constants(&pc, 0, sizeof(pc));
             cmd.set_texture(0, 1, tex ? g_gpu.tex[t.tex]->get_view() : g_gpu.white->get_view(), Vulkan::StockSampler::NearestClamp);
             cmd.set_input_attachments(0, 2);   // [date] binding 2 = the pass's colour attachment as input (self-dependent subpass)
-            if (t.date) ++g_gpu.dateDraws;
+            if (t.date) { ++g_gpu.dateDraws; if (d.kind == 1) ++g_gpu.dateHost; }
         }
 
         void composeCircuit(Vulkan::CommandBuffer &cmd, uint64_t dispfb, uint64_t display, float alpha, bool blend)
@@ -773,8 +831,8 @@ namespace seamvk
                             }
                         }
                     }
-                    std::fprintf(stderr, "[seamvk]  draw %zu HOST prog %u count %u w[%g..%g] neg %u pos %u zq[%g..%g] fbp 0x%x fbw %u psm %u msk %08x zbp 0x%x zte %u ztst %u zmsk %u tme %u tex %d%s abe %u (%u,%u,%u,%u) ate %u atst %u aref %u afail %u ctxt %u sc %u..%u %u..%u tex0 %08x%08x fst %u tfx %u tcc %u wms %u wmt %u %ux%u prim %03llx prmode %03llx cont %u sc1 %016llx sc2 %016llx\n",
-                                 i, d.prog, n, wmin, wmax, neg, pos, zqmin, zqmax, t.fbp, t.fbw, t.fpsm, t.fbmsk, t.zbp, t.zte, t.ztst, t.zmsk, t.tme, t.tex, t.texFromDrawn ? "(DRAWN)" : "", t.abe, t.aA, t.aB, t.aC, t.aD, t.ate, t.atst, t.aref, t.afail, t.ctxt, t.scax0, t.scax1, t.scay0, t.scay1, t.tex0hi, t.tex0lo, t.fst, t.tfx, t.tcc, t.wms, t.wmt, t.texW, t.texH, (unsigned long long)t.dbgPrim, (unsigned long long)t.dbgPrmode, t.dbgPrmodecont, (unsigned long long)t.dbgSc[0], (unsigned long long)t.dbgSc[1]);
+                    std::fprintf(stderr, "[seamvk]  draw %zu HOST prog %u count %u w[%g..%g] neg %u pos %u zq[%g..%g] fbp 0x%x fbw %u psm %u msk %08x zbp 0x%x zte %u ztst %u zmsk %u tme %u tex %d%s abe %u (%u,%u,%u,%u) ate %u atst %u aref %u afail %u date %u ctxt %u sc %u..%u %u..%u tex0 %08x%08x fst %u tfx %u tcc %u wms %u wmt %u %ux%u prim %03llx prmode %03llx cont %u sc1 %016llx sc2 %016llx\n",
+                                 i, d.prog, n, wmin, wmax, neg, pos, zqmin, zqmax, t.fbp, t.fbw, t.fpsm, t.fbmsk, t.zbp, t.zte, t.ztst, t.zmsk, t.tme, t.tex, t.texFromDrawn ? "(DRAWN)" : "", t.abe, t.aA, t.aB, t.aC, t.aD, t.ate, t.atst, t.aref, t.afail, t.date, t.ctxt, t.scax0, t.scax1, t.scay0, t.scay1, t.tex0hi, t.tex0lo, t.fst, t.tfx, t.tcc, t.wms, t.wmt, t.texW, t.texH, (unsigned long long)t.dbgPrim, (unsigned long long)t.dbgPrmode, t.dbgPrmodecont, (unsigned long long)t.dbgSc[0], (unsigned long long)t.dbgSc[1]);
                     continue;
                 }
                 if (d.kind == 3) { std::fprintf(stderr, "[seamvk]  draw %zu NATIVESTEP %u fbp 0x%x zbp 0x%x\n", i, d.prog, t.fbp, t.zbp); continue; }
@@ -799,6 +857,7 @@ namespace seamvk
         if (!g_gpu.dumpRt) g_gpu.dumpRt = s_dumpFrame && !s_dumped && std::getenv("PS2X_SEAMVK_TEXDUMP") && (s_dumpFrame != 1u && g_gpu.frames + 1u == s_dumpFrame);
         g_gpu.rtDumps.clear();
         auto cmd = dev.request_command_buffer();
+        g_gpu.tsCur.clear(); tsMark(*cmd, 0);
         // ---- the ordered draws, into their FRAME / ZBUF targets ----
         uint32_t curFbp = ~0u, curZbp = ~0u; bool inPass = false;
         // Draws that sample pages the game rendered into (the post chain: Z as an index texture, rendered
@@ -824,14 +883,16 @@ namespace seamvk
             if (d.kind == 3)
             {   // [postnative] an engine-seam step at its stream position
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
-                runNativeStep(*cmd, dev, f, d);
+                tsMark(*cmd, 3); runNativeStep(*cmd, dev, f, d); tsMark(*cmd, 0);
                 curFbp = ~0u;
                 continue;
             }
             if (d.kind == 2)
             {
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
+                tsMark(*cmd, 1);
                 if (d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size()) runRtDecode(*cmd, dev, f, f.rtDecodes[d.rt]);
+                tsMark(*cmd, 0);
                 curFbp = ~0u;
                 continue;
             }
@@ -863,7 +924,7 @@ namespace seamvk
             uint32_t pfbw = t.fbw;   // the pass target's row width: an alias16 draw keeps the target's own (its FRAME names the 16-bit view's)
             if (alias16) { auto it = g_gpu.targets.find(t.fbp); if (it != g_gpu.targets.end() && it->second.img) pfbw = it->second.img->get_width() / (g_gpu.scale * 64u); }
             const uint32_t zbp = (t.zte ? t.zbp : ~1u) ^ (pfbw << 24);   // the pass key also changes with the row width
-            const bool dateBarrier = (t.date && !s_noDate) || (t.abe && t.aC == 1u) || alias16;   // [date] handled in-pass: a by-region barrier before the draw (below); Ad blends read the destination the same way
+            const bool dateBarrier = (t.date && !s_noDate && !stencilDate()) || (t.abe && t.aC == 1u) || alias16;   // [date] handled in-pass: a by-region barrier before the draw (below); Ad blends read the destination the same way
             if (t.fbp != curFbp || zbp != curZbp)
             {
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
@@ -876,12 +937,12 @@ namespace seamvk
                 rp.store_attachments = 1u << 0;
                 if (!ct.cleared) { rp.clear_attachments = 1u << 0; ct.cleared = true; }
                 else rp.load_attachments = 1u << 0;
-                Target &dt = depth(dev, t.zte ? t.zbp : 0u, pfbw);   // an unused Z buffer still needs an attachment: pair every pass with one
+                Target &dt = depth(dev, t.zte ? t.zbp : 0u, pfbw, t.fbp);   // an unused Z buffer still needs an attachment: pair every pass with one
                 toAttachment(*cmd, dt, true);
                 rp.depth_stencil = &dt.img->get_view();
                 rp.op_flags = Vulkan::RENDER_PASS_OP_STORE_DEPTH_STENCIL_BIT | (dt.cleared ? Vulkan::RENDER_PASS_OP_LOAD_DEPTH_STENCIL_BIT : Vulkan::RENDER_PASS_OP_CLEAR_DEPTH_STENCIL_BIT);
                 dt.cleared = true;
-                rp.clear_depth_stencil.depth = 0.0f;
+                rp.clear_depth_stencil.depth = 0.0f; rp.clear_depth_stencil.stencil = 0;
                 // [date] one subpass whose colour attachment is also its input attachment: Granite emits the colour
                 // self-dependency, so a DATE draw can read the destination pixel it is about to blend into after a
                 // by-region barrier, with no pass break and no copy.
@@ -904,46 +965,56 @@ namespace seamvk
             if (alias16)
             {
                 Target &ct = g_gpu.targets[t.fbp];
+                tsMark(*cmd, 2);
                 drawAlias16(*cmd, f, d, t.fbp, pfbw, ct.img->get_width(), ct.img->get_height());
+                tsMark(*cmd, 0);
                 ++g_gpu.draws; g_gpu.verts += d.count;
                 continue;
             }
-            bindDraw(*cmd, d, sc);
-            if (d.kind == 0)
+            const bool dateSplit = stencilDate() && t.date != 0u && !(t.abe && t.aC == 1u);   // [stencildate] colour pass (stencil test) + stencil pass (write)
+            auto issue = [&](int mode)
             {
-                cmd->set_program(g_gpu.progGs);
-                cmd->set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-                cmd->set_vertex_attrib(0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0);
-                cmd->set_vertex_attrib(1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16);
-                cmd->set_vertex_attrib(2, 0, VK_FORMAT_R8G8B8A8_UNORM, 32);
-                cmd->set_vertex_attrib(3, 0, VK_FORMAT_R32_SFLOAT, 36);
-                const size_t bytes = size_t(d.count) * sizeof(seamgs::Vtx);
-                void *vb = cmd->allocate_vertex_data(0, bytes, sizeof(seamgs::Vtx));
-                std::memcpy(vb, f.verts.data() + d.vertOff, bytes);
-                cmd->draw(d.count);
-            }
-            else
-            {
-                cmd->set_program(g_gpu.progSeam);
-                cmd->set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
-                cmd->set_vertex_attrib(0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0);
-                cmd->set_vertex_attrib(1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16);
-                cmd->set_vertex_attrib(2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 32);
-                cmd->set_vertex_attrib(3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 48);
-                Consts *c = static_cast<Consts *>(cmd->allocate_constant_data(0, 0, sizeof(Consts)));
-                std::memcpy(c, &d.c, sizeof(Consts));
-                c->misc[1] = float(d.hostPass);
-                static const bool s_flat = [](){ const char *v = std::getenv("PS2X_SEAMVK_FLAT"); return v && v[0] && v[0] != '0'; }();
-                if (s_flat) c->misc[3] = 1.0f;   // PS2X_SEAMVK_FLAT=1: the seam's meshes in a flat colour per program (coverage diagnostics)
-                void *vb = cmd->allocate_vertex_data(0, VkDeviceSize(64) * d.count, 64);
-                uint8_t *dst = static_cast<uint8_t *>(vb);
-                const uint8_t *src = f.verts.data() + d.vertOff;
-                for (uint32_t v = 0; v < d.count; ++v) { std::memcpy(dst + v * 64u, src + size_t(v) * d.stride, d.stride); if (d.stride < 64u) std::memset(dst + v * 64u + d.stride, 0, 64u - d.stride); }
-                cmd->draw(d.count);
-            }
+                bindDraw(*cmd, d, sc, mode);
+                const bool st = stencilDate() && mode != 1;   // the DATE colour pass must not export (the exported value would replace the test reference)
+                if (d.kind == 0)
+                {
+                    cmd->set_program(st ? g_gpu.progGsSt : g_gpu.progGs);
+                    cmd->set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+                    cmd->set_vertex_attrib(0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0);
+                    cmd->set_vertex_attrib(1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16);
+                    cmd->set_vertex_attrib(2, 0, VK_FORMAT_R8G8B8A8_UNORM, 32);
+                    cmd->set_vertex_attrib(3, 0, VK_FORMAT_R32_SFLOAT, 36);
+                    const size_t bytes = size_t(d.count) * sizeof(seamgs::Vtx);
+                    void *vb = cmd->allocate_vertex_data(0, bytes, sizeof(seamgs::Vtx));
+                    std::memcpy(vb, f.verts.data() + d.vertOff, bytes);
+                    cmd->draw(d.count);
+                }
+                else
+                {
+                    cmd->set_program(st ? g_gpu.progSeamSt : g_gpu.progSeam);
+                    cmd->set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+                    cmd->set_vertex_attrib(0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0);
+                    cmd->set_vertex_attrib(1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16);
+                    cmd->set_vertex_attrib(2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 32);
+                    cmd->set_vertex_attrib(3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 48);
+                    Consts *c = static_cast<Consts *>(cmd->allocate_constant_data(0, 0, sizeof(Consts)));
+                    std::memcpy(c, &d.c, sizeof(Consts));
+                    c->misc[1] = float(d.hostPass);
+                    static const bool s_flat = [](){ const char *v = std::getenv("PS2X_SEAMVK_FLAT"); return v && v[0] && v[0] != '0'; }();
+                    if (s_flat) c->misc[3] = 1.0f;   // PS2X_SEAMVK_FLAT=1: the seam's meshes in a flat colour per program (coverage diagnostics)
+                    void *vb = cmd->allocate_vertex_data(0, VkDeviceSize(64) * d.count, 64);
+                    uint8_t *dst = static_cast<uint8_t *>(vb);
+                    const uint8_t *src = f.verts.data() + d.vertOff;
+                    for (uint32_t v = 0; v < d.count; ++v) { std::memcpy(dst + v * 64u, src + size_t(v) * d.stride, d.stride); if (d.stride < 64u) std::memset(dst + v * 64u + d.stride, 0, 64u - d.stride); }
+                    cmd->draw(d.count);
+                }
+            };
+            if (dateSplit) { issue(1); if ((t.fbmsk & 0xFF000000u) != 0xFF000000u) issue(2); }
+            else issue(0);
             ++g_gpu.draws; g_gpu.verts += d.count;
         }
         if (inPass) cmd->end_render_pass();
+        tsMark(*cmd, 4);
 
         // ---- compose the CRTC circuits into the output frame ----
         const uint32_t en1 = (uint32_t)(priv.pmode & 1u), en2 = (uint32_t)((priv.pmode >> 1) & 1u);
@@ -984,6 +1055,8 @@ namespace seamvk
         cmd->copy_image_to_buffer(*slot.buf, *g_gpu.out, 0, {}, { w, h, 1 }, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
         cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
         const auto tC = std::chrono::steady_clock::now();
+        tsMark(*cmd, 7);
+        slot.ts.swap(g_gpu.tsCur); g_gpu.tsCur.clear();
         dev.submit(cmd, &slot.fence);
         slot.live = true;
         const auto tD = std::chrono::steady_clock::now();
@@ -991,6 +1064,16 @@ namespace seamvk
         Gpu::Pending &prev = g_gpu.ring[(g_gpu.ringNext + 1u) % 3u];   // two frames back: certainly done, no wait in practice
         Vulkan::Fence fence; bool havePrev = false;
         if (prev.live) { prev.fence->wait(); havePrev = true; }
+        if (prev.live && !prev.ts.empty())
+        {   // [gputime] the intervals of the frame two back, by category (its queries completed with its fence)
+            const double period = dev.get_gpu_properties().limits.timestampPeriod * 1e-6;   // ns -> ms
+            for (size_t i = 0; i + 1 < prev.ts.size(); ++i)
+            {
+                const uint64_t a = prev.ts[i].q->get_timestamp_ticks(), b = prev.ts[i + 1].q->get_timestamp_ticks();
+                if (b > a && prev.ts[i].cat < 8) g_gpu.gpuMs[prev.ts[i].cat] += double(b - a) * period;
+            }
+            ++g_gpu.gpuFrames; prev.ts.clear();
+        }
         const auto tE = std::chrono::steady_clock::now();
         g_gpu.msTake += std::chrono::duration<double, std::milli>(tB - tA).count();
         g_gpu.msRecord += std::chrono::duration<double, std::milli>(tC - tB).count();
@@ -1009,6 +1092,7 @@ namespace seamvk
             prev.live = false;
         }
         if (dumpNow && std::getenv("PS2X_SEAMVK_TEXDUMP")) dumpTargets(dev, std::getenv("PS2X_SEAMVK_TEXDUMP"), "");
+        g_gpu.dumpRt = false;   // one frame only (left on, every later decode allocated a fresh image and the dump loop below ran every frame: 4 fps)
         if (!g_gpu.rtDumps.empty())
         {   // PS2X_SEAMVK_TEXDUMP + DUMPFRAME: the render-target decodes of this frame as rt_*.ppm (synchronous readback)
             const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP");
@@ -1039,11 +1123,19 @@ namespace seamvk
 
         if ((++g_gpu.frames % 300u) == 0u)
         {
-            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws, %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f VRAM pages up, %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
+            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws (%.1f on host meshes), %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f VRAM pages up, %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
                          (unsigned long long)g_gpu.frames, double(g_gpu.draws) / 300.0, double(g_gpu.verts) / 300.0, double(g_gpu.passes) / 300.0,
-                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.nativeSteps) / 300.0, double(g_gpu.vramPagesUp) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
-            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = g_gpu.nativeSteps = g_gpu.vramPagesUp = 0;
+                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.dateHost) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.nativeSteps) / 300.0, double(g_gpu.vramPagesUp) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
+            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.dateHost = 0; g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = g_gpu.nativeSteps = g_gpu.vramPagesUp = 0;
             std::fprintf(stderr, "[seamvk] per frame: take %.2f ms, record %.2f ms, submit %.2f ms, wait %.2f ms\n", g_gpu.msTake / 300.0, g_gpu.msRecord / 300.0, g_gpu.msSubmit / 300.0, g_gpu.msWait / 300.0);
+            if (g_gpu.gpuFrames)
+            {
+                const double n = double(g_gpu.gpuFrames);
+                std::fprintf(stderr, "[seamvk] gpu ms/frame: uploads %.2f, main draws %.2f, rt decodes %.2f, alias16 %.2f, native steps %.2f, compose %.2f (total %.2f)\n",
+                             g_gpu.gpuMs[5] / n, g_gpu.gpuMs[0] / n, g_gpu.gpuMs[1] / n, g_gpu.gpuMs[2] / n, g_gpu.gpuMs[3] / n, g_gpu.gpuMs[4] / n,
+                             (g_gpu.gpuMs[0] + g_gpu.gpuMs[1] + g_gpu.gpuMs[2] + g_gpu.gpuMs[3] + g_gpu.gpuMs[4] + g_gpu.gpuMs[5]) / n);
+                for (double &m : g_gpu.gpuMs) m = 0; g_gpu.gpuFrames = 0;
+            }
             g_gpu.msTake = g_gpu.msRecord = g_gpu.msSubmit = g_gpu.msWait = 0;
         }
     }
