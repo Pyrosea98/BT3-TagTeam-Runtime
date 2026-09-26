@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <system_error>
 
@@ -135,15 +136,21 @@ namespace frontend
         ImGui::CreateContext();
         ImGuiIO &io = ImGui::GetIO();
         io.IniFilename = nullptr;
-        // [imgui-error] Both channels are ON. They were turned off to stop a sticky red tooltip
-        // from re-raising every frame, but the errors feeding it were ours: an EndPopup/EndCombo
-        // called outside its Begin's `if` (see comboRowStr) raised 8-10 of them per frame. ImGui's
-        // own callers guard EndErrorTooltip correctly, so the tooltip is not the problem. A
-        // release build compiles IM_ASSERT out, so the tooltip is the only channel a player or a
-        // non-debugging dev will ever see -- keep it on, or the next unbalanced pair is invisible.
-        io.ConfigErrorRecoveryEnableTooltip = true;
-        io.ConfigErrorRecoveryEnableAssert = true;
-        io.ConfigErrorRecoveryEnableDebugLog = true;
+        // [imgui-error] All three channels are OFF by default. With them on, a single unbalanced
+        // Begin/End pair raises the same error on EVERY frame: a modal "MESSAGE FROM DEAR IMGUI"
+        // box that sits on top of the UI and has to be dismissed by hand, plus a console line
+        // per frame per error. Both were on to keep an imbalance visible, but the box lands on
+        // top of the very UI it is reporting on, which is worse than the report for a player.
+        //
+        // Not lost, just moved: fe_imgui_probe and fe_picker_probe assert the same invariants
+        // headlessly (window stack back to base, popup stack empty, ErrorCountCurrentFrame 0), so
+        // `cmake --build build --target fe_imgui_probe fe_picker_probe` catches this class of bug
+        // without a window. And PS2X_IMGUI_ERRORS=1 turns the channels back on to watch a live
+        // run.
+        const bool imguiErrors = std::getenv("PS2X_IMGUI_ERRORS") != nullptr;
+        io.ConfigErrorRecoveryEnableTooltip = imguiErrors;
+        io.ConfigErrorRecoveryEnableAssert = imguiErrors;
+        io.ConfigErrorRecoveryEnableDebugLog = imguiErrors;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
 
