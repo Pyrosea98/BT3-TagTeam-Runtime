@@ -2,6 +2,7 @@
 #include "runtime/ps2_seamprobe.h"
 #include "runtime/ps2_memory.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -358,5 +359,249 @@ namespace seamprobe
         else             { ++s.unattrMscal; ++s.mscals[Key{0u, progHashLo, mscnt ? 0xFFFu : startPc}].n; }
         const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - s.t0).count();
         if (dt >= 5.0) report(s);
+    }
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// [kickprobe]
+// ---------------------------------------------------------------------------------------------
+#include <map>
+#include <set>
+#include <atomic>
+extern std::atomic<uint64_t> g_bt3FrameCount;
+namespace seamprobe
+{
+    namespace
+    {
+        struct KickSite
+        {
+            uint64_t kicks = 0, tags = 0, directQw = 0, unpackQw = 0, mscal = 0, uploads = 0, uploadQw = 0;
+            uint64_t prims[8] = {}, dateDraws = 0, alphaOnlyDraws = 0, rgbOnlyDraws = 0, ateDraws = 0, texDraws = 0;
+            std::map<uint64_t, uint64_t> frames;   // (fbp | psm<<16 | fbmsk<<24 (class: 0 none, 1 rgb-only, 2 alpha-only, 3 other)) -> writes
+            std::map<uint32_t, uint64_t> texPsm;   // texture psm -> TEX0 writes
+            std::map<uint32_t, uint64_t> texBase;  // tbp -> TEX0 writes (top few)
+        };
+        struct KickState { uint32_t helper = 0, chain = 0, ra = 0; bool live = false; };
+        thread_local KickState t_kick;
+        std::map<uint32_t, KickSite> g_sites;   // by the allocating code's ra
+        uint64_t g_lastPrint = 0;
+        struct Alloc { uint32_t start, end, ra; };
+        std::vector<Alloc> g_allocs;            // this frame's display-list allocations (game thread; published at the kick)
+        std::mutex g_pubMtx;                    // guards everything below (game thread publishes, kick thread reads)
+        std::deque<std::vector<Alloc>> g_pubAllocs;   // the last few kicks' allocations, sorted
+        std::map<const void *, std::vector<std::array<uint32_t, 3>>> g_chainMaps;   // chain buffer -> (offset, guest, scratch)
+        thread_local std::vector<std::array<uint32_t, 3>> t_chainMap;
+        thread_local uint32_t t_lastOwner = 0;
+        uint32_t ownerOfAddrLocked(uint32_t a)
+        {
+            for (auto it = g_pubAllocs.rbegin(); it != g_pubAllocs.rend(); ++it)
+            {
+                const std::vector<Alloc> &v = *it;
+                size_t lo = 0, hi = v.size();
+                while (lo < hi) { const size_t mid = (lo + hi) / 2; if (v[mid].start <= a) lo = mid + 1; else hi = mid; }
+                if (lo == 0) continue;
+                const Alloc &al = v[lo - 1];
+                if (a >= al.start && a < al.end) return al.ra;
+            }
+            return 0u;
+        }
+        uint32_t ownerAt(uint32_t) { return t_lastOwner; }   // the DIRECT payload's owner, set by noteDirect
+
+        struct GifState { uint32_t nloop = 0, nreg = 1, ri = 0, flg = 0; uint64_t regs = 0; bool lastOdd = false; uint32_t total = 0; };
+        extern thread_local GifState t_gs;
+        struct GifScan
+        {
+            KickSite *k; uint32_t prim = 0; uint64_t frame[2] = {}, tex0[2] = {}, test[2] = {};
+            bool ate = false, date = false;
+            uint32_t off = 0;   // stream byte offset of the qword being processed
+            void reg(uint32_t a, uint64_t v)
+            {
+                k = &g_sites[ownerAt(off)];
+                switch (a & 0xFF)
+                {
+                case 0x00: prim = (uint32_t)(v & 0x7FF); break;
+                case 0x04: case 0x05: case 0x0C: case 0x0D:
+                {
+                    if (a == 0x0C || a == 0x0D) break;
+                    const uint32_t kind = prim & 7u, ctxt = (prim >> 9) & 1u;
+                    k->prims[kind]++;
+                    { static int s_dbg = 0; if (kind == 7u && s_dbg < 12) { ++s_dbg; std::fprintf(stderr, "[kickprobe] kind7: prim 0x%x reg 0x%x v %016llx owner 0x%x tag regs %016llx nreg %u ri %u flg %u nloop %u\n", prim, a, (unsigned long long)v, ownerAt(off), (unsigned long long)t_gs.regs, t_gs.nreg, t_gs.ri, t_gs.flg, t_gs.nloop); } }
+                    const uint64_t fr = frame[ctxt], te = test[ctxt];
+                    const uint32_t fbp = (uint32_t)(fr & 0x1FF) * 32u, psm = (uint32_t)((fr >> 24) & 0x3F), msk = (uint32_t)(fr >> 32);
+                    const uint32_t cls = msk == 0u ? 0u : msk == 0xFF000000u ? 1u : msk == 0x00FFFFFFu ? 2u : 3u;
+                    if ((te >> 14) & 1) { k->dateDraws++; date = true; }
+                    if (te & 1) k->ateDraws++;
+                    if (cls == 1u) k->rgbOnlyDraws++; else if (cls == 2u) k->alphaOnlyDraws++;
+                    if ((prim >> 4) & 1) { k->texDraws++; const uint32_t tp = (uint32_t)((tex0[ctxt] >> 20) & 0x3F); k->texPsm[tp]++; }
+                    k->frames[(uint64_t)fbp | ((uint64_t)psm << 16) | ((uint64_t)cls << 24)]++;
+                    break;
+                }
+                case 0x06: tex0[0] = v; k->texBase[(uint32_t)(v & 0x3FFF)]++; break;
+                case 0x07: tex0[1] = v; k->texBase[(uint32_t)(v & 0x3FFF)]++; break;
+                case 0x47: test[0] = v; break;
+                case 0x48: test[1] = v; break;
+                case 0x4C: frame[0] = v; break;
+                case 0x4D: frame[1] = v; break;
+                case 0x53: if ((v & 3) == 0) k->uploads++; break;
+                default: break;
+                }
+            }
+        };
+        // GIF packets inside DIRECT payloads: PACKED / REGLIST / IMAGE. The tag state persists across payloads
+        // (an IMAGE upload or a PACKED loop continues in the next DIRECT), so the scanner is resumable.
+        thread_local GifState t_gs;
+        void scanGif(GifScan &g, const uint8_t *d, uint32_t n, uint32_t base)
+        {
+            GifState &st = t_gs;
+            uint32_t off = 0;
+            while (off < n)
+            {
+                g.off = base + off;
+                if (st.nloop == 0)
+                {
+                    if (off + 16 > n) break;
+                    uint64_t lo, hi; std::memcpy(&lo, d + off, 8); std::memcpy(&hi, d + off + 8, 8); off += 16;
+                    st.nloop = (uint32_t)(lo & 0x7FFF); st.flg = (uint32_t)((lo >> 58) & 3); st.nreg = (uint32_t)((lo >> 60) & 0xF); if (!st.nreg) st.nreg = 16;
+                    st.regs = hi; st.ri = 0; st.total = st.nloop * st.nreg;
+                    if (st.flg == 3) st.flg = 2;
+                    if (((lo >> 46) & 1) && st.nloop) g.prim = (uint32_t)((lo >> 47) & 0x7FF);
+                    continue;
+                }
+                if (st.flg == 2)
+                {
+                    const uint32_t take = std::min(st.nloop * 16u, n - off);
+                    g.k = &g_sites[ownerAt(g.off)]; g.k->uploadQw += take / 16u;
+                    off += take; st.nloop -= take / 16u;
+                    if (take % 16u) st.nloop = 0;
+                    continue;
+                }
+                if (st.flg == 1)
+                {
+                    if (off + 8 > n) break;
+                    uint64_t v; std::memcpy(&v, d + off, 8); off += 8;
+                    const uint32_t desc = (uint32_t)((st.regs >> (4 * st.ri)) & 0xF);
+                    if (desc < 0xE) g.reg(desc, v);
+                    if (++st.ri == st.nreg) { st.ri = 0; --st.nloop; }
+                    if (st.nloop == 0 && (st.total & 1)) off += 8;
+                    continue;
+                }
+                if (off + 16 > n) break;
+                uint64_t qlo, qhi; std::memcpy(&qlo, d + off, 8); std::memcpy(&qhi, d + off + 8, 8); off += 16;
+                const uint32_t desc = (uint32_t)((st.regs >> (4 * st.ri)) & 0xF);
+                if (desc == 0xE) g.reg((uint32_t)(qhi & 0xFF), qlo);
+                else if (desc == 0x0) g.prim = (uint32_t)(qlo & 0x7FF);
+                else if (desc == 0x4 || desc == 0x5) { if (!((qhi >> 47) & 1)) g.reg(desc, 0); }
+                else if (desc == 0x1 || desc == 0x2 || desc == 0x3 || desc == 0xA || desc == 0xC || desc == 0xD || desc == 0xF) {}
+                else g.reg(desc, qlo);
+                if (++st.ri == st.nreg) { st.ri = 0; --st.nloop; }
+            }
+        }
+        // VIF codes of one DMA data block: DIRECT payloads to the GIF scan, UNPACK/MPG skipped by size.
+        void scanVif(GifScan &g, const uint8_t *d, uint32_t words)
+        {
+            uint32_t i = 0;
+            while (i < words)
+            {
+                g.off = i * 4; g.k = &g_sites[ownerAt(g.off)];
+                uint32_t code; std::memcpy(&code, d + i * 4, 4); ++i;
+                const uint32_t cmd = (code >> 24) & 0x7F, imm = code & 0xFFFF, num = (code >> 16) & 0xFF;
+                if (cmd == 0x20) i += 1;
+                else if (cmd == 0x30 || cmd == 0x31) i += 4;
+                else if (cmd == 0x4A) i += (num ? num : 256) * 2;
+                else if (cmd == 0x50 || cmd == 0x51) { const uint32_t qw = imm ? imm : 65536; const uint32_t w = std::min(qw * 4, words - i); g.k->directQw += qw; scanGif(g, d + i * 4, w * 4, i * 4); i += qw * 4; }
+                else if (cmd >= 0x60)
+                {
+                    const uint32_t n = num ? num : 256, vn = ((cmd >> 2) & 3) + 1, vl = cmd & 3;
+                    uint32_t bytes = vl == 3 ? n * 2 : n * vn * (vl == 0 ? 4 : vl == 1 ? 2 : 1);
+                    const uint32_t w = (bytes + 3) / 4; g.k->unpackQw += (w + 3) / 4; i += w;
+                }
+                else if (cmd == 0x14 || cmd == 0x15 || cmd == 0x17) g.k->mscal++;
+            }
+        }
+        void printSites()
+        {
+            std::fprintf(stderr, "[kickprobe] frame %llu, per frame (%zu callers):\n", (unsigned long long)g_bt3FrameCount.load(), g_sites.size());
+            const double n = 300.0;
+            const char *pn[8] = {"pt", "ln", "ls", "tri", "ts", "tf", "spr", "?"};
+            for (auto &kv : g_sites)
+            {
+                KickSite &k = kv.second;
+                uint64_t prims = 0; for (int i = 0; i < 8; ++i) prims += k.prims[i];
+                if (k.kicks == 0 && k.directQw == 0 && k.unpackQw == 0 && k.mscal == 0 && prims == 0 && k.uploadQw == 0) continue;
+                std::fprintf(stderr, "[kickprobe] ra 0x%06x: kicks %.1f tags %.0f direct %.0f qw unpack %.0f qw mscal %.0f | tex draws %.0f date %.0f alpha-only %.0f rgb-only %.0f ate %.0f uploads %.1f (%.0f qw) |",
+                             kv.first, k.kicks / n, k.tags / n, k.directQw / n, k.unpackQw / n, k.mscal / n, k.texDraws / n, k.dateDraws / n, k.alphaOnlyDraws / n, k.rgbOnlyDraws / n, k.ateDraws / n, k.uploads / n, k.uploadQw / n);
+                for (int i = 0; i < 8; ++i) if (k.prims[i]) std::fprintf(stderr, " %s %.0f", pn[i], k.prims[i] / n);
+                std::fprintf(stderr, " | frames:");
+                for (auto &f : k.frames) std::fprintf(stderr, " %llx/psm%llu%s(%.0f)", (unsigned long long)(f.first & 0xFFFF), (unsigned long long)((f.first >> 16) & 0xFF), ((f.first >> 24) & 3) == 1 ? "rgb" : ((f.first >> 24) & 3) == 2 ? "A" : ((f.first >> 24) & 3) == 3 ? "m" : "", f.second / n);
+                std::fprintf(stderr, " | texpsm:");
+                for (auto &t : k.texPsm) std::fprintf(stderr, " %u(%.0f)", t.first, t.second / n);
+                std::fprintf(stderr, "\n");
+                k = KickSite();
+            }
+        }
+    }
+
+    bool kickProbeOn()
+    {
+        static const bool s = [](){ const char *v = std::getenv("PS2X_KICKPROBE"); return v && v[0] && v[0] != '0'; }();
+        return s;
+    }
+    void noteKick(uint32_t helper, uint32_t chainAddr, uint32_t ra)
+    {
+        t_kick.helper = helper; t_kick.chain = chainAddr; t_kick.ra = ra; t_kick.live = true;
+    }
+    void noteAdvance(uint32_t before, uint32_t after, uint32_t ra)
+    {
+        if (!kickProbeOn()) return;
+        static uint32_t s_lastEnd = 0;
+        before &= 0x1FFFFFFu; after &= 0x1FFFFFFu;
+        if (g_allocs.size() < 400000u)
+        {
+            if (s_lastEnd && before > s_lastEnd && before - s_lastEnd < 0x100000u) g_allocs.push_back(Alloc{ s_lastEnd, before, ra });   // inline writes since the last helper call
+            if (after > before && after - before < 0x100000u) g_allocs.push_back(Alloc{ before, after, ra });
+        }
+        s_lastEnd = after > before ? after : before;
+    }
+    void classifyVif1Chain(const uint8_t *rdram, uint32_t tagAddr)
+    {
+        if (!kickProbeOn()) return;
+        (void)rdram; (void)tagAddr;
+        t_kick.live = false;
+        std::sort(g_allocs.begin(), g_allocs.end(), [](const Alloc &a, const Alloc &b){ return a.start < b.start; });
+        {
+            std::lock_guard<std::mutex> lk(g_pubMtx);
+            g_pubAllocs.push_back(std::move(g_allocs));
+            while (g_pubAllocs.size() > 4u) g_pubAllocs.pop_front();
+            g_sites[0xFFFFFFu].kicks++;
+        }
+        g_allocs.clear();
+    }
+    void publishChainMap(const void *chainData, const std::vector<std::array<uint32_t, 3>> &map)
+    {
+        std::lock_guard<std::mutex> lk(g_pubMtx);
+        g_chainMaps[chainData] = map;
+        while (g_chainMaps.size() > 8u) g_chainMaps.erase(g_chainMaps.begin());
+    }
+    void beginChain(const void *chainData)
+    {
+        std::lock_guard<std::mutex> lk(g_pubMtx);
+        auto it = g_chainMaps.find(chainData);
+        if (it != g_chainMaps.end()) { t_chainMap = it->second; g_chainMaps.erase(it); }
+        else t_chainMap.clear();
+    }
+    void noteDirect(uint32_t pos, const uint8_t *gif, uint32_t bytes)
+    {
+        uint32_t guest = 0;
+        for (size_t mi = t_chainMap.size(); mi > 0; --mi)
+            if (t_chainMap[mi - 1][0] <= pos) { guest = t_chainMap[mi - 1][1] + (pos - t_chainMap[mi - 1][0]); break; }
+        std::lock_guard<std::mutex> lk(g_pubMtx);
+        t_lastOwner = guest ? ownerOfAddrLocked(guest & 0x1FFFFFFu) : 0u;
+        KickSite &k = g_sites[t_lastOwner];
+        k.directQw += bytes / 16u;
+        static thread_local GifScan g; g.k = &k;
+        scanGif(g, gif, bytes, 0);
+        const uint64_t fr = g_bt3FrameCount.load();
+        if (fr - g_lastPrint >= 300u) { g_lastPrint = fr; printSites(); }
     }
 }

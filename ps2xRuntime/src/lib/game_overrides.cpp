@@ -4484,6 +4484,32 @@ namespace
         if (g_origSeamListEnd) g_origSeamListEnd(rdram, ctx, runtime);
     }
 
+    // [kickprobe] the VIF1 DMA-send helpers: a0 = chain address; ra = the code that sent it
+    struct KickHook { uint32_t addr; PS2Runtime::RecompiledFunction orig; };
+    KickHook g_kickHooks[] = { {0x00100cc0u, nullptr}, {0x00100b98u, nullptr}, {0x00100d88u, nullptr} };
+    template <int I>
+    void bt3KickHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        seamprobe::noteKick(g_kickHooks[I].addr, getRegU32(ctx, 4), getRegU32(ctx, 31));
+        if (g_kickHooks[I].orig) g_kickHooks[I].orig(rdram, ctx, runtime);
+    }
+
+    // [kickprobe] the three helpers that advance the display-list bump pointer (gp-0x59d8 = 0x2fe898): the batch
+    // allocator 0x100850 and the packet open/close pair 0x1006e8 / 0x100738. Every advance [before, after) belongs
+    // to the caller (ra); so do the bytes the caller wrote inline since the previous advance.
+    struct AllocHook { uint32_t addr; PS2Runtime::RecompiledFunction orig; };
+    AllocHook g_allocHooks[] = { {0x00100850u, nullptr}, {0x001006e8u, nullptr}, {0x00100738u, nullptr} };
+    PS2Runtime::RecompiledFunction g_origAlloc = nullptr;   // 0x100850, kept for the install message
+    template <int I>
+    void bt3AllocHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ra = getRegU32(ctx, 31), gp = getRegU32(ctx, 28), ptrAddr = (gp - 0x59d8u) & 0x1FFFFFFu;
+        uint32_t before = 0; std::memcpy(&before, rdram + ptrAddr, 4);
+        if (g_allocHooks[I].orig) g_allocHooks[I].orig(rdram, ctx, runtime);
+        uint32_t after = 0; std::memcpy(&after, rdram + ptrAddr, 4);
+        seamprobe::noteAdvance(before, after, ra);
+    }
+
     // Camera matrix-multiply probe (PS2X_CAMPROBE). sub_001201B8 concatenates $a0 = A($a1) x B($a2).
     // The gameplay-camera update (FUN_0023d510) calls it at ra=0x23d9bc to build the camera WORLD
     // matrix = localRot(BASE+0x260) x parent(BASE+0x40). Dump A and B ONLY for that caller so we
@@ -6579,6 +6605,17 @@ namespace
             g_orig131a20 = runtime.lookupFunction(0x00131a20u);
             if (g_orig131a20) runtime.replaceFunction(0x00131a20u, &bt3QuadEmitHook);
             std::fprintf(stderr, "[wisphook] installed=%d\n", g_orig131a20 ? 1 : 0);
+        }
+        if (seamprobe::kickProbeOn())
+        {   // [kickprobe]
+            PS2Runtime::RecompiledFunction fns[] = { &bt3KickHook<0>, &bt3KickHook<1>, &bt3KickHook<2> };
+            int nk = 0;
+            for (int i = 0; i < 3; ++i) { g_kickHooks[i].orig = runtime.lookupFunction(g_kickHooks[i].addr); if (g_kickHooks[i].orig) { runtime.replaceFunction(g_kickHooks[i].addr, fns[i]); ++nk; } }
+            PS2Runtime::RecompiledFunction afns[] = { &bt3AllocHook<0>, &bt3AllocHook<1>, &bt3AllocHook<2> };
+            int na = 0;
+            for (int i = 0; i < 3; ++i) { g_allocHooks[i].orig = runtime.lookupFunction(g_allocHooks[i].addr); if (g_allocHooks[i].orig) { runtime.replaceFunction(g_allocHooks[i].addr, afns[i]); ++na; } }
+            g_origAlloc = g_allocHooks[0].orig;
+            std::fprintf(stderr, "[kickprobe] installed %d/3 DMA-send hooks, %d/3 list-pointer hooks\n", nk, na);
         }
         if (seamprobe::on())
         {   // [seamprobe] see bt3SeamDrawHook

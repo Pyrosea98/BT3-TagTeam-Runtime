@@ -1,3 +1,4 @@
+#include "runtime/ps2_seamprobe.h"  // [kickprobe]
 #include "ps2_waitprof.h"   // [waitprof]
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_statesync.h"   // [statesync]
@@ -23,7 +24,7 @@ bool g_kickSrcMapEnabled()
     static const bool s_on = [](){ const char *v = std::getenv("PS2X_BONECHK"); if (v && v[0] && v[0] != '0') return true;
                                    const char *m = std::getenv("PS2X_MVPCHK"); if (m && m[0] && m[0] != '0') return true;
                                    const char *k = std::getenv("PS2X_KICKHIST"); return k && k[0] && k[0] != '0'; }();
-    return s_on;
+    return s_on || seamprobe::kickProbeOn();   // [kickprobe] the DIRECT attribution needs the offset -> guest map
 }
 #include <atomic>
 #include <chrono>
@@ -1482,6 +1483,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                 else if (mode == 1)
                 {
                     uint32_t tagAddr = m_ioRegisters[channelBase + 0x30];
+                    if (channelBase == 0x10009000u) seamprobe::classifyVif1Chain(m_rdram, tagAddr);   // [kickprobe]
                     uint32_t asr0 = m_ioRegisters[channelBase + 0x40];
                     uint32_t asr1 = m_ioRegisters[channelBase + 0x50];
                     uint32_t asp = (chcr >> 4) & 0x3u;
@@ -2354,6 +2356,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                         pt.srcAddr = 0;
                         pt.qwc = 0;
                         pt.chainData = std::move(chainBuf);
+                        if (channelBase == 0x10009000u && seamprobe::kickProbeOn()) seamprobe::publishChainMap(pt.chainData.data(), g_kickSrcMap);   // [kickprobe]
                         if (channelBase == 0x1000A000)
                         {
                             m_pendingGifTransfers.push_back(std::move(pt));

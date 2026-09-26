@@ -364,6 +364,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
     if (sizeBytes == 0u)
         return;
     gprof::Scope gpScope(gprof::VIF);   // [guestprof]
+    if (seamprobe::kickProbeOn()) seamprobe::beginChain(data);   // [kickprobe]
 
     if ([](){ static const char *s_env = std::getenv("PS2X_GIFSRC"); return s_env; }()) {
         static int vs_n = 0;
@@ -882,6 +883,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                     }
                 }
                 const bool directHl = (opcode == VIF_DIRECTHL);
+                if (seamprobe::kickProbeOn()) seamprobe::noteDirect(pos, data + pos, qwCount * 16u);   // [kickprobe]
                 const auto _g0 = g_vifTimeProf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 submitGifPacket(GifPathId::Path2, data + pos, qwCount * 16, true, directHl);
                 if (g_vifTimeProf) { g_vifGifNs.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - _g0).count(), std::memory_order_relaxed); g_vifGifN.fetch_add(1, std::memory_order_relaxed); }
