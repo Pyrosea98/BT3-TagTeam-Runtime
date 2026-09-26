@@ -98,12 +98,14 @@ public:
     // herede su opacidad.
     void drawPerfHud();
 
-    // [mmpopup] Test plate in the bottom-right corner, shown only while the main menu is up.
-    // Wanted() is what the draw() early-out asks, so a retracted panel with the perf HUD off
-    // still opens a frame for it (UiBegin/UiEnd may only happen once per iteration). Off unless
-    // PS2X_MAINMENU_POPUP_TEST=1; scaffold for the Netplay popup, not a shipped feature.
-    static bool mainMenuTestPlateWanted();
-    void drawMainMenuTestPlate();
+    // [mmpopup] The main-menu popup: an icon in the bottom-right corner that unfolds a panel.
+    // Wanted() is what the draw() early-out asks, so a retracted panel with the perf HUD off still
+    // opens a frame for it (UiBegin/UiEnd may only happen once per iteration). It is also where
+    // the panel's open state is reset: the draw function only runs while the gate is OPEN, so the
+    // closing edge has to be caught here or the panel would come back open after leaving the
+    // menu. Off unless PS2X_MAINMENU_POPUP_TEST=1.
+    static bool mainMenuPopupWanted();
+    void drawMainMenuPopup();
 
     void shutdown();
 

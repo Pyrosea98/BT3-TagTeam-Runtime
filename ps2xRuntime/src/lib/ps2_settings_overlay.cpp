@@ -1068,27 +1068,38 @@ extern std::atomic<uint32_t> g_bt3MenuShown;   // [mainmenu] ps2_runtime.cpp: 1 
 extern std::atomic<uint32_t> g_bt3MenuPhase;   // [mainmenu] the ps2x::mainmenu::Phase value
 extern std::atomic<uint32_t> g_bt3MenuPlates;  // [mainmenu] menuObj+0x144, the build counter
 
-bool PS2SettingsOverlay::mainMenuTestPlateWanted()
+// [mmpopup] The panel's open state, plus the gate's previous value. File scope rather than a local
+// so the closing edge can be seen from mainMenuPopupWanted(): the draw function only runs while the
+// gate is OPEN, so by the time the menu is gone there is no longer a frame to notice it in.
+static bool s_mmPopupOpen = false;
+static bool s_mmGateWasOpen = false;
+
+bool PS2SettingsOverlay::mainMenuPopupWanted()
 {
+    // Reading the atomic (not the whole snapshot) keeps the draw path free of guest-RAM reads: the
+    // runtime samples once per frame and publishes, this only reads what it published.
+    const bool open = g_bt3MenuShown.load(std::memory_order_relaxed) != 0u;
+
+    // Leaving the menu closes the panel. On the closing edge only, not whenever the gate is shut:
+    // otherwise the panel would be unable to stay open across the frames where it is drawn, and
+    // "was open, now shut" is the one moment that means the menu is actually gone rather than
+    // never having been up.
+    if (s_mmGateWasOpen && !open)
+        s_mmPopupOpen = false;
+    s_mmGateWasOpen = open;
+
     static const bool s_on = [](){
         const char *v = std::getenv("PS2X_MAINMENU_POPUP_TEST");
         return v && v[0] && v[0] != '0';
     }();
-    if (!s_on)
-        return false;
-    // Only ask for a frame while there is something to show. Reading the atomic (not the whole
-    // snapshot) keeps the GS submit path free of guest-RAM reads: the runtime samples once per
-    // frame and publishes, this only reads what it published.
-    return g_bt3MenuShown.load(std::memory_order_relaxed) != 0u;
+    return s_on && open;
 }
 
-void PS2SettingsOverlay::drawMainMenuTestPlate()
+void PS2SettingsOverlay::drawMainMenuPopup()
 {
     // [mmpopup] An icon in the bottom-right corner that unfolds a panel when clicked. The icon is
     // the whole point for now: it proves the gate end to end without covering the menu, and it is
     // the shape the Netplay popup will take (small affordance on screen, panel on demand).
-    static bool s_open = false;
-
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     const float margin  = 18.0f;
     const float iconSz  = 44.0f;
@@ -1120,7 +1131,7 @@ void PS2SettingsOverlay::drawMainMenuTestPlate()
         const ImU32 edge   = ImGui::GetColorU32(ImVec4(0.10f, 0.12f, 0.14f,
                                                        hovered ? 0.95f : 0.75f));
         dl->AddRectFilled(a, b, edge, 8.0f);
-        dl->AddRect(a, b, accent, 8.0f, 0, s_open ? 2.0f : 1.0f);
+        dl->AddRect(a, b, accent, 8.0f, 0, s_mmPopupOpen ? 2.0f : 1.0f);
 
         // Three bars: a menu. The top one is the "open" indicator, filled when the panel is out.
         const float w = (b.x - a.x) * 0.44f;
@@ -1130,16 +1141,16 @@ void PS2SettingsOverlay::drawMainMenuTestPlate()
         {
             const float y = (a.y + b.y) * 0.5f + (float(i) - 1.0f) * 7.0f;
             dl->AddRectFilled(ImVec2(cx - w, y - h), ImVec2(cx + w, y + h),
-                              (s_open && i == 0) ? accent
+                              (s_mmPopupOpen && i == 0) ? accent
                                                   : ImGui::GetColorU32(ImVec4(0.78f, 0.82f, 0.86f, 1.0f)),
                               h);
         }
     }
     ImGui::End();
     if (clicked)
-        s_open = !s_open;
+        s_mmPopupOpen = !s_mmPopupOpen;
 
-    if (!s_open)
+    if (!s_mmPopupOpen)
         return;
 
     // The panel unfolds above and to the left of the icon, so it grows into the screen instead of
@@ -1174,7 +1185,7 @@ void PS2SettingsOverlay::drawMainMenuTestPlate()
     ImGui::TextDisabled("anclado a menuObj+0x144");
     ImGui::Spacing();
     if (ImGui::Button("Close", ImVec2(90.0f, 0.0f)))
-        s_open = false;
+        s_mmPopupOpen = false;
     ImGui::End();
 }
 
@@ -1337,7 +1348,7 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
         // [mmpopup] The main-menu test plate needs a frame of its own when the panel is retracted
         // and the perf HUD is off, which is the usual state on the main menu. Without this the
         // function returns before UiBegin() and the plate never appears at all.
-        const bool mmPopup = mainMenuTestPlateWanted();
+        const bool mmPopup = mainMenuPopupWanted();
         if (!m_settings.showPerf && !mmPopup)
             return;
         try
@@ -1348,7 +1359,7 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
             if (m_settings.showPerf)
                 drawPerfHud();
             if (mmPopup)
-                drawMainMenuTestPlate();
+                drawMainMenuPopup();
         }
         catch (...)
         {
