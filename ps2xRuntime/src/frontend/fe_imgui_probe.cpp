@@ -15,6 +15,7 @@
 // Both symptoms are timing- and page-dependent, so driving the real widgets through frames and
 // asserting the invariants is the only way to catch a regression. Null backend: no window, no GL.
 #include <cstdio>
+#include <cstdlib>
 
 #include "imgui.h"
 #include "imgui_internal.h"   // BeginComboDepth, BeginPopupStack, CurrentWindowStack, error count
@@ -95,22 +96,35 @@ int main()
         beginFrame();
 
         // Shaped like fe_app.cpp's host window, since that is the window a stray End* lands in and
-        // reports itself against.
+        // reports itself against. The nesting is copied verbatim, including the two details that
+        // only exist in the real app: the page child is sized (0,0) and the scroll child inside it
+        // has a NEGATIVE height (it reserves room for the footer bar). Both make BeginChild resolve
+        // its size from GetContentRegionAvail, so a child can come out zero-sized and be reported
+        // as not visible while still being begun.
         ImGui::Begin("##fe_host");
-        ImGui::BeginChild("##fe_scroll");
-        for (int s = 0; s < 3; ++s)
+        ImGui::BeginChild("##fe_side", ImVec2(190.0f, 400.0f), ImGuiChildFlags_Borders);
+        ImGui::TextUnformatted("side");
+        ImGui::EndChild();
+        if (ImGui::BeginChild("##fe_page", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders))
         {
-            char label[32];
-            std::snprintf(label, sizeof(label), "SECCION_%d", s);
-            const bool open = fe::beginSection(label, true, "help text");
-            if (s == 0)
-                sectionOpen = open;
-            if (open)
+            if (ImGui::BeginChild("##fe_scroll", ImVec2(0.0f, -30.0f), ImGuiChildFlags_None))
             {
-                fe::comboRow("Motor", &renderer, kRenders, 3);
-                fe::comboRowStr("GPU", &renderer, kRenders, 3, kRenders[renderer]);
-                fe::comboRow("Nivel", &level, kLevels, 4);
+                for (int s = 0; s < 3; ++s)
+                {
+                    char label[32];
+                    std::snprintf(label, sizeof(label), "SECCION_%d", s);
+                    const bool open = fe::beginSection(label, true, "help text");
+                    if (s == 0)
+                        sectionOpen = open;
+                    if (open)
+                    {
+                        fe::comboRow("Motor", &renderer, kRenders, 3);
+                        fe::comboRowStr("GPU", &renderer, kRenders, 3, kRenders[renderer]);
+                        fe::comboRow("Nivel", &level, kLevels, 4);
+                    }
+                }
             }
+            ImGui::EndChild();
         }
         ImGui::EndChild();
         ImGui::End();

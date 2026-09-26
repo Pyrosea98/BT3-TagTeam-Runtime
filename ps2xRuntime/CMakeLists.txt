@@ -583,8 +583,14 @@ if(PS2X_BUILD_PROBES AND NOT PS2X_IS_VITA)
     # coverage/source contract. No GL and no window, so the claims the readout makes are checkable.
     add_executable(fe_perf_probe src/frontend/fe_perf_probe.cpp src/lib/ps2x_perf.cpp)
     target_include_directories(fe_perf_probe PRIVATE src include)
-    target_compile_options(fe_perf_probe PRIVATE /W4)
-    target_compile_options(fe_perf_probe PRIVATE -Wall -Wextra)
+    # Per-toolchain warning flags, like ps2xGlProbe above: passing /W4 to gcc/clang makes it read
+    # the flag as a linker input ("/W4: linker input file not found"), so the probes could not be
+    # built at all outside MSVC -- which is where they are most useful.
+    if(MSVC)
+        target_compile_options(fe_perf_probe PRIVATE /W4)
+    else()
+        target_compile_options(fe_perf_probe PRIVATE -Wall -Wextra)
+    endif()
 
     # [fe-probe] Drives the front-end's combo/popup widgets through real frames on ImGui's null
     # backend and asserts the Begin/End contract holds. Needs no window and no GL, so the
@@ -593,8 +599,23 @@ if(PS2X_BUILD_PROBES AND NOT PS2X_IS_VITA)
     target_include_directories(fe_imgui_probe PRIVATE src)
     target_link_libraries(fe_imgui_probe PRIVATE imgui)
     target_sources(imgui PRIVATE "${PS2X_IMGUI_SOURCE_DIR}/backends/imgui_impl_null.cpp")
-    target_compile_options(fe_imgui_probe PRIVATE /W4)
-    target_compile_options(fe_imgui_probe PRIVATE -Wall -Wextra)
+    if(MSVC)
+        target_compile_options(fe_imgui_probe PRIVATE /W4)
+    else()
+        target_compile_options(fe_imgui_probe PRIVATE -Wall -Wextra)
+    endif()
+
+    # [fe-probe] Same idea for the file picker, the one widget that opens a MODAL: it drives the
+    # real FilePicker through open/close/reopen and a mouse sweep on the null backend and asserts
+    # the window and popup stacks come back to their base every frame.
+    add_executable(fe_picker_probe src/frontend/fe_picker_probe.cpp src/frontend/fe_picker.cpp)
+    target_include_directories(fe_picker_probe PRIVATE src)
+    target_link_libraries(fe_picker_probe PRIVATE imgui)
+    if(MSVC)
+        target_compile_options(fe_picker_probe PRIVATE /W4)
+    else()
+        target_compile_options(fe_picker_probe PRIVATE -Wall -Wextra)
+    endif()
 
     # Reads a disc image: directory tree, case-insensitive lookup, streamed read and the
     # SHA-256 over the boot ELF inside the image. The installer depends on all of it.
