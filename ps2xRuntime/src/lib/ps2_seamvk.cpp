@@ -18,6 +18,7 @@
 #include "sampler.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -47,6 +48,13 @@ namespace seamvk
         const uint32_t kPresentFrag[] = {
 #include "seamvk/present.frag.inc"
         };
+        const uint32_t kRtVert[] = {
+#include "seamvk/rtdecode.vert.inc"
+        };
+        const uint32_t kRtFrag[] = {
+#include "seamvk/rtdecode.frag.inc"
+        };
+        struct RtPC { uint32_t tex[4], clut[4], src[4], texa[4]; };
 
         struct PC { float view[4]; float texInfo[4]; int32_t fA[4]; int32_t fB[4]; float fogcol[4]; };
         static_assert(sizeof(PC) == 80, "push constants");
@@ -63,17 +71,23 @@ namespace seamvk
         struct Target { Vulkan::ImageHandle img; VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; bool cleared = false; };
         struct Gpu
         {
-            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progPresent = nullptr;
+            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progPresent = nullptr, *progRt = nullptr;
             Vulkan::ImageHandle out;            // the composed frame
             Vulkan::ImageHandle white;          // 1x1 for untextured draws
             Vulkan::ImageHandle snap;           // destination snapshot for DATE draws
             Vulkan::BufferHandle readback;
+            struct Pending { Vulkan::BufferHandle buf; Vulkan::Fence fence; uint32_t w = 0, h = 0; bool live = false; };
+            Pending ring[3]; uint32_t ringNext = 0;
             std::map<uint32_t, Target> targets; // by fbp
             std::map<uint32_t, Target> depths;  // by zbp
+            std::map<uint32_t, uint32_t> targetPsm;   // 16 or 32: the format class a target was first drawn with
+            bool dumpRt = false;                      // this frame: read decoded textures back and write them as PPM
+            std::vector<std::pair<Vulkan::ImageHandle, seamgs::RtDecode>> rtDumps;
             std::vector<Vulkan::ImageHandle> tex;
             uint32_t w = 0, h = 0, scale = 1;
             bool failed = false;
-            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0;
+            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, aliasedDraws = 0;
+            double msTake = 0, msRecord = 0, msSubmit = 0, msWait = 0;
         };
         Gpu g_gpu;
 
@@ -103,7 +117,12 @@ namespace seamvk
                 pf.sets[0].sampled_image_mask = 1u << 0; pf.sets[0].meta[0].array_size = 1;
                 pf.input_mask = 0x1u; pf.output_mask = 0x1u; pf.push_constant_size = sizeof(PresentPC);
                 g_gpu.progPresent = dev.request_program(kPresentVert, sizeof(kPresentVert), kPresentFrag, sizeof(kPresentFrag), &pv, &pf);
-                if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progPresent) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
+                Vulkan::ResourceLayout rv = {}, rf = {};
+                rv.output_mask = 0x0u; rf.output_mask = 0x1u; rf.push_constant_size = sizeof(RtPC); rv.push_constant_size = sizeof(RtPC);
+                rf.sets[0].sampled_image_mask = (1u << 0) | (1u << 1); rf.sets[0].meta[0].array_size = 1; rf.sets[0].meta[1].array_size = 1;
+                rf.sets[0].uniform_buffer_mask = 1u << 2; rf.sets[0].meta[2].array_size = 1;
+                g_gpu.progRt = dev.request_program(kRtVert, sizeof(kRtVert), kRtFrag, sizeof(kRtFrag), &rv, &rf);
+                if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progPresent || !g_gpu.progRt) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
                 const uint32_t whitePx = 0xFFFFFFFFu;
                 Vulkan::ImageInitialData init = { &whitePx, 0, 0 };
                 g_gpu.white = dev.create_image(Vulkan::ImageCreateInfo::immutable_2d_image(1, 1, VK_FORMAT_R8G8B8A8_UNORM), &init);
@@ -124,24 +143,28 @@ namespace seamvk
             return g_gpu.out && g_gpu.readback && g_gpu.white;
         }
 
-        Target &target(Vulkan::Device &dev, uint32_t fbp)
+        uint32_t targetW(uint32_t fbw) { return std::max(1u, std::min(fbw, 16u)) * 64u; }   // logical pixels: the row width
+        Target &target(Vulkan::Device &dev, uint32_t fbp, uint32_t fbw)
         {
             Target &t = g_gpu.targets[fbp];
+            const uint32_t w = targetW(fbw) * g_gpu.scale;
+            if (t.img && t.img->get_width() != w) { t.img.reset(); t.layout = VK_IMAGE_LAYOUT_UNDEFINED; t.cleared = false; }   // row width changed: start over
             if (!t.img)
             {
-                auto ci = Vulkan::ImageCreateInfo::render_target(kLogicalW * g_gpu.scale, kLogicalH * g_gpu.scale, VK_FORMAT_R8G8B8A8_UNORM);
+                auto ci = Vulkan::ImageCreateInfo::render_target(w, kLogicalH * g_gpu.scale, VK_FORMAT_R8G8B8A8_UNORM);
                 ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
                 t.img = dev.create_image(ci);
                 t.layout = VK_IMAGE_LAYOUT_UNDEFINED; t.cleared = false;
             }
             return t;
         }
-        Target &depth(Vulkan::Device &dev, uint32_t zbp)
+        Target &depth(Vulkan::Device &dev, uint32_t zbp, uint32_t fbw)
         {
-            Target &t = g_gpu.depths[zbp];
+            Target &t = g_gpu.depths[zbp | (targetW(fbw) << 16)];   // attachments of one pass share a size: one Z image per (base, width)
             if (!t.img)
             {
-                auto ci = Vulkan::ImageCreateInfo::render_target(kLogicalW * g_gpu.scale, kLogicalH * g_gpu.scale, VK_FORMAT_D32_SFLOAT);
+                auto ci = Vulkan::ImageCreateInfo::render_target(targetW(fbw) * g_gpu.scale, kLogicalH * g_gpu.scale, VK_FORMAT_D32_SFLOAT);
+                ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
                 t.img = dev.create_image(ci);
                 t.layout = VK_IMAGE_LAYOUT_UNDEFINED; t.cleared = false;
             }
@@ -155,7 +178,7 @@ namespace seamvk
             const VkAccessFlags2 ac = isDepth ? (VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT) : (VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
             if (t.layout == VK_IMAGE_LAYOUT_UNDEFINED)
                 cmd.image_barrier(*t.img, VK_IMAGE_LAYOUT_UNDEFINED, want, st, 0, st, ac);
-            else if (t.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            else if (t.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || t.layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
                 cmd.image_barrier(*t.img, t.layout, want, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, st, ac);
             else   // attachment -> attachment: order the passes
                 cmd.image_barrier(*t.img, want, want, st, ac, st, ac);
@@ -176,6 +199,61 @@ namespace seamvk
         {   // after the frame's draws: retired slots may still be referenced by them
             for (int32_t s : f.texFrees) if (s >= 0 && (size_t)s < g_gpu.tex.size()) g_gpu.tex[s].reset();
         }
+        void depthToSampled(Vulkan::CommandBuffer &cmd, Target &t)
+        {
+            if (t.layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) return;
+            const VkPipelineStageFlags2 st = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+            if (t.layout == VK_IMAGE_LAYOUT_UNDEFINED)
+                cmd.image_barrier(*t.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            else
+                cmd.image_barrier(*t.img, t.layout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, st, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            t.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        }
+
+        // kind 2: build texture slot r.slot from a render target (see rtdecode.frag)
+        void runRtDecode(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::RtDecode &r)
+        {
+            auto it = g_gpu.targets.find(r.srcFbp);
+            if (it == g_gpu.targets.end() || !it->second.img || r.slot < 0 || r.w == 0 || r.h == 0) return;
+            Target &src = it->second;
+            toSampled(cmd, src);
+            Target *dz = nullptr;
+            if (r.depthSrc) { auto zi = g_gpu.depths.find(r.srcFbp | ((src.img->get_width() / g_gpu.scale) << 16)); if (zi != g_gpu.depths.end() && zi->second.img) { dz = &zi->second; depthToSampled(cmd, *dz); } }
+            if ((size_t)r.slot >= g_gpu.tex.size()) g_gpu.tex.resize(size_t(r.slot) + 1u);
+            Vulkan::ImageHandle &img = g_gpu.tex[r.slot];
+            if (!img || img->get_width() != r.w || img->get_height() != r.h)
+            {
+                auto ci = Vulkan::ImageCreateInfo::render_target(r.w, r.h, VK_FORMAT_R8G8B8A8_UNORM);
+                ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+                img = dev.create_image(ci);
+            }
+            cmd.image_barrier(*img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+            Vulkan::RenderPassInfo rp = {};
+            rp.num_color_attachments = 1; rp.color_attachments[0] = &img->get_view(); rp.clear_attachments = 1u << 0; rp.store_attachments = 1u << 0;
+            cmd.begin_render_pass(rp);
+            cmd.set_opaque_state();
+            cmd.set_program(g_gpu.progRt);
+            cmd.set_cull_mode(VK_CULL_MODE_NONE);
+            cmd.set_depth_test(false, false);
+            cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+            RtPC pc = {};
+            pc.tex[0] = r.tbp; pc.tex[1] = r.tbw; pc.tex[2] = r.psm; pc.tex[3] = 0;
+            pc.clut[0] = r.cbp; pc.clut[1] = r.cpsm; pc.clut[2] = r.csa; pc.clut[3] = (r.clutFromTarget ? 1u : 0u) | ((r.depthSrc && dz) ? 2u : 0u);
+            pc.src[0] = r.srcFbp; pc.src[1] = r.srcFbw; pc.src[2] = r.srcRows; pc.src[3] = g_gpu.scale;
+            pc.texa[0] = (uint32_t)(r.texa & 0xFFu); pc.texa[1] = (uint32_t)((r.texa >> 15) & 1u); pc.texa[2] = (uint32_t)((r.texa >> 32) & 0xFFu); pc.texa[3] = 0;
+            cmd.push_constants(&pc, 0, sizeof(pc));
+            cmd.set_texture(0, 0, src.img->get_view(), Vulkan::StockSampler::NearestClamp);
+            cmd.set_texture(0, 1, dz ? dz->img->get_view() : g_gpu.white->get_view(), Vulkan::StockSampler::NearestClamp);
+            void *ub = cmd.allocate_constant_data(0, 2, sizeof(r.clut));
+            std::memcpy(ub, r.clut, sizeof(r.clut));
+            cmd.draw(3);
+            cmd.end_render_pass();
+            cmd.image_barrier(*img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            ++g_gpu.rtDecodes;
+            if (g_gpu.dumpRt) g_gpu.rtDumps.push_back({ img, r });
+        }
+
         void uploadTextures(Vulkan::Device &dev, seamgs::FrameList &f)
         {
             for (seamgs::TexUpload &u : f.texUploads)
@@ -241,7 +319,7 @@ namespace seamvk
             VkRect2D sr; sr.offset.x = int32_t(x0 * sc); sr.offset.y = int32_t(y0 * sc); sr.extent.width = (x1 - x0) * sc; sr.extent.height = (y1 - y0) * sc;
             cmd.set_scissor(sr);
             PC pc = {};
-            pc.view[0] = t.ofx / 16.0f; pc.view[1] = t.ofy / 16.0f; pc.view[2] = float(kLogicalW); pc.view[3] = float(kLogicalH);
+            pc.view[0] = t.ofx / 16.0f; pc.view[1] = t.ofy / 16.0f; pc.view[2] = float(targetW(t.fbw)); pc.view[3] = float(kLogicalH);
             const bool tex = t.tme && t.tex >= 0 && (size_t)t.tex < g_gpu.tex.size() && g_gpu.tex[t.tex];
             if (t.tme && !tex) ++g_gpu.texMissing;
             else if (tex && (g_gpu.tex[t.tex]->get_width() != t.texW || g_gpu.tex[t.tex]->get_height() != t.texH)) ++g_gpu.texMismatch;
@@ -271,7 +349,8 @@ namespace seamvk
                                                              alpha, blend ? 1 : 0, (unsigned long long)dispfb, (unsigned long long)display, fbp, fbw, dbx, dby, magh, magv, dw, dh, srcW, srcH, it == g_gpu.targets.end() ? "MISSING" : "ok"); }
             if (it == g_gpu.targets.end() || !it->second.img) return;
             PresentPC p = {};
-            p.src[0] = float(dbx) / kLogicalW; p.src[1] = float(dby) / kLogicalH; p.src[2] = float(srcW) / kLogicalW; p.src[3] = float(srcH) / kLogicalH;
+            const float lw = float(it->second.img->get_width() / g_gpu.scale);
+            p.src[0] = float(dbx) / lw; p.src[1] = float(dby) / kLogicalH; p.src[2] = float(srcW) / lw; p.src[3] = float(srcH) / kLogicalH;
             p.dst[0] = -1.0f; p.dst[1] = -1.0f; p.dst[2] = 1.0f; p.dst[3] = 1.0f;
             p.alpha[0] = alpha;
             cmd.set_blend_enable(blend);
@@ -299,9 +378,11 @@ namespace seamvk
 
     void renderFrame(Vulkan::Device &dev, const PrivRegs &priv)
     {
+        const auto tA = std::chrono::steady_clock::now();
         seamgs::FrameList f;
         seamgs::takeFrame(f);
         if (!ensureGpu(dev)) return;
+        const auto tB = std::chrono::steady_clock::now();
         const uint32_t sc = g_gpu.scale;
         uploadTextures(dev, f);
 
@@ -331,6 +412,8 @@ namespace seamvk
                     }
             }
         }
+        g_gpu.dumpRt = s_dumpFrame && !s_dumped && std::getenv("PS2X_SEAMVK_TEXDUMP") && ((s_dumpFrame != 1u && g_gpu.frames + 1u == s_dumpFrame) || (s_dumpFrame == 1u && f.draws.size() > 1500u));
+        g_gpu.rtDumps.clear();
         auto cmd = dev.request_command_buffer();
         // ---- the ordered draws, into their FRAME / ZBUF targets ----
         uint32_t curFbp = ~0u, curZbp = ~0u; bool inPass = false;
@@ -342,20 +425,35 @@ namespace seamvk
         for (const seamgs::Draw &d : f.draws)
         {
             const seamgs::State &t = d.st;
+            if (d.kind == 2)
+            {
+                if (inPass) { cmd->end_render_pass(); inPass = false; }
+                if (d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size()) runRtDecode(*cmd, dev, f.rtDecodes[d.rt]);
+                curFbp = ~0u;
+                continue;
+            }
             if (t.texFromDrawn && !s_feedback) { ++g_gpu.skippedDrawn; continue; }
+            {   // a draw through a different pixel format than the target's own (the depth-mask pass writes 2 bits per
+                // 16-bit half of each 32-bit frame pixel) cannot be a plain draw into the RGBA8 target: needs its own pass
+                auto &fmt = g_gpu.targetPsm[t.fbp];
+                const uint32_t cls = (t.fpsm == 2u || t.fpsm == 10u) ? 16u : 32u;
+                if (fmt == 0u) fmt = cls;
+                else if (fmt != cls) { ++g_gpu.aliasedDraws; continue; }
+            }
             {   // PS2X_SEAMVK_ONLYTEX0=<hex>: render only the GS draws whose TEX0 matches (diagnostic)
                 static const uint64_t s_only = [](){ const char *v = std::getenv("PS2X_SEAMVK_ONLYTEX0"); return v && v[0] ? std::strtoull(v, nullptr, 16) : 0ull; }();
                 if (s_only && d.kind == 0 && (((uint64_t)t.tex0hi << 32) | t.tex0lo) != s_only) continue;
             }
-            const uint32_t zbp = t.zte ? t.zbp : ~1u;
+            const uint32_t zbp = (t.zte ? t.zbp : ~1u) ^ (t.fbw << 24);   // the pass key also changes with the row width
             if (t.date && !s_noDate)
             {   // DATE reads the destination: snapshot the target between passes (the scissor would do; whole image for now)
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
-                Target &ct = target(dev, t.fbp);
+                Target &ct = target(dev, t.fbp, t.fbw);
                 toAttachment(*cmd, ct, false);   // a target never drawn yet still needs a defined layout for the copy
+                if (g_gpu.snap && g_gpu.snap->get_width() != ct.img->get_width()) g_gpu.snap.reset();
                 if (!g_gpu.snap)
                 {
-                    auto ci = Vulkan::ImageCreateInfo::render_target(kLogicalW * g_gpu.scale, kLogicalH * g_gpu.scale, VK_FORMAT_R8G8B8A8_UNORM);
+                    auto ci = Vulkan::ImageCreateInfo::render_target(ct.img->get_width(), kLogicalH * g_gpu.scale, VK_FORMAT_R8G8B8A8_UNORM);
                     ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT; ci.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
                     g_gpu.snap = dev.create_image(ci);
                 }
@@ -363,7 +461,16 @@ namespace seamvk
                                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
                 cmd->image_barrier(*g_gpu.snap, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-                cmd->copy_image(*g_gpu.snap, *ct.img);
+                {   // only the scissor region (the HUD's DATE draws are small)
+                    const uint32_t sc2 = g_gpu.scale, rowW = (t.fbw ? t.fbw : 1u) * 64u;
+                    uint32_t x0 = std::min<uint32_t>(t.scax0, rowW), x1 = std::min<uint32_t>(t.scax1 + 1u, rowW), y0 = std::min<uint32_t>(t.scay0, kLogicalH), y1 = std::min<uint32_t>(t.scay1 + 1u, kLogicalH);
+                    if (x1 > x0 && y1 > y0)
+                    {
+                        VkOffset3D off = { int32_t(x0 * sc2), int32_t(y0 * sc2), 0 };
+                        VkExtent3D ext = { (x1 - x0) * sc2, (y1 - y0) * sc2, 1 };
+                        cmd->copy_image(*g_gpu.snap, *ct.img, off, off, ext, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
+                    }
+                }
                 cmd->image_barrier(*g_gpu.snap, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
                 cmd->image_barrier(*ct.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -373,7 +480,7 @@ namespace seamvk
             if (t.fbp != curFbp || zbp != curZbp)
             {
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
-                Target &ct = target(dev, t.fbp);
+                Target &ct = target(dev, t.fbp, t.fbw);
                 toAttachment(*cmd, ct, false);
                 Vulkan::RenderPassInfo rp = {};
                 rp.num_color_attachments = 1;
@@ -381,7 +488,7 @@ namespace seamvk
                 rp.store_attachments = 1u << 0;
                 if (!ct.cleared) { rp.clear_attachments = 1u << 0; ct.cleared = true; }
                 else rp.load_attachments = 1u << 0;
-                Target &dt = depth(dev, t.zte ? t.zbp : 0u);   // an unused Z buffer still needs an attachment: pair every pass with one
+                Target &dt = depth(dev, t.zte ? t.zbp : 0u, t.fbw);   // an unused Z buffer still needs an attachment: pair every pass with one
                 toAttachment(*cmd, dt, true);
                 rp.depth_stencil = &dt.img->get_view();
                 rp.op_flags = Vulkan::RENDER_PASS_OP_STORE_DEPTH_STENCIL_BIT | (dt.cleared ? Vulkan::RENDER_PASS_OP_LOAD_DEPTH_STENCIL_BIT : Vulkan::RENDER_PASS_OP_CLEAR_DEPTH_STENCIL_BIT);
@@ -455,27 +562,77 @@ namespace seamvk
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
         const uint32_t w = g_gpu.w, h = g_gpu.h;
-        cmd->copy_image_to_buffer(*g_gpu.readback, *g_gpu.out, 0, {}, { w, h, 1 }, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
-        cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
-        Vulkan::Fence fence;
-        dev.submit(cmd, &fence);
-        fence->wait();   // V0: synchronous readback
-
-        const uint8_t *src = static_cast<const uint8_t *>(dev.map_host_buffer(*g_gpu.readback, Vulkan::MEMORY_ACCESS_READ_BIT));
+        // Asynchronous readback: this frame goes into ring slot N; the frame handed to the presenter is the oldest
+        // slot whose fence has already signalled (normally the previous frame), so the swap never waits on the GPU.
+        Gpu::Pending &slot = g_gpu.ring[g_gpu.ringNext % 3u];
+        if (!slot.buf || slot.w != w || slot.h != h)
         {
-            std::lock_guard<std::mutex> lk(g_mtx);
-            g_frame.assign(src, src + size_t(w) * h * 4u);
-            g_frameW = w; g_frameH = h; g_frameFresh = true;
+            Vulkan::BufferCreateInfo bi = {}; bi.size = VkDeviceSize(w) * h * 4u; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.domain = Vulkan::BufferDomain::CachedHost;
+            slot.buf = dev.create_buffer(bi); slot.w = w; slot.h = h;
         }
-        dev.unmap_host_buffer(*g_gpu.readback, Vulkan::MEMORY_ACCESS_READ_BIT);
+        cmd->copy_image_to_buffer(*slot.buf, *g_gpu.out, 0, {}, { w, h, 1 }, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
+        cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+        const auto tC = std::chrono::steady_clock::now();
+        dev.submit(cmd, &slot.fence);
+        slot.live = true;
+        const auto tD = std::chrono::steady_clock::now();
+        ++g_gpu.ringNext;
+        Gpu::Pending &prev = g_gpu.ring[(g_gpu.ringNext + 1u) % 3u];   // two frames back: certainly done, no wait in practice
+        Vulkan::Fence fence; bool havePrev = false;
+        if (prev.live) { prev.fence->wait(); havePrev = true; }
+        const auto tE = std::chrono::steady_clock::now();
+        g_gpu.msTake += std::chrono::duration<double, std::milli>(tB - tA).count();
+        g_gpu.msRecord += std::chrono::duration<double, std::milli>(tC - tB).count();
+        g_gpu.msSubmit += std::chrono::duration<double, std::milli>(tD - tC).count();
+        g_gpu.msWait += std::chrono::duration<double, std::milli>(tE - tD).count();
+
+        if (havePrev)
+        {
+            const uint8_t *src = static_cast<const uint8_t *>(dev.map_host_buffer(*prev.buf, Vulkan::MEMORY_ACCESS_READ_BIT));
+            {
+                std::lock_guard<std::mutex> lk(g_mtx);
+                g_frame.assign(src, src + size_t(prev.w) * prev.h * 4u);
+                g_frameW = prev.w; g_frameH = prev.h; g_frameFresh = true;
+            }
+            dev.unmap_host_buffer(*prev.buf, Vulkan::MEMORY_ACCESS_READ_BIT);
+            prev.live = false;
+        }
+        if (!g_gpu.rtDumps.empty())
+        {   // PS2X_SEAMVK_TEXDUMP + DUMPFRAME: the render-target decodes of this frame as rt_*.ppm (synchronous readback)
+            const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP");
+            int n = 0;
+            for (auto &rd : g_gpu.rtDumps)
+            {
+                const seamgs::RtDecode &r = rd.second;
+                Vulkan::BufferCreateInfo bi = {}; bi.size = VkDeviceSize(r.w) * r.h * 4u; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.domain = Vulkan::BufferDomain::CachedHost;
+                auto buf = dev.create_buffer(bi);
+                auto c2 = dev.request_command_buffer();
+                c2->image_barrier(*rd.first, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                c2->copy_image_to_buffer(*buf, *rd.first, 0, {}, { r.w, r.h, 1 }, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
+                c2->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+                c2->image_barrier(*rd.first, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                Vulkan::Fence fe; dev.submit(c2, &fe); fe->wait();
+                const uint8_t *px = static_cast<const uint8_t *>(dev.map_host_buffer(*buf, Vulkan::MEMORY_ACCESS_READ_BIT));
+                char path[512];
+                std::snprintf(path, sizeof(path), "%s/rt%02d_slot%d_psm%u_%ux%u_tbp%x_tbw%u_cbp%x_src%x_fbw%u_rows%u_z%u_c%u.ppm", dir, n, r.slot, r.psm, r.w, r.h, r.tbp, r.tbw, r.cbp, r.srcFbp, r.srcFbw, r.srcRows, r.depthSrc, r.clutFromTarget);
+                if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P6\n%u %u\n255\n", r.w, r.h); for (size_t i = 0; i < size_t(r.w) * r.h; ++i) std::fwrite(px + i * 4u, 1, 3, fp); std::fclose(fp); }
+                std::snprintf(path + std::strlen(path) - 4, 5, ".pgm");
+                if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P5\n%u %u\n255\n", r.w, r.h); for (size_t i = 0; i < size_t(r.w) * r.h; ++i) std::fputc(px[i * 4u + 3u], fp); std::fclose(fp); }
+                dev.unmap_host_buffer(*buf, Vulkan::MEMORY_ACCESS_READ_BIT);
+                ++n;
+            }
+            g_gpu.rtDumps.clear();
+        }
         freeTextures(f);
 
         if ((++g_gpu.frames % 300u) == 0u)
         {
-            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws, %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch per frame; %zu targets %zu depths\n",
+            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws, %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes, %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
                          (unsigned long long)g_gpu.frames, double(g_gpu.draws) / 300.0, double(g_gpu.verts) / 300.0, double(g_gpu.passes) / 300.0,
-                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
-            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = 0;
+                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
+            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.rtDecodes = g_gpu.aliasedDraws = 0;
+            std::fprintf(stderr, "[seamvk] per frame: take %.2f ms, record %.2f ms, submit %.2f ms, wait %.2f ms\n", g_gpu.msTake / 300.0, g_gpu.msRecord / 300.0, g_gpu.msSubmit / 300.0, g_gpu.msWait / 300.0);
+            g_gpu.msTake = g_gpu.msRecord = g_gpu.msSubmit = g_gpu.msWait = 0;
         }
     }
 }

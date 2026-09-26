@@ -13,6 +13,7 @@
 #include "runtime/ps2_gs_psmt4.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -140,19 +141,30 @@ namespace seamgs
         bool g_haveHost = false; seamvk::DrawPacket g_host; std::vector<uint8_t> g_hostVerts;
         bool g_inHostGif = false;
 
+        // [rtdecode] what the GPU targets hold: per FRAME base the row width / format / rows drawn and a draw stamp;
+        // per ZBUF base the rows written. Textures whose pages the game drew are decoded from these on the GPU.
+        struct TargetInfo { uint32_t fbw = 8, psm = 0, rows = 0, drawStamp = 0; };
+        std::map<uint32_t, TargetInfo> g_targets, g_zbufs;
+        uint32_t g_drawStamp = 1;
+
         // ---- texture cache -----------------------------------------------------------------
         struct TexEntry
         {
             uint64_t key = 0; uint32_t w = 0, h = 0; uint64_t lastUse = 0; bool used = false;
             std::vector<uint8_t> rgbaCopy;                      // kept for textures the CPU scratch raster may sample (<= 256x256)
             std::vector<std::pair<uint16_t, uint32_t>> pages;   // (page, write stamp seen)
-            bool drawnPages = false;                            // read pages the game had drawn into (stale mirror)
+            bool drawnPages = false;                            // texture pages the game had drawn into (stale mirror)
+            bool clutDrawn = false;                             // palette pages the game had drawn into
+            bool indexed = false; uint32_t clut[256] = {};      // the palette as decoded from the mirror
+            uint16_t firstPage = 0xFFFFu;
+            bool rtBased = false; uint32_t rtFbp = 0, rtStamp = 0;   // decoded from a target: valid until the target is drawn again
         };
         std::vector<TexEntry> g_tex;
         std::vector<int32_t> g_texFree;
         std::unordered_map<uint64_t, int32_t> g_texByKey;
         bool g_texDirty = true; int32_t g_curTex = -1; uint32_t g_curTexW = 0, g_curTexH = 0;
-        uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0, g_cpuSprites = 0, g_cpuTris = 0;
+        uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0, g_cpuSprites = 0, g_cpuTris = 0, g_rtDecodes = 0;
+        double g_msParse = 0, g_msDecode = 0, g_msRaster = 0, g_msHost = 0;
         uint32_t g_busyFrames = 0;   // frames so far with > 1500 draws (a fight): PS2X_SEAMVK_TEXDUMP_FROM=1 starts there
         std::vector<int32_t> g_retired;   // slots freed by the renderer after this frame; reusable from the next
 
@@ -198,7 +210,15 @@ namespace seamgs
         }
 
         // Decode the texture TEX0 describes into RGBA8 (raw alpha bytes: 0x80 = 1.0).
+        bool decodeTextureImpl(uint64_t tex0, uint64_t texa, TexEntry &e, std::vector<uint8_t> &rgba);
         bool decodeTexture(uint64_t tex0, uint64_t texa, TexEntry &e, std::vector<uint8_t> &rgba)
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool ok = decodeTextureImpl(tex0, texa, e, rgba);
+            g_msDecode += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            return ok;
+        }
+        bool decodeTextureImpl(uint64_t tex0, uint64_t texa, TexEntry &e, std::vector<uint8_t> &rgba)
         {
             const uint32_t tbp = (uint32_t)(tex0 & 0x3FFFu), tbw = (uint32_t)((tex0 >> 14) & 0x3Fu), psm = (uint32_t)((tex0 >> 20) & 0x3Fu);
             const uint32_t tw = (uint32_t)((tex0 >> 26) & 0xFu), th = (uint32_t)((tex0 >> 30) & 0xFu);
@@ -206,16 +226,26 @@ namespace seamgs
             const uint32_t w = 1u << std::min(tw, 10u), h = 1u << std::min(th, 10u);
             const uint32_t ta0 = (uint32_t)(texa & 0xFFu), aem = (uint32_t)((texa >> 15) & 1u), ta1 = (uint32_t)((texa >> 32) & 0xFFu);
             e.w = w; e.h = h;
-            rgba.resize(size_t(w) * h * 4u);
-            uint32_t *dst = reinterpret_cast<uint32_t *>(rgba.data());
-            uint32_t pagesBits[16] = {};
+            // Pages the game drew into: decoded from the target on the GPU instead; only the page sets and the
+            // palette are needed here (a 1024x1024 CPU decode per frame is what made the fight crawl).
+            bool anyDrawn = false;
+            {
+                const uint32_t p0 = pageOf(psm, tbp, tbw, 0, 0), p1 = pageOf(psm, tbp, tbw, w - 1u, h - 1u);
+                for (uint32_t p = std::min(p0, p1); p <= std::max(p0, p1) && p < kPages; ++p) if (g_pageDrawn[p] >= g_pageWrite[p] && g_pageDrawn[p] != 0u) { anyDrawn = true; break; }
+            }
+            rgba.resize(anyDrawn ? 0u : size_t(w) * h * 4u);
+            uint32_t *dst = anyDrawn ? nullptr : reinterpret_cast<uint32_t *>(rgba.data());
+            uint32_t pagesBits[16] = {}, clutBits[16] = {};
             const bool indexed = psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH;
             uint32_t clut[256];
-            if (indexed) readClut(cbp, cpsm, csa, texa, clut, pagesBits);
+            if (indexed) readClut(cbp, cpsm, csa, texa, clut, clutBits);
+            e.indexed = indexed;
+            if (indexed) std::memcpy(e.clut, clut, sizeof(clut));
             const uint32_t csaOff = (psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH) ? (csa & 15u) * 16u : 0u;
-            for (uint32_t y = 0; y < h; ++y)
+            const uint32_t step = anyDrawn ? 8u : 1u;   // page bookkeeping only: pages are >= 32 px, a stride of 8 touches them all
+            for (uint32_t y = 0; y < h; y += step)
             {
-                for (uint32_t x = 0; x < w; ++x)
+                for (uint32_t x = 0; x < w; x += step)
                 {
                     uint32_t v;
                     switch (psm)
@@ -237,16 +267,96 @@ namespace seamgs
                     }
                     default: { const uint32_t a = addr32(tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u); v = rd32(a); break; }
                     }
-                    dst[size_t(y) * w + x] = v;
+                    if (dst) dst[size_t(y) * w + x] = v;
                 }
             }
-            e.pages.clear(); e.drawnPages = false;
+            {   // [clut3c00] stage palettes: what the mirror holds for CLUTs in the rendered-palette area
+                static int s_dbg = 0;
+                if (indexed && cbp >= 0x3c00u && cbp < 0x3e00u && s_dbg < 8)
+                {
+                    ++s_dbg;
+                    const uint32_t pg = addr32(cbp, 1, 0, 0) >> 13;
+                    std::fprintf(stderr, "[clut3c00] frame %llu tex psm %u %ux%u tbp 0x%x cbp 0x%x: clut page 0x%x write %u drawn %u stamp %u; entries %08x %08x %08x %08x\n",
+                                 (unsigned long long)g_frame, psm, w, h, tbp, cbp, pg, g_pageWrite[pg], g_pageDrawn[pg], g_stamp, clut[0], clut[1], clut[2], clut[3]);
+                }
+            }
+            e.pages.clear(); e.drawnPages = false; e.clutDrawn = false; e.firstPage = 0xFFFFu;
+            for (uint32_t p = 0; p < kPages; ++p)
+                if (clutBits[p >> 5] & (1u << (p & 31u)))
+                {
+                    e.pages.emplace_back((uint16_t)p, g_pageWrite[p]);
+                    if (g_pageDrawn[p] >= g_pageWrite[p] && g_pageDrawn[p] != 0u) e.clutDrawn = true;
+                }
             for (uint32_t p = 0; p < kPages; ++p)
                 if (pagesBits[p >> 5] & (1u << (p & 31u)))
                 {
+                    if (e.firstPage == 0xFFFFu) e.firstPage = (uint16_t)p;
                     e.pages.emplace_back((uint16_t)p, g_pageWrite[p]);
-                    if (g_pageDrawn[p] >= g_pageWrite[p] && g_pageDrawn[p] != 0u) e.drawnPages = true;
+                    if (g_pageDrawn[p] >= g_pageWrite[p] && g_pageDrawn[p] != 0u)
+                    {
+                        static int s_dbg = 0;
+                        if (!e.drawnPages && s_dbg < 10) { ++s_dbg; std::fprintf(stderr, "[drawnpage] frame %llu tex psm %u %ux%u tbp 0x%x cbp 0x%x: page 0x%x drawn %u write %u\n", (unsigned long long)g_frame, psm, w, h, tbp, cbp, p, g_pageDrawn[p], g_pageWrite[p]); }
+                        e.drawnPages = true;
+                    }
                 }
+            return true;
+        }
+
+        // The target whose drawn region holds page p (the most recently drawn one when several do).
+        const std::map<uint32_t, TargetInfo>::value_type *targetForPage(const std::map<uint32_t, TargetInfo> &m, uint32_t p)
+        {
+            const std::map<uint32_t, TargetInfo>::value_type *best = nullptr;
+            for (const auto &kv : m)
+            {
+                const uint32_t base = kv.first / 32u;
+                if (p < base || kv.second.rows == 0u) continue;
+                const uint32_t rel = p - base;
+                if (rel >= kv.second.rows * kv.second.fbw) continue;
+                if (!best || kv.second.drawStamp > best->second.drawStamp) best = &kv;
+            }
+            return best;
+        }
+        bool rtDecodeFor(int32_t slot, TexEntry &e, uint64_t tex0)
+        {
+            static const bool s_noRt = [](){ const char *v = std::getenv("PS2X_SEAMVK_NORT"); return v && v[0] && v[0] != '0'; }();
+            if (s_noRt) return false;
+            const uint32_t psm = (uint32_t)((tex0 >> 20) & 0x3Fu);
+            const auto *ct = targetForPage(g_targets, e.firstPage);
+            const auto *zt = targetForPage(g_zbufs, e.firstPage);
+            if (!ct && !zt) return false;
+            RtDecode r;
+            r.slot = slot; r.w = e.w; r.h = e.h;
+            r.tbp = (uint32_t)(tex0 & 0x3FFFu); r.tbw = (uint32_t)((tex0 >> 14) & 0x3Fu); r.psm = psm;
+            r.cbp = (uint32_t)((tex0 >> 37) & 0x3FFFu); r.cpsm = (uint32_t)((tex0 >> 51) & 0xFu); r.csa = (uint32_t)((tex0 >> 56) & 0x1Fu);
+            r.texa = g_r.texa;
+            const bool zRead = psm >= 48u;   // PSMZ*: the Z bits come from the depth image
+            if (ct && (!zt || (!zRead && ct->second.drawStamp >= zt->second.drawStamp) || (zRead && zt->first != ct->first)))
+            {
+                r.srcFbp = ct->first; r.srcFbw = ct->second.fbw; r.srcRows = ct->second.rows;
+                if (zt && zt->first == ct->first) r.depthSrc = 1;   // colour target over the Z buffer: byte 3 from it, Z24 from depth
+                e.rtFbp = ct->first; e.rtStamp = ct->second.drawStamp;
+            }
+            else
+            {
+                r.srcFbp = zt->first; r.srcFbw = zt->second.fbw; r.srcRows = zt->second.rows; r.depthSrc = 1;
+                e.rtFbp = zt->first; e.rtStamp = zt->second.drawStamp;
+                if (!g_targets.count(zt->first)) return false;   // needs the colour view of that base for the top byte
+            }
+            if (e.indexed)
+            {
+                std::memcpy(r.clut, e.clut, sizeof(r.clut));
+                if (e.clutDrawn)
+                {
+                    const uint32_t cpage = addr32(r.cbp, 1, 0, 0) >> 13;
+                    const auto *cct = targetForPage(g_targets, cpage);
+                    if (cct && cct->first == r.srcFbp && r.cpsm == PSMCT32) r.clutFromTarget = 1;
+                }
+            }
+            e.rtBased = true;
+            Draw d; d.kind = 2; d.rt = (int32_t)g_list.rtDecodes.size(); d.st.tex = slot;
+            g_list.rtDecodes.push_back(r);
+            g_list.draws.push_back(d);
+            ++g_rtDecodes;
             return true;
         }
 
@@ -265,6 +375,7 @@ namespace seamgs
                 TexEntry &e = g_tex[it->second];
                 bool valid = true;
                 for (const auto &pg : e.pages) if (g_pageWrite[pg.first] != pg.second) { valid = false; break; }
+                if (valid && e.rtBased) { auto ti = g_targets.find(e.rtFbp); if (ti == g_targets.end() || ti->second.drawStamp != e.rtStamp) valid = false; }
                 if (valid) { e.lastUse = g_frame; g_curTexW = e.w; g_curTexH = e.h; return it->second; }
                 // Stale (the game uploaded over it): retire this slot -- draws already recorded this frame keep
                 // it, the renderer frees it after the frame -- and decode into a fresh one.
@@ -280,7 +391,7 @@ namespace seamgs
             decodeTexture(tex0, g_r.texa, e, rgba);
             ++g_texDecodes;
             if (e.drawnPages) ++g_texStale;
-            if (e.w * e.h <= 256u * 256u) e.rgbaCopy = rgba; else e.rgbaCopy.clear();
+            if (e.w * e.h <= 256u * 256u && !rgba.empty()) e.rgbaCopy = rgba; else e.rgbaCopy.clear();
             {   // PS2X_SEAMVK_TEXDUMP=<dir>: every first decode as a PPM (rgb) + PGM (alpha), named by its TEX0 fields
                 static const char *s_dir = std::getenv("PS2X_SEAMVK_TEXDUMP"); static int s_n = 0;
                 static const uint64_t s_from = [](){ const char *v = std::getenv("PS2X_SEAMVK_TEXDUMP_FROM"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
@@ -306,7 +417,11 @@ namespace seamgs
                 }
             }
             g_texByKey[key] = slot;
-            g_list.texUploads.push_back(TexUpload{ slot, e.w, e.h, std::move(rgba) });
+            if (e.drawnPages && rtDecodeFor(slot, e, tex0))
+            {   // decoded from the target on the GPU, in stream order: no mirror upload
+                e.drawnPages = false;
+            }
+            else if (!rgba.empty()) g_list.texUploads.push_back(TexUpload{ slot, e.w, e.h, std::move(rgba) });
             g_curTexW = e.w; g_curTexH = e.h;
             return slot;
         }
@@ -360,9 +475,19 @@ namespace seamgs
             const uint32_t pagesPerRow = s.fbw ? s.fbw : 1u;
             const uint32_t pageH = (s.fpsm == PSMCT16 || s.fpsm == PSMCT16S) ? 64u : 32u;
             const uint32_t row0 = s.scay0 / pageH, row1 = s.scay1 / pageH;
+            {
+                TargetInfo &t = g_targets[s.fbp];
+                t.fbw = pagesPerRow; t.psm = s.fpsm; t.rows = std::max(t.rows, (s.scay1 / 32u) + 1u); t.drawStamp = ++g_drawStamp;
+                if (s.zte && !s.zmsk) { TargetInfo &z = g_zbufs[s.zbp]; z.fbw = pagesPerRow; z.psm = s.zpsm; z.rows = std::max(z.rows, (s.scay1 / 32u) + 1u); z.drawStamp = g_drawStamp; }
+            }
             const uint32_t col0 = s.scax0 / 64u, col1 = std::min<uint32_t>(s.scax1 / 64u, pagesPerRow - 1u);
             const uint32_t p0 = s.fbp / 32u;
-            for (uint32_t r = row0; r <= row1; ++r) for (uint32_t c = col0; c <= col1; ++c) { const uint32_t p = p0 + r * pagesPerRow + c; if (p < kPages) g_pageDrawn[p] = g_stamp; }
+            for (uint32_t r = row0; r <= row1; ++r) for (uint32_t c = col0; c <= col1; ++c)
+            {
+                const uint32_t p = p0 + r * pagesPerRow + c;
+                if (p >= 0x1a0u && p < 0x1c0u) { static int s_dbg = 0; if (s_dbg < 6) { ++s_dbg; std::fprintf(stderr, "[stamp] frame %llu page 0x%x by fbp 0x%x fbw %u psm %u sc %u..%u %u..%u prim %u tme %u\n", (unsigned long long)g_frame, p, s.fbp, s.fbw, s.fpsm, s.scax0, s.scax1, s.scay0, s.scay1, s.prim, s.tme); } }
+                if (p < kPages) g_pageDrawn[p] = g_stamp;
+            }
             if (s.zte && !s.zmsk)
             {
                 const uint32_t z0 = s.zbp / 32u, zr0 = s.scay0 / 32u, zr1 = s.scay1 / 32u;
@@ -432,8 +557,11 @@ namespace seamgs
             g_list.verts.insert(g_list.verts.end(), b, b + sizeof(out));
         }
 
+        uint64_t g_hostIn[8] = {}, g_hostOut[8] = {}, g_hostDropped[8] = {};
+
         void emitHostDraw(const State &s)
         {
+            ++g_hostOut[g_host.prog & 7u];
             noteTargetHist(1, g_host.prog, s);
             Draw d; d.kind = 1; d.prog = g_host.prog; d.st = s; d.c = g_host.c;
             d.vertOff = (uint32_t)g_list.verts.size(); d.count = g_host.count; d.stride = g_host.stride;
@@ -516,9 +644,24 @@ namespace seamgs
         // [scratchraster] Sprites into small scratch targets (rendered palettes, lighting ramps) are rasterised into the
         // VRAM mirror on the CPU, exactly, so textures and CLUTs that read them decode like uploads. Only when the source
         // texture itself is mirror-backed. The GPU still draws them too (harmless: nothing displays those targets).
+        bool cpuSpriteRasterImpl(const State &s, const GsVert &a, const GsVert &b);
         bool cpuSpriteRaster(const State &s, const GsVert &a, const GsVert &b)
         {
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool ok = cpuSpriteRasterImpl(s, a, b);
+            g_msRaster += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            return ok;
+        }
+        bool cpuSpriteRasterImpl(const State &s, const GsVert &a, const GsVert &b)
+        {
             const TexEntry *te;
+            static int s_dbg = 0;
+            if (s.fbp >= 0x3c00u && s.fbp < 0x3e00u && s_dbg < 12)
+            {
+                ++s_dbg;
+                std::fprintf(stderr, "[spr3c00] frame %llu fbp 0x%x fbw %u psm %u tme %u tex %d%s abe %u (%u,%u,%u,%u) sc %u..%u %u..%u of %u,%u xy %u,%u %u,%u rgba %02x%02x%02x%02x\n",
+                             (unsigned long long)g_frame, s.fbp, s.fbw, s.fpsm, s.tme, s.tex, s.texFromDrawn ? "(DRAWN)" : "", s.abe, s.aA, s.aB, s.aC, s.aD, s.scax0, s.scax1, s.scay0, s.scay1, s.ofx, s.ofy, a.x, a.y, b.x, b.y, b.r, b.g, b.b, b.a);
+            }
             if (!cpuTargetOk(s, te)) return false;
             int x0 = (int)std::floor((float(int32_t(a.x)) - float(s.ofx)) / 16.0f + 0.5f), y0 = (int)std::floor((float(int32_t(a.y)) - float(s.ofy)) / 16.0f + 0.5f);
             int x1 = (int)std::floor((float(int32_t(b.x)) - float(s.ofx)) / 16.0f + 0.5f), y1 = (int)std::floor((float(int32_t(b.y)) - float(s.ofy)) / 16.0f + 0.5f);
@@ -845,10 +988,16 @@ namespace seamgs
             static uint64_t s_last = 0;
             if (g_frame - s_last < 300u) return;
             s_last = g_frame;
-            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu\n",
-                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris);
-            g_texLookups = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = 0;
+            std::fprintf(stderr, "[seamgs] per frame: parse %.2f ms (decode %.2f, scratch raster %.2f, host draws %.2f)\n", g_msParse / 300.0, g_msDecode / 300.0, g_msRaster / 300.0, g_msHost / 300.0);
+            g_msParse = g_msDecode = g_msRaster = g_msHost = 0;
+            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu\n",
+                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes);
+            g_texLookups = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = 0;
             printTargetHist();
+            std::fprintf(stderr, "[seamgs] host draws in/out/dropped per prog:");
+            for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %d:%llu/%llu/%llu", i, (unsigned long long)g_hostIn[i], (unsigned long long)g_hostOut[i], (unsigned long long)g_hostDropped[i]);
+            std::fprintf(stderr, "\n");
+            for (int i = 0; i < 8; ++i) g_hostIn[i] = g_hostOut[i] = g_hostDropped[i] = 0;
         }
     }
 
@@ -859,9 +1008,9 @@ namespace seamgs
         if (g_list.draws.size() > 1500u) ++g_busyFrames;
         evictTextures();
         g_list.frame = g_frame;
-        out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees);
+        out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees); out.rtDecodes.swap(g_list.rtDecodes);
         out.frame = g_frame;
-        g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear();
+        g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear(); g_list.rtDecodes.clear();
         g_texFree.insert(g_texFree.end(), g_retired.begin(), g_retired.end()); g_retired.clear();
         g_texDirty = true;   // a new frame: re-resolve (the renderer may have dropped slots)
         report();
@@ -880,10 +1029,12 @@ namespace seamvk
     {
         if (!on() || !data || size == 0u) return;
         std::lock_guard<std::mutex> lk(seamgs::g_mtx);
+        const auto t0 = std::chrono::steady_clock::now();
         seamgs::g_inHostGif = hostGif;
         seamgs::parse(path, data, size);
         seamgs::g_inHostGif = false;
-        if (hostGif) seamgs::g_haveHost = false;   // a host packet without a kick draws nothing
+        seamgs::g_msParse += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (!hostGif && seamgs::g_haveHost) { ++seamgs::g_hostDropped[seamgs::g_host.prog & 7u]; seamgs::g_haveHost = false; }   // the seam's packets are contiguous: anything else ends the pairing
     }
 
     void onHostDraw(const uint8_t *data, uint32_t size)
@@ -892,6 +1043,10 @@ namespace seamvk
         DrawPacket k; std::memcpy(&k, data, sizeof(k));
         if (k.magic != kDrawMagic || k.count < 3u || size < sizeof(DrawPacket) + size_t(k.count) * k.stride) return;
         std::lock_guard<std::mutex> lk(seamgs::g_mtx);
+        const auto t0 = std::chrono::steady_clock::now();
+        struct T { std::chrono::steady_clock::time_point t; ~T() { seamgs::g_msHost += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); } } tt{t0};
+        if (seamgs::g_haveHost) ++seamgs::g_hostDropped[seamgs::g_host.prog & 7u];
+        ++seamgs::g_hostIn[k.prog & 7u];
         seamgs::g_host = k; seamgs::g_haveHost = true;
         seamgs::g_hostVerts.assign(data + sizeof(DrawPacket), data + sizeof(DrawPacket) + size_t(k.count) * k.stride);
     }

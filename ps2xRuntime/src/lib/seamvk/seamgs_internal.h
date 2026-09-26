@@ -46,12 +46,25 @@ namespace seamgs
         uint32_t fogcol = 0;
     };
 
+    // Decode a texture from a render target on the GPU (kind 2), in stream order: after the draws that wrote
+    // the target and before the draw that samples it.
+    struct RtDecode
+    {
+        int32_t slot = -1; uint32_t w = 0, h = 0;
+        uint32_t tbp = 0, tbw = 0, psm = 0, cbp = 0, cpsm = 0, csa = 0;
+        uint64_t texa = 0;
+        uint32_t srcFbp = 0, srcFbw = 0, srcRows = 0;
+        uint8_t clutFromTarget = 0, depthSrc = 0;
+        uint32_t clut[256] = {};
+    };
+
     struct Draw
     {
-        uint8_t kind = 0;     // 0: GS triangle list of Vtx; 1: seam host mesh (DrawPacket verts, strip)
+        uint8_t kind = 0;     // 0: GS triangle list of Vtx; 1: seam host mesh (DrawPacket verts, strip); 2: RtDecode op
         uint8_t prog = 0;     // kind 1: the vertex program
         State st;
         uint32_t vertOff = 0, count = 0, stride = sizeof(Vtx);
+        int32_t rt = -1;      // kind 2: index into FrameList::rtDecodes
         seamvk::Consts c;     // kind 1 only
     };
 
@@ -63,6 +76,7 @@ namespace seamgs
         std::vector<Draw> draws;
         std::vector<uint8_t> verts;
         std::vector<TexUpload> texUploads;
+        std::vector<RtDecode> rtDecodes;
         std::vector<int32_t> texFrees;
         uint64_t frame = 0;
     };
