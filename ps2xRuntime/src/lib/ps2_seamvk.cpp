@@ -20,6 +20,8 @@
 
 #include <algorithm>
 #include <deque>
+#include <unordered_set>
+#include <unordered_map>
 #include <atomic>
 extern std::atomic<uint64_t> g_bt3FrameCount;   // game_overrides.cpp: the game's frame counter
 #include <chrono>
@@ -104,6 +106,7 @@ namespace seamvk
             Vulkan::BufferHandle readback;
             struct TsMark { uint8_t cat; Vulkan::QueryPoolHandle q; };   // [gputime] GPU timestamps: cat = the category that STARTS at this mark
             struct Pending { Vulkan::BufferHandle buf; Vulkan::Fence fence; uint32_t w = 0, h = 0; bool live = false; std::vector<TsMark> ts; };
+            std::vector<Vulkan::ImageHandle> hoistPool;   // [hoist] one image per hoisted decode of the frame, reused by index
             std::vector<TsMark> tsCur; double gpuMs[8] = {}; uint32_t gpuFrames = 0; std::deque<std::vector<TsMark>> tsPending;   // [gputime] frames whose queries are not signalled yet   // [gputime] per category, ms; 0 main draws, 1 rt decodes, 2 alias16, 3 native steps, 4 compose, 5 uploads
             Pending ring[3]; uint32_t ringNext = 0;
             std::map<uint32_t, Target> targets; // by fbp
@@ -115,13 +118,13 @@ namespace seamvk
             std::vector<Vulkan::ImageHandle> tex;
             uint32_t w = 0, h = 0, scale = 1;
             bool failed = false;
-            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0, nativeSteps = 0, vramPagesUp = 0, dateHost = 0, batches = 0, chunksBatched = 0;
+            uint64_t decTexels = 0, decBracketed = 0, decHoisted = 0, hoistSkippedFrames = 0, frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0, nativeSteps = 0, vramPagesUp = 0, dateHost = 0, batches = 0, chunksBatched = 0;
             double msTake = 0, msRecord = 0, msSubmit = 0, msWait = 0;
         };
         Gpu g_gpu;
         bool gpuTime()
         {
-            static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUTIME"); return v && v[0] == '1'; }();   // =1: per-category GPU timestamps (costs ~10 ms/frame of recording; off by default)
+            static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUTIME"); return v && (v[0] == '1' || v[0] == '2' || v[0] == '3'); }();   // =1: per-category GPU timestamps (costs ~10 ms/frame of recording; off by default)
             return s;
         }
         bool gpuTimeFull() { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUTIME"); return v && v[0] == '2'; }(); return s; }
@@ -129,8 +132,9 @@ namespace seamvk
         {
             if (!gpuTime()) return;
             static uint8_t s_last = 255;
-            if (!gpuTimeFull() && (cat == 1 || cat == 2)) return;   // =1: frame + native steps + compose only (per-decode marks cost ~10 ms/frame of recording); =2: everything
-            if (!gpuTimeFull() && cat == 0 && s_last == 0) return;
+            static const bool s_some = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUTIME"); return v && v[0] == '3'; }();   // =3: decode/alias16 marks while the frame's marks fit Granite's 64-query pool (=2 never resolves)
+            if (!gpuTimeFull() && (cat == 1 || cat == 2) && !(s_some && g_gpu.tsCur.size() < 56)) return;   // =1: frame + native steps + compose only (per-decode marks cost ~10 ms/frame of recording); =2: everything
+            if (cat == s_last) return;   // consecutive marks of one category collapse (the interval stays in that category)
             s_last = cat;
             g_gpu.tsCur.push_back({ cat, cmd.write_timestamp(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) });
         }
@@ -151,7 +155,7 @@ namespace seamvk
             const uint32_t s = g_gpu.cslot;
             if (!g_gpu.cring[s])
             {
-                Vulkan::BufferCreateInfo bi = {}; bi.size = kCringBytes; bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; bi.domain = Vulkan::BufferDomain::Host;
+                Vulkan::BufferCreateInfo bi = {}; bi.size = kCringBytes; bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; bi.domain = Vulkan::BufferDomain::LinkedDeviceHost;   // [perf] device-local + host-visible (BAR): every vertex reads its chunk's 496-byte Consts, 22 MB/frame that used to cross PCIe from system memory
                 g_gpu.cring[s] = dev.create_buffer(bi);
                 g_gpu.cmap[s] = static_cast<uint8_t *>(dev.map_host_buffer(*g_gpu.cring[s], Vulkan::MEMORY_ACCESS_WRITE_BIT));
             }
@@ -248,6 +252,7 @@ namespace seamvk
         }
 
         uint32_t targetW(uint32_t fbw) { return std::max(1u, std::min(fbw, 16u)) * 64u; }   // logical pixels: the row width
+        bool generalTargets();
         Target &target(Vulkan::Device &dev, uint32_t fbp, uint32_t fbw)
         {
             Target &t = g_gpu.targets[fbp];
@@ -257,6 +262,7 @@ namespace seamvk
             {
                 auto ci = Vulkan::ImageCreateInfo::render_target(w, kLogicalH * g_gpu.scale, VK_FORMAT_R8G8B8A8_UNORM);
                 ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;   // [date] read back in-pass
+                if (generalTargets()) ci.layout = Vulkan::ImageLayout::General;
                 t.img = dev.create_image(ci);
                 t.layout = VK_IMAGE_LAYOUT_UNDEFINED; t.cleared = false;
             }
@@ -283,32 +289,38 @@ namespace seamvk
             {
                 auto ci = Vulkan::ImageCreateInfo::render_target(targetW(fbw) * g_gpu.scale, kLogicalH * g_gpu.scale, stencilDate() ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_D32_SFLOAT);   // [stencildate] stencil = bit 7 of the stored alpha (experimental)
                 ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+                if (generalTargets()) ci.layout = Vulkan::ImageLayout::General;
                 t.img = dev.create_image(ci);
                 t.layout = VK_IMAGE_LAYOUT_UNDEFINED; t.cleared = false;
             }
             return t;
         }
 
+        // [general] PS2X_SEAMVK_GENERAL=1: targets live in VK_IMAGE_LAYOUT_GENERAL for their whole life (Granite honours it for
+        // attachments, sampling and input attachments), so a decode reading a target needs a memory barrier, not a layout
+        // transition (each transition of a 1024x1024 target decompresses it: the 16 target decodes a frame cost 13 ms of GPU).
+        bool generalTargets() { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_GENERAL"); return v && v[0] && v[0] != '0'; }(); return s; }
+        VkImageLayout gl(const Target &t, VkImageLayout l) { return (l != VK_IMAGE_LAYOUT_UNDEFINED && t.img->get_create_info().layout == Vulkan::ImageLayout::General) ? VK_IMAGE_LAYOUT_GENERAL : l; }
         void toAttachment(Vulkan::CommandBuffer &cmd, Target &t, bool isDepth)
         {
             const VkImageLayout want = isDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             const VkPipelineStageFlags2 st = isDepth ? (VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT) : VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
             const VkAccessFlags2 ac = isDepth ? (VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT) : (VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
             if (t.layout == VK_IMAGE_LAYOUT_UNDEFINED)
-                cmd.image_barrier(*t.img, VK_IMAGE_LAYOUT_UNDEFINED, want, st, 0, st, ac);
+                cmd.image_barrier(*t.img, gl(t, VK_IMAGE_LAYOUT_UNDEFINED), gl(t, want), st, 0, st, ac);
             else if (t.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || t.layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
-                cmd.image_barrier(*t.img, t.layout, want, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, st, ac);
+                cmd.image_barrier(*t.img, gl(t, t.layout), gl(t, want), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, st, ac);
             else   // attachment -> attachment: order the passes
-                cmd.image_barrier(*t.img, want, want, st, ac, st, ac);
+                cmd.image_barrier(*t.img, gl(t, want), gl(t, want), st, ac, st, ac);
             t.layout = want;
         }
         void toSampled(Vulkan::CommandBuffer &cmd, Target &t)
         {
             if (t.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) return;
             if (t.layout == VK_IMAGE_LAYOUT_UNDEFINED)
-                cmd.image_barrier(*t.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                cmd.image_barrier(*t.img, gl(t, VK_IMAGE_LAYOUT_UNDEFINED), gl(t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             else
-                cmd.image_barrier(*t.img, t.layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                cmd.image_barrier(*t.img, gl(t, t.layout), gl(t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL), VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             t.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
@@ -322,15 +334,15 @@ namespace seamvk
             if (t.layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) return;
             const VkPipelineStageFlags2 st = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
             if (t.layout == VK_IMAGE_LAYOUT_UNDEFINED)
-                cmd.image_barrier(*t.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                cmd.image_barrier(*t.img, gl(t, VK_IMAGE_LAYOUT_UNDEFINED), gl(t, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             else
-                cmd.image_barrier(*t.img, t.layout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, st, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                cmd.image_barrier(*t.img, gl(t, t.layout), gl(t, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL), st, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             t.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         }
 
         // kind 2: build texture slot r.slot from a render target (see rtdecode.frag)
-        void runRtDecode(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::FrameList &f, const seamgs::RtDecode &r)
-        {
+        void runRtDecode(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::FrameList &f, const seamgs::RtDecode &r, Vulkan::ImageHandle *into = nullptr)
+        {   // into: [hoist] decode into this image instead of the slot's (the slot is pointed at it when the stream reaches the decode)
             if (r.slot < 0 || r.w == 0 || r.h == 0) return;
             Target *srcp = nullptr; Target *dz = nullptr;
             if (r.fromVram)
@@ -352,11 +364,18 @@ namespace seamvk
                 auto it = g_gpu.targets.find(r.srcFbp);
                 if (it == g_gpu.targets.end() || !it->second.img) return;
                 srcp = &it->second;
-                toSampled(cmd, *srcp);
-                if (r.depthSrc) { dz = depthFor(r.srcFbp, srcp->img->get_width() / g_gpu.scale); if (dz) depthToSampled(cmd, *dz); }
+                static const int s_skipDec = [](){ const char *v = std::getenv("PS2X_SEAMVK_SKIP"); return v && v[0] ? std::atoi(v) : 0; }();   // [perf attribution] 128 = no depth source, 256 = sample a dummy instead of the target (no transitions)
+                if (s_skipDec & 256) srcp = nullptr;
+                else
+                {
+                    toSampled(cmd, *srcp);
+                    if (r.depthSrc && !(s_skipDec & 128)) { dz = depthFor(r.srcFbp, srcp->img->get_width() / g_gpu.scale); if (dz) depthToSampled(cmd, *dz); }
+                    if (s_skipDec & 512) { srcp = nullptr; dz = nullptr; }   // 512 = transitions done, but sample the dummy: isolates the transition cost
+                }
+                if (g_gpu.dumpRt) std::fprintf(stderr, "[seamvk] decode slot %d %ux%u psm %u from target %x (%ux%u) depth %u clutFromTarget %u\n", r.slot, r.w, r.h, r.psm, r.srcFbp, srcp ? srcp->img->get_width() : 0u, srcp ? srcp->img->get_height() : 0u, r.depthSrc, r.clutFromTarget);
             }
             if ((size_t)r.slot >= g_gpu.tex.size()) g_gpu.tex.resize(size_t(r.slot) + 1u);
-            Vulkan::ImageHandle &img = g_gpu.tex[r.slot];
+            Vulkan::ImageHandle &img = into ? *into : g_gpu.tex[r.slot];
             if (g_gpu.dumpRt) img.reset();   // dumping: every decode keeps its own image (a slot decoded twice in the frame would show only the last)
             if (!img || img->get_width() != r.w || img->get_height() != r.h)
             {
@@ -378,7 +397,7 @@ namespace seamvk
             }
             cmd.begin_render_pass(rp);
             cmd.set_opaque_state();
-            cmd.set_program(r.fromVram ? g_gpu.progVram : g_gpu.progRt);
+            cmd.set_program((r.fromVram || !srcp) ? g_gpu.progVram : g_gpu.progRt);
             cmd.set_cull_mode(VK_CULL_MODE_NONE);
             cmd.set_depth_test(false, false);
             cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
@@ -400,7 +419,7 @@ namespace seamvk
                 cmd.set_texture(0, 0, srcp->img->get_view(), Vulkan::StockSampler::NearestClamp);
                 cmd.set_texture(0, 1, dz ? dz->img->get_view() : g_gpu.white->get_view(), Vulkan::StockSampler::NearestClamp);
             }
-            else cmd.set_storage_buffer(0, 3, *g_gpu.vram);
+            if (!srcp) cmd.set_storage_buffer(0, 3, *g_gpu.vram);
             void *ub = cmd.allocate_constant_data(0, 2, sizeof(r.clut));
             std::memcpy(ub, r.clut, sizeof(r.clut));
             cmd.draw(3);
@@ -490,10 +509,10 @@ namespace seamvk
                 auto buf = dev.create_buffer(bi);
                 auto c2 = dev.request_command_buffer();
                 const VkImageLayout was = ct.layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_IMAGE_LAYOUT_GENERAL : ct.layout;
-                c2->image_barrier(*ct.img, was, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                c2->image_barrier(*ct.img, gl(ct, was), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
                 c2->copy_image_to_buffer(*buf, *ct.img, 0, {}, { w, h, 1 }, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
                 c2->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
-                c2->image_barrier(*ct.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, was, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+                c2->image_barrier(*ct.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, gl(ct, was), VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
                 Vulkan::Fence fe; dev.submit(c2, &fe); fe->wait();
                 const uint8_t *px = static_cast<const uint8_t *>(dev.map_host_buffer(*buf, Vulkan::MEMORY_ACCESS_READ_BIT));
                 char path[512];
@@ -908,6 +927,26 @@ namespace seamvk
         auto cmd = dev.request_command_buffer();
         g_gpu.tsCur.clear(); tsMark(*cmd, 0);
         g_gpu.cslot = g_gpu.ringNext % 3u; g_gpu.coff = 0;   // [batch] the constants ring slot of this frame (its fence is waited two frames later)
+        // [hoist] decodes from the VRAM copy read only the copy (updated in stream order among themselves) and never a pass target, so
+        // their GPU work runs before the first draw pass instead of breaking it (each break: end pass, barriers, decode pass, begin
+        // pass with LOAD; 40 a frame). Each hoisted decode gets its own image from a pool; the slot is pointed at it when the
+        // stream reaches the decode, so a slot decoded twice in a frame still binds the right version.
+        static const bool s_hoist = [](){ const char *v = std::getenv("PS2X_SEAMVK_HOIST"); return !(v && v[0] == '0'); }();
+        std::vector<Vulkan::ImageHandle> hoistImg;
+        if (s_hoist && !f.rtDecodes.empty() && !g_gpu.dumpRt)
+        {
+            hoistImg.resize(f.rtDecodes.size());
+            size_t k = 0; tsMark(*cmd, 1);
+            for (const seamgs::Draw &d : f.draws)
+                if (d.kind == 2 && d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size() && f.rtDecodes[d.rt].fromVram)
+                {
+                    if (k >= g_gpu.hoistPool.size()) g_gpu.hoistPool.resize(k + 1u);
+                    runRtDecode(*cmd, dev, f, f.rtDecodes[d.rt], &g_gpu.hoistPool[k]);
+                    g_gpu.decTexels += uint64_t(f.rtDecodes[d.rt].w) * f.rtDecodes[d.rt].h;
+                    hoistImg[d.rt] = g_gpu.hoistPool[k]; ++k; ++g_gpu.decHoisted;
+                }
+            tsMark(*cmd, 0);
+        }
         // ---- the ordered draws, into their FRAME / ZBUF targets ----
         uint32_t curFbp = ~0u, curZbp = ~0u; bool inPass = false;
         // Draws that sample pages the game rendered into (the post chain: Z as an index texture, rendered
@@ -932,6 +971,9 @@ namespace seamvk
                 char suf[32]; std::snprintf(suf, sizeof(suf), "_at%zu", di);
                 dumpTargets(dev, std::getenv("PS2X_SEAMVK_TEXDUMP"), suf);
             }
+            static const int s_skip = [](){ const char *v = std::getenv("PS2X_SEAMVK_SKIP"); return v && v[0] ? std::atoi(v) : 0; }();   // [perf attribution] 1 = no rt decodes, 2 = no main draws, 4 = no native steps (the picture breaks; only the GPU time matters)
+            if (s_skip && ((d.kind == 2 && (s_skip & 1)) || (d.kind <= 1 && (s_skip & 2)) || (d.kind == 3 && (s_skip & 4))
+                || (d.kind <= 1 && (s_skip & 8) && d.st.texFromDrawn) || (d.kind <= 1 && (s_skip & 16) && d.st.date != 0u) || (d.kind == 0 && (s_skip & 32)) || (d.kind == 1 && (s_skip & 64)))) { ++drawIdx; continue; }   // 32 = no GS packet draws, 64 = no seam meshes   // 8 = no draws sampling a decoded target, 16 = no DATE draws
             if (d.kind == 3)
             {   // [postnative] an engine-seam step at its stream position
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
@@ -939,11 +981,18 @@ namespace seamvk
                 curFbp = ~0u;
                 continue;
             }
+            if (d.kind == 2 && d.rt >= 0 && (size_t)d.rt < hoistImg.size() && hoistImg[d.rt])
+            {   // [hoist] decoded before the first pass: point the slot at that image, no pass break
+                const int32_t slot = f.rtDecodes[d.rt].slot;
+                if ((size_t)slot >= g_gpu.tex.size()) g_gpu.tex.resize(size_t(slot) + 1u);
+                g_gpu.tex[slot] = hoistImg[d.rt];
+                continue;
+            }
             if (d.kind == 2)
             {
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
-                tsMark(*cmd, 1);
-                if (d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size()) runRtDecode(*cmd, dev, f, f.rtDecodes[d.rt]);
+                const size_t nb = g_gpu.tsCur.size(); tsMark(*cmd, 1);
+                if (d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size()) { runRtDecode(*cmd, dev, f, f.rtDecodes[d.rt]); g_gpu.decTexels += uint64_t(f.rtDecodes[d.rt].w) * f.rtDecodes[d.rt].h; if (g_gpu.tsCur.size() > nb) g_gpu.decBracketed++; }
                 tsMark(*cmd, 0);
                 curFbp = ~0u;
                 continue;
@@ -1023,6 +1072,7 @@ namespace seamvk
                 ++g_gpu.draws; g_gpu.verts += d.count;
                 continue;
             }
+            if (gpuTimeFull()) tsMark(*cmd, d.kind == 1 ? 6 : 0);   // [gputime] =2: GS packet draws (0) vs seam meshes (6)
             const bool dateSplit = stencilDate() && t.date != 0u && !(t.abe && t.aC == 1u);   // [stencildate] colour pass (stencil test) + stencil pass (write)
             auto issue = [&](int mode)
             {
@@ -1238,18 +1288,20 @@ namespace seamvk
 
         if ((++g_gpu.frames % 300u) == 0u)
         {
-            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws (%.1f on host meshes), %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f VRAM pages up, %.1f batches of %.0f chunks, %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
+            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws (%.1f on host meshes), %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f VRAM pages up, %.1f batches of %.0f chunks, %.1f aliased-format draws skipped per frame; %.1f decodes hoisted (%llu pool); %zu targets %zu depths\n",
                          (unsigned long long)g_gpu.frames, double(g_gpu.draws) / 300.0, double(g_gpu.verts) / 300.0, double(g_gpu.passes) / 300.0,
-                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.dateHost) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.nativeSteps) / 300.0, double(g_gpu.vramPagesUp) / 300.0, double(g_gpu.batches) / 300.0, double(g_gpu.chunksBatched) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
-            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.dateHost = 0; g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = g_gpu.nativeSteps = g_gpu.vramPagesUp = g_gpu.batches = g_gpu.chunksBatched = 0;
+                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.dateHost) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.nativeSteps) / 300.0, double(g_gpu.vramPagesUp) / 300.0, double(g_gpu.batches) / 300.0, double(g_gpu.chunksBatched) / 300.0, double(g_gpu.aliasedDraws) / 300.0, double(g_gpu.decHoisted) / 300.0, (unsigned long long)g_gpu.hoistPool.size(), g_gpu.targets.size(), g_gpu.depths.size());
+            const double rtDecPer = double(g_gpu.rtDecodes) / 300.0;
+            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.dateHost = 0; g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = g_gpu.nativeSteps = g_gpu.vramPagesUp = g_gpu.batches = g_gpu.chunksBatched = g_gpu.decHoisted = g_gpu.hoistSkippedFrames = 0;
             std::fprintf(stderr, "[seamvk] per frame: take %.2f ms, record %.2f ms, submit %.2f ms, wait %.2f ms\n", g_gpu.msTake / 300.0, g_gpu.msRecord / 300.0, g_gpu.msSubmit / 300.0, g_gpu.msWait / 300.0);
+            if (gpuTime() && !g_gpu.gpuFrames) std::fprintf(stderr, "[seamvk] gputime: no resolved frames; pending %zu, front marks %zu, back q %s signalled %d\n", g_gpu.tsPending.size(), g_gpu.tsPending.empty() ? 0u : g_gpu.tsPending.front().size(), (!g_gpu.tsPending.empty() && g_gpu.tsPending.front().back().q) ? "set" : "null", (!g_gpu.tsPending.empty() && g_gpu.tsPending.front().back().q) ? int(g_gpu.tsPending.front().back().q->is_signalled()) : -1);
             if (g_gpu.gpuFrames)
             {
                 const double n = double(g_gpu.gpuFrames);
-                std::fprintf(stderr, "[seamvk] gpu ms/frame: uploads %.2f, main draws %.2f, rt decodes %.2f, alias16 %.2f, native steps %.2f, compose %.2f (total %.2f)\n",
-                             g_gpu.gpuMs[5] / n, g_gpu.gpuMs[0] / n, g_gpu.gpuMs[1] / n, g_gpu.gpuMs[2] / n, g_gpu.gpuMs[3] / n, g_gpu.gpuMs[4] / n,
-                             (g_gpu.gpuMs[0] + g_gpu.gpuMs[1] + g_gpu.gpuMs[2] + g_gpu.gpuMs[3] + g_gpu.gpuMs[4] + g_gpu.gpuMs[5]) / n);
-                for (double &m : g_gpu.gpuMs) m = 0; g_gpu.gpuFrames = 0;
+                std::fprintf(stderr, "[seamvk] gpu ms/frame: uploads %.2f, GS packet draws %.2f, seam meshes %.2f, rt decodes %.2f (%.1f of %.1f decodes bracketed, %.0f ktexels/frame), alias16 %.2f, native steps %.2f, compose %.2f (total %.2f)\n",
+                             g_gpu.gpuMs[5] / n, g_gpu.gpuMs[0] / n, g_gpu.gpuMs[6] / n, g_gpu.gpuMs[1] / n, double(g_gpu.decBracketed) / 300.0, rtDecPer, double(g_gpu.decTexels) / 300.0 / 1000.0, g_gpu.gpuMs[2] / n, g_gpu.gpuMs[3] / n, g_gpu.gpuMs[4] / n,
+                             (g_gpu.gpuMs[0] + g_gpu.gpuMs[1] + g_gpu.gpuMs[2] + g_gpu.gpuMs[3] + g_gpu.gpuMs[4] + g_gpu.gpuMs[5] + g_gpu.gpuMs[6]) / n);
+                for (double &m : g_gpu.gpuMs) m = 0; g_gpu.gpuFrames = 0; g_gpu.decTexels = g_gpu.decBracketed = 0;
             }
             g_gpu.msTake = g_gpu.msRecord = g_gpu.msSubmit = g_gpu.msWait = 0;
         }
