@@ -408,3 +408,23 @@ shaders in `src/lib/seamvk/`). What it is and is not:
 - Recompiled functions named above: `games/bt3/work/output/<name>_0x<addr>.cpp`.
 - Prior performance record: `docs/BOTTLENECK-INVESTIGATION.md` (Windows, GL
   replay, empty JIT table at the time; superseded by the 2026-09-25 profile).
+
+
+## 2026-09-26 additions (native renderer)
+
+- Destination-alpha test in-pass: the colour target is also its subpass's input attachment (Granite
+  emits the colour self-dependency); a DATE draw reads its own pixel with `subpassLoad` after a
+  by-region barrier. No pass break, no snapshot copy: 419 -> 5 passes per fight frame.
+- FBA (TEST/FBA register): forces bit 7 of the alpha WRITTEN to the frame only. The blend factor
+  As is the source alpha before FBA. The HUD's additive flashes (`(0,2,0,1)`, vertex alpha 0,
+  FBA=1, DATE on the mask bit) add nothing but leave the mask bit; applying FBA before the blend
+  made them add at full strength, which was the white HUD.
+- Per-program w sign of the VU1 projections (stage/effects/two-pass character positive, single-pass
+  character negative), clip against the program's clip matrix with gl_ClipDistance, saturating GS
+  depth: the stage, near ground and characters render; the two-pass character program draws the
+  host mesh once per distinct state (outline pass in context 1 hidden by the game's 64x64 scissor
+  while the palette target is live, lit pass in context 2 with the toon ramp coordinates).
+- Diagnostics: PS2X_SEAMVK_DUMPGAMEFRAME=<n> (draw list, register events, palettes, target/mirror/
+  backend VRAM dumps with PS2X_SEAMVK_TEXDUMP), PS2X_SEAMVK_PROBE=x,y (every draw covering a
+  pixel with its sampled texel), PS2X_SEAMVK_DATEDBG, PS2X_SEAMGS_WATCH, PS2X_SEAMGS_TEXTRACE,
+  tools/run_watchdog.sh (runs under gdb, dumps threads on a hang).
