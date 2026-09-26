@@ -58,6 +58,9 @@ namespace seamvk
         const uint32_t kRtFrag[] = {
 #include "seamvk/rtdecode.frag.inc"
         };
+        const uint32_t kVramFrag[] = {
+#include "seamvk/rtdecode_vram.frag.inc"
+        };
         const uint32_t kAliasFrag[] = {
 #include "seamvk/alias16.frag.inc"
         };
@@ -85,7 +88,8 @@ namespace seamvk
         struct Target { Vulkan::ImageHandle img; VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; bool cleared = false; bool aliasedDirty = false; };   // aliasedDirty: a draw through the other pixel format was skipped since the last draw of its own
         struct Gpu
         {
-            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutline = nullptr, *progDepthMask = nullptr;
+            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progVram = nullptr;
+            Vulkan::BufferHandle vram;          // [gpudecode] the GPU copy of GS VRAM (4 MB), pages uploaded in stream order
             Vulkan::ImageHandle out;            // the composed frame
             Vulkan::ImageHandle white;          // 1x1 for untextured draws
             Vulkan::ImageHandle snap;           // destination snapshot for DATE draws
@@ -100,7 +104,7 @@ namespace seamvk
             std::vector<Vulkan::ImageHandle> tex;
             uint32_t w = 0, h = 0, scale = 1;
             bool failed = false;
-            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0, nativeSteps = 0;
+            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0, nativeSteps = 0, vramPagesUp = 0;
             double msTake = 0, msRecord = 0, msSubmit = 0, msWait = 0;
         };
         Gpu g_gpu;
@@ -136,6 +140,15 @@ namespace seamvk
                 rf.sets[0].sampled_image_mask = (1u << 0) | (1u << 1); rf.sets[0].meta[0].array_size = 1; rf.sets[0].meta[1].array_size = 1;
                 rf.sets[0].uniform_buffer_mask = 1u << 2; rf.sets[0].meta[2].array_size = 1;
                 g_gpu.progRt = dev.request_program(kRtVert, sizeof(kRtVert), kRtFrag, sizeof(kRtFrag), &rv, &rf);
+                Vulkan::ResourceLayout vv = {}, vf = {};   // [gpudecode] decode from the VRAM copy: palette (2), VRAM (3)
+                vv.output_mask = 0x0u; vv.push_constant_size = sizeof(RtPC); vf.output_mask = 0x1u; vf.push_constant_size = sizeof(RtPC);
+                vf.sets[0].uniform_buffer_mask = 1u << 2; vf.sets[0].meta[2].array_size = 1;
+                vf.sets[0].storage_buffer_mask = 1u << 3; vf.sets[0].meta[3].array_size = 1;
+                g_gpu.progVram = dev.request_program(kRtVert, sizeof(kRtVert), kVramFrag, sizeof(kVramFrag), &vv, &vf);
+                {
+                    Vulkan::BufferCreateInfo bi = {}; bi.size = 4u << 20; bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.domain = Vulkan::BufferDomain::Device;
+                    g_gpu.vram = dev.create_buffer(bi);
+                }
                 Vulkan::ResourceLayout av = {}, af = {};   // alias16: fullscreen triangle, target as input attachment (binding 2), texture (1), rects (0)
                 av.output_mask = 0x0u; av.push_constant_size = sizeof(AliasPC);
                 af.sets[0].uniform_buffer_mask = 1u << 0; af.sets[0].meta[0].array_size = 1;
@@ -151,7 +164,7 @@ namespace seamvk
                 Vulkan::ResourceLayout dv = {}, df = {};   // depth mask: fullscreen triangle, depth image (1)
                 dv.output_mask = 0x0u; df.sets[0].sampled_image_mask = 1u << 1; df.sets[0].meta[1].array_size = 1; df.output_mask = 0x1u;
                 g_gpu.progDepthMask = dev.request_program(kRtVert, sizeof(kRtVert), kDepthMaskFrag, sizeof(kDepthMaskFrag), &dv, &df);
-                if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progPresent || !g_gpu.progRt || !g_gpu.progAlias || !g_gpu.progOutline || !g_gpu.progDepthMask) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
+                if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progPresent || !g_gpu.progRt || !g_gpu.progAlias || !g_gpu.progOutline || !g_gpu.progDepthMask || !g_gpu.progVram || !g_gpu.vram) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
                 const uint32_t whitePx = 0xFFFFFFFFu;
                 Vulkan::ImageInitialData init = { &whitePx, 0, 0 };
                 g_gpu.white = dev.create_image(Vulkan::ImageCreateInfo::immutable_2d_image(1, 1, VK_FORMAT_R8G8B8A8_UNORM), &init);
@@ -240,14 +253,32 @@ namespace seamvk
         }
 
         // kind 2: build texture slot r.slot from a render target (see rtdecode.frag)
-        void runRtDecode(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::RtDecode &r)
+        void runRtDecode(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::FrameList &f, const seamgs::RtDecode &r)
         {
-            auto it = g_gpu.targets.find(r.srcFbp);
-            if (it == g_gpu.targets.end() || !it->second.img || r.slot < 0 || r.w == 0 || r.h == 0) return;
-            Target &src = it->second;
-            toSampled(cmd, src);
-            Target *dz = nullptr;
-            if (r.depthSrc) { auto zi = g_gpu.depths.find(r.srcFbp | ((src.img->get_width() / g_gpu.scale) << 16)); if (zi != g_gpu.depths.end() && zi->second.img) { dz = &zi->second; depthToSampled(cmd, *dz); } }
+            if (r.slot < 0 || r.w == 0 || r.h == 0) return;
+            Target *srcp = nullptr; Target *dz = nullptr;
+            if (r.fromVram)
+            {   // [gpudecode] bring the pages this decode needs up to date, then read them in the shader
+                if (r.upCount)
+                {
+                    for (uint32_t i = 0; i < r.upCount; ++i)
+                    {
+                        const uint32_t page = f.vramPages[r.upFirst + i];
+                        void *dst = cmd.update_buffer(*g_gpu.vram, VkDeviceSize(page) * 8192u, 8192u);
+                        std::memcpy(dst, f.vramBytes.data() + size_t(r.upFirst + i) * 8192u, 8192u);
+                    }
+                    cmd.barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+                    g_gpu.vramPagesUp += r.upCount;
+                }
+            }
+            else
+            {
+                auto it = g_gpu.targets.find(r.srcFbp);
+                if (it == g_gpu.targets.end() || !it->second.img) return;
+                srcp = &it->second;
+                toSampled(cmd, *srcp);
+                if (r.depthSrc) { auto zi = g_gpu.depths.find(r.srcFbp | ((srcp->img->get_width() / g_gpu.scale) << 16)); if (zi != g_gpu.depths.end() && zi->second.img) { dz = &zi->second; depthToSampled(cmd, *dz); } }
+            }
             if ((size_t)r.slot >= g_gpu.tex.size()) g_gpu.tex.resize(size_t(r.slot) + 1u);
             Vulkan::ImageHandle &img = g_gpu.tex[r.slot];
             if (g_gpu.dumpRt) img.reset();   // dumping: every decode keeps its own image (a slot decoded twice in the frame would show only the last)
@@ -260,7 +291,7 @@ namespace seamvk
             cmd.image_barrier(*img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
             Vulkan::RenderPassInfo rp = {};
             rp.num_color_attachments = 1; rp.color_attachments[0] = &img->get_view(); rp.clear_attachments = 1u << 0; rp.store_attachments = 1u << 0;
-            if (src.aliasedDirty)
+            if (srcp && srcp->aliasedDirty)
             {   // the pages were last written through the other pixel format (skipped): read back as nothing
                 cmd.begin_render_pass(rp); cmd.end_render_pass();
                 cmd.image_barrier(*img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -271,18 +302,22 @@ namespace seamvk
             }
             cmd.begin_render_pass(rp);
             cmd.set_opaque_state();
-            cmd.set_program(g_gpu.progRt);
+            cmd.set_program(r.fromVram ? g_gpu.progVram : g_gpu.progRt);
             cmd.set_cull_mode(VK_CULL_MODE_NONE);
             cmd.set_depth_test(false, false);
             cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
             RtPC pc = {};
             pc.tex[0] = r.tbp; pc.tex[1] = r.tbw; pc.tex[2] = r.psm; pc.tex[3] = 0;
             pc.clut[0] = r.cbp; pc.clut[1] = r.cpsm; pc.clut[2] = r.csa; pc.clut[3] = (r.clutFromTarget ? 1u : 0u) | ((r.depthSrc && dz) ? 2u : 0u);
-            pc.src[0] = r.srcFbp; pc.src[1] = src.img->get_width() / (g_gpu.scale * 64u); pc.src[2] = src.img->get_height() / (g_gpu.scale * 32u); pc.src[3] = g_gpu.scale;   // the image's own geometry, not the front end's last notion of it
+            if (srcp) { pc.src[0] = r.srcFbp; pc.src[1] = srcp->img->get_width() / (g_gpu.scale * 64u); pc.src[2] = srcp->img->get_height() / (g_gpu.scale * 32u); pc.src[3] = g_gpu.scale; }   // the image's own geometry, not the front end's last notion of it
             pc.texa[0] = (uint32_t)(r.texa & 0xFFu); pc.texa[1] = (uint32_t)((r.texa >> 15) & 1u); pc.texa[2] = (uint32_t)((r.texa >> 32) & 0xFFu); pc.texa[3] = 0;
             cmd.push_constants(&pc, 0, sizeof(pc));
-            cmd.set_texture(0, 0, src.img->get_view(), Vulkan::StockSampler::NearestClamp);
-            cmd.set_texture(0, 1, dz ? dz->img->get_view() : g_gpu.white->get_view(), Vulkan::StockSampler::NearestClamp);
+            if (srcp)
+            {
+                cmd.set_texture(0, 0, srcp->img->get_view(), Vulkan::StockSampler::NearestClamp);
+                cmd.set_texture(0, 1, dz ? dz->img->get_view() : g_gpu.white->get_view(), Vulkan::StockSampler::NearestClamp);
+            }
+            else cmd.set_storage_buffer(0, 3, *g_gpu.vram);
             void *ub = cmd.allocate_constant_data(0, 2, sizeof(r.clut));
             std::memcpy(ub, r.clut, sizeof(r.clut));
             cmd.draw(3);
@@ -746,8 +781,8 @@ namespace seamvk
                 if (d.kind == 2 && d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size())
                 {
                     const seamgs::RtDecode &r = f.rtDecodes[d.rt];
-                    std::fprintf(stderr, "[seamvk]  draw %zu RTDECODE slot %d %ux%u tbp 0x%x tbw %u psm %u cbp 0x%x src fbp 0x%x fbw %u rows %u depthSrc %u clutFromTarget %u\n",
-                                 i, r.slot, r.w, r.h, r.tbp, r.tbw, r.psm, r.cbp, r.srcFbp, r.srcFbw, r.srcRows, r.depthSrc, r.clutFromTarget);
+                    std::fprintf(stderr, "[seamvk]  draw %zu RTDECODE%s slot %d %ux%u tbp 0x%x tbw %u psm %u cbp 0x%x src fbp 0x%x fbw %u rows %u depthSrc %u clutFromTarget %u\n",
+                                 i, r.fromVram ? " (vram)" : "", r.slot, r.w, r.h, r.tbp, r.tbw, r.psm, r.cbp, r.srcFbp, r.srcFbw, r.srcRows, r.depthSrc, r.clutFromTarget);
                     continue;
                 }
                 if (d.kind != 0) continue;   // list the GS draws
@@ -796,7 +831,7 @@ namespace seamvk
             if (d.kind == 2)
             {
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
-                if (d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size()) runRtDecode(*cmd, dev, f.rtDecodes[d.rt]);
+                if (d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size()) runRtDecode(*cmd, dev, f, f.rtDecodes[d.rt]);
                 curFbp = ~0u;
                 continue;
             }
@@ -1004,10 +1039,10 @@ namespace seamvk
 
         if ((++g_gpu.frames % 300u) == 0u)
         {
-            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws, %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
+            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws, %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f VRAM pages up, %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
                          (unsigned long long)g_gpu.frames, double(g_gpu.draws) / 300.0, double(g_gpu.verts) / 300.0, double(g_gpu.passes) / 300.0,
-                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.nativeSteps) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
-            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = g_gpu.nativeSteps = 0;
+                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.nativeSteps) / 300.0, double(g_gpu.vramPagesUp) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
+            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = g_gpu.nativeSteps = g_gpu.vramPagesUp = 0;
             std::fprintf(stderr, "[seamvk] per frame: take %.2f ms, record %.2f ms, submit %.2f ms, wait %.2f ms\n", g_gpu.msTake / 300.0, g_gpu.msRecord / 300.0, g_gpu.msSubmit / 300.0, g_gpu.msWait / 300.0);
             g_gpu.msTake = g_gpu.msRecord = g_gpu.msSubmit = g_gpu.msWait = 0;
         }

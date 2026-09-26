@@ -3,8 +3,12 @@
 // pixel holding that byte (inverse swizzle) -> palette. Exact for CT32 targets holding GS bytes; the Z24 bits of a
 // depth buffer come from the depth image, its top byte from the colour target the game writes it through.
 #include "gs_tables.glsl"
+#ifdef FROM_VRAM
+layout(set = 0, binding = 3, std430) readonly buffer Vram { uint w[]; } uVram;   // the GPU copy of GS VRAM (4 MB)
+#else
 layout(set = 0, binding = 0) uniform sampler2D uSrc;     // the colour target (RGBA8 = GS bytes)
 layout(set = 0, binding = 1) uniform sampler2D uDepth;   // D32 for Z reads (or a dummy)
+#endif
 layout(set = 0, binding = 2, std140) uniform Clut { uvec4 clut[64]; } uClut;   // 256 entries from the mirror
 layout(push_constant) uniform PC
 {
@@ -63,6 +67,9 @@ ivec2 rtPixelL(uint a, bool zlayout)
     return ivec2(int(px * 64u + uint(ib & 15) * 8u + uint(ic & 15)), int(py * 32u + uint(ib >> 4) * 8u + uint(ic >> 4)));
 }
 ivec2 rtPixel(uint a) { return rtPixelL(a, false); }
+#ifdef FROM_VRAM
+uint rtDword(uint a) { return uVram.w[(a & 0x3FFFFFu) >> 2]; }
+#else
 uint rtDword(uint a)
 {
     ivec2 p = rtPixel(a & ~3u);
@@ -78,6 +85,7 @@ uint rtDword(uint a)
     }
     return d;
 }
+#endif
 uint expand16(uint c)
 {
     uint r = (c & 0x1Fu) << 3, g = ((c >> 5) & 0x1Fu) << 3, b = ((c >> 10) & 0x1Fu) << 3;

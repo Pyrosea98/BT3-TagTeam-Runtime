@@ -57,6 +57,7 @@ namespace seamgs
         uint64_t texa = 0;
         uint32_t srcFbp = 0, srcFbw = 0, srcRows = 0;
         uint8_t clutFromTarget = 0, depthSrc = 0;
+        uint8_t fromVram = 0; uint32_t upFirst = 0, upCount = 0;   // decode from the GPU copy of VRAM: pages [upFirst, upFirst+upCount) of FrameList::vramPages are uploaded first
         uint32_t clut[256] = {};
     };
 
@@ -80,6 +81,7 @@ namespace seamgs
         std::vector<uint8_t> verts;
         std::vector<TexUpload> texUploads;
         std::vector<RtDecode> rtDecodes;
+        std::vector<uint16_t> vramPages; std::vector<uint8_t> vramBytes;   // page snapshots (8 KB each, in vramPages order) for the GPU VRAM copy
         std::vector<std::array<uint32_t, 256>> stepCluts;   // kind 3 draws: the palette a native step needs, captured at the marker (the mirror moves on)
         std::vector<int32_t> texFrees;
         struct RegEvent { uint32_t drawIndex; uint8_t path, hostGif, addr; uint64_t value; };   // FRAME/SCISSOR writes in stream order (diagnostics)

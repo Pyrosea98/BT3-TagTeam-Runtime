@@ -33,6 +33,7 @@ namespace seamgs
         constexpr uint32_t kPages = 512;
         uint8_t g_vram[kVramBytes];
         uint32_t g_pageWrite[kPages];   // stamp of the last mirror write touching the page
+        uint32_t g_pageUploaded[kPages];   // [gpudecode] write stamp of the page as last snapshotted for the GPU VRAM copy
         uint32_t g_pageDrawn[kPages];   // stamp at the last DRAW into the page (pixels the mirror never sees)
         uint32_t g_stamp = 1;           // bumped per transfer
         // PS2X_SEAMGS_WATCH=<lo>-<hi> (hex blocks): log the image transfers and scratch-raster writes that land in that block range
@@ -176,12 +177,13 @@ namespace seamgs
             bool indexed = false; uint32_t clut[256] = {};      // the palette as decoded from the mirror
             uint16_t firstPage = 0xFFFFu;
             bool rtBased = false; uint32_t rtFbp = 0, rtStamp = 0;   // decoded from a target: valid until the target is drawn again
+            bool gpuDecode = false;                              // decoded on the GPU from the VRAM copy (no CPU decode, no rgba)
         };
         std::vector<TexEntry> g_tex;
         std::vector<int32_t> g_texFree;
         std::unordered_map<uint64_t, int32_t> g_texByKey;
         bool g_texDirty = true; int32_t g_curTex = -1; uint32_t g_curTexW = 0, g_curTexH = 0;
-        uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0, g_cpuSprites = 0, g_cpuTris = 0, g_rtDecodes = 0;
+        uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0, g_cpuSprites = 0, g_cpuTris = 0, g_rtDecodes = 0, g_gpuDecodes = 0;
         double g_msParse = 0, g_msDecode = 0, g_msRaster = 0, g_msHost = 0;
         uint32_t g_busyFrames = 0;   // frames so far with > 1500 draws (a fight): PS2X_SEAMVK_TEXDUMP_FROM=1 starts there
         std::vector<int32_t> g_retired;   // slots freed by the renderer after this frame; reusable from the next
@@ -251,17 +253,34 @@ namespace seamgs
                 const uint32_t p0 = pageOf(psm, tbp, tbw, 0, 0), p1 = pageOf(psm, tbp, tbw, w - 1u, h - 1u);
                 for (uint32_t p = std::min(p0, p1); p <= std::max(p0, p1) && p < kPages; ++p) if (g_pageDrawn[p] >= g_pageWrite[p] && g_pageDrawn[p] != 0u) { anyDrawn = true; break; }
             }
-            rgba.resize(anyDrawn ? 0u : size_t(w) * h * 4u);
-            uint32_t *dst = anyDrawn ? nullptr : reinterpret_cast<uint32_t *>(rgba.data());
+            // [gpudecode] PS2X_SEAMVK_GPUDECODE_MIN=<texels> (default 65536; 0 = every texture, -1 = none): textures at least
+            // this big are not decoded here; the renderer decodes them from its GPU copy of VRAM (rtdecode.frag FROM_VRAM),
+            // this side only lists the pages (snapshotted when their write stamp moved) and reads the palette.
+            static const long long s_gpuMin = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUDECODE_MIN"); return v && v[0] ? std::atoll(v) : 65536ll; }();
+            const bool gpu = !anyDrawn && s_gpuMin >= 0 && (long long)w * h >= s_gpuMin;
+            rgba.resize((anyDrawn || gpu) ? 0u : size_t(w) * h * 4u);
+            uint32_t *dst = (anyDrawn || gpu) ? nullptr : reinterpret_cast<uint32_t *>(rgba.data());
             uint32_t pagesBits[16] = {}, clutBits[16] = {};
             const bool indexed = psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH;
             uint32_t clut[256];
             if (indexed) readClut(cbp, cpsm, csa, texa, clut, clutBits);
             e.indexed = indexed;
             if (indexed) std::memcpy(e.clut, clut, sizeof(clut));
+            e.gpuDecode = gpu;
+            if (gpu)
+            {   // the pages the texture rect spans, by page corners (page size by format: 64x32, 64x64, 128x64, 128x128)
+                const uint32_t pw = (psm == PSMT8 || psm == PSMT4) ? 128u : 64u;
+                const uint32_t ph = psm == PSMT4 ? 128u : (psm == PSMT8 || psm == PSMCT16 || psm == PSMCT16S || psm == PSMZ16 || psm == PSMZ16S) ? 64u : 32u;
+                for (uint32_t y = 0; y < h; y += ph)
+                    for (uint32_t x = 0; x < w; x += pw)
+                    {
+                        const uint32_t p = pageOf(psm, tbp, tbw, x, y);
+                        if (p < kPages) pagesBits[p >> 5] |= 1u << (p & 31u);
+                    }
+            }
             const uint32_t csaOff = (psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH) ? (csa & 15u) * 16u : 0u;
             const uint32_t step = anyDrawn ? 8u : 1u;   // page bookkeeping only: pages are >= 32 px, a stride of 8 touches them all
-            for (uint32_t y = 0; y < h; y += step)
+            for (uint32_t y = 0; y < (gpu ? 0u : h); y += step)   // (GPU-decoded textures: pages listed above, nothing to read here)
             {
                 for (uint32_t x = 0; x < w; x += step)
                 {
@@ -333,6 +352,32 @@ namespace seamgs
                 if (!best || kv.second.drawStamp > best->second.drawStamp) best = &kv;
             }
             return best;
+        }
+        // [gpudecode] decode on the GPU from its VRAM copy: snapshot the texture's pages whose bytes changed since the copy
+        // last saw them (in stream order, so a page rewritten between two decodes gets both versions), pass the palette.
+        void vramDecodeFor(int32_t slot, TexEntry &e, uint64_t tex0)
+        {
+            RtDecode r;
+            r.slot = slot; r.w = e.w; r.h = e.h; r.fromVram = 1;
+            r.tbp = (uint32_t)(tex0 & 0x3FFFu); r.tbw = (uint32_t)((tex0 >> 14) & 0x3Fu); r.psm = (uint32_t)((tex0 >> 20) & 0x3Fu);
+            r.cbp = (uint32_t)((tex0 >> 37) & 0x3FFFu); r.cpsm = (uint32_t)((tex0 >> 51) & 0xFu); r.csa = (uint32_t)((tex0 >> 56) & 0x1Fu);
+            r.texa = g_r.texa;
+            if (e.indexed) std::memcpy(r.clut, e.clut, sizeof(r.clut));
+            r.upFirst = (uint32_t)g_list.vramPages.size();
+            for (const auto &pg : e.pages)
+            {
+                const uint32_t p = pg.first;
+                if (g_pageUploaded[p] == g_pageWrite[p] && g_pageWrite[p] != 0u) continue;
+                g_pageUploaded[p] = g_pageWrite[p] ? g_pageWrite[p] : 1u;
+                g_list.vramPages.push_back((uint16_t)p);
+                const size_t off = g_list.vramBytes.size(); g_list.vramBytes.resize(off + 8192u);
+                std::memcpy(g_list.vramBytes.data() + off, g_vram + size_t(p) * 8192u, 8192u);
+            }
+            r.upCount = (uint32_t)g_list.vramPages.size() - r.upFirst;
+            Draw d; d.kind = 2; d.rt = (int32_t)g_list.rtDecodes.size(); d.st.tex = slot;
+            g_list.rtDecodes.push_back(r);
+            g_list.draws.push_back(d);
+            ++g_gpuDecodes;
         }
         bool rtDecodeFor(int32_t slot, TexEntry &e, uint64_t tex0)
         {
@@ -462,6 +507,7 @@ namespace seamgs
             {   // decoded from the target on the GPU, in stream order: no mirror upload
                 e.drawnPages = false;
             }
+            else if (e.gpuDecode) vramDecodeFor(slot, e, tex0);   // [gpudecode] decoded on the GPU from the VRAM copy, in stream order
             else if (!rgba.empty()) g_list.texUploads.push_back(TexUpload{ slot, e.w, e.h, std::move(rgba) });
             g_curTexW = e.w; g_curTexH = e.h;
             return slot;
@@ -1051,9 +1097,9 @@ namespace seamgs
             s_last = g_frame;
             std::fprintf(stderr, "[seamgs] per frame: parse %.2f ms (decode %.2f, scratch raster %.2f, host draws %.2f)\n", g_msParse / 300.0, g_msDecode / 300.0, g_msRaster / 300.0, g_msHost / 300.0);
             g_msParse = g_msDecode = g_msRaster = g_msHost = 0;
-            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu\n",
-                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes);
-            g_texLookups = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = 0;
+            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu\n",
+                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes);
+            g_texLookups = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = 0;
             printTargetHist();
             std::fprintf(stderr, "[seamgs] host draws in/out/dropped per prog:");
             for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %d:%llu/%llu/%llu", i, (unsigned long long)g_hostIn[i], (unsigned long long)g_hostOut[i], (unsigned long long)g_hostDropped[i]);
@@ -1069,9 +1115,9 @@ namespace seamgs
         if (g_list.draws.size() > 1500u) ++g_busyFrames;
         evictTextures();
         g_list.frame = g_frame;
-        out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees); out.rtDecodes.swap(g_list.rtDecodes); out.stepCluts.swap(g_list.stepCluts); out.regEvents.swap(g_list.regEvents);
+        out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees); out.rtDecodes.swap(g_list.rtDecodes); out.vramPages.swap(g_list.vramPages); out.vramBytes.swap(g_list.vramBytes); out.stepCluts.swap(g_list.stepCluts); out.regEvents.swap(g_list.regEvents);
         out.frame = g_frame;
-        g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear(); g_list.rtDecodes.clear(); g_list.stepCluts.clear(); g_list.regEvents.clear();
+        g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear(); g_list.rtDecodes.clear(); g_list.vramPages.clear(); g_list.vramBytes.clear(); g_list.stepCluts.clear(); g_list.regEvents.clear();
         g_texFree.insert(g_texFree.end(), g_retired.begin(), g_retired.end()); g_retired.clear();
         g_texDirty = true;   // a new frame: re-resolve (the renderer may have dropped slots)
         report();
