@@ -98,6 +98,13 @@ public:
     // herede su opacidad.
     void drawPerfHud();
 
+    // [mmpopup] Test plate in the bottom-right corner, shown only while the main menu is up.
+    // Wanted() is what the draw() early-out asks, so a retracted panel with the perf HUD off
+    // still opens a frame for it (UiBegin/UiEnd may only happen once per iteration). Off unless
+    // PS2X_MAINMENU_POPUP_TEST=1; scaffold for the Netplay popup, not a shipped feature.
+    static bool mainMenuTestPlateWanted();
+    void drawMainMenuTestPlate();
+
     void shutdown();
 
 private:

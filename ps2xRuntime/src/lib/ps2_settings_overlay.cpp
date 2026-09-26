@@ -16,6 +16,7 @@
 #include "gfx/ps2x_ui.h"
 #include "runtime/ps2_video_status.h"   // [video] the status dots
 #include "runtime/ps2x_perf_status.h"   // [perf] the live fps / frame-time / GPU-busy readout   // UiSetup/Begin/End: rlImGui (GL) or imgui_impl_dx11 (PS2X_D3D11)
+#include "runtime/ps2x_mainmenu.h"      // [mmpopup] phase names + the plate-count the gate is made of
 #include "gfx/bt3gl_api.h"   // [B] bt3* API bridge
 
 #include "runtime/ps2_toml.h"
@@ -1052,6 +1053,131 @@ void PS2SettingsOverlay::readGamepadStateForDevice(
     // Keyboard: no gamepad axes/buttons to read
 }
 
+// [mmpopup] The main-menu test plate.
+//
+// Its whole job is to prove the gate end to end: if this plate is on screen, the runtime believes
+// the main menu is up, and it must vanish on exactly the frame the menu goes away. It is anchored
+// to the game's own plate-build counter (menuObj+0x144, which the build loop at 0x3355b8
+// increments once per entry until 11), NOT to a "menu is displayed" state field -- the addresses
+// docs/MAIN-MENU.md section 7 gives for that do not resolve in this build (*(0x3B38D8) reads 0),
+// so a gate built on them would never open.
+//
+// PS2X_MAINMENU_POPUP_TEST=1 turns it on. Off by default: it is a scaffold for the Netplay popup,
+// not something to ship on.
+extern std::atomic<uint32_t> g_bt3MenuShown;   // [mainmenu] ps2_runtime.cpp: 1 while the menu is up
+extern std::atomic<uint32_t> g_bt3MenuPhase;   // [mainmenu] the ps2x::mainmenu::Phase value
+extern std::atomic<uint32_t> g_bt3MenuPlates;  // [mainmenu] menuObj+0x144, the build counter
+
+bool PS2SettingsOverlay::mainMenuTestPlateWanted()
+{
+    static const bool s_on = [](){
+        const char *v = std::getenv("PS2X_MAINMENU_POPUP_TEST");
+        return v && v[0] && v[0] != '0';
+    }();
+    if (!s_on)
+        return false;
+    // Only ask for a frame while there is something to show. Reading the atomic (not the whole
+    // snapshot) keeps the GS submit path free of guest-RAM reads: the runtime samples once per
+    // frame and publishes, this only reads what it published.
+    return g_bt3MenuShown.load(std::memory_order_relaxed) != 0u;
+}
+
+void PS2SettingsOverlay::drawMainMenuTestPlate()
+{
+    // [mmpopup] An icon in the bottom-right corner that unfolds a panel when clicked. The icon is
+    // the whole point for now: it proves the gate end to end without covering the menu, and it is
+    // the shape the Netplay popup will take (small affordance on screen, panel on demand).
+    static bool s_open = false;
+
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    const float margin  = 18.0f;
+    const float iconSz  = 44.0f;
+    const ImVec2 br(vp->Pos.x + vp->Size.x - margin, vp->Pos.y + vp->Size.y - margin);
+
+    const ImGuiWindowFlags iconFlags = ImGuiWindowFlags_NoDecoration |
+                                       ImGuiWindowFlags_NoMove |
+                                       ImGuiWindowFlags_NoSavedSettings |
+                                       ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                       ImGuiWindowFlags_NoNav |
+                                       ImGuiWindowFlags_AlwaysAutoResize;
+
+    bool clicked = false;
+    ImGui::SetNextWindowPos(br, ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    if (ImGui::Begin("##mm_popup_icon", nullptr, iconFlags))
+    {
+        // The row is an empty button and the mark is painted on the draw list: Russo One has no
+        // symbol for this, and a text glyph would come out as a missing-character box. Same
+        // approach as the file picker's folder and page marks.
+        ImGui::InvisibleButton("##icon", ImVec2(iconSz, iconSz));
+        clicked = ImGui::IsItemClicked();
+        const bool hovered = ImGui::IsItemHovered();
+
+        const ImVec2 a = ImGui::GetItemRectMin();
+        const ImVec2 b = ImGui::GetItemRectMax();
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        const ImU32 accent = ImGui::GetColorU32(ImVec4(1.00f, 0.80f, 0.30f, 1.00f));
+        const ImU32 edge   = ImGui::GetColorU32(ImVec4(0.10f, 0.12f, 0.14f,
+                                                       hovered ? 0.95f : 0.75f));
+        dl->AddRectFilled(a, b, edge, 8.0f);
+        dl->AddRect(a, b, accent, 8.0f, 0, s_open ? 2.0f : 1.0f);
+
+        // Three bars: a menu. The top one is the "open" indicator, filled when the panel is out.
+        const float w = (b.x - a.x) * 0.44f;
+        const float h = 2.5f;
+        const float cx = (a.x + b.x) * 0.5f;
+        for (int i = 0; i < 3; ++i)
+        {
+            const float y = (a.y + b.y) * 0.5f + (float(i) - 1.0f) * 7.0f;
+            dl->AddRectFilled(ImVec2(cx - w, y - h), ImVec2(cx + w, y + h),
+                              (s_open && i == 0) ? accent
+                                                  : ImGui::GetColorU32(ImVec4(0.78f, 0.82f, 0.86f, 1.0f)),
+                              h);
+        }
+    }
+    ImGui::End();
+    if (clicked)
+        s_open = !s_open;
+
+    if (!s_open)
+        return;
+
+    // The panel unfolds above and to the left of the icon, so it grows into the screen instead of
+    // off the bottom-right edge.
+    const ImVec2 panelSize(360.0f, 0.0f);
+    ImGui::SetNextWindowPos(ImVec2(br.x, br.y - iconSz - 10.0f), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowSize(panelSize, ImGuiCond_Always);
+    const ImGuiWindowFlags panelFlags = ImGuiWindowFlags_NoDecoration |
+                                        ImGuiWindowFlags_NoMove |
+                                        ImGuiWindowFlags_NoSavedSettings |
+                                        ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                        ImGuiWindowFlags_NoNav |
+                                        ImGuiWindowFlags_AlwaysAutoResize;
+    if (!ImGui::Begin("##mm_popup_panel", nullptr, panelFlags))
+    {
+        ImGui::End();
+        return;
+    }
+
+    const uint32_t phase = g_bt3MenuPhase.load(std::memory_order_relaxed);
+    ImGui::TextColored(ImVec4(1.00f, 0.80f, 0.30f, 1.0f), "MAINMENU POPUP");
+    ImGui::Separator();
+    ImGui::Text("gate   : %s", g_bt3MenuShown.load(std::memory_order_relaxed) ? "OPEN" : "shut");
+    ImGui::Text("phase  : %s",
+                ps2x::mainmenu::phaseName(static_cast<ps2x::mainmenu::Phase>(phase)));
+    // The plate counter, read live. It was a hardcoded "11/11" here, which is exactly the kind of
+    // lie a diagnostic panel must not tell: the real value is 9, because the build loop skips the
+    // hidden entry and sends index 10 down another path (see ps2x_mainmenu.h, kRowCount).
+    ImGui::Text("plates : %u/%u", g_bt3MenuPlates.load(std::memory_order_relaxed),
+                ps2x::mainmenu::kRowCount);
+    ImGui::Spacing();
+    ImGui::TextDisabled("anclado a menuObj+0x144");
+    ImGui::Spacing();
+    if (ImGui::Button("Close", ImVec2(90.0f, 0.0f)))
+        s_open = false;
+    ImGui::End();
+}
+
 void PS2SettingsOverlay::drawPerfHud()
 {
     // [perf] Medidor de esquina, arriba a la derecha. Solo el numero de presents por segundo: es lo
@@ -1208,14 +1334,21 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
     // solo puede haber uno por iteracion. La rama del panel de mas abajo queda intacta.
     if (m_animT <= 0.0001f)
     {
-        if (!m_settings.showPerf)
+        // [mmpopup] The main-menu test plate needs a frame of its own when the panel is retracted
+        // and the perf HUD is off, which is the usual state on the main menu. Without this the
+        // function returns before UiBegin() and the plate never appears at all.
+        const bool mmPopup = mainMenuTestPlateWanted();
+        if (!m_settings.showPerf && !mmPopup)
             return;
         try
         {
             ps2x::gfx::UiBegin();
             pushDbzTheme();
             DbzThemeScope dbzTheme;   // pops all 40 style colours on scope exit
-            drawPerfHud();
+            if (m_settings.showPerf)
+                drawPerfHud();
+            if (mmPopup)
+                drawMainMenuTestPlate();
         }
         catch (...)
         {
