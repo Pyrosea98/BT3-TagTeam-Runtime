@@ -37,7 +37,9 @@ namespace seamprobe
     // do (frame targets, texture formats, uploads, primitive kinds, DATE / alpha-only draws) per caller.
     bool kickProbeOn();
     void noteKick(uint32_t helper, uint32_t chainAddr, uint32_t ra);
-    void noteAdvance(uint32_t before, uint32_t after, uint32_t ra);   // the display-list pointer moved before..after in a helper called from ra
+    void noteAdvance(uint32_t before, uint32_t after, uint32_t ra);
+    void pushEmitter(uint32_t emitter, uint32_t callerRa);   // a generic packet emitter is running: charge its output to callerRa
+    void popEmitter();   // the display-list pointer moved before..after in a helper called from ra
     void classifyVif1Chain(const uint8_t *rdram, uint32_t tagAddr);
     // Game thread: the chain buffer's offset -> guest address map, keyed by the buffer pointer (it moves with the vector).
     void publishChainMap(const void *chainData, const std::vector<std::array<uint32_t, 3>> &map);

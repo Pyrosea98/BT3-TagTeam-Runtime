@@ -551,9 +551,13 @@ namespace seamprobe
     {
         t_kick.helper = helper; t_kick.chain = chainAddr; t_kick.ra = ra; t_kick.live = true;
     }
+    namespace { thread_local uint32_t t_emitterRa[8]; thread_local int t_emitDepth = 0; }
+    void pushEmitter(uint32_t, uint32_t callerRa) { if (t_emitDepth < 8) t_emitterRa[t_emitDepth] = callerRa; ++t_emitDepth; }
+    void popEmitter() { if (t_emitDepth > 0) --t_emitDepth; }
     void noteAdvance(uint32_t before, uint32_t after, uint32_t ra)
     {
         if (!kickProbeOn()) return;
+        if (t_emitDepth > 0) ra = t_emitterRa[std::min(t_emitDepth, 8) - 1];   // the effect that called the emitter
         static uint32_t s_lastEnd = 0;
         before &= 0x1FFFFFFu; after &= 0x1FFFFFFu;
         if (g_allocs.size() < 400000u)

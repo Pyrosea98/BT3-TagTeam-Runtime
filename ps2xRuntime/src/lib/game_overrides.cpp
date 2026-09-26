@@ -4510,6 +4510,22 @@ namespace
         seamprobe::noteAdvance(before, after, ra);
     }
 
+    // [kickprobe] the generic packet emitters (88..300-byte helpers that build one sprite / quad / mask write): the
+    // effect logic is their caller, so while one runs the list advances are charged to ITS ra instead.
+    struct EmitHook { uint32_t addr; PS2Runtime::RecompiledFunction orig; };
+    EmitHook g_emitHooks[] = {
+        {0x00101298u, nullptr}, {0x00101548u, nullptr}, {0x001051c8u, nullptr}, {0x00105250u, nullptr}, {0x00105bd8u, nullptr}, {0x00108750u, nullptr},
+        {0x0010a0a8u, nullptr}, {0x0010a110u, nullptr}, {0x00101210u, nullptr}, {0x00101400u, nullptr}, {0x00102b70u, nullptr}, {0x00116770u, nullptr},
+        {0x001234e8u, nullptr}, {0x00101644u, nullptr}, {0x00101d40u, nullptr}, {0x00105c4cu, nullptr},
+    };
+    template <int I>
+    void bt3EmitHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        seamprobe::pushEmitter(g_emitHooks[I].addr, getRegU32(ctx, 31));
+        if (g_emitHooks[I].orig) g_emitHooks[I].orig(rdram, ctx, runtime);
+        seamprobe::popEmitter();
+    }
+
     // Camera matrix-multiply probe (PS2X_CAMPROBE). sub_001201B8 concatenates $a0 = A($a1) x B($a2).
     // The gameplay-camera update (FUN_0023d510) calls it at ra=0x23d9bc to build the camera WORLD
     // matrix = localRot(BASE+0x260) x parent(BASE+0x40). Dump A and B ONLY for that caller so we
@@ -6615,7 +6631,11 @@ namespace
             int na = 0;
             for (int i = 0; i < 3; ++i) { g_allocHooks[i].orig = runtime.lookupFunction(g_allocHooks[i].addr); if (g_allocHooks[i].orig) { runtime.replaceFunction(g_allocHooks[i].addr, afns[i]); ++na; } }
             g_origAlloc = g_allocHooks[0].orig;
-            std::fprintf(stderr, "[kickprobe] installed %d/3 DMA-send hooks, %d/3 list-pointer hooks\n", nk, na);
+            PS2Runtime::RecompiledFunction efns[] = { &bt3EmitHook<0>, &bt3EmitHook<1>, &bt3EmitHook<2>, &bt3EmitHook<3>, &bt3EmitHook<4>, &bt3EmitHook<5>, &bt3EmitHook<6>, &bt3EmitHook<7>,
+                                                     &bt3EmitHook<8>, &bt3EmitHook<9>, &bt3EmitHook<10>, &bt3EmitHook<11>, &bt3EmitHook<12>, &bt3EmitHook<13>, &bt3EmitHook<14>, &bt3EmitHook<15> };
+            int ne = 0;
+            for (int i = 0; i < 16; ++i) { g_emitHooks[i].orig = runtime.lookupFunction(g_emitHooks[i].addr); if (g_emitHooks[i].orig) { runtime.replaceFunction(g_emitHooks[i].addr, efns[i]); ++ne; } }
+            std::fprintf(stderr, "[kickprobe] installed %d/3 DMA-send hooks, %d/3 list-pointer hooks, %d/16 emitter hooks\n", nk, na, ne);
         }
         if (seamprobe::on())
         {   // [seamprobe] see bt3SeamDrawHook
