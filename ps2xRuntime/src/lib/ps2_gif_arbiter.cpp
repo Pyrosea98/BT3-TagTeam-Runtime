@@ -238,17 +238,45 @@ namespace
         std::fprintf(stderr, "[pktoracle] %x %s dump %s (%s)\n", lo, what, ok ? "ok" : "FAILED", b);
     }
 }
+// [postnative] PS2X_POSTNATIVE=<mask> (bit i = step i of ps2x_pgs::nativePostStep; needs PS2X_KICKPROBE=1 for the owners):
+// the packets those steps built are dropped and the host pass runs at the position of the first one.
+namespace
+{
+    struct NativeStep { uint32_t lo, hi; int id; bool inRun; };
+    NativeStep g_nativeSteps[] = { {0x109848u, 0x109938u, 0, false}, {0x106ba8u, 0x106c5cu, 1, false}, {0x24b118u, 0x24b1dcu, 2, false}, {0x245a50u, 0x245de4u, 3, false}, {0x103070u, 0x103254u, 4, false} };
+    const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u; }();
+    bool nativeIntercept(const GifArbiterPacket &pkt)
+    {
+        for (NativeStep &st : g_nativeSteps)
+        {
+            if (!((g_nativeMask >> st.id) & 1u)) continue;
+            const bool in = pkt.owner >= st.lo && pkt.owner < st.hi;
+            if (in && !st.inRun)
+            {
+                st.inRun = true;
+#ifdef PS2X_HAVE_PGS
+                static uint32_t s_fail[8] = {};
+                if (!ps2x_pgs::nativePostStep(st.id) && s_fail[st.id]++ < 3u) std::fprintf(stderr, "[postnative] step %d: pass FAILED (frame not 512 wide?)\n", st.id);
+#endif
+            }
+            else if (!in && st.inRun) st.inRun = false;
+            if (in) return true;
+        }
+        return false;
+    }
+}
 void GifArbiter::process(const GifArbiterPacket &pkt)
 {
     if (!m_processFn || !pkt.data || pkt.size == 0u) return;
     if (!g_pktOracles.empty() && pkt.pathId == GifPathId::Path2)
         for (PktOracle &o : g_pktOracles)
-        {
+        {   // (before the native intercept: a natively replaced step is bracketed the same way, so its output is verified)
             if (o.done) continue;
             const bool in = pkt.owner >= o.lo && pkt.owner < o.hi;
             if (in && !o.inRun) { o.inRun = true; if (++o.entries == o.nth) pktOracleDump(o.lo, "before"); }
             else if (!in && o.inRun) { o.inRun = false; if (o.entries == o.nth) { pktOracleDump(o.lo, "after"); o.done = true; } }
         }
+    if (g_nativeMask && pkt.pathId == GifPathId::Path2 && nativeIntercept(pkt)) return;   // [postnative] replaced by the host pass
     uint8_t pathId = static_cast<uint8_t>(pkt.pathId);
     const uint8_t *data = pkt.data; uint32_t size = pkt.size;
     if (pkt.pathId == GifPathId::HostDraw)

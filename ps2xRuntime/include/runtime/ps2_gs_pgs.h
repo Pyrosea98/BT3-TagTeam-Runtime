@@ -18,6 +18,11 @@ namespace ps2x_pgs
     // [steporacle] the whole 4 MB VRAM as the backend holds it now (flushes first), plus its register state as text.
     // Caller must have the GS stream drained to this point (PS2Memory::drainKickQueue). Game thread.
     bool dumpVramRaw(const char *binPath, const char *regsPath);
+    // [postnative] The post-chain steps implemented on the host (docs/SEAM-POSTCHAIN.md, pinned by the packet oracle).
+    // Called on the GS thread at the stream position of the step's first packet; reads the backend's planes, computes
+    // the pass, writes the result back as ordinary image uploads. Step ids: 0 depth mask (sub_00109848), 1 alpha clear
+    // (FUN_00106ba8), 2 Z top byte (sub_0024B118), 3 blur weight (FUN_00245a50), 4 glow downscale + composite (FUN_00103070).
+    bool nativePostStep(int step);
 
 #if defined(PS2X_HAVE_PGS)
 bool enabled();

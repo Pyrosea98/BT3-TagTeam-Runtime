@@ -1694,6 +1694,116 @@ static thread_local bool t_suppressed = false;
 void setSuppressed(bool on) { t_suppressed = on; }
 bool exclusive() { static const bool ex = envOn("PS2X_PGS_EXCLUSIVE") && !packMode(); return ex; }   // pack mode keeps our (state-only) parse
 
+// [postnative] ------------------------------------------------------------------------------------------------------
+namespace
+{
+    // Byte address of pixel (x, y) in a 32-bit layout at a block-granular base (PSMCT32; PSMZ32 with z).
+    inline uint32_t addrBlk32(uint32_t block, uint32_t width, uint32_t x, uint32_t y, bool z)
+    {
+        const uint32_t page = (block >> 5u) + (y >> 5u) * (width ? width : 1u) + (x >> 6u);
+        uint32_t blockId = (block & 0x1Fu) + GSPSMCT32::blockTable32[(y >> 3u) & 3u][(x >> 3u) & 7u];
+        const uint32_t pageOff = (blockId >> 5u) << 13u; blockId &= 0x1Fu;
+        if (z) blockId ^= 0x18u;
+        return ((page << 13u) + pageOff + blockId * 256u + GSPSMCT32::columnTable32[y & 7u][x & 7u] * 4u) & ((4u << 20) - 1u);
+    }
+    // One CT32 image upload (BITBLTBUF/TRXPOS/TRXREG/TRXDIR + IMAGE) through the backend, split so no IMAGE tag exceeds
+    // 0x7fff qwords. dbp in blocks, dbw in 64-px pages, w*h pixels row-major.
+    void uploadCt32(State &s, uint32_t dbp, uint32_t dbw, uint32_t x0, uint32_t y0, uint32_t w, uint32_t h, const uint32_t *px)
+    {
+        static std::vector<uint8_t> buf;
+        const uint32_t rowsPer = std::max(1u, (0x7FFFu * 4u) / w);
+        for (uint32_t ry = 0; ry < h; ry += rowsPer)
+        {
+            const uint32_t rows = std::min(rowsPer, h - ry), qw = (w * rows + 3u) / 4u;
+            buf.resize(16u + 4u * 16u + 16u + qw * 16u);
+            uint64_t *q = reinterpret_cast<uint64_t *>(buf.data());
+            q[0] = 4ull | (0ull << 15) | (0ull << 58) | (1ull << 60); q[1] = 0xEull;   // A+D x4
+            const uint64_t bitblt = (uint64_t)(dbp & 0x3FFFu) << 32 | (uint64_t)(dbw & 0x3Fu) << 48 | (uint64_t)0 << 56;
+            const uint64_t trxpos = (uint64_t)(x0 & 0x7FFu) << 32 | (uint64_t)(y0 & 0x7FFu) << 48;
+            const uint64_t trxreg = (uint64_t)(w & 0xFFFu) | (uint64_t)(rows & 0xFFFu) << 32;
+            q[2] = bitblt; q[3] = 0x50; q[4] = trxpos; q[5] = 0x51; q[6] = trxreg; q[7] = 0x52; q[8] = 0; q[9] = 0x53;
+            q[10] = (uint64_t)qw | (1ull << 15) | (2ull << 58); q[11] = 0;
+            std::memcpy(buf.data() + 96, px + (size_t)ry * w, (size_t)w * rows * 4u);
+            if ((w * rows) & 3u) std::memset(buf.data() + 96 + (size_t)w * rows * 4u, 0, (4u - ((w * rows) & 3u)) * 4u);
+            s.iface.gif_transfer(2u, buf.data(), buf.size());   // PATH3
+            y0 += rows;
+        }
+    }
+    uint32_t csm1(uint32_t i) { return (i & ~0x18u) | ((i & 8u) << 1) | ((i & 16u) >> 1); }
+}
+bool nativePostStep(int step)
+{
+    State &s = st();
+    std::lock_guard<std::mutex> lk(s.mtx);
+    if (!initLocked(s)) return false;
+    const auto &r = s.iface.get_register_state();
+    const uint32_t fbp = (uint32_t)(r.ctx[0].frame.bits & 0x1FFu) * 32u, fbw = (uint32_t)((r.ctx[0].frame.bits >> 16) & 0x3Fu);
+    const uint32_t zbp = (uint32_t)(r.ctx[0].zbuf.bits & 0x1FFu) * 32u;
+    const uint32_t W = 512u, H = 448u;
+    if (fbw != 8u) return false;
+    s.iface.flush();
+    const uint8_t *v = static_cast<const uint8_t *>(s.iface.map_vram_read(0, 4u * 1024u * 1024u));
+    if (!v) return false;
+    static std::vector<uint32_t> F, Zc, T; F.resize(W * H); Zc.resize(W * H);
+    auto rd = [&](uint32_t a) { uint32_t w; std::memcpy(&w, v + a, 4); return w; };
+    for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) F[y * W + x] = rd(addrBlk32(fbp, 8, x, y, false));
+    switch (step)
+    {
+    case 0:   // depth mask: frame.A := Z24[15:8]
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) { const uint32_t z = rd(addrBlk32(zbp, 8, x, y, true)); F[y * W + x] = (F[y * W + x] & 0xFFFFFFu) | (((z >> 8) & 0xFFu) << 24); }
+        uploadCt32(s, fbp, 8, 0, 0, W, H, F.data()); break;
+    case 1:   // alpha clear
+        for (uint32_t i = 0; i < W * H; ++i) F[i] &= 0xFFFFFFu;
+        uploadCt32(s, fbp, 8, 0, 0, W, H, F.data()); break;
+    case 2:   // Z top byte (CT32 layout of the Z buffer) := frame.A
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) Zc[y * W + x] = (rd(addrBlk32(zbp, 8, x, y, false)) & 0xFFFFFFu) | (F[y * W + x] & 0xFF000000u);
+        uploadCt32(s, zbp, 8, 0, 0, W, H, Zc.data()); break;
+    case 3:   // blur weight: frame.A := CLUT_0x3e84[Ztop].A
+    {
+        uint32_t clutA[256];
+        for (uint32_t i = 0; i < 256; ++i) { const uint32_t j = csm1(i); clutA[i] = rd(addrBlk32(0x3e84u, 1, j & 15u, j >> 4, false)) & 0xFF000000u; }
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x) { const uint32_t zt = rd(addrBlk32(zbp, 8, x, y, false)) >> 24; F[y * W + x] = (F[y * W + x] & 0xFFFFFFu) | clutA[zt]; }
+        uploadCt32(s, fbp, 8, 0, 0, W, H, F.data()); break;
+    }
+    case 4:   // glow: 0x2a00 := 2:1 box of the scene (alpha 0x80); frame.rgb := floor(f + (round(U) - f) * A / 128), U bilinear at (x/2, y/2)
+    {
+        const uint32_t TW = 256u, TH = 224u; T.resize(TW * TH);
+        for (uint32_t y = 0; y < TH; ++y) for (uint32_t x = 0; x < TW; ++x)
+        {
+            uint32_t o = 0x80000000u;
+            for (int c = 0; c < 3; ++c)
+            {
+                const uint32_t sh = c * 8;
+                const uint32_t sum = ((F[(2 * y) * W + 2 * x] >> sh) & 0xFF) + ((F[(2 * y) * W + 2 * x + 1] >> sh) & 0xFF) + ((F[(2 * y + 1) * W + 2 * x] >> sh) & 0xFF) + ((F[(2 * y + 1) * W + 2 * x + 1] >> sh) & 0xFF);
+                o |= ((sum + 2u) / 4u) << sh;
+            }
+            T[y * TW + x] = o;
+        }
+        uploadCt32(s, 0x2a00u, 4, 0, 0, TW, TH, T.data());
+        auto tex = [&](int x, int y, int c) { x = std::clamp(x, 0, (int)TW - 1); y = std::clamp(y, 0, (int)TH - 1); return (int)((T[y * TW + x] >> (c * 8)) & 0xFF); };
+        for (uint32_t y = 0; y < H; ++y) for (uint32_t x = 0; x < W; ++x)
+        {
+            const uint32_t f = F[y * W + x]; const int a = (int)(f >> 24); if (!a) continue;
+            uint32_t o = f & 0xFF000000u;
+            const int x0 = (int)x / 2, y0 = (int)y / 2; const bool hx = x & 1u, hy = y & 1u;
+            for (int c = 0; c < 3; ++c)
+            {
+                double u = tex(x0, y0, c);
+                if (hx && hy) u = (tex(x0, y0, c) + tex(x0 + 1, y0, c) + tex(x0, y0 + 1, c) + tex(x0 + 1, y0 + 1, c)) / 4.0;
+                else if (hx) u = (tex(x0, y0, c) + tex(x0 + 1, y0, c)) / 2.0;
+                else if (hy) u = (tex(x0, y0, c) + tex(x0, y0 + 1, c)) / 2.0;
+                const int ur = (int)std::floor(u + 0.5), fc = (int)((f >> (c * 8)) & 0xFF);
+                int out = (int)std::floor(fc + (ur - fc) * (double)a / 128.0);
+                out = std::clamp(out, 0, 255); o |= (uint32_t)out << (c * 8);
+            }
+            F[y * W + x] = o;
+        }
+        uploadCt32(s, fbp, 8, 0, 0, W, H, F.data()); break;
+    }
+    default: return false;
+    }
+    return true;
+}
 bool dumpVramRaw(const char *binPath, const char *regsPath)
 {
     State &s = st();
