@@ -509,3 +509,17 @@ thread alone drifted 6 -> 10 ms between identical runs):
   + record 4 ms + GPU wait 8 ms: the GPU is now the limiter.
 Defaults with PS2X_SEAMVK=1: light kick probe, PS2X_POSTNATIVE=0x21 (depth mask + outline native), no
 reference, no scratch raster. Launch: PS2X_SEAMVK=1 and nothing else renderer-related.
+
+## 2026-09-27 (night): where the GPU time went, and the 60 fps cap
+
+The native renderer was GPU-bound at ~17 ms/frame at scale 2 and, oddly, ~16 ms at scale 1. Attribution (PS2X_SEAMVK_GPUTIME=2/3
+per-category timestamps, PS2X_SEAMVK_SKIP=<mask> to drop parts of the frame) put 13-15 ms in the 16 decodes per frame that
+rebuild post-chain textures from the frame/depth targets (rtdecode.frag, non-VRAM path) -- 0.8 ms each for a 512x512 output.
+Not the layout transitions (targets in GENERAL layout: same), not the pass breaks (VRAM decodes hoisted before the first pass,
+58 -> 34 passes: same), not the scatter (a dummy source at the same pass sizes: 1.3 ms). The SPIR-V headers had been
+generated without `-O`; with `tools/shaders.sh` (glslc -O) the same decodes cost 1.6 ms and the GPU frame is 6.2 ms.
+Result on the Ultimate Training replay, fps60 mode: native 60 fps (vsync cap, GPU wait 0) at 1.56 cores / 40% GPU;
+paraLLEl-GS 60 fps at 0.92 cores / 75% GPU. GPU: native wins. CPU: the GsThread parse (9 ms/frame: CPU texture decode 2.3,
+scratch raster 1.9, GIF parse + state + page hashing ~4.8) and seamvk record (2.4 ms) are the excess; next.
+Fight-load freeze (5 of ~14 runs tonight): the GameThread spins in game code (FUN_0024c958 / 0x256e00 / 0x2baae8) with the
+DMA counter frozen and every renderer thread idle -- guest-side, pre-existing; `REGWD=1 tools/regcheck.sh` leaves the dump.

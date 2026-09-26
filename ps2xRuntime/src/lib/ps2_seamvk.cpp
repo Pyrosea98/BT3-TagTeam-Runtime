@@ -118,6 +118,7 @@ namespace seamvk
             std::vector<Vulkan::ImageHandle> tex;
             uint32_t w = 0, h = 0, scale = 1;
             bool failed = false;
+            double msUpload = 0, msLoop = 0;
             uint64_t decTexels = 0, decBracketed = 0, decHoisted = 0, hoistSkippedFrames = 0, frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0, nativeSteps = 0, vramPagesUp = 0, dateHost = 0, batches = 0, chunksBatched = 0;
             double msTake = 0, msRecord = 0, msSubmit = 0, msWait = 0;
         };
@@ -753,7 +754,9 @@ namespace seamvk
         if (!ensureGpu(dev)) return;
         const auto tB = std::chrono::steady_clock::now();
         const uint32_t sc = g_gpu.scale;
+        const auto tU0 = std::chrono::steady_clock::now();
         uploadTextures(dev, f);
+        g_gpu.msUpload += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tU0).count();
 
         static const uint64_t s_dumpFrame = [](){ const char *v = std::getenv("PS2X_SEAMVK_DUMPFRAME"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
         static bool s_dumped = false;
@@ -947,6 +950,7 @@ namespace seamvk
                 }
             tsMark(*cmd, 0);
         }
+        const auto tL0 = std::chrono::steady_clock::now();
         // ---- the ordered draws, into their FRAME / ZBUF targets ----
         uint32_t curFbp = ~0u, curZbp = ~0u; bool inPass = false;
         // Draws that sample pages the game rendered into (the post chain: Z as an index texture, rendered
@@ -1176,6 +1180,7 @@ namespace seamvk
             ++g_gpu.draws; g_gpu.verts += d.count;
         }
         if (inPass) cmd->end_render_pass();
+        g_gpu.msLoop += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tL0).count();
         tsMark(*cmd, 4);
 
         // ---- compose the CRTC circuits into the output frame ----
@@ -1303,7 +1308,8 @@ namespace seamvk
                              (g_gpu.gpuMs[0] + g_gpu.gpuMs[1] + g_gpu.gpuMs[2] + g_gpu.gpuMs[3] + g_gpu.gpuMs[4] + g_gpu.gpuMs[5] + g_gpu.gpuMs[6]) / n);
                 for (double &m : g_gpu.gpuMs) m = 0; g_gpu.gpuFrames = 0; g_gpu.decTexels = g_gpu.decBracketed = 0;
             }
-            g_gpu.msTake = g_gpu.msRecord = g_gpu.msSubmit = g_gpu.msWait = 0;
+            std::fprintf(stderr, "[seamvk] record split: tex image creation %.2f ms, draw loop %.2f ms\n", g_gpu.msUpload / 300.0, g_gpu.msLoop / 300.0);
+            g_gpu.msTake = g_gpu.msRecord = g_gpu.msSubmit = g_gpu.msWait = 0; g_gpu.msUpload = g_gpu.msLoop = 0;
         }
     }
 }
