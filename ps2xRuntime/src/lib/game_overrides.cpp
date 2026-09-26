@@ -26,6 +26,7 @@ extern std::atomic<uint64_t> g_workerFrameNs;   // [framegate] kick worker busy 
 extern std::atomic<uint64_t> g_cdLoadReads, g_cdLoadBytes;   // [cdload] CD.cpp (file scope: a block-scope extern inside the namespace mangles into it)
 extern std::atomic<uint32_t> g_bt3StateLive;    // [fightgate] BT3's top-level state, as seen by the status probe (ps2_runtime.cpp)
 extern std::atomic<uint64_t> g_vu1PairCount;    // [fightgate] VU1 instruction pairs run by the fight's programs (ps2_vu1.cpp)
+extern std::atomic<uint64_t> g_seamHostChunks;  // [fightgate] the seam's host mesh chunks (ps2_seammesh.cpp): the fight's render work when its VU1 programs are skipped
 // [syncrelax] true while the frame gate is engaged (async kick on, gate on, worker frame > one vblank): the gate
 // then owns the frame rate, so the busy-bit pacing and the sceGsSyncPath drain can let the guest run ahead.
 std::atomic<bool> g_ps2xFrameGateHeavy{false};
@@ -5812,8 +5813,11 @@ namespace
             {
                 const uint64_t pairs = g_vu1PairCount.load(std::memory_order_relaxed);
                 const uint64_t delta = pairs - s_lastPairs; s_lastPairs = pairs;
+                static uint64_t s_lastChunks = 0;
+                const uint64_t chunks = g_seamHostChunks.load(std::memory_order_relaxed);
+                const uint64_t dChunks = chunks - s_lastChunks; s_lastChunks = chunks;
                 if (!fightState) s_fightRendering = false;
-                else if (delta > 200000ull) s_fightRendering = true;
+                else if (delta > 200000ull || dChunks > 50ull) s_fightRendering = true;   // seam path: the meshes it emits are the fight's VU1 work
             }
             const bool inFight = s_fightGate && fightState && s_fightRendering;
             g_ps2xFrameGateHeavy.store(s_gate && heavy && PS2Memory::asyncKickEnabled(), std::memory_order_relaxed);   // [syncrelax]

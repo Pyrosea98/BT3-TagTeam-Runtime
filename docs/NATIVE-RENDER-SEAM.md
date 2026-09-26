@@ -487,3 +487,25 @@ wait); PS2X_SEAMVK_DUMPCONSTS=1 prints seam constants and per-vertex clip values
 Result on the Ultimate Training replay: native == paraLLEl-GS incl. outline and shading; median fight fps 26.9
 (29.8 before the post chain existed natively). Open: depth-of-field looks blocky at scale 2 (rt decodes are at GS
 resolution) -> native DoF step or native-res decodes; the far character's ink/blur is lighter than the reference.
+
+## 2026-09-27: what paced the native renderer, and the defaults now
+
+Measured on the Ultimate Training replay (fight-only medians; the laptop must be plugged in, on battery the game
+thread alone drifted 6 -> 10 ms between identical runs):
+- Texture decode on the CPU was 8-11 ms/frame on the GS thread -> `rtdecode.frag FROM_VRAM`: the front end
+  snapshots a texture's pages when their write stamp moved (8 KB each, in stream order) into a 4 MB storage
+  buffer and the decode runs on the GPU (PS2X_SEAMVK_GPUDECODE_MIN, default 65536 texels; smaller textures
+  still decode on the CPU: 2.6 ms). 
+- The paraLLEl-GS reference ran in full beside the native renderer: 4.1 ms of packet processing + 4.9 ms of
+  flush/scanout per frame on the GS thread plus its GPU work. Off by default now (PS2X_SEAMVK_REF=1 keeps it
+  for side-by-side dumps); the swap handler then advances Granite's frame context itself (the backend's
+  frame-boundary flush did that before; without it every submit blocked in the driver).
+- The CPU scratch raster (2.2 ms) is redundant since targets decode on the GPU: off by default
+  (PS2X_SEAMGS_SCRATCH=1). The draw State was rebuilt per primitive: now cached until a register write.
+- The 60 fps mode is ON in the saved settings ("[fps60] ON" in the log): what looks like "43 fps in a 30 fps
+  fight" is that mode running as fast as the pipeline allows. The frame gate's fight latch now also counts the
+  seam's mesh chunks (its VU1 programs are skipped, so the old VU1-pair latch never fired).
+- Result: wall 40 ms -> 25 ms per game frame; 60 fps mode median 43.5 fps (was 21-25); GS thread parse 8.8 ms
+  + record 4 ms + GPU wait 8 ms: the GPU is now the limiter.
+Defaults with PS2X_SEAMVK=1: light kick probe, PS2X_POSTNATIVE=0x21 (depth mask + outline native), no
+reference, no scratch raster. Launch: PS2X_SEAMVK=1 and nothing else renderer-related.

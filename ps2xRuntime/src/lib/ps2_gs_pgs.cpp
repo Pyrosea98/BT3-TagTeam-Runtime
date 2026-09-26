@@ -2004,8 +2004,9 @@ void onSwap()
     if (!initLocked(s)) return;
     { const int ws = g_wantScale.load(std::memory_order_relaxed); if (ws > 0 && scaleToSsaa(ws) != s.ssaa && !reinitLocked(s, scaleToSsaa(ws))) return; }   // [pgslive]
     const auto t0 = std::chrono::steady_clock::now();
-    s.iface.flush();
-    { const FlushStats fs = s.iface.consume_flush_stats(); s.fsPrims += fs.num_primitives; s.fsPasses += fs.num_render_passes; s.fsCopies += fs.num_copies; s.fsPal += fs.num_palette_updates; }
+    static const bool s_noRef = !envOn("PS2X_SEAMVK_REF") && seamvk::on();   // [seamvk] reference backend idle: no flush, no scanout, no readback
+    if (!s_noRef) s.iface.flush();
+    if (!s_noRef) { const FlushStats fs = s.iface.consume_flush_stats(); s.fsPrims += fs.num_primitives; s.fsPasses += fs.num_render_passes; s.fsCopies += fs.num_copies; s.fsPal += fs.num_palette_updates; }
     copyPrivLocked(s);
     if (seamvk::on())
     {   // [seamvk] the native frame, composed from the same CRTC registers the backend scans out
@@ -2014,6 +2015,7 @@ void onSwap()
         std::memcpy(&pr.pmode, &p.pmode, 8); std::memcpy(&pr.dispfb1, &p.dispfb1, 8); std::memcpy(&pr.display1, &p.display1, 8);
         std::memcpy(&pr.dispfb2, &p.dispfb2, 8); std::memcpy(&pr.display2, &p.display2, 8); std::memcpy(&pr.bgcolor, &p.bgcolor, 8);
         seamvk::renderFrame(s.device, pr);
+        if (s_noRef) s.device.next_frame_context();   // the backend's frame-boundary flush would have advanced it (fences and command buffers recycle per context)
     }
     VSyncInfo info = {};
     info.phase = s.field ^= 1u;
@@ -2045,7 +2047,8 @@ void onSwap()
         info.high_resolution_scanout_shift = shift >= 2 ? 2u : 1u;
         s.lastShift = shift;
     }
-    ScanoutResult res = s.iface.vsync(info);
+    ScanoutResult res = {};
+    if (!s_noRef) res = s.iface.vsync(info);
     if (res.image) { s.baseW = res.image->get_width() >> res.high_resolution_shift; s.baseH = res.image->get_height() >> res.high_resolution_shift; }
     const auto t1 = std::chrono::steady_clock::now();
     static const bool s_noReadback = envOn("PS2X_PGS_NOREADBACK");   // isolation: skip the sync scanout readback (nothing presented)

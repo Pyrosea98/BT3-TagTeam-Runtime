@@ -27,6 +27,8 @@ extern uint8_t *g_ps2WatchRdram;                // ps2_runtime.cpp: the bound gu
 // ============================================================================================
 // Phase 1: importer
 // ============================================================================================
+std::atomic<uint64_t> g_seamHostChunks{0};   // [fightgate] host mesh chunks emitted by the seam (ps2_seammesh.cpp); the frame gate latches the fight on these when VU1 pairs are gone
+
 namespace seammesh
 {
     namespace
@@ -925,6 +927,7 @@ namespace seam
     }
     static bool emitChunk(uint32_t chunkIdx, uint32_t top, uint8_t *vuData, uint32_t dataSize, void *memory, bool verifyCheck)
     {
+        g_seamHostChunks.fetch_add(1u, std::memory_order_relaxed);   // [fightgate] the seam's meshes count as the fight's render work (its VU1 programs are skipped)
         std::lock_guard<std::mutex> lk(g_mtx);
         if (chunkIdx >= t_mesh->chunks.size()) { ++g_st.chunkOOB; return false; }
         const bool isStage = t_builder == kStageBuilder, isChar2 = t_builder == kChar2Builder, isChar1 = t_builder == kChar1Builder, isFx = t_builder == kFxBuilder;

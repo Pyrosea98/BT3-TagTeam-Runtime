@@ -184,6 +184,7 @@ namespace seamgs
         std::unordered_map<uint64_t, int32_t> g_texByKey;
         bool g_texDirty = true; int32_t g_curTex = -1; uint32_t g_curTexW = 0, g_curTexH = 0;
         uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0, g_cpuSprites = 0, g_cpuTris = 0, g_rtDecodes = 0, g_gpuDecodes = 0;
+        uint64_t g_swapHash = 1469598103934665603ull, g_lastSwapHash = 0, g_swapBytes = 0, g_sameSwaps = 0, g_swapsSeen = 0;   // [swaphash] is a swap's packet stream identical to the previous one?
         double g_msParse = 0, g_msDecode = 0, g_msRaster = 0, g_msHost = 0;
         uint32_t g_busyFrames = 0;   // frames so far with > 1500 draws (a fight): PS2X_SEAMVK_TEXDUMP_FROM=1 starts there
         std::vector<int32_t> g_retired;   // slots freed by the renderer after this frame; reusable from the next
@@ -524,7 +525,14 @@ namespace seamgs
         }
 
         // ---- draw state --------------------------------------------------------------------
+        bool g_stateDirty = true; State g_stateCache[2];   // [statecache] currentState(true/false) memo, invalidated by writeReg
+        State buildState(bool tex);
         State currentState(bool tex)
+        {
+            if (g_stateDirty || g_texDirty) { g_stateCache[0] = buildState(false); g_stateCache[1] = buildState(true); g_stateDirty = false; }   // (buildState(true) resolves the texture and clears g_texDirty)
+            return g_stateCache[tex ? 1 : 0];
+        }
+        State buildState(bool tex)
         {
             State s;
             const uint64_t pr = g_r.prmodecont ? g_r.prim : ((g_r.prim & 7u) | (g_r.prmode & ~7ull));
@@ -675,6 +683,8 @@ namespace seamgs
             te = nullptr;
             if (g_watch.hi && s.fbp * 32u >= g_watch.lo && s.fbp * 32u < g_watch.hi && g_watch.logged < 400u)
             { ++g_watch.logged; std::fprintf(stderr, "[seamgs-watch] frame %llu draw into fbp 0x%x (block 0x%x) fbw %u psm %u msk %08x sc %u..%u %u..%u\n", (unsigned long long)g_frame, s.fbp, s.fbp * 32u, s.fbw, s.fpsm, s.fbmsk, s.scax0, s.scax1, s.scay0, s.scay1); }
+            static const bool s_scratch = [](){ const char *v = std::getenv("PS2X_SEAMGS_SCRATCH"); return v && v[0] && v[0] != '0'; }();
+            if (!s_scratch) return false;   // default: every target goes through the GPU (rt decodes); PS2X_SEAMGS_SCRATCH=1 restores the CPU scratch raster (identical picture, 2 ms/frame)
             if (s.fbp == 0u || s.fbp == 0xe00u || s.fbw > 4u) return false;
             if (s.fpsm != PSMCT32 && s.fpsm != PSMCT24 && s.fpsm != PSMCT16 && s.fpsm != PSMCT16S) return false;
             if (s.tme)
@@ -971,6 +981,7 @@ namespace seamgs
         // ---- registers ---------------------------------------------------------------------
         void writeReg(uint32_t addr, uint64_t v)
         {
+            g_stateDirty = true;
             if ((addr >= 0x40u && addr <= 0x41u) || (addr >= 0x4cu && addr <= 0x4du) || addr == 0x3bu)
                 if (g_list.regEvents.size() < 4096u) g_list.regEvents.push_back(FrameList::RegEvent{(uint32_t)g_list.draws.size(), g_curPath, (uint8_t)(g_inHostGif ? 1 : 0), (uint8_t)addr, v});
             switch (addr & 0xFFu)
@@ -1097,9 +1108,9 @@ namespace seamgs
             s_last = g_frame;
             std::fprintf(stderr, "[seamgs] per frame: parse %.2f ms (decode %.2f, scratch raster %.2f, host draws %.2f)\n", g_msParse / 300.0, g_msDecode / 300.0, g_msRaster / 300.0, g_msHost / 300.0);
             g_msParse = g_msDecode = g_msRaster = g_msHost = 0;
-            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu\n",
-                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes);
-            g_texLookups = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = 0;
+            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu; identical swaps %llu/%llu\n",
+                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
+            g_texLookups = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = 0; g_sameSwaps = g_swapsSeen = 0;
             printTargetHist();
             std::fprintf(stderr, "[seamgs] host draws in/out/dropped per prog:");
             for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %d:%llu/%llu/%llu", i, (unsigned long long)g_hostIn[i], (unsigned long long)g_hostOut[i], (unsigned long long)g_hostDropped[i]);
@@ -1112,6 +1123,7 @@ namespace seamgs
     {
         std::lock_guard<std::mutex> lk(g_mtx);
         ++g_frame;
+        ++g_swapsSeen; if (g_swapHash == g_lastSwapHash) ++g_sameSwaps; g_lastSwapHash = g_swapHash; g_swapHash = 1469598103934665603ull; g_swapBytes = 0;
         if (g_list.draws.size() > 1500u) ++g_busyFrames;
         evictTextures();
         g_list.frame = g_frame;
@@ -1134,6 +1146,11 @@ namespace seamvk
 {
     void onGifPacket(uint8_t path, const uint8_t *data, uint32_t size, bool hostGif)
     {
+        {   // [swaphash] cheap stream identity: fnv over path, size and a 64-byte stride of the payload
+            uint64_t h = seamgs::g_swapHash; h ^= path; h *= 1099511628211ull; h ^= size; h *= 1099511628211ull;
+            for (uint32_t o = 0; o + 8 <= size; o += 64) { uint64_t v; std::memcpy(&v, data + o, 8); h ^= v; h *= 1099511628211ull; }
+            seamgs::g_swapHash = h; seamgs::g_swapBytes += size;
+        }
         if (!on() || !data || size == 0u) return;
         std::lock_guard<std::mutex> lk(seamgs::g_mtx);
         const auto t0 = std::chrono::steady_clock::now();

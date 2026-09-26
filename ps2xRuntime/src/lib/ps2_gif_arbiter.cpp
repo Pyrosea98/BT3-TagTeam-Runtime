@@ -244,7 +244,7 @@ namespace
 {
     struct NativeStep { uint32_t lo, hi; int id; bool inRun; bool marked = false; };
     NativeStep g_nativeSteps[] = { {0x109848u, 0x109938u, 0, false}, {0x106ba8u, 0x106c5cu, 1, false}, {0x24b118u, 0x24b1dcu, 2, false}, {0x245a50u, 0x245de4u, 3, false}, {0x103070u, 0x103254u, 4, false}, {0x105cd8u, 0x105f28u, 5, false} };   // 5: outline mask, native renderer only
-    const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u; }();
+    const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : (seamvk::on() ? 0x21u : 0u); }();   // native renderer: depth mask + outline by default
     // The step's packets are not dropped: their register writes (FRAME/ZBUF/SCISSOR/TEST... which the game's later draws
     // inherit) still reach the backend; only their DRAW kicks are neutralised, XYZ2/XYZF2 -> XYZ3/XYZF3 (no kick), by
     // rewriting the GIF tags' register descriptors and A+D addresses in place. Tag state persists across PATH2 payloads.
@@ -294,7 +294,8 @@ namespace
                 st.inRun = true; st.marked = false;
                 if (st.id >= 5 && !seamvk::on()) { st.inRun = false; continue; }
 #ifdef PS2X_HAVE_PGS
-                if (st.id < 5)
+                static const bool s_noRefStep = [](){ const char *v = std::getenv("PS2X_SEAMVK_REF"); return !(v && v[0] && v[0] != '0'); }();
+                if (st.id < 5 && !(s_noRefStep && seamvk::on()))
                 {
                     static uint32_t s_fail[8] = {};
                     if (!ps2x_pgs::nativePostStep(st.id) && s_fail[st.id]++ < 3u) std::fprintf(stderr, "[postnative] step %d: pass FAILED (frame not 512 wide?)\n", st.id);
@@ -351,6 +352,10 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
         static const bool s_rec = [](){ const char *v = std::getenv("PS2X_GS_RECORD"); return v && v[0]; }();
         if (s_rec) { ps2xGsRecordPacket(pathId, data, size); }
     }
+    // [seamvk] PS2X_SEAMVK_NOREF=1: the native renderer alone; the paraLLEl-GS reference gets no packets and renders nothing
+    // (no side-by-side dumps then). Its full pipeline otherwise runs beside the native one every frame.
+    static const bool s_noRef = [](){ const char *v = std::getenv("PS2X_SEAMVK_REF"); return !(v && v[0] && v[0] != '0'); }();   // PS2X_SEAMVK_REF=1: keep the reference (side-by-side dumps); default off (its packets + flush + GPU work cost ~9 ms/frame)
+    if (s_noRef && seamvk::on()) return;
     if (ps2x_pgs::enabled())
     {   // [pgs] the paraLLEl-GS backend consumes the same packet, on its own path index. Pack mode: OUR parse first, so the
         // VRAM and palettes its replacement hook hashes already include this packet's uploads.
