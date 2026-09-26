@@ -691,8 +691,8 @@ namespace seamgs
             te = nullptr;
             if (g_watch.hi && s.fbp * 32u >= g_watch.lo && s.fbp * 32u < g_watch.hi && g_watch.logged < 400u)
             { ++g_watch.logged; std::fprintf(stderr, "[seamgs-watch] frame %llu draw into fbp 0x%x (block 0x%x) fbw %u psm %u msk %08x sc %u..%u %u..%u\n", (unsigned long long)g_frame, s.fbp, s.fbp * 32u, s.fbw, s.fpsm, s.fbmsk, s.scax0, s.scax1, s.scay0, s.scay1); }
-            static const bool s_scratch = [](){ const char *v = std::getenv("PS2X_SEAMGS_SCRATCH"); return v && v[0] && v[0] != '0'; }();
-            if (!s_scratch) return false;   // default: every target goes through the GPU (rt decodes); PS2X_SEAMGS_SCRATCH=1 restores the CPU scratch raster (identical picture, 2 ms/frame)
+            static const bool s_scratch = [](){ const char *v = std::getenv("PS2X_SEAMGS_SCRATCH"); return !(v && v[0] == '0'); }();
+            if (!s_scratch) return false;   // PS2X_SEAMGS_SCRATCH=0: every target through the GPU (rt decodes) -- saves 2 ms/frame but the HUD's rendered palettes then decode stale from the mirror (gray flicker, 2026-09-27)
             if (s.fbp == 0u || s.fbp == 0xe00u || s.fbw > 4u) return false;
             if (s.fpsm != PSMCT32 && s.fpsm != PSMCT24 && s.fpsm != PSMCT16 && s.fpsm != PSMCT16S) return false;
             if (s.tme)

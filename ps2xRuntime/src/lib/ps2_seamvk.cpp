@@ -19,6 +19,7 @@
 #include "sampler.hpp"
 
 #include <algorithm>
+#include <deque>
 #include <atomic>
 extern std::atomic<uint64_t> g_bt3FrameCount;   // game_overrides.cpp: the game's frame counter
 #include <chrono>
@@ -96,13 +97,14 @@ namespace seamvk
         {
             Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progSeamSt = nullptr, *progGsSt = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progVram = nullptr;
             Vulkan::BufferHandle vram;          // [gpudecode] the GPU copy of GS VRAM (4 MB), pages uploaded in stream order
+            Vulkan::BufferHandle cring[3]; uint8_t *cmap[3] = {}; VkDeviceSize coff = 0; uint32_t cslot = 0;   // [batch] host-visible constants ring (one per frame in flight)
             Vulkan::ImageHandle out;            // the composed frame
             Vulkan::ImageHandle white;          // 1x1 for untextured draws
             Vulkan::ImageHandle snap;           // destination snapshot for DATE draws
             Vulkan::BufferHandle readback;
             struct TsMark { uint8_t cat; Vulkan::QueryPoolHandle q; };   // [gputime] GPU timestamps: cat = the category that STARTS at this mark
             struct Pending { Vulkan::BufferHandle buf; Vulkan::Fence fence; uint32_t w = 0, h = 0; bool live = false; std::vector<TsMark> ts; };
-            std::vector<TsMark> tsCur; double gpuMs[8] = {}; uint32_t gpuFrames = 0;   // [gputime] per category, ms; 0 main draws, 1 rt decodes, 2 alias16, 3 native steps, 4 compose, 5 uploads
+            std::vector<TsMark> tsCur; double gpuMs[8] = {}; uint32_t gpuFrames = 0; std::deque<std::vector<TsMark>> tsPending;   // [gputime] frames whose queries are not signalled yet   // [gputime] per category, ms; 0 main draws, 1 rt decodes, 2 alias16, 3 native steps, 4 compose, 5 uploads
             Pending ring[3]; uint32_t ringNext = 0;
             std::map<uint32_t, Target> targets; // by fbp
             std::map<uint64_t, Target> depths;  // [stencildate] by (zbp | width<<16) and the COLOUR target it pairs with: the stencil mirrors that target's alpha, so double-buffered frames sharing one Z buffer each get their own image
@@ -113,7 +115,7 @@ namespace seamvk
             std::vector<Vulkan::ImageHandle> tex;
             uint32_t w = 0, h = 0, scale = 1;
             bool failed = false;
-            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0, nativeSteps = 0, vramPagesUp = 0, dateHost = 0;
+            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0, nativeSteps = 0, vramPagesUp = 0, dateHost = 0, batches = 0, chunksBatched = 0;
             double msTake = 0, msRecord = 0, msSubmit = 0, msWait = 0;
         };
         Gpu g_gpu;
@@ -122,10 +124,44 @@ namespace seamvk
             static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUTIME"); return v && v[0] == '1'; }();   // =1: per-category GPU timestamps (costs ~10 ms/frame of recording; off by default)
             return s;
         }
+        bool gpuTimeFull() { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUTIME"); return v && v[0] == '2'; }(); return s; }
         void tsMark(Vulkan::CommandBuffer &cmd, uint8_t cat)
         {
             if (!gpuTime()) return;
+            static uint8_t s_last = 255;
+            if (!gpuTimeFull() && (cat == 1 || cat == 2)) return;   // =1: frame + native steps + compose only (per-decode marks cost ~10 ms/frame of recording); =2: everything
+            if (!gpuTimeFull() && cat == 0 && s_last == 0) return;
+            s_last = cat;
             g_gpu.tsCur.push_back({ cat, cmd.write_timestamp(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) });
+        }
+        // [batch] draw-state equality for merging consecutive seam chunks into one draw (everything bindDraw looks at)
+        bool sameBindState(const seamgs::State &a, const seamgs::State &b)
+        {
+            return a.fbp == b.fbp && a.fbw == b.fbw && a.fpsm == b.fpsm && a.fbmsk == b.fbmsk && a.zbp == b.zbp && a.zmsk == b.zmsk && a.zte == b.zte && a.ztst == b.ztst
+                && a.ate == b.ate && a.atst == b.atst && a.aref == b.aref && a.afail == b.afail && a.date == b.date && a.datm == b.datm
+                && a.abe == b.abe && a.aA == b.aA && a.aB == b.aB && a.aC == b.aC && a.aD == b.aD && a.fix == b.fix && a.fba == b.fba
+                && a.tme == b.tme && a.tex == b.tex && a.fst == b.fst && a.mmag == b.mmag && a.tcc == b.tcc && a.fge == b.fge && a.tfx == b.tfx && a.wms == b.wms && a.wmt == b.wmt
+                && a.minu == b.minu && a.maxu == b.maxu && a.minv == b.minv && a.maxv == b.maxv && a.texW == b.texW && a.texH == b.texH
+                && a.scax0 == b.scax0 && a.scax1 == b.scax1 && a.scay0 == b.scay0 && a.scay1 == b.scay1 && a.ofx == b.ofx && a.ofy == b.ofy && a.fogcol == b.fogcol && a.texFromDrawn == b.texFromDrawn;
+        }
+        // [batch] write n Consts into this frame's ring and bind them as the seam program's storage buffer (binding 0)
+        static constexpr VkDeviceSize kCringBytes = 8u << 20;
+        bool bindConsts(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const Consts *arr, size_t n)
+        {
+            const uint32_t s = g_gpu.cslot;
+            if (!g_gpu.cring[s])
+            {
+                Vulkan::BufferCreateInfo bi = {}; bi.size = kCringBytes; bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; bi.domain = Vulkan::BufferDomain::Host;
+                g_gpu.cring[s] = dev.create_buffer(bi);
+                g_gpu.cmap[s] = static_cast<uint8_t *>(dev.map_host_buffer(*g_gpu.cring[s], Vulkan::MEMORY_ACCESS_WRITE_BIT));
+            }
+            const VkDeviceSize bytes = VkDeviceSize(sizeof(Consts)) * n;
+            VkDeviceSize off = (g_gpu.coff + 255u) & ~VkDeviceSize(255u);
+            if (off + bytes > kCringBytes) { static int s_warn = 0; if (s_warn++ < 3) std::fprintf(stderr, "[seamvk] constants ring full (%zu chunks)\n", n); return false; }
+            std::memcpy(g_gpu.cmap[s] + off, arr, bytes);
+            g_gpu.coff = off + bytes;
+            cmd.set_storage_buffer(0, 0, *g_gpu.cring[s], off, bytes);
+            return true;
         }
         bool stencilDate()
         {
@@ -146,7 +182,7 @@ namespace seamvk
             if (!g_gpu.progGs)
             {
                 Vulkan::ResourceLayout vl = {}, fl = {};
-                vl.sets[0].uniform_buffer_mask = 1u << 0; vl.sets[0].meta[0].array_size = 1;
+                vl.sets[0].storage_buffer_mask = 1u << 0; vl.sets[0].meta[0].array_size = 1;   // [batch] per-chunk constants array (SSBO ring)
                 vl.input_mask = 0xFu; vl.output_mask = 0xFu; vl.push_constant_size = sizeof(PC);
                 fl.sets[0].sampled_image_mask = (1u << 1) | (1u << 2); fl.sets[0].meta[1].array_size = 1; fl.sets[0].meta[2].array_size = 1;
                 fl.input_mask = 0xFu; fl.output_mask = 0x1u; fl.push_constant_size = sizeof(PC);
@@ -346,6 +382,13 @@ namespace seamvk
             cmd.set_cull_mode(VK_CULL_MODE_NONE);
             cmd.set_depth_test(false, false);
             cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+            if (srcp)
+            {   // [decodeclip] only the part of the texture that lies inside the source target's drawn extent is worth decoding
+                // (a PSMZ16 view of the 512x448 frame is declared 1024x1024 but only 512x896 of it exists)
+                const bool v16 = r.psm == 2u || r.psm == 10u || r.psm == 50u || r.psm == 58u;
+                const uint32_t ew = std::min(r.w, (srcp->img->get_width() / g_gpu.scale)), eh = std::min(r.h, (srcp->img->get_height() / g_gpu.scale) * (v16 ? 2u : 1u));
+                VkRect2D sr = {}; sr.extent.width = std::max(1u, ew); sr.extent.height = std::max(1u, eh); cmd.set_scissor(sr);
+            }
             RtPC pc = {};
             pc.tex[0] = r.tbp; pc.tex[1] = r.tbw; pc.tex[2] = r.psm; pc.tex[3] = 0;
             pc.clut[0] = r.cbp; pc.clut[1] = r.cpsm; pc.clut[2] = r.csa; pc.clut[3] = (r.clutFromTarget ? 1u : 0u) | ((r.depthSrc && dz) ? 2u : 0u);
@@ -521,9 +564,10 @@ namespace seamvk
             cmd.set_texture(0, 1, zt.img->get_view(), Vulkan::StockSampler::NearestClamp);
             uint32_t *cl = static_cast<uint32_t *>(cmd.allocate_constant_data(0, 0, 256u * 4u));
             if (d.rt >= 0 && (size_t)d.rt < f.stepCluts.size()) std::memcpy(cl, f.stepCluts[d.rt].data(), 1024); else std::memset(cl, 0, 1024);
-            static const uint32_t s_core = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); return v && v[0] ? (uint32_t)std::atoi(v) : 2u; }();
-            static const uint32_t s_fringe = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); if (v) if (const char *c = std::strchr(v, ',')) return (uint32_t)std::atoi(c + 1); return 3u; }();
-            const uint32_t pcv[4] = { g_gpu.scale, s_core, s_fringe, 0u };
+            // radii in GS pixels (PS2X_SEAMVK_OUTLINE=<core>,<fringe>, default 1,1.5), scaled to native pixels: the same look at any scale
+            static const float s_core = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); return v && v[0] ? (float)std::atof(v) : 1.0f; }();
+            static const float s_fringe = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); if (v) if (const char *c = std::strchr(v, ',')) return (float)std::atof(c + 1); return 1.5f; }();
+            const uint32_t pcv[4] = { g_gpu.scale, (uint32_t)std::lround(s_core * g_gpu.scale), (uint32_t)std::lround(s_fringe * g_gpu.scale), 0u };
             cmd.push_constants(pcv, 0, sizeof(pcv));
             cmd.draw(3);
             cmd.end_render_pass();
@@ -631,7 +675,12 @@ namespace seamvk
             pc.fB[0] = t.minu; pc.fB[1] = t.maxu; pc.fB[2] = t.minv; pc.fB[3] = t.maxv;
             pc.fogcol[0] = (t.fogcol & 0xFFu) / 255.0f; pc.fogcol[1] = ((t.fogcol >> 8) & 0xFFu) / 255.0f; pc.fogcol[2] = ((t.fogcol >> 16) & 0xFFu) / 255.0f; pc.fogcol[3] = 1.0f;
             cmd.push_constants(&pc, 0, sizeof(pc));
-            cmd.set_texture(0, 1, tex ? g_gpu.tex[t.tex]->get_view() : g_gpu.white->get_view(), Vulkan::StockSampler::NearestClamp);
+            {   // [hwfilter] bilinear with plain REPEAT or CLAMP on both axes: let the sampler filter (4 manual fetches + wrap math otherwise)
+                const bool hw = tex && t.mmag && t.wms <= 1u && t.wmt == t.wms;
+                const Vulkan::StockSampler smp = hw ? (t.wms == 0u ? Vulkan::StockSampler::LinearWrap : Vulkan::StockSampler::LinearClamp) : Vulkan::StockSampler::NearestClamp;
+                cmd.set_texture(0, 1, tex ? g_gpu.tex[t.tex]->get_view() : g_gpu.white->get_view(), smp);
+                if (hw) { pc.fA[0] |= 32768; cmd.push_constants(&pc, 0, sizeof(pc)); }
+            }
             cmd.set_input_attachments(0, 2);   // [date] binding 2 = the pass's colour attachment as input (self-dependent subpass)
             if (t.date) { ++g_gpu.dateDraws; if (d.kind == 1) ++g_gpu.dateHost; }
         }
@@ -858,6 +907,7 @@ namespace seamvk
         g_gpu.rtDumps.clear();
         auto cmd = dev.request_command_buffer();
         g_gpu.tsCur.clear(); tsMark(*cmd, 0);
+        g_gpu.cslot = g_gpu.ringNext % 3u; g_gpu.coff = 0;   // [batch] the constants ring slot of this frame (its fence is waited two frames later)
         // ---- the ordered draws, into their FRAME / ZBUF targets ----
         uint32_t curFbp = ~0u, curZbp = ~0u; bool inPass = false;
         // Draws that sample pages the game rendered into (the post chain: Z as an index texture, rendered
@@ -865,12 +915,14 @@ namespace seamvk
         // native. PS2X_SEAMVK_FEEDBACK=1 draws them anyway (diagnostics).
         static const bool s_noDate = [](){ const char *v = std::getenv("PS2X_SEAMVK_NODATE"); return v && v[0] && v[0] != '0'; }();
         static const bool s_feedback = [](){ const char *v = std::getenv("PS2X_SEAMVK_FEEDBACK"); return v && v[0] && v[0] != '0'; }();
+        static const bool s_batch = [](){ const char *v = std::getenv("PS2X_SEAMVK_BATCH"); return !(v && v[0] == '0'); }();   // [batch] merge seam chunks (=0: one draw per chunk)
         static const std::vector<uint32_t> s_dumpAt = [](){ std::vector<uint32_t> v; if (const char *e = std::getenv("PS2X_SEAMVK_DUMPAT")) { const char *p = e; while (*p) { v.push_back((uint32_t)std::strtoul(p, (char **)&p, 10)); while (*p == ',' || *p == ' ') ++p; } } return v; }();
         size_t drawIdx = 0;
-        for (const seamgs::Draw &d : f.draws)
+        for (size_t di0 = 0; di0 < f.draws.size(); ++di0)
         {
+            const seamgs::Draw &d = f.draws[di0];
             const seamgs::State &t = d.st;
-            const size_t di = drawIdx++;
+            const size_t di = di0; drawIdx = di0 + 1;
             if (dumpNow && !s_dumpAt.empty() && std::find(s_dumpAt.begin(), s_dumpAt.end(), (uint32_t)di) != s_dumpAt.end() && std::getenv("PS2X_SEAMVK_TEXDUMP"))
             {   // PS2X_SEAMVK_DUMPAT: the targets as they are just BEFORE this draw (submit what was recorded, wait, dump, go on)
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
@@ -997,11 +1049,12 @@ namespace seamvk
                     cmd->set_vertex_attrib(1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16);
                     cmd->set_vertex_attrib(2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 32);
                     cmd->set_vertex_attrib(3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 48);
-                    Consts *c = static_cast<Consts *>(cmd->allocate_constant_data(0, 0, sizeof(Consts)));
-                    std::memcpy(c, &d.c, sizeof(Consts));
-                    c->misc[1] = float(d.hostPass);
+                    Consts c1; std::memcpy(&c1, &d.c, sizeof(Consts));
+                    c1.misc[1] = float(d.hostPass);
                     static const bool s_flat = [](){ const char *v = std::getenv("PS2X_SEAMVK_FLAT"); return v && v[0] && v[0] != '0'; }();
-                    if (s_flat) c->misc[3] = 1.0f;   // PS2X_SEAMVK_FLAT=1: the seam's meshes in a flat colour per program (coverage diagnostics)
+                    if (s_flat) c1.misc[3] = 1.0f;   // PS2X_SEAMVK_FLAT=1: the seam's meshes in a flat colour per program (coverage diagnostics)
+                    bindConsts(*cmd, dev, &c1, 1);
+                    const float zero = 0.0f; cmd->push_constants(&zero, offsetof(PC, texInfo) + 8u, 4u);
                     void *vb = cmd->allocate_vertex_data(0, VkDeviceSize(64) * d.count, 64);
                     uint8_t *dst = static_cast<uint8_t *>(vb);
                     const uint8_t *src = f.verts.data() + d.vertOff;
@@ -1009,6 +1062,65 @@ namespace seamvk
                     cmd->draw(d.count);
                 }
             };
+            if (d.kind == 1 && s_batch && d.stride == 48u && !dateSplit)
+            {   // [batch] the run of seam chunks from here, drawn as a few strips instead of one draw per VU chunk: chunks are
+                // partitioned by pass (hostPass 0 = pass A, else pass B), each partition grouped by bind state in order of first
+                // appearance, and all pass-A groups draw before any pass-B group, so every chunk's pass A precedes its pass B
+                // (pass A writes depth with GEQUAL, pass B tests it: a later chunk's pass B lands only where its own pass A is
+                // the visible surface, as in the interleaved order). Another program, a DATE / destination-alpha / feedback
+                // state, or 128 chunks end the run. Each vertex carries its chunk index in inA3.w; the constants come from an array.
+                struct Grp { std::vector<uint32_t> idx; };
+                static std::vector<Grp> grpA, grpB; grpA.clear(); grpB.clear();
+                uint32_t nrun = 0; size_t j = di0;
+                for (; j < f.draws.size(); ++j)
+                {
+                    const seamgs::Draw &e = f.draws[j];
+                    if (e.kind != 1 || e.stride != 48u || e.prog != d.prog) break;
+                    if (j != di0 && ((e.st.date && !sameBindState(e.st, t)) || (e.st.abe && e.st.aC == 1u) || e.st.texFromDrawn)) break;   // DATE chunks: only with the run's own state (one barrier per batch; tiles rarely overlap)
+                    if (nrun >= 1024u) break;
+                    std::vector<Grp> &gs = e.hostPass == 0u ? grpA : grpB;
+                    Grp *g = nullptr;
+                    for (Grp &c : gs) if (sameBindState(f.draws[c.idx[0]].st, e.st)) { g = &c; break; }
+                    if (!g) { gs.push_back(Grp()); g = &gs.back(); }
+                    g->idx.push_back((uint32_t)j); ++nrun;
+                }
+                di0 = j - 1;
+                auto issueBatch = [&](const std::vector<uint32_t> &b)
+                {
+                    const seamgs::Draw &d0 = f.draws[b[0]];
+                    bindDraw(*cmd, d0, sc, 0);
+                    cmd->set_program(stencilDate() ? g_gpu.progSeamSt : g_gpu.progSeam);
+                    cmd->set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+                    cmd->set_vertex_attrib(0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0);
+                    cmd->set_vertex_attrib(1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16);
+                    cmd->set_vertex_attrib(2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 32);
+                    cmd->set_vertex_attrib(3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 48);
+                    static std::vector<Consts> cvec; cvec.resize(b.size()); Consts *carr = cvec.data();
+                    uint32_t total = 0; for (uint32_t k : b) total += f.draws[k].count + 2u;
+                    uint8_t *vb = static_cast<uint8_t *>(cmd->allocate_vertex_data(0, VkDeviceSize(64) * total, 64));
+                    static const bool s_flat = [](){ const char *v = std::getenv("PS2X_SEAMVK_FLAT"); return v && v[0] && v[0] != '0'; }();
+                    uint32_t o = 0;
+                    for (size_t k = 0; k < b.size(); ++k)
+                    {
+                        const seamgs::Draw &e = f.draws[b[k]];
+                        std::memcpy(&carr[k], &e.c, sizeof(Consts)); carr[k].misc[1] = float(e.hostPass); if (s_flat) carr[k].misc[3] = 1.0f;
+                        const uint8_t *src = f.verts.data() + e.vertOff; const float idx = float(k);
+                        auto put = [&](uint32_t v) { uint8_t *dst = vb + size_t(o++) * 64u; std::memcpy(dst, src + size_t(v) * 48u, 48u); std::memset(dst + 48, 0, 12); std::memcpy(dst + 60, &idx, 4); };
+                        if (k) put(0);                          // degenerate join: repeat this chunk's first vertex ...
+                        for (uint32_t v = 0; v < e.count; ++v) put(v);
+                        if (k + 1 < b.size()) put(e.count - 1u);   // ... and its last one before the next chunk
+                        g_gpu.verts += e.count;
+                    }
+                    if (!bindConsts(*cmd, dev, carr, b.size())) return;
+                    const float one = 1.0f; cmd->push_constants(&one, offsetof(PC, texInfo) + 8u, 4u);   // texInfo.z = 1: chunk index in inA3.w
+                    cmd->draw(o);
+                    ++g_gpu.draws; ++g_gpu.batches;
+                };
+                for (const Grp &g : grpA) issueBatch(g.idx);
+                for (const Grp &g : grpB) issueBatch(g.idx);
+                g_gpu.chunksBatched += nrun;
+                continue;
+            }
             if (dateSplit) { issue(1); if ((t.fbmsk & 0xFF000000u) != 0xFF000000u) issue(2); }
             else issue(0);
             ++g_gpu.draws; g_gpu.verts += d.count;
@@ -1056,7 +1168,8 @@ namespace seamvk
         cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
         const auto tC = std::chrono::steady_clock::now();
         tsMark(*cmd, 7);
-        slot.ts.swap(g_gpu.tsCur); g_gpu.tsCur.clear();
+        if (!g_gpu.tsCur.empty()) { g_gpu.tsPending.emplace_back(); g_gpu.tsPending.back().swap(g_gpu.tsCur); }
+        g_gpu.tsCur.clear();
         dev.submit(cmd, &slot.fence);
         slot.live = true;
         const auto tD = std::chrono::steady_clock::now();
@@ -1064,16 +1177,18 @@ namespace seamvk
         Gpu::Pending &prev = g_gpu.ring[(g_gpu.ringNext + 1u) % 3u];   // two frames back: certainly done, no wait in practice
         Vulkan::Fence fence; bool havePrev = false;
         if (prev.live) { prev.fence->wait(); havePrev = true; }
-        if (prev.live && !prev.ts.empty())
-        {   // [gputime] the intervals of the frame two back, by category (its queries completed with its fence)
+        while (!g_gpu.tsPending.empty() && g_gpu.tsPending.front().back().q->is_signalled())
+        {   // [gputime] a frame whose queries Granite has resolved: attribute its intervals by category
+            const std::vector<Gpu::TsMark> &ts = g_gpu.tsPending.front();
             const double period = dev.get_gpu_properties().limits.timestampPeriod * 1e-6;   // ns -> ms
-            for (size_t i = 0; i + 1 < prev.ts.size(); ++i)
+            for (size_t i = 0; i + 1 < ts.size(); ++i)
             {
-                const uint64_t a = prev.ts[i].q->get_timestamp_ticks(), b = prev.ts[i + 1].q->get_timestamp_ticks();
-                if (b > a && prev.ts[i].cat < 8) g_gpu.gpuMs[prev.ts[i].cat] += double(b - a) * period;
+                const uint64_t a = ts[i].q->get_timestamp_ticks(), b = ts[i + 1].q->get_timestamp_ticks();
+                if (b > a && ts[i].cat < 8) g_gpu.gpuMs[ts[i].cat] += double(b - a) * period;
             }
-            ++g_gpu.gpuFrames; prev.ts.clear();
+            ++g_gpu.gpuFrames; g_gpu.tsPending.pop_front();
         }
+        if (g_gpu.tsPending.size() > 8) g_gpu.tsPending.pop_front();
         const auto tE = std::chrono::steady_clock::now();
         g_gpu.msTake += std::chrono::duration<double, std::milli>(tB - tA).count();
         g_gpu.msRecord += std::chrono::duration<double, std::milli>(tC - tB).count();
@@ -1123,10 +1238,10 @@ namespace seamvk
 
         if ((++g_gpu.frames % 300u) == 0u)
         {
-            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws (%.1f on host meshes), %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f VRAM pages up, %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
+            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws (%.1f on host meshes), %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f VRAM pages up, %.1f batches of %.0f chunks, %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
                          (unsigned long long)g_gpu.frames, double(g_gpu.draws) / 300.0, double(g_gpu.verts) / 300.0, double(g_gpu.passes) / 300.0,
-                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.dateHost) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.nativeSteps) / 300.0, double(g_gpu.vramPagesUp) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
-            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.dateHost = 0; g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = g_gpu.nativeSteps = g_gpu.vramPagesUp = 0;
+                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.dateHost) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.nativeSteps) / 300.0, double(g_gpu.vramPagesUp) / 300.0, double(g_gpu.batches) / 300.0, double(g_gpu.chunksBatched) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
+            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.dateHost = 0; g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = g_gpu.nativeSteps = g_gpu.vramPagesUp = g_gpu.batches = g_gpu.chunksBatched = 0;
             std::fprintf(stderr, "[seamvk] per frame: take %.2f ms, record %.2f ms, submit %.2f ms, wait %.2f ms\n", g_gpu.msTake / 300.0, g_gpu.msRecord / 300.0, g_gpu.msSubmit / 300.0, g_gpu.msWait / 300.0);
             if (g_gpu.gpuFrames)
             {

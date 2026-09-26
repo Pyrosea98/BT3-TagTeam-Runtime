@@ -58,7 +58,8 @@ void main()
     {
         vec2 uv = ((flags & 2) != 0) ? vTex.xy : (vTex.xy / vTex.z) * pc.texInfo.xy;
         vec4 ct;
-        if ((flags & 8) != 0)
+        if ((flags & 32768) != 0) ct = texture(uTex, uv / pc.texInfo.xy);   // [hwfilter] plain REPEAT/CLAMP bilinear through the sampler: hardware samples texel index uv - 0.5 at coordinate uv / size, the GS convention
+        else if ((flags & 8) != 0)
         {   // bilinear, GS convention: the sample point is uv - 0.5
             vec2 p = uv - 0.5;
             ivec2 i = ivec2(floor(p));

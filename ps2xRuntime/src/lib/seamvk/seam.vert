@@ -6,7 +6,7 @@ layout(location = 1) in vec4 inA1;   // normal (characters, effects) or float co
 layout(location = 2) in vec4 inA2;   // texcoord (characters, stage) or colour (effects)
 layout(location = 3) in vec4 inA3;   // texcoord (effects only)
 
-layout(std140, set = 0, binding = 0) uniform Consts
+struct Consts
 {
     vec4 A[4];      // bone A / M1 (screen)
     vec4 B[4];      // bone B / M2 (clip)
@@ -18,7 +18,10 @@ layout(std140, set = 0, binding = 0) uniform Consts
     vec4 colA, colB;   // constant colours (0..128)
     vec4 misc;         // x = program, y = pass index within the packet, z = qw16.x scale (effects), w = flat-colour debug
     vec4 view;         // ofx, ofy, width, height in GS pixels
-} c;
+};
+// [batch] up to 128 chunks share one draw: each vertex carries its chunk's index in inA3.w (pc.texInfo.z = 1), so the
+// per-chunk constants (bone matrices, pass index) come from this array instead of one draw per VU chunk.
+layout(std430, set = 0, binding = 0) readonly buffer ConstsArr { Consts arr[]; } ca;
 
 #include "pc.glsl"
 layout(location = 0) out vec4 vColor;
@@ -32,6 +35,8 @@ vec4 xfw(vec4 r[4], vec4 v) { return r[0] * v.x + r[1] * v.y + r[2] * v.z + r[3]
 
 void main()
 {
+    const int ci = (pc.texInfo.z > 0.5) ? int(inA3.w + 0.5) : 0;
+#define c ca.arr[ci]
     const int prog = int(c.misc.x);
     vec4 screen;      // GS pixel space * w
     vec4 clipv;       // the program's clip-space position (M2 / F): the VU1 clips |x|,|y|,|z| <= |w| here
