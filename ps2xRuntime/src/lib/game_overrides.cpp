@@ -4526,6 +4526,11 @@ namespace
         seamprobe::popEmitter();
     }
 
+    // [postskip] PS2X_POSTSKIP=1: the three post-processing orchestrators of the fight frame do nothing
+    // (sub_00247578: depth mask / ink / glow composite; FUN_0010ff40: downscales, DoF masks, Z top-byte plane;
+    // FUN_00247660). Step one of replacing them natively (docs/SEAM-POSTCHAIN.md).
+    void bt3PostSkipHook(uint8_t *, R5900Context *, PS2Runtime *) {}
+
     // Camera matrix-multiply probe (PS2X_CAMPROBE). sub_001201B8 concatenates $a0 = A($a1) x B($a2).
     // The gameplay-camera update (FUN_0023d510) calls it at ra=0x23d9bc to build the camera WORLD
     // matrix = localRot(BASE+0x260) x parent(BASE+0x40). Dump A and B ONLY for that caller so we
@@ -6621,6 +6626,16 @@ namespace
             g_orig131a20 = runtime.lookupFunction(0x00131a20u);
             if (g_orig131a20) runtime.replaceFunction(0x00131a20u, &bt3QuadEmitHook);
             std::fprintf(stderr, "[wisphook] installed=%d\n", g_orig131a20 ? 1 : 0);
+        }
+        {   // [postskip]
+            static const bool s_postSkip = [](){ const char *v = std::getenv("PS2X_POSTSKIP"); return v && v[0] && v[0] != '0'; }();
+            if (s_postSkip)
+            {
+                int n = 0;
+                for (uint32_t a : { 0x00247578u, 0x0010ff40u, 0x00247660u })
+                    if (runtime.lookupFunction(a)) { runtime.replaceFunction(a, &bt3PostSkipHook); ++n; }
+                std::fprintf(stderr, "[postskip] %d/3 post orchestrators skipped\n", n);
+            }
         }
         if (seamprobe::kickProbeOn())
         {   // [kickprobe]

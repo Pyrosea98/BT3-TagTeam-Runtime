@@ -70,7 +70,10 @@ void main()
         }
     }
     // GS pixel space -> NDC over the game's window (ofx, ofy, w, h), perspective-correct.
-    if (screen.w < 0.0) screen = -screen;   // VU1 only needs 1/w; Vulkan clips w < 0
+    // The VU1 programs' projection gives visible vertices a NEGATIVE w (they only ever take 1/w). Negate the whole
+    // vector: visible vertices get w > 0 and vertices behind the camera get w < 0, which Vulkan clips. (Flipping
+    // only when w < 0 left behind-camera vertices unclipped: screen-filling triangles whenever a chunk crossed the near plane.)
+    screen = -screen;
     float w = screen.w;
     vec2 px = screen.xy;                       // still multiplied by w
     vec2 ndc = vec2((px.x - pc.view.x * w) / pc.view.z * 2.0 - w,
