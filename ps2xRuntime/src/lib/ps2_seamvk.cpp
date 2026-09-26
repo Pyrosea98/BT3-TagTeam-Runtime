@@ -61,6 +61,12 @@ namespace seamvk
         const uint32_t kAliasFrag[] = {
 #include "seamvk/alias16.frag.inc"
         };
+        const uint32_t kDepthMaskFrag[] = {
+#include "seamvk/depthmask.frag.inc"
+        };
+        const uint32_t kOutlineFrag[] = {
+#include "seamvk/outline.frag.inc"
+        };
         struct RtPC { uint32_t tex[4], clut[4], src[4], texa[4]; };
         struct AliasPC { uint32_t tgt[4], v16[4]; int32_t fA[4], blend[4], texInfo[4]; float col[4]; };   // alias16.frag
 
@@ -79,7 +85,7 @@ namespace seamvk
         struct Target { Vulkan::ImageHandle img; VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; bool cleared = false; bool aliasedDirty = false; };   // aliasedDirty: a draw through the other pixel format was skipped since the last draw of its own
         struct Gpu
         {
-            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr;
+            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutline = nullptr, *progDepthMask = nullptr;
             Vulkan::ImageHandle out;            // the composed frame
             Vulkan::ImageHandle white;          // 1x1 for untextured draws
             Vulkan::ImageHandle snap;           // destination snapshot for DATE draws
@@ -94,7 +100,7 @@ namespace seamvk
             std::vector<Vulkan::ImageHandle> tex;
             uint32_t w = 0, h = 0, scale = 1;
             bool failed = false;
-            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0;
+            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0, nativeSteps = 0;
             double msTake = 0, msRecord = 0, msSubmit = 0, msWait = 0;
         };
         Gpu g_gpu;
@@ -136,7 +142,16 @@ namespace seamvk
                 af.sets[0].sampled_image_mask = (1u << 1) | (1u << 2); af.sets[0].meta[1].array_size = 1; af.sets[0].meta[2].array_size = 1;
                 af.output_mask = 0x1u; af.push_constant_size = sizeof(AliasPC);
                 g_gpu.progAlias = dev.request_program(kRtVert, sizeof(kRtVert), kAliasFrag, sizeof(kAliasFrag), &av, &af);
-                if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progPresent || !g_gpu.progRt || !g_gpu.progAlias) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
+                Vulkan::ResourceLayout ov = {}, of = {};   // outline: fullscreen triangle, Ztop texture (1), CLUT (0)
+                ov.output_mask = 0x0u; ov.push_constant_size = 16;
+                of.sets[0].uniform_buffer_mask = 1u << 0; of.sets[0].meta[0].array_size = 1;
+                of.sets[0].sampled_image_mask = 1u << 1; of.sets[0].meta[1].array_size = 1;
+                of.output_mask = 0x1u; of.push_constant_size = 16;
+                g_gpu.progOutline = dev.request_program(kRtVert, sizeof(kRtVert), kOutlineFrag, sizeof(kOutlineFrag), &ov, &of);
+                Vulkan::ResourceLayout dv = {}, df = {};   // depth mask: fullscreen triangle, depth image (1)
+                dv.output_mask = 0x0u; df.sets[0].sampled_image_mask = 1u << 1; df.sets[0].meta[1].array_size = 1; df.output_mask = 0x1u;
+                g_gpu.progDepthMask = dev.request_program(kRtVert, sizeof(kRtVert), kDepthMaskFrag, sizeof(kDepthMaskFrag), &dv, &df);
+                if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progPresent || !g_gpu.progRt || !g_gpu.progAlias || !g_gpu.progOutline || !g_gpu.progDepthMask) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
                 const uint32_t whitePx = 0xFFFFFFFFu;
                 Vulkan::ImageInitialData init = { &whitePx, 0, 0 };
                 g_gpu.white = dev.create_image(Vulkan::ImageCreateInfo::immutable_2d_image(1, 1, VK_FORMAT_R8G8B8A8_UNORM), &init);
@@ -370,6 +385,67 @@ namespace seamvk
                 dev.unmap_host_buffer(*buf, Vulkan::MEMORY_ACCESS_READ_BIT);
                 std::fprintf(stderr, "[seamvk]  target dump fbp 0x%x %ux%u -> %s\n", kv.first, w, h, path);
             }
+        }
+
+        // [postnative] step 5: the outline mask, written straight into the frame's alpha from the Z top-byte plane
+        void runNativeStep(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::Draw &d)
+        {
+            if (d.prog == 0)
+            {   // depth mask: frame.A := Z24[15:8]
+                auto fi = g_gpu.targets.find(d.st.fbp); if (fi == g_gpu.targets.end() || !fi->second.img) return;
+                Target &ft = fi->second;
+                auto zi = g_gpu.depths.find(d.st.zbp | (targetW(d.st.fbw) << 16)); if (zi == g_gpu.depths.end() || !zi->second.img) return;
+                Target &zt = zi->second;
+                depthToSampled(cmd, zt);
+                toAttachment(cmd, ft, false);
+                Vulkan::RenderPassInfo rp = {};
+                rp.num_color_attachments = 1; rp.color_attachments[0] = &ft.img->get_view(); rp.load_attachments = 1u << 0; rp.store_attachments = 1u << 0;
+                cmd.begin_render_pass(rp);
+                cmd.set_opaque_state();
+                cmd.set_program(g_gpu.progDepthMask);
+                cmd.set_cull_mode(VK_CULL_MODE_NONE);
+                cmd.set_depth_test(false, false);
+                cmd.set_blend_enable(false);
+                cmd.set_color_write_mask(VK_COLOR_COMPONENT_A_BIT);
+                cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+                const uint32_t w = ft.img->get_width(), h = ft.img->get_height();
+                VkViewport vp = {}; vp.width = float(w); vp.height = float(h); vp.maxDepth = 1.0f; cmd.set_viewport(vp);
+                VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = h; cmd.set_scissor(sr);
+                cmd.set_texture(0, 1, zt.img->get_view(), Vulkan::StockSampler::NearestClamp);
+                cmd.draw(3);
+                cmd.end_render_pass();
+                ++g_gpu.nativeSteps;
+                return;
+            }
+            if (d.prog != 5) return;
+            auto zi = g_gpu.targets.find(d.st.zbp); auto fi = g_gpu.targets.find(d.st.fbp);
+            if (zi == g_gpu.targets.end() || !zi->second.img || fi == g_gpu.targets.end() || !fi->second.img) return;
+            Target &zt = zi->second, &ft = fi->second;
+            toSampled(cmd, zt);
+            toAttachment(cmd, ft, false);
+            Vulkan::RenderPassInfo rp = {};
+            rp.num_color_attachments = 1; rp.color_attachments[0] = &ft.img->get_view(); rp.load_attachments = 1u << 0; rp.store_attachments = 1u << 0;
+            cmd.begin_render_pass(rp);
+            cmd.set_opaque_state();
+            cmd.set_program(g_gpu.progOutline);
+            cmd.set_cull_mode(VK_CULL_MODE_NONE);
+            cmd.set_depth_test(false, false);
+            cmd.set_blend_enable(false);
+            cmd.set_color_write_mask(VK_COLOR_COMPONENT_A_BIT);
+            cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+            const uint32_t w = ft.img->get_width(), h = ft.img->get_height();
+            VkViewport vp = {}; vp.width = float(w); vp.height = float(h); vp.maxDepth = 1.0f; cmd.set_viewport(vp);
+            VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = h; cmd.set_scissor(sr);
+            cmd.set_texture(0, 1, zt.img->get_view(), Vulkan::StockSampler::NearestClamp);
+            uint32_t *cl = static_cast<uint32_t *>(cmd.allocate_constant_data(0, 0, 256u * 4u));
+            if (!seamgs::peekClut(0x3e8cu, 0u, cl)) std::memset(cl, 0, 1024);
+            static const uint32_t s_core = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); return v && v[0] ? (uint32_t)std::atoi(v) : 2u; }();
+            static const uint32_t s_fringe = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); if (v) if (const char *c = std::strchr(v, ',')) return (uint32_t)std::atoi(c + 1); return 3u; }();
+            const uint32_t pcv[4] = { g_gpu.scale, s_core, s_fringe, 0u };
+            cmd.push_constants(pcv, 0, sizeof(pcv));
+            cmd.draw(3);
+            cmd.end_render_pass();
+            ++g_gpu.nativeSteps;
         }
 
         void uploadTextures(Vulkan::Device &dev, seamgs::FrameList &f)
@@ -666,6 +742,7 @@ namespace seamvk
                                  i, d.prog, n, wmin, wmax, neg, pos, zqmin, zqmax, t.fbp, t.fbw, t.fpsm, t.fbmsk, t.zbp, t.zte, t.ztst, t.zmsk, t.tme, t.tex, t.texFromDrawn ? "(DRAWN)" : "", t.abe, t.aA, t.aB, t.aC, t.aD, t.ate, t.atst, t.aref, t.afail, t.ctxt, t.scax0, t.scax1, t.scay0, t.scay1, t.tex0hi, t.tex0lo, t.fst, t.tfx, t.tcc, t.wms, t.wmt, t.texW, t.texH, (unsigned long long)t.dbgPrim, (unsigned long long)t.dbgPrmode, t.dbgPrmodecont, (unsigned long long)t.dbgSc[0], (unsigned long long)t.dbgSc[1]);
                     continue;
                 }
+                if (d.kind == 3) { std::fprintf(stderr, "[seamvk]  draw %zu NATIVESTEP %u fbp 0x%x zbp 0x%x\n", i, d.prog, t.fbp, t.zbp); continue; }
                 if (d.kind == 2 && d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size())
                 {
                     const seamgs::RtDecode &r = f.rtDecodes[d.rt];
@@ -708,6 +785,13 @@ namespace seamvk
                 curFbp = ~0u; curZbp = ~0u;
                 char suf[32]; std::snprintf(suf, sizeof(suf), "_at%zu", di);
                 dumpTargets(dev, std::getenv("PS2X_SEAMVK_TEXDUMP"), suf);
+            }
+            if (d.kind == 3)
+            {   // [postnative] an engine-seam step at its stream position
+                if (inPass) { cmd->end_render_pass(); inPass = false; }
+                runNativeStep(*cmd, dev, d);
+                curFbp = ~0u;
+                continue;
             }
             if (d.kind == 2)
             {
@@ -920,10 +1004,10 @@ namespace seamvk
 
         if ((++g_gpu.frames % 300u) == 0u)
         {
-            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws, %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
+            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws, %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
                          (unsigned long long)g_gpu.frames, double(g_gpu.draws) / 300.0, double(g_gpu.verts) / 300.0, double(g_gpu.passes) / 300.0,
-                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
-            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = 0;
+                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.nativeSteps) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
+            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = g_gpu.nativeSteps = 0;
             std::fprintf(stderr, "[seamvk] per frame: take %.2f ms, record %.2f ms, submit %.2f ms, wait %.2f ms\n", g_gpu.msTake / 300.0, g_gpu.msRecord / 300.0, g_gpu.msSubmit / 300.0, g_gpu.msWait / 300.0);
             g_gpu.msTake = g_gpu.msRecord = g_gpu.msSubmit = g_gpu.msWait = 0;
         }

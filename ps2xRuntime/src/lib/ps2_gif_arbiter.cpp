@@ -243,7 +243,7 @@ namespace
 namespace
 {
     struct NativeStep { uint32_t lo, hi; int id; bool inRun; };
-    NativeStep g_nativeSteps[] = { {0x109848u, 0x109938u, 0, false}, {0x106ba8u, 0x106c5cu, 1, false}, {0x24b118u, 0x24b1dcu, 2, false}, {0x245a50u, 0x245de4u, 3, false}, {0x103070u, 0x103254u, 4, false} };
+    NativeStep g_nativeSteps[] = { {0x109848u, 0x109938u, 0, false}, {0x106ba8u, 0x106c5cu, 1, false}, {0x24b118u, 0x24b1dcu, 2, false}, {0x245a50u, 0x245de4u, 3, false}, {0x103070u, 0x103254u, 4, false}, {0x105cd8u, 0x105f28u, 5, false} };   // 5: outline mask, native renderer only
     const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u; }();
     // The step's packets are not dropped: their register writes (FRAME/ZBUF/SCISSOR/TEST... which the game's later draws
     // inherit) still reach the backend; only their DRAW kicks are neutralised, XYZ2/XYZF2 -> XYZ3/XYZF3 (no kick), by
@@ -291,9 +291,14 @@ namespace
             if (in && !st.inRun)
             {
                 st.inRun = true;
+                if (st.id >= 5) { if (!seamvk::on()) { st.inRun = false; continue; } seamvk::onNativeStep(st.id); }   // engine-seam steps of the native renderer
+                else if (seamvk::on() && st.id == 0) seamvk::onNativeStep(st.id);   // the native renderer's own pass (the backend keeps its host pass below as the reference)
 #ifdef PS2X_HAVE_PGS
-                static uint32_t s_fail[8] = {};
-                if (!ps2x_pgs::nativePostStep(st.id) && s_fail[st.id]++ < 3u) std::fprintf(stderr, "[postnative] step %d: pass FAILED (frame not 512 wide?)\n", st.id);
+                if (st.id < 5)
+                {
+                    static uint32_t s_fail[8] = {};
+                    if (!ps2x_pgs::nativePostStep(st.id) && s_fail[st.id]++ < 3u) std::fprintf(stderr, "[postnative] step %d: pass FAILED (frame not 512 wide?)\n", st.id);
+                }
 #endif
             }
             else if (!in && st.inRun) st.inRun = false;

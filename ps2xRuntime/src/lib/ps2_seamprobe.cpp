@@ -674,6 +674,8 @@ namespace seamprobe
             if (t_chainMap[mi - 1][0] <= pos) { guest = t_chainMap[mi - 1][1] + (pos - t_chainMap[mi - 1][0]); break; }
         std::lock_guard<std::mutex> lk(g_pubMtx);
         t_lastOwner = guest ? ownerOfAddrLocked(guest & 0x1FFFFFFu) : 0u;
+        static const bool s_light = [](){ const char *v = std::getenv("PS2X_KICKPROBE"); return v && v[0] == '2'; }();   // PS2X_KICKPROBE=2: owner attribution only (for the native post steps), no per-packet GIF census (that census cost ~10 fps)
+        if (s_light) return;
         KickSite &k = g_sites[t_lastOwner];
         k.directQw += bytes / 16u;
         static thread_local GifScan g; g.k = &k;

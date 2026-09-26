@@ -462,3 +462,28 @@ The proper form is the GPU implementation of those passes.
 Result: native == paraLLEl-GS on the static frame except the post chain (outline/ink on the far
 character, depth-of-field tone), which is the remaining open item. `PS2X_SEAMVK_DUMPCONSTS=1`
 prints the constants and per-vertex clip values of the first effect / off-screen character draws.
+
+## 2026-09-26 (night): the post chain on the GPU; native outline and depth-mask steps
+
+Three routes now exist for a post-chain step in the native renderer, in order of preference:
+1. **Native step** (engine seam): the arbiter's `[postnative]` interception neutralises the step's kicks and calls
+   `seamvk::onNativeStep(id)`; the front end records a kind-3 draw at that stream position and seamvk runs a
+   fullscreen pass. Steps: 0 = depth mask (`depthmask.frag`, frame.A := Z24[15:8] from the depth image, one draw
+   instead of the game's 64) and 5 = outline (`outline.frag`, ink alpha 0x80 / 0x30 from the edges of the depth
+   ramp CLUT_0x3e8c[Ztop] at native resolution, both sides, radius PS2X_SEAMVK_OUTLINE=<core>,<fringe>, default
+   2,3). Enable with PS2X_POSTNATIVE=0x21 PS2X_KICKPROBE=2 (2 = owner attribution only, no GIF census).
+   The paraLLEl-GS reference keeps its own host pass for step 0 but loses the outline (its kicks are neutralised).
+2. **alias16** (`alias16.frag`): any GS draw through a 16-bit FRAME view of a 32-bit target runs as a gather pass
+   in the target's own pass (inverse 16-bit swizzle per dword half, triangles at pixel centres, GS blend / 16-bit
+   FBMSK / ATE). Generic fallback for unpinned 16-bit steps; 64 single-triangle draws cost ~5 fps, which is why
+   the depth mask went native.
+3. Plain draws: alpha-only writes, Ad blends (now exact through the in-pass self-read), rt decodes.
+
+Pinned along the way (see memory bt3-gs-sampling-conventions): attributes at pixel centres; 16-bit FBMSK converts
+GSdx-style; a target keeps its own row width and 16-bit views have 64-px page rows; the GPU decode takes geometry
+from the image; depth is fetched through the Z32 block table (CT32 ^ 0x18), the top byte through CT32.
+Diagnostics: PS2X_SEAMVK_DUMPAT=<i>,... dumps every target just before draw i of the dump frame (device idle
+wait); PS2X_SEAMVK_DUMPCONSTS=1 prints seam constants and per-vertex clip values; the draw lines carry mmag.
+Result on the Ultimate Training replay: native == paraLLEl-GS incl. outline and shading; median fight fps 26.9
+(29.8 before the post chain existed natively). Open: depth-of-field looks blocky at scale 2 (rt decodes are at GS
+resolution) -> native DoF step or native-res decodes; the far character's ink/blur is lighter than the reference.

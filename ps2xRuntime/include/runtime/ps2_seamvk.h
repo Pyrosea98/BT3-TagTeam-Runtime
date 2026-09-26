@@ -48,6 +48,9 @@ namespace seamvk
     // GS thread, from the arbiter, in stream order.
     void onGifPacket(uint8_t path, const uint8_t *data, uint32_t size, bool hostGif);
     void onHostDraw(const uint8_t *data, uint32_t size);
+    // [postnative] a post-chain step replaced at the engine seam: its packets' kicks are neutralised by the arbiter and the
+    // native front end records the step at that stream position (kind 3 draw) for the GPU pass.
+    void onNativeStep(int step);
 
     // Present thread: the newest native frame (RGBA8), when one is ready.
     bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h);

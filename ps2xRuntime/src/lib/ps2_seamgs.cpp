@@ -1099,6 +1099,18 @@ namespace seamvk
         // uploads can land between them in the arbiter queue: they do not end the pairing. Only a new 'SVKD' does.
     }
 
+    void onNativeStep(int step)
+    {
+        if (!on()) return;
+        std::lock_guard<std::mutex> lk(seamgs::g_mtx);
+        static uint64_t s_lastFrame[8] = {};   // once per frame: the step's packets interleave with other owners' (uploads, decodes), so the arbiter sees several runs
+        if (step >= 0 && step < 8 && s_lastFrame[step] == seamgs::g_frame + 1u) return;
+        if (step >= 0 && step < 8) s_lastFrame[step] = seamgs::g_frame + 1u;
+        seamgs::Draw d; d.kind = 3; d.prog = (uint8_t)step;
+        d.st.fbp = (uint32_t)(seamgs::g_r.ctx[0].frame & 0x1FFu) << 5; d.st.fbw = (uint32_t)((seamgs::g_r.ctx[0].frame >> 16) & 0x3Fu);
+        d.st.zbp = (uint32_t)(seamgs::g_r.ctx[0].zbuf & 0x1FFu) << 5;
+        seamgs::g_list.draws.push_back(d);
+    }
     void onHostDraw(const uint8_t *data, uint32_t size)
     {
         if (!on() || size < sizeof(DrawPacket)) return;
