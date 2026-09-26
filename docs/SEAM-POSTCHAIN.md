@@ -6,6 +6,20 @@ effect, take its intent from the game's data, implement it as a native pass, and
 the GS packets it would have emitted. What stays on the lean 2D front-end (sprites,
 text, uploads) is a separate decision.
 
+## Native passes (PS2X_POSTNATIVE=<mask>, 2026-09-26)
+
+`ps2x_pgs::nativePostStep` (ps2_gs_pgs.cpp [postnative]) implements the pinned steps on the host:
+bit 0 depth mask, 1 alpha clear, 2 Z top byte, 3 blur weight, 4 glow (downscale + composite).
+At the stream position of the step's first packet (GifArbiter::process, owners from
+PS2X_KICKPROBE=1) the pass reads the backend's planes (flush + map_vram_read), computes, and
+writes back as ordinary CT32 image uploads; the step's own packets still go through with only
+their draw kicks neutralised (XYZ2/XYZF2 -> XYZ3/XYZF3 in the tags), so every register write the
+game's later draws inherit is preserved (dropping the packets wholesale left FRAME pointing at
+the wrong buffer and blacked out the stage). `tools/native_verify.py <oracle dir>` checks a run
+made with the oracle bracketing the native steps: all five 100% exact in a live fight, the
+picture identical to the game's. Cost: five readback/upload round trips per frame (slow, not
+measured; the GPU version comes once the remaining steps are pinned).
+
 ## Tooling
 
 **The packet oracle** (`PS2X_KICKPROBE=1 PS2X_PKTORACLE=<lo>-<hi>[:<nth>][,...] PS2X_STEPORACLE_DIR=<dir>`,

@@ -245,6 +245,43 @@ namespace
     struct NativeStep { uint32_t lo, hi; int id; bool inRun; };
     NativeStep g_nativeSteps[] = { {0x109848u, 0x109938u, 0, false}, {0x106ba8u, 0x106c5cu, 1, false}, {0x24b118u, 0x24b1dcu, 2, false}, {0x245a50u, 0x245de4u, 3, false}, {0x103070u, 0x103254u, 4, false} };
     const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u; }();
+    // The step's packets are not dropped: their register writes (FRAME/ZBUF/SCISSOR/TEST... which the game's later draws
+    // inherit) still reach the backend; only their DRAW kicks are neutralised, XYZ2/XYZF2 -> XYZ3/XYZF3 (no kick), by
+    // rewriting the GIF tags' register descriptors and A+D addresses in place. Tag state persists across PATH2 payloads.
+    struct P2Scan { uint32_t nloop = 0, nreg = 0, ri = 0; uint8_t flg = 0; uint64_t regs = 0; } g_p2scan;
+    void neutralizeKicks(uint8_t *d, uint32_t n)
+    {
+        P2Scan &p = g_p2scan; uint32_t off = 0;
+        while (off < n)
+        {
+            if (p.nloop == 0u)
+            {
+                if (off + 16u > n) break;
+                uint64_t lo, hi; std::memcpy(&lo, d + off, 8); std::memcpy(&hi, d + off + 8, 8);
+                p.nloop = (uint32_t)(lo & 0x7FFFu); p.flg = (uint8_t)((lo >> 58) & 3u); p.nreg = (uint32_t)((lo >> 60) & 0xFu); if (!p.nreg) p.nreg = 16u; p.ri = 0;
+                if (p.flg == 3u) p.flg = 2u;
+                if (p.flg != 2u)
+                {   // XYZ2 (5) -> XYZ3 (d), XYZF2 (4) -> XYZF3 (c) in the descriptors
+                    uint64_t r2 = 0;
+                    for (uint32_t i = 0; i < 16; ++i) { uint64_t nib = (hi >> (4 * i)) & 0xFu; if (nib == 5u) nib = 0xDu; else if (nib == 4u) nib = 0xCu; r2 |= nib << (4 * i); }
+                    hi = r2; std::memcpy(d + off + 8, &hi, 8);
+                }
+                p.regs = hi; off += 16;
+                continue;
+            }
+            if (p.flg == 2u) { const uint32_t take = std::min(p.nloop * 16u, n - off); off += take; p.nloop -= take / 16u; if (take % 16u) p.nloop = 0; continue; }
+            if (p.flg == 1u)
+            {   // REGLIST: 8 bytes per register, descriptors already rewritten in the tag
+                if (off + 8u > n) break;
+                off += 8; if (++p.ri == p.nreg) { p.ri = 0; --p.nloop; if (p.nloop == 0u && ((p.nreg & 1u) != 0u)) off += 8; }
+                continue;
+            }
+            if (off + 16u > n) break;
+            const uint32_t desc = (uint32_t)((p.regs >> (4u * p.ri)) & 0xFu);
+            if (desc == 0xEu) { uint8_t &addr = d[off + 8]; if (addr == 0x05u) addr = 0x0Du; else if (addr == 0x04u) addr = 0x0Cu; }
+            off += 16; if (++p.ri == p.nreg) { p.ri = 0; --p.nloop; }
+        }
+    }
     bool nativeIntercept(const GifArbiterPacket &pkt)
     {
         for (NativeStep &st : g_nativeSteps)
@@ -260,7 +297,7 @@ namespace
 #endif
             }
             else if (!in && st.inRun) st.inRun = false;
-            if (in) return true;
+            if (in) { neutralizeKicks(const_cast<uint8_t *>(pkt.data), pkt.size); return true; }
         }
         return false;
     }
@@ -276,7 +313,7 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
             if (in && !o.inRun) { o.inRun = true; if (++o.entries == o.nth) pktOracleDump(o.lo, "before"); }
             else if (!in && o.inRun) { o.inRun = false; if (o.entries == o.nth) { pktOracleDump(o.lo, "after"); o.done = true; } }
         }
-    if (g_nativeMask && pkt.pathId == GifPathId::Path2 && nativeIntercept(pkt)) return;   // [postnative] replaced by the host pass
+    if (g_nativeMask && pkt.pathId == GifPathId::Path2) nativeIntercept(pkt);   // [postnative] the host pass ran; the packet goes on with its kicks neutralised
     uint8_t pathId = static_cast<uint8_t>(pkt.pathId);
     const uint8_t *data = pkt.data; uint32_t size = pkt.size;
     if (pkt.pathId == GifPathId::HostDraw)
