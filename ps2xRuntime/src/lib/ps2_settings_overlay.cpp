@@ -1162,6 +1162,199 @@ static void netOrbitPoint(float t, float cx, float cy, float rx, float ry, float
     y = cy + ex * sn + ey * cs;
 }
 
+// [netplay] The form's values, shared by the settings tab and by the main-menu popup.
+//
+// They were function-local statics inside drawNetplayTab(), which quietly meant the two views could
+// not agree: set a port in the settings tab, open the popup, and it showed a stale 7777 because it
+// had no access to the other copy. One struct, two layouts, one set of values.
+//
+// Still not persisted -- these reset on every process start, so a game-mode change does not survive
+// quitting. Only `peer` can be seeded from outside, and only through PS2X_NET_PEER.
+struct NetplayForm
+{
+    char peer[64] = "127.0.0.1";
+    int  port    = 7777;
+    int  delay   = 2;      // frames; BT3 runs at 30 fps
+    int  battle  = 0;      // 0 Single, 1 Team, 2 DP
+    int  dp      = 0;      // 0 = 10 DP, 1 = 15, 2 = 20
+    int  time    = 3;      // 0..3 = 60/90/180/240 s, 4 = no limit
+    bool jump    = true;   // go to character select once connected
+    bool seeded  = false;
+    // The last connect attempt, for the popup's status monitor. ps2NetHost/ps2NetJoin already
+    // answer false when the socket will not open, but nothing in the API remembers it afterwards,
+    // so "failed to connect" would otherwise be indistinguishable from "never tried".
+    bool attempted = false;
+    bool faild     = false;
+
+    void seed()
+    {
+        if (seeded)
+            return;
+        seeded = true;
+        if (const char *e = std::getenv("PS2X_NET_PEER"))
+            std::snprintf(peer, sizeof peer, "%s", e);
+        if (port < 1 || port > 65535)
+            port = 7777;
+    }
+};
+static NetplayForm g_netForm;
+
+// A label above its widget, for the popup's narrow columns. The tab draws labels inline to the
+// left, which is fine at the 1080px the settings window is and does not fit the popup's 520.
+static void netLabel(const char *label)
+{
+    ImGui::TextUnformatted(label);
+    ImGui::SetNextItemWidth(-1.0f);   // the widget takes the whole cell, not the 120px default
+}
+
+// [netplay] The popup's body: the same form the settings tab shows, in the geometry that fits a
+// corner popup.
+//
+// Only the "Go to character select" checkbox is gone -- its value still lives in the shared form
+// (the tab owns the checkbox), because ps2_netplay's g_autoJump starts false and nothing else sets
+// it, so dropping it entirely would mean the game never jumps. Everything else is the tab's.
+static void drawNetplayPopupBody()
+{
+    g_netForm.seed();
+
+    // The status monitor, and the four states it can be in. This drives the header pill and is the
+    // only thing in the popup that says whether the last button press did anything.
+    struct Status { const char *text; ImVec4 color; };
+    Status st;
+    if (!ps2NetActive())
+    {
+        // No session. If one was asked for and is not here, it did not come up.
+        if (g_netForm.attempted) { st = {"FAILED TO CONNECT", {0.95f, 0.34f, 0.31f, 1.0f}}; }
+        else                     { st = {"WAITING",           {0.62f, 0.68f, 0.74f, 1.0f}}; }
+    }
+    else if (!ps2NetPeerConnected())
+    {
+        st = {"CONNECTING", {1.00f, 0.72f, 0.20f, 1.0f}};
+    }
+    else
+    {
+        st = {"CONNECTED", {0.35f, 0.88f, 0.45f, 1.0f}};
+    }
+
+    // Header: the Namek mark, the word, and the status pill on the right. Drawn by hand rather than
+    // laid out with SameLine, because the mark is an image on the draw list and the pill has to be
+    // right-aligned to the panel's edge; doing it in one pass keeps all three on one baseline.
+    const float hdrH  = 42.0f;
+    const float hdrW  = ImGui::GetContentRegionAvail().x;
+    const ImVec2 h0   = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(0.0f, hdrH));
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    const ImVec4 gold(1.00f, 0.80f, 0.30f, 1.0f);
+    const float  midY = h0.y + hdrH * 0.5f;
+
+    const float markW = 30.0f;
+    if (g_netplayIcon.ok())
+    {
+        const float markH = markW * float(g_netplayIcon.ph) / float(g_netplayIcon.pw);
+        dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.planet),
+                     ImVec2(h0.x, midY - markH * 0.5f),
+                     ImVec2(h0.x + markW, midY + markH * 0.5f));
+    }
+    const ImVec2 titleSz = ImGui::CalcTextSize("Netplay");
+    dl->AddText(ImVec2(h0.x + markW + 10.0f, midY - titleSz.y * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(gold), "Netplay");
+
+    // The pill, flush right: a soft fill of the state colour, its border, and its name.
+    const ImVec2 stSz = ImGui::CalcTextSize(st.text);
+    const float  pillH = stSz.y + 8.0f;
+    const float  pillW = stSz.x + 22.0f;
+    const ImVec2 p1(h0.x + hdrW - pillW, midY - pillH * 0.5f);
+    const ImVec2 p0(p1.x - pillW, midY - pillH * 0.5f);
+    const ImU32  stCol = ImGui::ColorConvertFloat4ToU32(st.color);
+    dl->AddRectFilled(p0, p1, ImGui::ColorConvertFloat4ToU32(
+                        ImVec4(st.color.x, st.color.y, st.color.z, 0.16f)), pillH * 0.5f);
+    dl->AddRect(p0, p1, stCol, pillH * 0.5f, 0, 1.0f);
+    dl->AddText(ImVec2(p0.x + 11.0f, p0.y + 4.0f), stCol, st.text);
+
+    ImGui::Separator();
+
+    if (ps2NetActive())
+    {
+        ImGui::Text("You are player %d", ps2NetLocalPlayer());
+        ImGui::Text("Input delay: %u frames (%u ms at 30 fps)", ps2NetDelay(),
+                    ps2NetDelay() * 33u);
+        { const char *bn[] = {"Single Battle", "Team Battle", "DP Battle"};
+          const char *tn[] = {"60 s", "90 s", "180 s", "240 s", "no limit"};
+          const char *dn[] = {"10 DP", "15 DP", "20 DP"};
+          const int bt = ps2NetBattleType(), tl = ps2NetTimeLimit(), dp = ps2NetDpLimit();
+          ImGui::Text("Game mode: %s%s%s   |   time limit: %s",
+                      (bt >= 0 && bt < 3) ? bn[bt] : "?",
+                      bt == 2 ? " / " : "", (bt == 2 && dp >= 0 && dp < 3) ? dn[dp] : "",
+                      (tl >= 0 && tl < 5) ? tn[tl] : "?"); }
+        ImGui::TextDisabled("Only buttons cross the wire. Each side renders its own player "
+                            "full-screen.");
+        ImGui::Spacing();
+        if (ImGui::Button("Disconnect", ImVec2(-1.0f, 0.0f)))
+        {
+            ps2NetDisconnect("popup");
+            g_netForm.attempted = false;   // back to WAITING, not left reading FAILED
+            g_netForm.faild     = false;
+        }
+        return;
+    }
+
+    if (ImGui::BeginTable("##net_cols", 2, ImGuiTableFlags_SizingStretchProp))
+    {
+        ImGui::TableNextColumn();
+        netLabel("HOST ADDRESS (JOIN ONLY)");
+        ImGui::InputText("##peer", g_netForm.peer, sizeof g_netForm.peer);
+        netLabel("PORT");
+        ImGui::InputInt("##port", &g_netForm.port);
+        if (g_netForm.port < 1 || g_netForm.port > 65535)
+            g_netForm.port = 7777;   // same clamp the tab does, and equally silent
+
+        ImGui::TableNextColumn();
+        netLabel("GAME MODE");
+        { const char *kBattle[] = {"Single Battle", "Team Battle", "DP Battle"};
+          ImGui::Combo("##battle", &g_netForm.battle, kBattle, 3); }
+        netLabel("TIME LIMIT");
+        { const char *kTime[] = {"60 seconds", "90 seconds", "180 seconds",
+                                 "240 seconds (default)", "No limit"};
+          ImGui::Combo("##time", &g_netForm.time, kTime, 5); }
+        // DP Battle's point budget is a SEPARATE row of the versus menu (duelObj+0x118), so choosing
+        // DP without it left the screen playing like Team Battle: the right type, no budget behind it.
+        if (g_netForm.battle == 2)
+        {
+            netLabel("DP LIMIT");
+            const char *kDp[] = {"10 DP", "15 DP", "20 DP"};
+            ImGui::Combo("##dp", &g_netForm.dp, kDp, 3);
+        }
+        ImGui::EndTable();
+    }
+
+    netLabel("INPUT DELAY (FRAMES)");
+    ImGui::SliderInt("##delay", &g_netForm.delay, 1, 10);
+    ImGui::TextDisabled("The HOST's choices apply to both players.");
+
+    ImGui::Separator();
+    if (ImGui::Button("HOST  ·  you are Player 1", ImVec2(-1.0f, 0.0f)))
+    {
+        ps2NetSetAutoJump(g_netForm.jump);
+        ps2NetSetDelay(g_netForm.delay);
+        ps2NetSetBattleType(g_netForm.battle);
+        ps2NetSetTimeLimit(g_netForm.time);
+        ps2NetSetDpLimit(g_netForm.dp);
+        g_netForm.attempted = true;
+        g_netForm.faild     = !ps2NetHost(g_netForm.port, 1);
+    }
+    if (ImGui::Button("JOIN  ·  you are Player 2", ImVec2(-1.0f, 0.0f)))
+    {
+        ps2NetSetAutoJump(g_netForm.jump);
+        ps2NetSetDelay(g_netForm.delay);      // the host's game mode wins
+        char hp[96];
+        std::snprintf(hp, sizeof hp, "%s:%d", g_netForm.peer, g_netForm.port);
+        g_netForm.attempted = true;
+        g_netForm.faild     = !ps2NetJoin(hp, 2);
+    }
+    ImGui::TextDisabled("HOST: press Host and give the other player your IP and this port.");
+    ImGui::TextDisabled("JOIN: type the host's IP above, then press Join.");
+}
+
 void PS2SettingsOverlay::drawMainMenuPopup()
 {
     // [mmpopup] An icon in the bottom-right corner that unfolds a panel when clicked. The icon is
@@ -1169,10 +1362,15 @@ void PS2SettingsOverlay::drawMainMenuPopup()
     // the shape the Netplay popup will take (small affordance on screen, panel on demand).
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     const float margin  = 18.0f;
-    const float iconSz  = 58.0f;
     const ImVec2 br(vp->Pos.x + vp->Size.x - margin, vp->Pos.y + vp->Size.y - margin);
 
+    // NoBackground is what keeps ImGui's own frame out of it. A zero alpha only hides the fill;
+    // ImGui strokes the window's border out of the same colour, so with NoDecoration alone the
+    // icon still came out with a gold line around it that nothing here had asked for. The one
+    // rectangle on screen is the pill drawn below, which is the label and the plate together.
+    //
     const ImGuiWindowFlags iconFlags = ImGuiWindowFlags_NoDecoration |
+                                       ImGuiWindowFlags_NoBackground |
                                        ImGuiWindowFlags_NoMove |
                                        ImGuiWindowFlags_NoSavedSettings |
                                        ImGuiWindowFlags_NoBringToFrontOnFocus |
@@ -1180,15 +1378,29 @@ void PS2SettingsOverlay::drawMainMenuPopup()
                                        ImGuiWindowFlags_AlwaysAutoResize;
 
     loadNetplayIcon();
+
+    // [mmpopup] The affordance is a label and an icon inside ONE box: "Netplay" on the left, the
+    // Namek plate on the right, one rounded gold rectangle around both, and the whole thing is the
+    // button. That is why the metrics are computed up here and not inside the window: the panel
+    // below has to know how tall the pill is to sit above it, and CalcTextSize needs a font, which
+    // only exists once the overlay's frame is open.
+    static const char *kLabel = "Netplay";
+    const ImVec2 labelSz = ImGui::CalcTextSize(kLabel);
+    const float padX  = 15.0f;
+    const float gap   = 10.0f;
+    const float artSz = 34.0f;   // planet width; its 464x524 aspect makes it taller than this
+    const float pillH  = 48.0f;
+    const float pillW  = padX + labelSz.x + gap + artSz + padX;
+    // A pill, not a rounded box: the radius is half the height, so the ends are semicircles.
+    const float pillR = pillH * 0.5f;
+
     bool clicked = false;
     ImGui::SetNextWindowPos(br, ImGuiCond_Always, ImVec2(1.0f, 1.0f));
-    ImGui::SetNextWindowBgAlpha(0.0f);
     if (ImGui::Begin("##mm_popup_icon", nullptr, iconFlags))
     {
-        // The row is an empty button and the mark is painted on the draw list: Russo One has no
-        // symbol for this, and a text glyph would come out as a missing-character box. Same
-        // approach as the file picker's folder and page marks.
-        ImGui::InvisibleButton("##icon", ImVec2(iconSz, iconSz));
+        // One InvisibleButton for the whole pill, so the label is clickable too and not just the
+        // artwork -- a 34px planet is a poor thing to ask someone to hit on its own.
+        ImGui::InvisibleButton("##icon", ImVec2(pillW, pillH));
         clicked = ImGui::IsItemClicked();
         const bool hovered = ImGui::IsItemHovered();
 
@@ -1197,26 +1409,34 @@ void PS2SettingsOverlay::drawMainMenuPopup()
         ImDrawList *dl = ImGui::GetWindowDrawList();
         const ImU32 accent = ImGui::GetColorU32(ImVec4(1.00f, 0.80f, 0.30f,
                                                        hovered ? 1.00f : 0.72f));
-        // The Namek plate, straight on the menu. No fill behind it: a plate would hide the very
-        // artwork the icon is offering, and the outline is enough to read as a button.
-        const float side = (b.x - a.x);
+        // The box itself: border only. The menu shows through, same as the icon did on its own --
+        // a filled plate here would cover the rows it is offering to jump to.
+        dl->AddRect(a, b, accent, pillR, 0, s_mmPopupOpen ? 2.0f : 1.0f);
+
+        // The label, left of the artwork, vertically centred on the pill.
+        dl->AddText(ImVec2(a.x + padX, (a.y + b.y) * 0.5f - labelSz.y * 0.5f), accent, kLabel);
+
+        // The plate, in the right-hand slot of the pill.
+        const float cx = b.x - padX - artSz * 0.5f;
+        const float cy = (a.y + b.y) * 0.5f;
         if (g_netplayIcon.ok())
         {
-            dl->PushClipRect(a, b, true);
-            const float pw = side * 0.92f;
-            const float ph = pw * float(g_netplayIcon.ph) / float(g_netplayIcon.pw);
-            const ImVec2 pp((a.x + b.x) * 0.5f - pw * 0.5f, (a.y + b.y) * 0.5f - ph * 0.5f);
+            const float ph = artSz * float(g_netplayIcon.ph) / float(g_netplayIcon.pw);
+            const ImVec2 pp(cx - artSz * 0.5f, cy - ph * 0.5f);
+            // Clipped to the slot, not to the pill: the orbit reaches past the planet's own width,
+            // and unclipped the cloud would print over the label and over the border.
+            dl->PushClipRect(ImVec2(cx - artSz * 0.5f, cy - ph * 0.5f),
+                             ImVec2(cx + artSz * 0.5f, cy + ph * 0.5f), true);
             dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.planet), pp,
-                         ImVec2(pp.x + pw, pp.y + ph));
+                         ImVec2(pp.x + artSz, pp.y + ph));
 
-            // The same cloud on the same orbit the panel uses, scaled into the icon: the design's
-            // ellipse is 323x105 in a 420px card, so the radii keep that ratio here.
-            const float cw = side * 0.186f;
+            // The same cloud on the same orbit the panel uses, with the design's ratios kept:
+            // 78px of cloud and a 323x105 ellipse inside a 232px planet.
+            const float cw = artSz * 0.336f;
             const float ch = cw * float(g_netplayIcon.ch) / float(g_netplayIcon.cw);
             const float t = float(ImGui::GetTime() / 6.0) - float((int)(ImGui::GetTime() / 6.0));
             float ox = 0.0f, oy = 0.0f;
-            netOrbitPoint(t, (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f,
-                          side * 0.385f, side * 0.125f, -18.0f, ox, oy);
+            netOrbitPoint(t, cx, cy, artSz * 0.697f, artSz * 0.226f, -18.0f, ox, oy);
             dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.cloud),
                          ImVec2(ox - cw * 0.5f, oy - ch * 0.5f),
                          ImVec2(ox + cw * 0.5f, oy + ch * 0.5f),
@@ -1225,15 +1445,14 @@ void PS2SettingsOverlay::drawMainMenuPopup()
         }
         else
         {
-            // No art: fall back to the three bars rather than an empty box.
-            const float w = side * 0.44f, h = 2.5f, cx = (a.x + b.x) * 0.5f;
+            // No art: three bars where the planet goes, rather than an empty slot.
+            const float w = artSz * 0.44f, h = 2.5f;
             for (int i = 0; i < 3; ++i)
             {
-                const float y = (a.y + b.y) * 0.5f + (float(i) - 1.0f) * 7.0f;
+                const float y = cy + (float(i) - 1.0f) * 7.0f;
                 dl->AddRectFilled(ImVec2(cx - w, y - h), ImVec2(cx + w, y + h), accent, h);
             }
         }
-        dl->AddRect(a, b, accent, 8.0f, 0, s_mmPopupOpen ? 2.0f : 1.0f);
     }
     ImGui::End();
     if (clicked)
@@ -1242,10 +1461,12 @@ void PS2SettingsOverlay::drawMainMenuPopup()
     if (!s_mmPopupOpen)
         return;
 
-    // The panel unfolds above and to the left of the icon, so it grows into the screen instead of
-    // off the bottom-right edge.
-    const ImVec2 panelSize(360.0f, 0.0f);
-    ImGui::SetNextWindowPos(ImVec2(br.x, br.y - iconSz - 10.0f), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    // The panel unfolds above and to the left of the pill, so it grows into the screen instead of
+    // off the bottom-right edge. 520 is what the two-column form needs: the settings window this
+    // content came from is min(1080, vpW*0.96), and inline labels do not survive in anything
+    // narrower, which is why the popup's labels sit above their widgets instead.
+    const ImVec2 panelSize(520.0f, 0.0f);
+    ImGui::SetNextWindowPos(ImVec2(br.x, br.y - pillH - 10.0f), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
     ImGui::SetNextWindowSize(panelSize, ImGuiCond_Always);
     const ImGuiWindowFlags panelFlags = ImGuiWindowFlags_NoDecoration |
                                         ImGuiWindowFlags_NoMove |
@@ -1262,75 +1483,8 @@ void PS2SettingsOverlay::drawMainMenuPopup()
         return;
     }
 
-    const uint32_t phase = g_bt3MenuPhase.load(std::memory_order_relaxed);
     loadNetplayIcon();
-
-    // The card, at the design's proportions. 420x420 with a 96px radius inside a 480x620 artboard;
-    // only the card matters here, and it is scaled down so the panel stays a popup rather than a
-    // takeover. The clip is what makes the rounded corner and the drifting cloud read as one object.
-    //
-    // The position is read BEFORE the Dummy reserves the space: GetCursorScreenPos() after a
-    // layout item is already past it, which draws the card below where the text expects it.
-    const float card = 200.0f;
-    const ImVec2 c0 = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(card, card + 6.0f));
-    const ImVec2 c1(c0.x + card, c0.y + card);
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-
-    // Background: the design's radial gradient (#eef3f7 centre -> #dbe6ee edge) approximated with a
-    // few concentric rounded rects. A real gradient shader is not worth a texture for a 200px card.
-    for (int i = 6; i >= 1; --i)
-    {
-        const float f = float(i) / 6.0f;
-        const ImVec2 pad(card * 0.5f * (1.0f - f) * 0.30f, card * 0.5f * (1.0f - f) * 0.30f);
-        dl->AddRectFilled(ImVec2(c0.x + pad.x, c0.y + pad.y), ImVec2(c1.x - pad.x, c1.y - pad.y),
-                          ImGui::ColorConvertFloat4ToU32(ImVec4(
-                              0.933f - 0.078f * f, 0.953f - 0.059f * f, 0.969f - 0.027f * f, 1.0f)),
-                          card * 0.12f);
-    }
-    dl->AddRect(c0, c1, ImGui::ColorConvertFloat4ToU32(ImVec4(0.55f, 0.62f, 0.68f, 0.45f)),
-                card * 0.12f, 0, 1.0f);
-    dl->PushClipRect(c0, c1, true);
-
-    if (g_netplayIcon.ok())
-    {
-        // The planet: 232px wide in a 420px card, centred, so 55% of the card's width.
-        const float pw = card * 0.553f;
-        const float ph = pw * float(g_netplayIcon.ph) / float(g_netplayIcon.pw);
-        const ImVec2 pp((c0.x + c1.x) * 0.5f - pw * 0.5f, (c0.y + c1.y) * 0.5f - ph * 0.5f);
-        dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.planet), pp, ImVec2(pp.x + pw, pp.y + ph));
-
-        // The cloud, 78px in the same 420px card => 18.6% of the width, mirrored as the design does
-        // (transform: scaleX(-1)), orbiting the ellipse the design's offset-path describes.
-        const float cw = card * 0.186f;
-        const float ch = cw * float(g_netplayIcon.ch) / float(g_netplayIcon.cw);
-        const float t = float(ImGui::GetTime() / 6.0) - float((int)(ImGui::GetTime() / 6.0));
-        float ox = 0.0f, oy = 0.0f;
-        netOrbitPoint(t, card * 0.5f, card * 0.5f, card * 0.385f, card * 0.125f, -18.0f, ox, oy);
-        dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.cloud), ImVec2(ox - cw * 0.5f, oy - ch * 0.5f),
-                     ImVec2(ox + cw * 0.5f, oy + ch * 0.5f),
-                     ImVec2(1.0f, 0.0f), ImVec2(0.0f, 1.0f));   // uv mirrored horizontally
-    }
-    else
-    {
-        ImGui::SetCursorScreenPos(ImVec2(c0.x, c0.y + card * 0.45f));
-        ImGui::TextDisabled("(arte de netplay no encontrado en assets/netplay)");
-    }
-    dl->PopClipRect();
-
-    ImGui::TextColored(ImVec4(1.00f, 0.80f, 0.30f, 1.0f), "NETPLAY");
-    ImGui::Separator();
-    ImGui::Text("gate   : %s", g_bt3MenuShown.load(std::memory_order_relaxed) ? "OPEN" : "shut");
-    ImGui::Text("phase  : %s",
-                ps2x::mainmenu::phaseName(static_cast<ps2x::mainmenu::Phase>(phase)));
-    // The plate counter, read live. It was a hardcoded "11/11" here, which is exactly the kind of
-    // lie a diagnostic panel must not tell: the real value is 9, because the build loop skips the
-    // hidden entry and sends index 10 down another path (see ps2x_mainmenu.h, kRowCount).
-    ImGui::Text("plates : %u/%u", g_bt3MenuPlates.load(std::memory_order_relaxed),
-                ps2x::mainmenu::kRowCount);
-    ImGui::Spacing();
-    if (ImGui::Button("Close", ImVec2(90.0f, 0.0f)))
-        s_mmPopupOpen = false;
+    drawNetplayPopupBody();
     ImGui::End();
     ImGui::PopStyleColor();
 }
@@ -2623,14 +2777,9 @@ void PS2SettingsOverlay::drawBindingsPopup()
 // menu sequence so both sides land on character select together (see ps2NetBeginAutoStart).
 void PS2SettingsOverlay::drawNetplayTab()
 {
-    static char s_peer[64] = "127.0.0.1";
-    static int  s_port = 7777;
-    static bool s_loaded = false;
-    if (!s_loaded)
-    {
-        s_loaded = true;
-        if (const char *e = std::getenv("PS2X_NET_PEER")) { std::snprintf(s_peer, sizeof s_peer, "%s", e); }
-    }
+    // The values live in NetplayForm (see above drawMainMenuPopup), shared with the main-menu
+    // popup: they were statics local to this function, so the two views could not see each other.
+    g_netForm.seed();
 
     ImGui::TextUnformatted("Online play (deterministic lockstep)");
     ImGui::Separator();
@@ -2666,56 +2815,52 @@ void PS2SettingsOverlay::drawNetplayTab()
         return;
     }
 
-    static int  s_delay = 2;
-    static int  s_battle = 0;
-    static int  s_time = 3;
-    static int  s_dp = 0;          // DP Battle budget: 0 = 10 DP, 1 = 15, 2 = 20
-    static bool s_jump = true;
     // [rollback] The rollback window and state-sync controls are hidden until rollback ships (2026-09-17):
     // netplay is lockstep. The environment defaults (PS2X_NETROLLBACK / state sync) still reach the
     // connect calls below, so developers can keep testing without the UI advertising it.
     static int  s_rollback = ps2NetRollbackSetting();
     static bool s_sync = ps2NetSyncSetting();
-    ImGui::Checkbox("Go to character select once connected", &s_jump);
+    ImGui::Checkbox("Go to character select once connected", &g_netForm.jump);
     ImGui::TextDisabled("The HOST's choice applies to both; the menus are hidden while it happens.");
     ImGui::Separator();
     // Only Join uses the address: hosting binds the port and learns the peer from its first
     // packet, which is why only one side needs a reachable port.
-    ImGui::InputText("Host address (Join only)", s_peer, sizeof s_peer);
-    ImGui::InputInt("Port", &s_port);
+    ImGui::InputText("Host address (Join only)", g_netForm.peer, sizeof g_netForm.peer);
+    ImGui::InputInt("Port", &g_netForm.port);
     const char *kBattle[] = { "Single Battle", "Team Battle", "DP Battle" };
-    ImGui::Combo("Game mode", &s_battle, kBattle, 3);
+    ImGui::Combo("Game mode", &g_netForm.battle, kBattle, 3);
     // DP Battle's point budget is a SEPARATE row of the versus menu (duelObj+0x118, committed to
     // stateObj+0x630 = RetroAchievements' 0x6af7b0). Selecting DP without it left the screen
     // playing like Team Battle: the right type with no budget behind it.
-    if (s_battle == 2)
+    if (g_netForm.battle == 2)
     {
         const char *kDp[] = { "10 DP", "15 DP", "20 DP" };
-        ImGui::Combo("DP limit", &s_dp, kDp, 3);
+        ImGui::Combo("DP limit", &g_netForm.dp, kDp, 3);
     }
     // Battle Settings time-limit indices, confirmed in game:
     //   0 = 60 s, 1 = 90 s, 2 = 180 s, 3 = 240 s (default), 4 = no limit
     const char *kTime[] = { "60 seconds", "90 seconds", "180 seconds", "240 seconds (default)", "No limit" };
-    ImGui::Combo("Time limit", &s_time, kTime, 5);
+    ImGui::Combo("Time limit", &g_netForm.time, kTime, 5);
     ImGui::TextDisabled("The HOST's choices apply to both players.");
-    ImGui::SliderInt("Input delay (frames)", &s_delay, 1, 10);
+    ImGui::SliderInt("Input delay (frames)", &g_netForm.delay, 1, 10);
     ImGui::TextDisabled("BT3 runs at 30 fps, so each frame is 33 ms. Use 1 on the same machine,");
     ImGui::TextDisabled("2 on a LAN. Raise it only if you see stalls.");
-    if (s_port < 1 || s_port > 65535) s_port = 7777;
+    if (g_netForm.port < 1 || g_netForm.port > 65535) g_netForm.port = 7777;
 
     if (ImGui::Button("Host (you are Player 1)"))
     {
-        ps2NetSetAutoJump(s_jump); ps2NetSetDelay(s_delay); ps2NetSetBattleType(s_battle);
-        ps2NetSetTimeLimit(s_time); ps2NetSetDpLimit(s_dp);
+        ps2NetSetAutoJump(g_netForm.jump); ps2NetSetDelay(g_netForm.delay);
+        ps2NetSetBattleType(g_netForm.battle);
+        ps2NetSetTimeLimit(g_netForm.time); ps2NetSetDpLimit(g_netForm.dp);
         ps2NetSetRollback(s_rollback); ps2NetSetSync(s_sync);
-        ps2NetHost(s_port, 1);
+        ps2NetHost(g_netForm.port, 1);
     }
     ImGui::SameLine();
     if (ImGui::Button("Join (you are Player 2)"))
     {
-        ps2NetSetAutoJump(s_jump); ps2NetSetDelay(s_delay);   // the host's game mode wins
+        ps2NetSetAutoJump(g_netForm.jump); ps2NetSetDelay(g_netForm.delay);  // host's mode wins
         ps2NetSetRollback(s_rollback); ps2NetSetSync(s_sync);
-        char hp[96]; std::snprintf(hp, sizeof hp, "%s:%d", s_peer, s_port);
+        char hp[96]; std::snprintf(hp, sizeof hp, "%s:%d", g_netForm.peer, g_netForm.port);
         ps2NetJoin(hp, 2);
     }
     ImGui::Separator();
