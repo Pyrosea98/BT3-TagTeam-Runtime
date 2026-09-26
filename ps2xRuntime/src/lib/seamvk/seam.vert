@@ -67,8 +67,10 @@ void main()
             // s = 0.5 * lit + 0.5 (lit = the blend of C*N and D*N by the skin weight, x lane), t = 0, with colour B.
             vec3 na = xf1(c.C, inA1.xyz).xyz, nb = xf1(c.D, inA1.xyz).xyz;
             vec3 n = nb + (na - nb) * inP.w;
-            lit = n.x * 0.5 + 0.5;
-            if (c.misc.y > 0.5) { tex = vec3(lit, 0.0, 1.0); col = c.colB / 255.0; }
+            float ramp = n.x * 0.5 + 0.5;
+            if (c.misc.y > 0.5) { tex = vec3(ramp, 0.0, 1.0); col = c.colB / 255.0; }
+            // lit stays 1: the toon look IS pass 1 (the ramp texel subtracted from pass 0); the fragment shader's
+            // extra darkening by lit was a stand-in from before pass 1 existed and made the cel shading a gradient.
         }
         else if (prog == 4)
         {   // ccb6aa07: L*N, 2D toon lookup ((1+l.x)/2, (1+l.y)/2)

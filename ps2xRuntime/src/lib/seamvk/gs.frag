@@ -90,5 +90,7 @@ void main()
     // additive flashes carry vertex alpha 0 with FBA set: they add nothing but leave the mask bit behind).
     float aStored = ((flags & 32) != 0 && a255 < 128.0) ? a255 + 128.0 : a255;
     outColor = vec4(c.rgb, aStored / 255.0);
-    outBlend = vec4(0.0, 0.0, 0.0, min(a255 / 128.0, 1.0));
+    float fac = a255 / 128.0;
+    if ((flags & 16384) != 0) fac = subpassLoad(uDst).a * (255.0 / 128.0);   // Ad: the destination alpha, read in-pass like DATE (was Ad/255)
+    outBlend = vec4(0.0, 0.0, 0.0, min(fac, 1.0));
 }

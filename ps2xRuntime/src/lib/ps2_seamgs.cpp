@@ -519,7 +519,15 @@ namespace seamgs
             const uint32_t row0 = s.scay0 / pageH, row1 = s.scay1 / pageH;
             {
                 TargetInfo &t = g_targets[s.fbp];
-                t.fbw = pagesPerRow; t.psm = s.fpsm; t.rows = std::max(t.rows, (s.scay1 / 32u) + 1u); t.drawStamp = ++g_drawStamp;
+                {   // A target keeps the row width of its own (32-bit) layout; a 16-bit FRAME view of the same pages (64-pixel
+                    // page rows, possibly a different FBW) only extends the page span. Taking the view's width would make
+                    // the read-back decode the native image with the wrong width (the outline mask came back empty).
+                    const bool f16 = s.fpsm == 2u || s.fpsm == 10u;
+                    const uint32_t pages = ((s.scay1 / (f16 ? 64u : 32u)) + 1u) * pagesPerRow;
+                    if (t.rows == 0u || (!f16 && (t.psm == 2u || t.psm == 10u))) { t.fbw = pagesPerRow; t.psm = s.fpsm; }
+                    const uint32_t fbwE = t.fbw != 0u ? t.fbw : 1u;
+                    t.rows = std::max(t.rows, (pages + fbwE - 1u) / fbwE); t.drawStamp = ++g_drawStamp;
+                }
                 if (s.zte && !s.zmsk) { TargetInfo &z = g_zbufs[s.zbp]; z.fbw = pagesPerRow; z.psm = s.zpsm; z.rows = std::max(z.rows, (s.scay1 / 32u) + 1u); z.drawStamp = g_drawStamp; }
             }
             const uint32_t col0 = s.scax0 / 64u, col1 = std::min<uint32_t>(s.scax1 / 64u, pagesPerRow - 1u);

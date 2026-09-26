@@ -11,6 +11,11 @@ layout(location = 2) out float vLit;
 layout(location = 3) out float vFog;
 void main()
 {
+    // Attributes are evaluated at pixel centres (x + 0.5): the GS convention. The post chain relies on it: its outline pass
+    // draws the depth ramp shifted by half a pixel with NEAREST filtering and subtracts, which only differs from the
+    // unshifted draw when the sample point is the centre (floor(y + 1) vs floor(y + 0.5)); its read-back sprites carry
+    // +0.5 texel UVs with LINEAR filtering, which lands exactly on texel x. (paraLLEl-GS snaps 1:1 sprites to the integer
+    // position, so its depth-mask pass is one row off from this; nothing visible depends on that row.)
     vec2 ndc = vec2(inPos.x / pc.view.z * 2.0 - 1.0, inPos.y / pc.view.w * 2.0 - 1.0);
     gl_Position = vec4(ndc, inPos.z, 1.0);
     vColor = inCol;

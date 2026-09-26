@@ -46,8 +46,10 @@ uint addr16(uint psm, uint block, uint bw, uint x, uint y)
     return (page << 13) + ((blockId >> 5) << 13) + (blockId & 31u) * 256u + uint(columnTable16[(y & 1u) * 16u + (x & 15u)]) * 2u;
 }
 
-// The CT32 target pixel holding GS byte address a (dword-aligned), or (-1,-1) when outside the target.
-ivec2 rtPixel(uint a)
+// The target pixel holding GS byte address a (dword-aligned), or (-1,-1) when outside the target. zlayout: the pixel in
+// the Z32 layout (a Z buffer's own swizzle: block table = the CT32 one with bits 3,4 flipped), where the depth image
+// holds that dword; the colour view of the same pages (its top byte, PSMT8H writes) is in the CT32 layout.
+ivec2 rtPixelL(uint a, bool zlayout)
 {
     uint page = a >> 13;
     uint base = pc.src.x >> 5;
@@ -57,9 +59,10 @@ ivec2 rtPixel(uint a)
     uint py = rel / fbw, px = rel - py * fbw;
     if (py >= pc.src.z) return ivec2(-1);
     uint blk = (a >> 8) & 31u, word = (a & 255u) >> 2;
-    int ib = invBlock32[blk], ic = invColumn32[word];
+    int ib = invBlock32[zlayout ? (blk ^ 0x18u) : blk], ic = invColumn32[word];
     return ivec2(int(px * 64u + uint(ib & 15) * 8u + uint(ic & 15)), int(py * 32u + uint(ib >> 4) * 8u + uint(ic >> 4)));
 }
+ivec2 rtPixel(uint a) { return rtPixelL(a, false); }
 uint rtDword(uint a)
 {
     ivec2 p = rtPixel(a & ~3u);
@@ -67,8 +70,9 @@ uint rtDword(uint a)
     ivec2 sp = p * int(pc.src.w);
     uint d = packUnorm4x8(texelFetch(uSrc, sp, 0));
     if ((pc.clut.w & 2u) != 0u)
-    {   // depth buffer: the Z24 value from the depth image, the top byte from the colour target
-        float z = texelFetch(uDepth, sp, 0).r;
+    {   // depth buffer: the Z24 value from the depth image (Z32 layout), the top byte from the colour target (CT32 layout)
+        ivec2 zp = rtPixelL(a & ~3u, true) * int(pc.src.w);
+        float z = texelFetch(uDepth, zp, 0).r;
         uint zi = uint(clamp(z, 0.0, 1.0) * 16777216.0 + 0.5) & 0xFFFFFFu;
         d = (d & 0xFF000000u) | zi;
     }
