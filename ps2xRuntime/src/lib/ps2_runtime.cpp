@@ -32,6 +32,7 @@ extern "C" int ps2xSchedTraceOn();               // PS2X_SCHEDTRACE window (defi
 #include "runtime/ps2_fmv_override.h"  // [fmvoverride]
 #include <filesystem>
 #include "runtime/ps2_memory.h"
+#include "runtime/ps2x_mainmenu.h"   // [mainmenu] the main-menu lifecycle gate
 #include "runtime/ps2_gs_pgs.h"   // [pgs]
 #include <iomanip>
 #include <cstdlib>
@@ -6319,6 +6320,20 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
 }
 
 std::atomic<uint32_t> g_bt3StateLive{0xffffffffu};   // [barblock] last bt3state seen by the status probe
+
+// [mainmenu] The main-menu lifecycle, published for the GS submit path. 1 only while the menu is
+// actually on screen and has not been confirmed -- ps2x::mainmenu::Phase::Shown -- which is NOT
+// the same as "the state is 0x04". A popup drawn off this flag cannot appear during the boot into
+// the menu (0x04 with no menu object yet) nor on the frame the player confirms and the game
+// leaves for New Game / Continue.
+std::atomic<uint32_t> g_bt3MenuShown{0u};
+// The phase itself, as a ps2x::mainmenu::Phase. Diagnostic: the trace prints it, and it is what a
+// caller wants when it needs to tell STARTED from BUILDING (neither draws, for different reasons).
+std::atomic<uint32_t> g_bt3MenuPhase{0u};
+// [mainmenu] menuObj+0x144, the game's own plate-build counter, published so a panel can show the
+// real number instead of a hardcoded one. It climbs 0 -> 9 as the menu is built (9, not 11: the
+// loop skips the hidden entry and routes index 10 elsewhere; see ps2x_mainmenu.h).
+std::atomic<uint32_t> g_bt3MenuPlates{0u};
 static PS2Runtime *g_waitHookRuntime = nullptr;   // [barblock]
 void *PS2Runtime::guestWaitBegin()
 {
@@ -7502,6 +7517,44 @@ void PS2Runtime::run()
                             o << duelSub(st, rd, vs, type, dp);
                             std::fprintf(stderr, "%s\n", o.str().c_str());
                             s_prevState = st;
+                        }
+                    }
+                }
+            }
+            {   // [mainmenu] The main-menu lifecycle, and the gate an in-menu popup hangs off.
+                // One read per frame, published as two atomics, and logged ONLY when the phase
+                // changes: the transitions are the interesting part (when the menu starts, when it
+                // becomes visible, when the confirm lands) and a per-frame line would drown them.
+                //   [bt3menu] phase SHOWN state=0x04 menuObj=0x200000 menuState=DISPLAYED ...
+                // PS2X_MENU_LIFECYCLE=0 silences it. See ps2x_mainmenu.h for the field map and for
+                // why "state == 0x04" is not the same answer as "the menu is on screen".
+                static const bool s_lifecycle = [](){
+                    const char *v = std::getenv("PS2X_MENU_LIFECYCLE");
+                    return !(v && v[0] && v[0] == '0');
+                }();
+                if (const uint8_t *rd = m_memory.getRDRAM())
+                {
+                    const uint64_t fr = g_bt3FrameCount.load(std::memory_order_relaxed);
+                    const ps2x::mainmenu::Snapshot snap =
+                        ps2x::mainmenu::read(rd, PS2_RAM_MASK, fr);
+                    const ps2x::mainmenu::Phase ph = ps2x::mainmenu::phase(snap);
+                    g_bt3MenuPhase.store(static_cast<uint32_t>(ph), std::memory_order_relaxed);
+                    g_bt3MenuShown.store(ps2x::mainmenu::popupVisible(snap) ? 1u : 0u,
+                                         std::memory_order_relaxed);
+                    g_bt3MenuPlates.store(snap.plates, std::memory_order_relaxed);
+                    if (s_lifecycle)
+                    {
+                        static ps2x::mainmenu::Phase s_prevPh = ps2x::mainmenu::Phase::Absent;
+                        static bool s_first = true;
+                        if (s_first || ph != s_prevPh)
+                        {
+                            s_first = false;
+                            s_prevPh = ph;
+                            char line[384];
+                            ps2x::mainmenu::format(snap, line, sizeof line);
+                            std::fprintf(stderr, "[bt3menu] fr=%llu %s%s\n",
+                                         (unsigned long long)fr, line,
+                                         ps2x::mainmenu::popupVisible(snap) ? "  <-- popup draws" : "");
                         }
                     }
                 }
