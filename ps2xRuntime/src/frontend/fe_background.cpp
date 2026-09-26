@@ -5,6 +5,10 @@
 #include <cstdio>
 #include <vector>
 
+// bt3gl's rtextures.c compiles its own stb_image with external linkage, so a second external
+// copy here is a duplicate-symbol link error (GNU ld "multiple definition of `stbi_*'"; MSVC
+// would be LNK2005). Keep ours file-local, same as gfx/image_io.cpp.
+#define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
