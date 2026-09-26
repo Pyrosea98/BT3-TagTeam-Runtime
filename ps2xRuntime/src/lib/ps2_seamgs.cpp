@@ -213,7 +213,7 @@ namespace seamgs
                 {
                     x = (i & 7u) | ((i & 0x10u) >> 1); y = ((i & 8u) >> 3) | ((i & 0xE0u) >> 4);
                     const uint32_t a = addr32(cbp, 1, x, y); v = rd32(a); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u);
-                    if (cpsm == PSMCT24) v = (v & 0xFFFFFFu) | (ta0 << 24);
+                    if (cpsm == PSMCT24) { v &= 0xFFFFFFu; v |= ((aem && v == 0u) ? 0u : ta0) << 24; }
                 }
                 else
                 {
@@ -274,7 +274,7 @@ namespace seamgs
                     case PSMT8H: { const uint32_t a = addr32(tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u); v = clut[rd32(a) >> 24]; break; }
                     case PSMT4HL: { const uint32_t a = addr32(tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u); v = clut[(csaOff + ((rd32(a) >> 24) & 0xFu)) & 255u]; break; }
                     case PSMT4HH: { const uint32_t a = addr32(tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u); v = clut[(csaOff + (rd32(a) >> 28)) & 255u]; break; }
-                    case PSMCT24: case PSMZ24: { const uint32_t a = addr32(tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u); v = (rd32(a) & 0xFFFFFFu) | (ta0 << 24); break; }
+                    case PSMCT24: case PSMZ24: { const uint32_t a = addr32(tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u); const uint32_t c = rd32(a) & 0xFFFFFFu; v = c | (((aem && c == 0u) ? 0u : ta0) << 24); break; }
                     case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S:
                     {
                         const uint32_t a = addr16(psm, tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u);
@@ -917,7 +917,7 @@ namespace seamgs
         // ---- registers ---------------------------------------------------------------------
         void writeReg(uint32_t addr, uint64_t v)
         {
-            if ((addr >= 0x40u && addr <= 0x41u) || (addr >= 0x4cu && addr <= 0x4du))
+            if ((addr >= 0x40u && addr <= 0x41u) || (addr >= 0x4cu && addr <= 0x4du) || addr == 0x3bu)
                 if (g_list.regEvents.size() < 4096u) g_list.regEvents.push_back(FrameList::RegEvent{(uint32_t)g_list.draws.size(), g_curPath, (uint8_t)(g_inHostGif ? 1 : 0), (uint8_t)addr, v});
             switch (addr & 0xFFu)
             {

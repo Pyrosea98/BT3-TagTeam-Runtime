@@ -102,7 +102,7 @@ void main()
     else if (psm == 27u) { v = clutEntry(rtDword(addr32(tbp, tbw, x, y)) >> 24); }
     else if (psm == 36u) { v = clutEntry((csaOff + ((rtDword(addr32(tbp, tbw, x, y)) >> 24) & 0xFu)) & 255u); }
     else if (psm == 44u) { v = clutEntry((csaOff + (rtDword(addr32(tbp, tbw, x, y)) >> 28)) & 255u); }
-    else if (psm == 1u || psm == 49u) { v = (rtDword(addr32(tbp, tbw, x, y)) & 0xFFFFFFu) | (pc.texa.x << 24); }
+    else if (psm == 1u || psm == 49u) { uint c = rtDword(addr32(tbp, tbw, x, y)) & 0xFFFFFFu; v = c | (((pc.texa.y != 0u && c == 0u) ? 0u : pc.texa.x) << 24); }   // AEM: RGB 0 -> alpha 0
     else if (psm == 2u || psm == 10u || psm == 50u || psm == 58u)
     {
         uint a = addr16(psm, tbp, tbw, x, y);

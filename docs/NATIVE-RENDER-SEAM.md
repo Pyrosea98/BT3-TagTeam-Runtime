@@ -428,3 +428,37 @@ shaders in `src/lib/seamvk/`). What it is and is not:
   backend VRAM dumps with PS2X_SEAMVK_TEXDUMP), PS2X_SEAMVK_PROBE=x,y (every draw covering a
   pixel with its sampled texel), PS2X_SEAMVK_DATEDBG, PS2X_SEAMGS_WATCH, PS2X_SEAMGS_TEXTRACE,
   tools/run_watchdog.sh (runs under gdb, dumps threads on a hang).
+
+## 2026-09-26 (evening): static-scene comparison via input replay; the ground shadow
+
+Recording: the user played from boot into Ultimate Training with `PS2X_INREC=caps/ultimate.inrec`
+(2076 game frames, fight from frame ~1630). Every run since replays it (`PS2X_INPLAY=<file>`, no
+AUTOSTART) so native and paraLLEl-GS are compared on the identical static frame
+(`PS2X_PGS_DUMP` writes pgs_/ref_ PNG pairs of the same swap; `PS2X_SEAMVK_DUMPGAMEFRAME=2150`
+for the draw list). The replay landed in the fight on every run.
+
+The ground shadow pipeline (per character, per frame): a 256x256 clear at 0x2a00 (fbw 4), the
+character drawn again through the SINGLE-PASS program (prog 3) with an orthographic E matrix
+(w = -862 constant, z = -9.4e6, XYOFFSET 1920,1920), colour 0x80 grey; then TEX0 reads 0x2a00 as
+PSMCT24 with TEXA = ta0 0x80, AEM 1, ta1 0x80, and the effects program (prog 1) draws a 100x100
+ground quad with projective texcoords (C matrix), atst NOTEQUAL 0, blend (0,1,0,1).
+Three things were wrong in native, each pinned by a dump before the fix:
+1. `seam.vert` negated w for prog 3 by program, so the orthographic pass became w < 0 and was
+   Vulkan-clipped: an orthographic screen matrix (rows 0..2 have no w term) now takes its sign from
+   row 3 instead of the program default.
+2. prog 3's clip planes: the single-pass program computes clip flags but never acts on them
+   (`charChunk1`: "this program never marks ADC"), and the silhouette relies on it (z far outside
+   |w|). prog 3 now sets gl_ClipDistance to +1.
+3. AEM was ignored for 24-bit reads in both `rtdecode.frag` and the CPU decoder: with TEXA
+   ta0 0x80 / AEM 1 the cleared black area must read alpha 0 (that is what hides the quad outside
+   the silhouette). Fixed in both.
+The striped trapezoid over the left half of the native frame was NOT the shadow: the pixel probe
+(`PS2X_SEAMVK_PROBE=120,300`) showed the post chain's 16-bit passes (draws into 0x2a00 as PSMCT16,
+fbw 8, skipped as aliased-format) followed by their read-back as a PSMCT16 texture, which decoded
+the target's stale 32-bit content (silhouette / downscaled scene) as 16-bit pixels. Interim guard:
+a target that received a skipped aliased-format draw is `aliasedDirty` until its next own-format
+draw, and a decode from a dirty target yields transparent black (stats: "rt decodes (N stale)").
+The proper form is the GPU implementation of those passes.
+Result: native == paraLLEl-GS on the static frame except the post chain (outline/ink on the far
+character, depth-of-field tone), which is the remaining open item. `PS2X_SEAMVK_DUMPCONSTS=1`
+prints the constants and per-vertex clip values of the first effect / off-screen character draws.

@@ -71,7 +71,7 @@ namespace seamvk
         uint32_t g_frameW = 0, g_frameH = 0;
         bool g_frameFresh = false;
 
-        struct Target { Vulkan::ImageHandle img; VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; bool cleared = false; };
+        struct Target { Vulkan::ImageHandle img; VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; bool cleared = false; bool aliasedDirty = false; };   // aliasedDirty: a draw through the other pixel format was skipped since the last draw of its own
         struct Gpu
         {
             Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progPresent = nullptr, *progRt = nullptr;
@@ -89,7 +89,7 @@ namespace seamvk
             std::vector<Vulkan::ImageHandle> tex;
             uint32_t w = 0, h = 0, scale = 1;
             bool failed = false;
-            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, aliasedDraws = 0;
+            uint64_t frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0;
             double msTake = 0, msRecord = 0, msSubmit = 0, msWait = 0;
         };
         Gpu g_gpu;
@@ -224,6 +224,7 @@ namespace seamvk
             if (r.depthSrc) { auto zi = g_gpu.depths.find(r.srcFbp | ((src.img->get_width() / g_gpu.scale) << 16)); if (zi != g_gpu.depths.end() && zi->second.img) { dz = &zi->second; depthToSampled(cmd, *dz); } }
             if ((size_t)r.slot >= g_gpu.tex.size()) g_gpu.tex.resize(size_t(r.slot) + 1u);
             Vulkan::ImageHandle &img = g_gpu.tex[r.slot];
+            if (g_gpu.dumpRt) img.reset();   // dumping: every decode keeps its own image (a slot decoded twice in the frame would show only the last)
             if (!img || img->get_width() != r.w || img->get_height() != r.h)
             {
                 auto ci = Vulkan::ImageCreateInfo::render_target(r.w, r.h, VK_FORMAT_R8G8B8A8_UNORM);
@@ -233,6 +234,15 @@ namespace seamvk
             cmd.image_barrier(*img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
             Vulkan::RenderPassInfo rp = {};
             rp.num_color_attachments = 1; rp.color_attachments[0] = &img->get_view(); rp.clear_attachments = 1u << 0; rp.store_attachments = 1u << 0;
+            if (src.aliasedDirty)
+            {   // the pages were last written through the other pixel format (skipped): read back as nothing
+                cmd.begin_render_pass(rp); cmd.end_render_pass();
+                cmd.image_barrier(*img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                ++g_gpu.rtDecodesStale;
+                if (g_gpu.dumpRt) g_gpu.rtDumps.push_back({ img, r });
+                return;
+            }
             cmd.begin_render_pass(rp);
             cmd.set_opaque_state();
             cmd.set_program(g_gpu.progRt);
@@ -467,7 +477,7 @@ namespace seamvk
             }
             for (const seamgs::FrameList::RegEvent &e : f.regEvents)
                 std::fprintf(stderr, "[seamvk]  reg before draw %u path %u%s %s %016llx\n", e.drawIndex, e.path, e.hostGif ? " (host)" : "",
-                             e.addr == 0x40 ? "SCISSOR_1" : e.addr == 0x41 ? "SCISSOR_2" : e.addr == 0x4c ? "FRAME_1" : "FRAME_2", (unsigned long long)e.value);
+                             e.addr == 0x40 ? "SCISSOR_1" : e.addr == 0x41 ? "SCISSOR_2" : e.addr == 0x4c ? "FRAME_1" : e.addr == 0x3b ? "TEXA" : "FRAME_2", (unsigned long long)e.value);
             for (size_t i = 0; i < f.draws.size(); ++i)
             {
                 const seamgs::Draw &d = f.draws[i]; const seamgs::State &t = d.st;
@@ -501,6 +511,44 @@ namespace seamvk
                         if (w < 0.0f) ++neg; else ++pos;
                         wmin = std::min(wmin, w); wmax = std::max(wmax, w);
                         if (w != 0.0f) { const float zq = scr[2] / scr[3]; zqmin = std::min(zqmin, zq); zqmax = std::max(zqmax, zq); }
+                    }
+                    {   // PS2X_SEAMVK_DUMPCONSTS: the constants and per-vertex clip values of the first few effect draws and
+                        // off-screen-target character draws (the shadow pass), exactly as the vertex shader evaluates them
+                        static int s_cn[5] = {};
+                        static const bool s_dc = [](){ const char *v = std::getenv("PS2X_SEAMVK_DUMPCONSTS"); return v && v[0] && v[0] != '0'; }();
+                        if (s_dc && d.prog < 5 && (d.prog == 1 || (d.prog >= 2 && t.fbp != 0xe00u && t.fbp != 0x0u)) && s_cn[d.prog]++ < 3)
+                        {
+                            auto pr = [&](const char *nm, const float (*m)[4]) { std::fprintf(stderr, "[seamvk]    %s: [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]\n", nm, m[0][0], m[0][1], m[0][2], m[0][3], m[1][0], m[1][1], m[1][2], m[1][3], m[2][0], m[2][1], m[2][2], m[2][3], m[3][0], m[3][1], m[3][2], m[3][3]); };
+                            std::fprintf(stderr, "[seamvk]   draw %zu consts: prog %u stride %u ofx %g ofy %g colA [%g %g %g %g] misc [%g %g %g %g] pivA [%g %g %g] pivB [%g %g %g]\n", i, d.prog, d.stride, t.ofx / 16.0f, t.ofy / 16.0f, c.colA[0], c.colA[1], c.colA[2], c.colA[3], c.misc[0], c.misc[1], c.misc[2], c.misc[3], c.pivA[0], c.pivA[1], c.pivA[2], c.pivB[0], c.pivB[1], c.pivB[2]);
+                            pr("A", c.A); pr("B", c.B); pr("E", c.E); pr("F", c.F); pr("C", c.C);
+                            for (uint32_t v = 0; v < std::min(n, 8u); ++v)
+                            {
+                                const float *P = reinterpret_cast<const float *>(f.verts.data() + d.vertOff + size_t(v) * d.stride);
+                                float scr[4], cl[4], sk[3];
+                                if (d.prog <= 1)
+                                {
+                                    const float pw = d.prog == 0 ? P[3] : 1.0f;
+                                    for (int k = 0; k < 4; ++k) { scr[k] = c.A[0][k] * P[0] + c.A[1][k] * P[1] + c.A[2][k] * P[2] + c.A[3][k] * pw; cl[k] = c.B[0][k] * P[0] + c.B[1][k] * P[1] + c.B[2][k] * P[2] + c.B[3][k] * pw; }
+                                    sk[0] = P[0]; sk[1] = P[1]; sk[2] = P[2];
+                                }
+                                else
+                                {
+                                    float pa[3], pb[3];
+                                    for (int k = 0; k < 3; ++k)
+                                    {
+                                        const float x = P[0] - c.pivA[0], y = P[1] - c.pivA[1], z = P[2] - c.pivA[2];
+                                        pa[k] = c.A[0][k] * x + c.A[1][k] * y + c.A[2][k] * z + c.A[3][k];
+                                        const float x2 = P[0] - c.pivB[0], y2 = P[1] - c.pivB[1], z2 = P[2] - c.pivB[2];
+                                        pb[k] = c.B[0][k] * x2 + c.B[1][k] * y2 + c.B[2][k] * z2 + c.B[3][k];
+                                    }
+                                    for (int k = 0; k < 3; ++k) sk[k] = pb[k] + (pa[k] - pb[k]) * P[3];
+                                    for (int k = 0; k < 4; ++k) { scr[k] = c.E[0][k] * sk[0] + c.E[1][k] * sk[1] + c.E[2][k] * sk[2] + c.E[3][k]; cl[k] = c.F[0][k] * sk[0] + c.F[1][k] * sk[1] + c.F[2][k] * sk[2] + c.F[3][k]; }
+                                }
+                                const float cw = cl[3] < 0.0f ? -cl[3] : cl[3];
+                                std::fprintf(stderr, "[seamvk]    v%u P [%g %g %g %g] skinned [%g %g %g] screen [%g %g %g %g] -> px %g py %g zq %g | clip [%g %g %g %g] dist %g %g\n", v, P[0], P[1], P[2], P[3], sk[0], sk[1], sk[2], scr[0], scr[1], scr[2], scr[3],
+                                             scr[3] != 0.0f ? scr[0] / scr[3] : 0.0f, scr[3] != 0.0f ? scr[1] / scr[3] : 0.0f, scr[3] != 0.0f ? scr[2] / scr[3] : 0.0f, cl[0], cl[1], cl[2], cl[3], cw - cl[2], cw + cl[2]);
+                            }
+                        }
                     }
                     std::fprintf(stderr, "[seamvk]  draw %zu HOST prog %u count %u w[%g..%g] neg %u pos %u zq[%g..%g] fbp 0x%x fbw %u psm %u msk %08x zbp 0x%x zte %u ztst %u zmsk %u tme %u tex %d%s abe %u (%u,%u,%u,%u) ate %u atst %u aref %u afail %u ctxt %u sc %u..%u %u..%u tex0 %08x%08x fst %u tfx %u tcc %u wms %u wmt %u %ux%u prim %03llx prmode %03llx cont %u sc1 %016llx sc2 %016llx\n",
                                  i, d.prog, n, wmin, wmax, neg, pos, zqmin, zqmax, t.fbp, t.fbw, t.fpsm, t.fbmsk, t.zbp, t.zte, t.ztst, t.zmsk, t.tme, t.tex, t.texFromDrawn ? "(DRAWN)" : "", t.abe, t.aA, t.aB, t.aC, t.aD, t.ate, t.atst, t.aref, t.afail, t.ctxt, t.scax0, t.scax1, t.scay0, t.scay1, t.tex0hi, t.tex0lo, t.fst, t.tfx, t.tcc, t.wms, t.wmt, t.texW, t.texH, (unsigned long long)t.dbgPrim, (unsigned long long)t.dbgPrmode, t.dbgPrmodecont, (unsigned long long)t.dbgSc[0], (unsigned long long)t.dbgSc[1]);
@@ -550,7 +598,14 @@ namespace seamvk
                 auto &fmt = g_gpu.targetPsm[t.fbp];
                 const uint32_t cls = (t.fpsm == 2u || t.fpsm == 10u) ? 16u : 32u;
                 if (fmt == 0u) fmt = cls;
-                else if (fmt != cls) { ++g_gpu.aliasedDraws; continue; }
+                else if (fmt != cls)
+                {   // until those passes have a GPU form, a target holding skipped writes must not be read back as a texture:
+                    // the post chain's 16-bit weight map at 0x2a00 would otherwise decode the stale 32-bit content (the
+                    // silhouette, the downscaled scene) as 16-bit pixels: vertical stripes composited over half the screen
+                    ++g_gpu.aliasedDraws;
+                    auto it = g_gpu.targets.find(t.fbp); if (it != g_gpu.targets.end()) it->second.aliasedDirty = true;
+                    continue;
+                }
             }
             {   // PS2X_SEAMVK_ONLYTEX0=<hex>: render only the GS draws whose TEX0 matches (diagnostic)
                 static const uint64_t s_only = [](){ const char *v = std::getenv("PS2X_SEAMVK_ONLYTEX0"); return v && v[0] ? std::strtoull(v, nullptr, 16) : 0ull; }();
@@ -565,6 +620,7 @@ namespace seamvk
             {
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
                 Target &ct = target(dev, t.fbp, t.fbw);
+                ct.aliasedDirty = false;   // drawn in its own format again: the game reclaimed the target
                 toAttachment(*cmd, ct, false);
                 Vulkan::RenderPassInfo rp = {};
                 rp.num_color_attachments = 1;
@@ -754,10 +810,10 @@ namespace seamvk
 
         if ((++g_gpu.frames % 300u) == 0u)
         {
-            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws, %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes, %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
+            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws, %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f aliased-format draws skipped per frame; %zu targets %zu depths\n",
                          (unsigned long long)g_gpu.frames, double(g_gpu.draws) / 300.0, double(g_gpu.verts) / 300.0, double(g_gpu.passes) / 300.0,
-                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
-            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.rtDecodes = g_gpu.aliasedDraws = 0;
+                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasedDraws) / 300.0, g_gpu.targets.size(), g_gpu.depths.size());
+            g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = 0;
             std::fprintf(stderr, "[seamvk] per frame: take %.2f ms, record %.2f ms, submit %.2f ms, wait %.2f ms\n", g_gpu.msTake / 300.0, g_gpu.msRecord / 300.0, g_gpu.msSubmit / 300.0, g_gpu.msWait / 300.0);
             g_gpu.msTake = g_gpu.msRecord = g_gpu.msSubmit = g_gpu.msWait = 0;
         }

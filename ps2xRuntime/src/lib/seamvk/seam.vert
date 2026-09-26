@@ -81,7 +81,13 @@ void main()
     // POSITIVE w, the single-pass character program a NEGATIVE one. Negate that one so visible vertices have w > 0 and
     // vertices behind the camera w < 0, which Vulkan clips. (Flipping per vertex on the sign of w is wrong: it makes
     // behind-camera vertices visible, mirrored, and gives screen-filling triangles whenever a chunk crosses the camera.)
-    if (prog == 3) screen = -screen;
+    // Exception: an orthographic screen matrix (rows 0..2 have no w term, w = row 3's constant) has no behind-camera
+    // side, and its sign is whatever the game stored: the character silhouette passes (single-pass program into the
+    // 256x256 shadow target, w = +862) would otherwise be negated into w < 0 and clipped away entirely.
+    vec4 M3 = prog == 0 || prog == 1 ? c.A[3] : c.E[3];
+    vec3 Mw = prog == 0 || prog == 1 ? vec3(c.A[0].w, c.A[1].w, c.A[2].w) : vec3(c.E[0].w, c.E[1].w, c.E[2].w);
+    bool ortho = all(equal(Mw, vec3(0.0)));
+    if (ortho ? (M3.w < 0.0) : (prog == 3)) screen = -screen;
     float w = screen.w;
     vec2 px = screen.xy;                       // still multiplied by w
     vec2 ndc = vec2((px.x - pc.view.x * w) / pc.view.z * 2.0 - w,
@@ -93,6 +99,12 @@ void main()
     float cw = abs(clipv.w);
     gl_ClipDistance[0] = cw - clipv.z;
     gl_ClipDistance[1] = cw + clipv.z;
+    if (prog == 3)
+    {   // the single-pass character program computes the clip flags but never acts on them (its FCAND branch skips a
+        // NOP): nothing is dropped. The shadow silhouette pass relies on that: its orthographic matrix puts z at -9e6
+        // against w = 862, and the VU1 draws it anyway.
+        gl_ClipDistance[0] = 1.0; gl_ClipDistance[1] = 1.0;
+    }
     // Depth: the GS receives FTOI4(z * Q) >> 4 as an unsigned 24-bit value per vertex and interpolates it linearly in
     // screen space; Vulkan interpolates z/w linearly in screen space too, so gl_Position.z = gsz / 2^24 * w reproduces it.
     // FTOI4 saturates, so z past the far plane is clamped, and z < 0 (the sky dome, drawn without depth writes) becomes
