@@ -18,6 +18,7 @@
 #include "runtime/ps2x_perf_status.h"   // [perf] the live fps / frame-time / GPU-busy readout   // UiSetup/Begin/End: rlImGui (GL) or imgui_impl_dx11 (PS2X_D3D11)
 #include "runtime/ps2x_mainmenu.h"      // [mmpopup] phase names + the plate-count the gate is made of
 #include "gfx/bt3gl_api.h"   // [B] bt3* API bridge
+#include "gfx/image_io.h"    // [netplay] PNG decode for the icon art
 
 #include "runtime/ps2_toml.h"
 #include "runtime/ps2x_settings.h"
@@ -1095,6 +1096,72 @@ bool PS2SettingsOverlay::mainMenuPopupWanted()
     return s_on && open;
 }
 
+// [mmpopup] The Netplay icon: the Namek planet with a cloud drifting around it.
+//
+// The artwork is the Dragon Net menu's own (assets/DragonNet/menu in the old tree, now
+// assets/netplay/): a 464x524 planet and a 300x142 cloud. Both are plain RGBA8 PNGs, decoded once
+// with the same GsDecodeImageRGBA8 the launcher uses for its background.
+//
+// The cloud's motion comes from the design's inline styles, which drive it along a CSS
+// offset-path of two elliptical arcs -- "M48.3,262.5 A170,140 -18 1,1 371.7,157.5 A170,140 -18 1,1
+// 48.3,262.5 Z" -- over 6s, linear, infinite, with the sprite mirrored. Both arcs are the same
+// ellipse (a 170x140 arc is exactly a half-ellipse), so the whole path is one closed loop: centre
+// (210,210), radii (161.7, 52.5), rotated -18 degrees, and the cloud is 78px wide inside a 420px
+// card. Parametrising that ellipse is the same path, minus the browser.
+struct NetplayIcon
+{
+    unsigned long long planet = 0;
+    unsigned long long cloud  = 0;
+    int pw = 0, ph = 0, cw = 0, ch = 0;
+    bool tried = false;
+    bool ok() const { return planet != 0 && cloud != 0; }
+};
+
+static NetplayIcon g_netplayIcon;
+
+static void loadNetplayIcon()
+{
+    if (g_netplayIcon.tried)
+        return;
+    g_netplayIcon.tried = true;
+
+    // Relative to the working directory, which is the deploy root: the front-end runs with that as
+    // its working directory and CMake stages assets/ next to the executable.
+    const char *envDir = std::getenv("PS2X_NETPLAY_ART");
+    const std::string dir = (envDir && envDir[0]) ? envDir : "assets/netplay";
+
+    std::vector<uint8_t> rgba;
+    int w = 0, h = 0;
+    if (ps2x::gfx::GsDecodeImageRGBA8((dir + "/netplanet.png").c_str(), rgba, w, h) && w > 0 && h > 0)
+    {
+        g_netplayIcon.planet = ps2x::gfx::UiLoadTextureRgba(rgba.data(), w, h);
+        g_netplayIcon.pw = w;
+        g_netplayIcon.ph = h;
+    }
+    if (ps2x::gfx::GsDecodeImageRGBA8((dir + "/netcloud.png").c_str(), rgba, w, h) && w > 0 && h > 0)
+    {
+        g_netplayIcon.cloud = ps2x::gfx::UiLoadTextureRgba(rgba.data(), w, h);
+        g_netplayIcon.cw = w;
+        g_netplayIcon.ch = h;
+    }
+    std::fprintf(stderr, "[netplay-icon] planet=%dx%d cloud=%dx%d loaded=%d\n",
+                 g_netplayIcon.pw, g_netplayIcon.ph, g_netplayIcon.cw, g_netplayIcon.ch,
+                 g_netplayIcon.ok() ? 1 : 0);
+}
+
+// The one point of the design's orbit path, at phase t in [0,1).
+static void netOrbitPoint(float t, float cx, float cy, float rx, float ry, float rotDeg,
+                          float &x, float &y)
+{
+    const float a = t * 6.28318530718f;
+    const float ex = rx * std::cos(a);
+    const float ey = ry * std::sin(a);
+    const float r = rotDeg * 3.14159265359f / 180.0f;
+    const float cs = std::cos(r), sn = std::sin(r);
+    x = cx + ex * cs - ey * sn;
+    y = cy + ex * sn + ey * cs;
+}
+
 void PS2SettingsOverlay::drawMainMenuPopup()
 {
     // [mmpopup] An icon in the bottom-right corner that unfolds a panel when clicked. The icon is
@@ -1102,7 +1169,7 @@ void PS2SettingsOverlay::drawMainMenuPopup()
     // the shape the Netplay popup will take (small affordance on screen, panel on demand).
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     const float margin  = 18.0f;
-    const float iconSz  = 44.0f;
+    const float iconSz  = 58.0f;
     const ImVec2 br(vp->Pos.x + vp->Size.x - margin, vp->Pos.y + vp->Size.y - margin);
 
     const ImGuiWindowFlags iconFlags = ImGuiWindowFlags_NoDecoration |
@@ -1112,6 +1179,7 @@ void PS2SettingsOverlay::drawMainMenuPopup()
                                        ImGuiWindowFlags_NoNav |
                                        ImGuiWindowFlags_AlwaysAutoResize;
 
+    loadNetplayIcon();
     bool clicked = false;
     ImGui::SetNextWindowPos(br, ImGuiCond_Always, ImVec2(1.0f, 1.0f));
     ImGui::SetNextWindowBgAlpha(0.0f);
@@ -1127,24 +1195,45 @@ void PS2SettingsOverlay::drawMainMenuPopup()
         const ImVec2 a = ImGui::GetItemRectMin();
         const ImVec2 b = ImGui::GetItemRectMax();
         ImDrawList *dl = ImGui::GetWindowDrawList();
-        const ImU32 accent = ImGui::GetColorU32(ImVec4(1.00f, 0.80f, 0.30f, 1.00f));
-        const ImU32 edge   = ImGui::GetColorU32(ImVec4(0.10f, 0.12f, 0.14f,
-                                                       hovered ? 0.95f : 0.75f));
-        dl->AddRectFilled(a, b, edge, 8.0f);
-        dl->AddRect(a, b, accent, 8.0f, 0, s_mmPopupOpen ? 2.0f : 1.0f);
-
-        // Three bars: a menu. The top one is the "open" indicator, filled when the panel is out.
-        const float w = (b.x - a.x) * 0.44f;
-        const float h = 2.5f;
-        const float cx = (a.x + b.x) * 0.5f;
-        for (int i = 0; i < 3; ++i)
+        const ImU32 accent = ImGui::GetColorU32(ImVec4(1.00f, 0.80f, 0.30f,
+                                                       hovered ? 1.00f : 0.72f));
+        // The Namek plate, straight on the menu. No fill behind it: a plate would hide the very
+        // artwork the icon is offering, and the outline is enough to read as a button.
+        const float side = (b.x - a.x);
+        if (g_netplayIcon.ok())
         {
-            const float y = (a.y + b.y) * 0.5f + (float(i) - 1.0f) * 7.0f;
-            dl->AddRectFilled(ImVec2(cx - w, y - h), ImVec2(cx + w, y + h),
-                              (s_mmPopupOpen && i == 0) ? accent
-                                                  : ImGui::GetColorU32(ImVec4(0.78f, 0.82f, 0.86f, 1.0f)),
-                              h);
+            dl->PushClipRect(a, b, true);
+            const float pw = side * 0.92f;
+            const float ph = pw * float(g_netplayIcon.ph) / float(g_netplayIcon.pw);
+            const ImVec2 pp((a.x + b.x) * 0.5f - pw * 0.5f, (a.y + b.y) * 0.5f - ph * 0.5f);
+            dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.planet), pp,
+                         ImVec2(pp.x + pw, pp.y + ph));
+
+            // The same cloud on the same orbit the panel uses, scaled into the icon: the design's
+            // ellipse is 323x105 in a 420px card, so the radii keep that ratio here.
+            const float cw = side * 0.186f;
+            const float ch = cw * float(g_netplayIcon.ch) / float(g_netplayIcon.cw);
+            const float t = float(ImGui::GetTime() / 6.0) - float((int)(ImGui::GetTime() / 6.0));
+            float ox = 0.0f, oy = 0.0f;
+            netOrbitPoint(t, (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f,
+                          side * 0.385f, side * 0.125f, -18.0f, ox, oy);
+            dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.cloud),
+                         ImVec2(ox - cw * 0.5f, oy - ch * 0.5f),
+                         ImVec2(ox + cw * 0.5f, oy + ch * 0.5f),
+                         ImVec2(1.0f, 0.0f), ImVec2(0.0f, 1.0f));
+            dl->PopClipRect();
         }
+        else
+        {
+            // No art: fall back to the three bars rather than an empty box.
+            const float w = side * 0.44f, h = 2.5f, cx = (a.x + b.x) * 0.5f;
+            for (int i = 0; i < 3; ++i)
+            {
+                const float y = (a.y + b.y) * 0.5f + (float(i) - 1.0f) * 7.0f;
+                dl->AddRectFilled(ImVec2(cx - w, y - h), ImVec2(cx + w, y + h), accent, h);
+            }
+        }
+        dl->AddRect(a, b, accent, 8.0f, 0, s_mmPopupOpen ? 2.0f : 1.0f);
     }
     ImGui::End();
     if (clicked)
@@ -1164,14 +1253,72 @@ void PS2SettingsOverlay::drawMainMenuPopup()
                                         ImGuiWindowFlags_NoBringToFrontOnFocus |
                                         ImGuiWindowFlags_NoNav |
                                         ImGuiWindowFlags_AlwaysAutoResize;
+    // Opaque, or the game shows through and the readings are unreadable over moving artwork.
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.08f, 0.96f));
     if (!ImGui::Begin("##mm_popup_panel", nullptr, panelFlags))
     {
         ImGui::End();
+        ImGui::PopStyleColor();
         return;
     }
 
     const uint32_t phase = g_bt3MenuPhase.load(std::memory_order_relaxed);
-    ImGui::TextColored(ImVec4(1.00f, 0.80f, 0.30f, 1.0f), "MAINMENU POPUP");
+    loadNetplayIcon();
+
+    // The card, at the design's proportions. 420x420 with a 96px radius inside a 480x620 artboard;
+    // only the card matters here, and it is scaled down so the panel stays a popup rather than a
+    // takeover. The clip is what makes the rounded corner and the drifting cloud read as one object.
+    //
+    // The position is read BEFORE the Dummy reserves the space: GetCursorScreenPos() after a
+    // layout item is already past it, which draws the card below where the text expects it.
+    const float card = 200.0f;
+    const ImVec2 c0 = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(card, card + 6.0f));
+    const ImVec2 c1(c0.x + card, c0.y + card);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+
+    // Background: the design's radial gradient (#eef3f7 centre -> #dbe6ee edge) approximated with a
+    // few concentric rounded rects. A real gradient shader is not worth a texture for a 200px card.
+    for (int i = 6; i >= 1; --i)
+    {
+        const float f = float(i) / 6.0f;
+        const ImVec2 pad(card * 0.5f * (1.0f - f) * 0.30f, card * 0.5f * (1.0f - f) * 0.30f);
+        dl->AddRectFilled(ImVec2(c0.x + pad.x, c0.y + pad.y), ImVec2(c1.x - pad.x, c1.y - pad.y),
+                          ImGui::ColorConvertFloat4ToU32(ImVec4(
+                              0.933f - 0.078f * f, 0.953f - 0.059f * f, 0.969f - 0.027f * f, 1.0f)),
+                          card * 0.12f);
+    }
+    dl->AddRect(c0, c1, ImGui::ColorConvertFloat4ToU32(ImVec4(0.55f, 0.62f, 0.68f, 0.45f)),
+                card * 0.12f, 0, 1.0f);
+    dl->PushClipRect(c0, c1, true);
+
+    if (g_netplayIcon.ok())
+    {
+        // The planet: 232px wide in a 420px card, centred, so 55% of the card's width.
+        const float pw = card * 0.553f;
+        const float ph = pw * float(g_netplayIcon.ph) / float(g_netplayIcon.pw);
+        const ImVec2 pp((c0.x + c1.x) * 0.5f - pw * 0.5f, (c0.y + c1.y) * 0.5f - ph * 0.5f);
+        dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.planet), pp, ImVec2(pp.x + pw, pp.y + ph));
+
+        // The cloud, 78px in the same 420px card => 18.6% of the width, mirrored as the design does
+        // (transform: scaleX(-1)), orbiting the ellipse the design's offset-path describes.
+        const float cw = card * 0.186f;
+        const float ch = cw * float(g_netplayIcon.ch) / float(g_netplayIcon.cw);
+        const float t = float(ImGui::GetTime() / 6.0) - float((int)(ImGui::GetTime() / 6.0));
+        float ox = 0.0f, oy = 0.0f;
+        netOrbitPoint(t, card * 0.5f, card * 0.5f, card * 0.385f, card * 0.125f, -18.0f, ox, oy);
+        dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.cloud), ImVec2(ox - cw * 0.5f, oy - ch * 0.5f),
+                     ImVec2(ox + cw * 0.5f, oy + ch * 0.5f),
+                     ImVec2(1.0f, 0.0f), ImVec2(0.0f, 1.0f));   // uv mirrored horizontally
+    }
+    else
+    {
+        ImGui::SetCursorScreenPos(ImVec2(c0.x, c0.y + card * 0.45f));
+        ImGui::TextDisabled("(arte de netplay no encontrado en assets/netplay)");
+    }
+    dl->PopClipRect();
+
+    ImGui::TextColored(ImVec4(1.00f, 0.80f, 0.30f, 1.0f), "NETPLAY");
     ImGui::Separator();
     ImGui::Text("gate   : %s", g_bt3MenuShown.load(std::memory_order_relaxed) ? "OPEN" : "shut");
     ImGui::Text("phase  : %s",
@@ -1182,11 +1329,10 @@ void PS2SettingsOverlay::drawMainMenuPopup()
     ImGui::Text("plates : %u/%u", g_bt3MenuPlates.load(std::memory_order_relaxed),
                 ps2x::mainmenu::kRowCount);
     ImGui::Spacing();
-    ImGui::TextDisabled("anclado a menuObj+0x144");
-    ImGui::Spacing();
     if (ImGui::Button("Close", ImVec2(90.0f, 0.0f)))
         s_mmPopupOpen = false;
     ImGui::End();
+    ImGui::PopStyleColor();
 }
 
 void PS2SettingsOverlay::drawPerfHud()
