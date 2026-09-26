@@ -10,8 +10,10 @@ layout(location = 1) INTERP in vec3 vTex;
 layout(location = 2) INTERP in float vLit;
 layout(location = 3) INTERP in float vFog;
 layout(set = 0, binding = 1) uniform sampler2D uTex;   // RGBA8, raw GS alpha bytes / 255
+layout(set = 0, binding = 2) uniform sampler2D uDst;   // snapshot of the destination (DATE), alpha stored as A/128
 #include "pc.glsl"
-layout(location = 0) out vec4 outColor;
+layout(location = 0, index = 0) out vec4 outColor;   // stored: exact GS bytes / 255
+layout(location = 0, index = 1) out vec4 outBlend;   // dual-source: alpha = As / 128 for the blend factors
 
 ivec2 wrapT(ivec2 t)
 {
@@ -32,6 +34,12 @@ vec4 fetchT(ivec2 t) { return texelFetch(uTex, wrapT(t), 0); }
 void main()
 {
     int flags = pc.fA.x;
+    if ((flags & 512) != 0)
+    {   // DATE: draw only where the destination alpha's bit 7 equals DATM (stored A/128 saturates at 1.0 for A >= 128)
+        float da = texelFetch(uDst, ivec2(gl_FragCoord.xy), 0).a;
+        bool bit7 = da >= (127.5 / 255.0);
+        if (bit7 != ((flags & 1024) != 0)) discard;
+    }
     vec4 cf = vColor;
     vec4 c = cf;
     if ((flags & 1) != 0)
@@ -75,6 +83,6 @@ void main()
         if (!pass && afail == 0) discard;   // KEEP; FB_ONLY / ZB_ONLY / RGB_ONLY approximated as pass
     }
     if ((flags & 32) != 0 && a255 < 128.0) a255 += 128.0;   // FBA: force alpha bit 7
-    // Stored alpha is As / 128 (0x80 -> 1.0), so the fixed-function blend factors read As/128 directly.
-    outColor = vec4(c.rgb, a255 / 128.0);
+    outColor = vec4(c.rgb, a255 / 255.0);
+    outBlend = vec4(0.0, 0.0, 0.0, min(a255 / 128.0, 1.0));
 }

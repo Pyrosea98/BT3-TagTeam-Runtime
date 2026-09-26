@@ -13,9 +13,11 @@
 #include "runtime/ps2_gs_psmt4.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -142,6 +144,7 @@ namespace seamgs
         struct TexEntry
         {
             uint64_t key = 0; uint32_t w = 0, h = 0; uint64_t lastUse = 0; bool used = false;
+            std::vector<uint8_t> rgbaCopy;                      // kept for textures the CPU scratch raster may sample (<= 256x256)
             std::vector<std::pair<uint16_t, uint32_t>> pages;   // (page, write stamp seen)
             bool drawnPages = false;                            // read pages the game had drawn into (stale mirror)
         };
@@ -149,7 +152,8 @@ namespace seamgs
         std::vector<int32_t> g_texFree;
         std::unordered_map<uint64_t, int32_t> g_texByKey;
         bool g_texDirty = true; int32_t g_curTex = -1; uint32_t g_curTexW = 0, g_curTexH = 0;
-        uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0;
+        uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0, g_cpuSprites = 0, g_cpuTris = 0;
+        uint32_t g_busyFrames = 0;   // frames so far with > 1500 draws (a fight): PS2X_SEAMVK_TEXDUMP_FROM=1 starts there
         std::vector<int32_t> g_retired;   // slots freed by the renderer after this frame; reusable from the next
 
         void retireSlot(int32_t slot)
@@ -276,13 +280,15 @@ namespace seamgs
             decodeTexture(tex0, g_r.texa, e, rgba);
             ++g_texDecodes;
             if (e.drawnPages) ++g_texStale;
+            if (e.w * e.h <= 256u * 256u) e.rgbaCopy = rgba; else e.rgbaCopy.clear();
             {   // PS2X_SEAMVK_TEXDUMP=<dir>: every first decode as a PPM (rgb) + PGM (alpha), named by its TEX0 fields
                 static const char *s_dir = std::getenv("PS2X_SEAMVK_TEXDUMP"); static int s_n = 0;
-                if (s_dir && s_dir[0] && s_n < 400)
+                static const uint64_t s_from = [](){ const char *v = std::getenv("PS2X_SEAMVK_TEXDUMP_FROM"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
+                if (s_dir && s_dir[0] && s_n < 400 && (s_from == 1u ? g_busyFrames > 0u : g_frame >= s_from))
                 {
                     char path[512];
-                    std::snprintf(path, sizeof(path), "%s/t%03d_f%llu_psm%u_%ux%u_tbp%x_tbw%u_cbp%x_cpsm%u_csa%u.ppm", s_dir, s_n, (unsigned long long)g_frame, psm, e.w, e.h,
-                                  (unsigned)(tex0 & 0x3FFFu), (unsigned)((tex0 >> 14) & 0x3Fu), (unsigned)((tex0 >> 37) & 0x3FFFu), (unsigned)((tex0 >> 51) & 0xFu), (unsigned)((tex0 >> 56) & 0x1Fu));
+                    std::snprintf(path, sizeof(path), "%s/t%03d_f%llu_psm%u_%ux%u_tbp%x_tbw%u_cbp%x_cpsm%u_csa%u%s.ppm", s_dir, s_n, (unsigned long long)g_frame, psm, e.w, e.h,
+                                  (unsigned)(tex0 & 0x3FFFu), (unsigned)((tex0 >> 14) & 0x3Fu), (unsigned)((tex0 >> 37) & 0x3FFFu), (unsigned)((tex0 >> 51) & 0xFu), (unsigned)((tex0 >> 56) & 0x1Fu), e.drawnPages ? "_DRAWN" : "");
                     if (FILE *f = std::fopen(path, "wb"))
                     {
                         std::fprintf(f, "P6\n%u %u\n255\n", e.w, e.h);
@@ -341,6 +347,8 @@ namespace seamgs
                 s.mmag = (uint8_t)((c.tex1 >> 5) & 1u); s.mmin = (uint8_t)((c.tex1 >> 6) & 7u);
                 if (g_texDirty) { g_curTex = resolveTexture(c); g_texDirty = false; }
                 s.tex = g_curTex; s.texW = g_curTexW; s.texH = g_curTexH;
+                s.texFromDrawn = (g_curTex >= 0 && g_tex[g_curTex].drawnPages) ? 1u : 0u;
+                s.tex0lo = (uint32_t)c.tex0; s.tex0hi = (uint32_t)(c.tex0 >> 32);
             }
             return s;
         }
@@ -348,12 +356,18 @@ namespace seamgs
         inline bool sameState(const State &a, const State &b) { return std::memcmp(&a, &b, sizeof(State)) == 0; }
 
         void noteDrawPages(const State &s)
-        {   // the pages a draw into this target can touch (whole rows of pages: cheap and conservative)
+        {   // the pages a draw into this target can touch: the scissor's rows of pages (page = 64x32 px at 32 bpp, 64x64 at 16)
             const uint32_t pagesPerRow = s.fbw ? s.fbw : 1u;
-            const uint32_t rows = (s.fpsm == PSMCT16 || s.fpsm == PSMCT16S) ? 7u : 14u;   // 448 lines / (64 or 32) rows per page
+            const uint32_t pageH = (s.fpsm == PSMCT16 || s.fpsm == PSMCT16S) ? 64u : 32u;
+            const uint32_t row0 = s.scay0 / pageH, row1 = s.scay1 / pageH;
+            const uint32_t col0 = s.scax0 / 64u, col1 = std::min<uint32_t>(s.scax1 / 64u, pagesPerRow - 1u);
             const uint32_t p0 = s.fbp / 32u;
-            for (uint32_t p = p0; p < p0 + pagesPerRow * rows && p < kPages; ++p) g_pageDrawn[p] = g_stamp;
-            if (s.zte && !s.zmsk) { const uint32_t z0 = s.zbp / 32u; for (uint32_t p = z0; p < z0 + pagesPerRow * 14u && p < kPages; ++p) g_pageDrawn[p] = g_stamp; }
+            for (uint32_t r = row0; r <= row1; ++r) for (uint32_t c = col0; c <= col1; ++c) { const uint32_t p = p0 + r * pagesPerRow + c; if (p < kPages) g_pageDrawn[p] = g_stamp; }
+            if (s.zte && !s.zmsk)
+            {
+                const uint32_t z0 = s.zbp / 32u, zr0 = s.scay0 / 32u, zr1 = s.scay1 / 32u;
+                for (uint32_t r = zr0; r <= zr1; ++r) for (uint32_t c = col0; c <= col1; ++c) { const uint32_t p = z0 + r * pagesPerRow + c; if (p < kPages) g_pageDrawn[p] = g_stamp; }
+            }
         }
 
         float zNorm(uint32_t z, uint32_t zpsm)
@@ -364,6 +378,29 @@ namespace seamgs
             case 1: return float(z & 0xFFFFFFu) / 16777216.0f;
             default: return float(z & 0xFFFFu) / 65536.0f;
             }
+        }
+
+        // [targethist] PS2X_SEAMVK_TARGETHIST=1: draws per (kind, prog, FRAME base, fbw, psm, zte/zmsk, ctxt), printed every 300 frames
+        std::map<uint64_t, uint64_t> g_targetHist;
+        void noteTargetHist(int kind, int prog, const State &s)
+        {
+            static const bool s_on = [](){ const char *v = std::getenv("PS2X_SEAMVK_TARGETHIST"); return v && v[0] && v[0] != '0'; }();
+            if (!s_on) return;
+            const uint64_t k = (uint64_t)kind | ((uint64_t)prog << 1) | ((uint64_t)s.fbp << 4) | ((uint64_t)s.fbw << 20) | ((uint64_t)s.fpsm << 26) | ((uint64_t)s.zte << 32) | ((uint64_t)s.zmsk << 33) | ((uint64_t)s.ctxt << 34) | ((uint64_t)s.tme << 35) | ((uint64_t)s.texFromDrawn << 36);
+            ++g_targetHist[k];
+        }
+        void printTargetHist()
+        {
+            if (g_targetHist.empty()) return;
+            std::fprintf(stderr, "[targethist] frame %llu\n", (unsigned long long)g_frame);
+            for (const auto &kv : g_targetHist)
+            {
+                const uint64_t k = kv.first;
+                std::fprintf(stderr, "[targethist]  %8llu  kind %llu prog %llu fbp 0x%llx fbw %llu psm %llu zte %llu zmsk %llu ctxt %llu tme %llu drawnTex %llu\n", (unsigned long long)kv.second,
+                             (unsigned long long)(k & 1), (unsigned long long)((k >> 1) & 7), (unsigned long long)((k >> 4) & 0xFFFF), (unsigned long long)((k >> 20) & 0x3F), (unsigned long long)((k >> 26) & 0x3F),
+                             (unsigned long long)((k >> 32) & 1), (unsigned long long)((k >> 33) & 1), (unsigned long long)((k >> 34) & 1), (unsigned long long)((k >> 35) & 1), (unsigned long long)((k >> 36) & 1));
+            }
+            g_targetHist.clear();
         }
 
         void emitTriangle(const GsVert *v0, const GsVert *v1, const GsVert *v2, const State &s)
@@ -382,13 +419,14 @@ namespace seamgs
                 o.rgba = (uint32_t)cv.r | ((uint32_t)cv.g << 8) | ((uint32_t)cv.b << 16) | ((uint32_t)cv.a << 24);
                 o.fog = float(g.fog) / 255.0f; o.pad[0] = o.pad[1] = 0;
             }
+            noteTargetHist(0, 0, s);
             if (!g_list.draws.empty() && g_list.draws.back().kind == 0 && sameState(g_list.draws.back().st, s))
                 g_list.draws.back().count += 3;
             else
             {
                 Draw d; d.kind = 0; d.st = s; d.vertOff = (uint32_t)g_list.verts.size(); d.count = 3; d.stride = sizeof(Vtx);
                 g_list.draws.push_back(d);
-                noteDrawPages(s);
+                if (!s.cpuRastered) noteDrawPages(s);
             }
             const uint8_t *b = reinterpret_cast<const uint8_t *>(out);
             g_list.verts.insert(g_list.verts.end(), b, b + sizeof(out));
@@ -396,12 +434,168 @@ namespace seamgs
 
         void emitHostDraw(const State &s)
         {
+            noteTargetHist(1, g_host.prog, s);
             Draw d; d.kind = 1; d.prog = g_host.prog; d.st = s; d.c = g_host.c;
             d.vertOff = (uint32_t)g_list.verts.size(); d.count = g_host.count; d.stride = g_host.stride;
             g_list.verts.insert(g_list.verts.end(), g_hostVerts.begin(), g_hostVerts.end());
             g_list.draws.push_back(d);
             noteDrawPages(s);
             g_haveHost = false;
+        }
+
+        // [scratchraster] Sprites into small scratch targets (rendered palettes, lighting ramps) are rasterised into the
+        // VRAM mirror on the CPU, exactly, so textures and CLUTs that read them decode like uploads. Only when the source
+        // texture itself is mirror-backed. The GPU still draws them too (harmless: nothing displays those targets).
+        bool cpuTargetOk(const State &s, const TexEntry *&te)
+        {
+            te = nullptr;
+            if (s.fbp == 0u || s.fbp == 0xe00u || s.fbw > 4u) return false;
+            if (s.fpsm != PSMCT32 && s.fpsm != PSMCT24 && s.fpsm != PSMCT16 && s.fpsm != PSMCT16S) return false;
+            if (s.tme)
+            {
+                if (s.tex < 0 || (size_t)s.tex >= g_tex.size()) return false;
+                te = &g_tex[s.tex];
+                if (te->drawnPages || te->rgbaCopy.empty()) return false;
+            }
+            return true;
+        }
+        // One pixel of the GS pipeline into the mirror: texture (nearest), TFX, alpha test, blend, FBA, FBMSK.
+        void cpuShadePixel(const State &s, const TexEntry *te, int x, int y, uint32_t cr, uint32_t cg, uint32_t cb, uint32_t ca, float fu, float fv)
+        {
+            uint32_t r = cr, g = cg, bl = cb, al = ca;
+            if (te)
+            {
+                int u = (int)std::floor(fu), v = (int)std::floor(fv);
+                auto wrap = [](int t, int size, uint32_t mode, int mn, int mx) {
+                    if (mode == 0u) return t & (size - 1);
+                    if (mode == 1u) return std::min(std::max(t, 0), size - 1);
+                    if (mode == 2u) return std::min(std::max(t, mn), mx);
+                    return (t & mn) | mx;
+                };
+                u = wrap(u, (int)te->w, s.wms, s.minu, s.maxu); v = wrap(v, (int)te->h, s.wmt, s.minv, s.maxv);
+                u = std::min(std::max(u, 0), (int)te->w - 1); v = std::min(std::max(v, 0), (int)te->h - 1);
+                const uint8_t *t = te->rgbaCopy.data() + (size_t(v) * te->w + u) * 4u;
+                const uint32_t tr = t[0], tg = t[1], tb = t[2], ta = t[3];
+                switch (s.tfx)
+                {
+                case 0: r = std::min(255u, (tr * cr) >> 7); g = std::min(255u, (tg * cg) >> 7); bl = std::min(255u, (tb * cb) >> 7); al = s.tcc ? std::min(255u, (ta * ca) >> 7) : ca; break;
+                case 1: r = tr; g = tg; bl = tb; al = s.tcc ? ta : ca; break;
+                case 2: r = std::min(255u, ((tr * cr) >> 7) + ca); g = std::min(255u, ((tg * cg) >> 7) + ca); bl = std::min(255u, ((tb * cb) >> 7) + ca); al = s.tcc ? std::min(255u, ta + ca) : ca; break;
+                default: r = std::min(255u, ((tr * cr) >> 7) + ca); g = std::min(255u, ((tg * cg) >> 7) + ca); bl = std::min(255u, ((tb * cb) >> 7) + ca); al = s.tcc ? ta : ca; break;
+                }
+            }
+            if (s.ate)
+            {
+                bool pass = true;
+                switch (s.atst) { case 0: pass = false; break; case 2: pass = al < s.aref; break; case 3: pass = al <= s.aref; break; case 4: pass = al == s.aref; break; case 5: pass = al >= s.aref; break; case 6: pass = al > s.aref; break; case 7: pass = al != s.aref; break; default: break; }
+                if (!pass) return;   // KEEP (other AFAIL modes not needed here)
+            }
+            const bool c16 = s.fpsm == PSMCT16 || s.fpsm == PSMCT16S;
+            const uint32_t dst = readPixel(s.fpsm, s.fbp, s.fbw, (uint32_t)x, (uint32_t)y);
+            uint32_t dr, dg, db, da;
+            if (c16) { dr = (dst & 0x1Fu) << 3; dg = ((dst >> 5) & 0x1Fu) << 3; db = ((dst >> 10) & 0x1Fu) << 3; da = (dst & 0x8000u) ? 0x80u : 0u; }
+            else { dr = dst & 0xFFu; dg = (dst >> 8) & 0xFFu; db = (dst >> 16) & 0xFFu; da = (dst >> 24) & 0xFFu; }
+            if (s.abe)
+            {
+                auto pick = [&](uint32_t sel, uint32_t sv, uint32_t dv) { return sel == 0u ? (int)sv : sel == 1u ? (int)dv : 0; };
+                const int cc = s.aC == 0u ? (int)al : s.aC == 1u ? (int)da : (int)s.fix;
+                auto blend = [&](uint32_t sv, uint32_t dv) {
+                    int v = (((pick(s.aA, sv, dv) - pick(s.aB, sv, dv)) * cc) >> 7) + pick(s.aD, sv, dv);
+                    return (uint32_t)(s.colclamp ? std::min(std::max(v, 0), 255) : (v & 0xFF));
+                };
+                r = blend(r, dr); g = blend(g, dg); bl = blend(bl, db);
+            }
+            if (s.fba) al |= 0x80u;
+            uint32_t out;
+            if (c16) out = (r >> 3) | ((g >> 3) << 5) | ((bl >> 3) << 10) | ((al & 0x80u) ? 0x8000u : 0u);
+            else out = r | (g << 8) | (bl << 16) | (al << 24);
+            if (s.fbmsk) out = (out & ~s.fbmsk) | (dst & s.fbmsk);
+            writePixel(s.fpsm, s.fbp, s.fbw, (uint32_t)x, (uint32_t)y, out);
+        }
+
+        // [scratchraster] Sprites into small scratch targets (rendered palettes, lighting ramps) are rasterised into the
+        // VRAM mirror on the CPU, exactly, so textures and CLUTs that read them decode like uploads. Only when the source
+        // texture itself is mirror-backed. The GPU still draws them too (harmless: nothing displays those targets).
+        bool cpuSpriteRaster(const State &s, const GsVert &a, const GsVert &b)
+        {
+            const TexEntry *te;
+            if (!cpuTargetOk(s, te)) return false;
+            int x0 = (int)std::floor((float(int32_t(a.x)) - float(s.ofx)) / 16.0f + 0.5f), y0 = (int)std::floor((float(int32_t(a.y)) - float(s.ofy)) / 16.0f + 0.5f);
+            int x1 = (int)std::floor((float(int32_t(b.x)) - float(s.ofx)) / 16.0f + 0.5f), y1 = (int)std::floor((float(int32_t(b.y)) - float(s.ofy)) / 16.0f + 0.5f);
+            if (x1 < x0) std::swap(x0, x1);
+            if (y1 < y0) std::swap(y0, y1);
+            const int cx0 = std::max(x0, (int)s.scax0), cx1 = std::min(x1, (int)s.scax1 + 1), cy0 = std::max(y0, (int)s.scay0), cy1 = std::min(y1, (int)s.scay1 + 1);
+            if (cx1 <= cx0 || cy1 <= cy0 || (cx1 - cx0) * (cy1 - cy0) > 256 * 256) return false;
+            ++g_stamp;
+            const float du = (x1 > x0) ? (float(b.u) - float(a.u)) / 16.0f / float(x1 - x0) : 0.0f;
+            const float dv = (y1 > y0) ? (float(b.v) - float(a.v)) / 16.0f / float(y1 - y0) : 0.0f;
+            for (int y = cy0; y < cy1; ++y)
+                for (int x = cx0; x < cx1; ++x)
+                    cpuShadePixel(s, te, x, y, b.r, b.g, b.b, b.a, float(a.u) / 16.0f + du * (float(x) - float(x0) + 0.5f), float(a.v) / 16.0f + dv * (float(y) - float(y0) + 0.5f));
+            g_texDirty = true;
+            ++g_cpuSprites;
+            return true;
+        }
+
+        // Triangles into small scratch targets (the lighting ramps are gouraud strips): edge functions at pixel centres,
+        // colours and texcoords interpolated linearly in screen space (the GS's own rule for these flat 2D strips).
+        bool cpuTriRaster(const State &s, const GsVert &v0, const GsVert &v1, const GsVert &v2)
+        {
+            const TexEntry *te;
+            static int s_dbg = 0;
+            if (s.fbp >= 0x3c00u && s_dbg < 12)
+            {
+                ++s_dbg;
+                std::fprintf(stderr, "[tri3c00] fbp 0x%x fbw %u psm %u tme %u tex %d iip %u sc %u..%u %u..%u of %u,%u xy %u,%u %u,%u %u,%u rgba %02x%02x%02x%02x %02x%02x%02x%02x\n",
+                             s.fbp, s.fbw, s.fpsm, s.tme, s.tex, s.iip, s.scax0, s.scax1, s.scay0, s.scay1, s.ofx, s.ofy, v0.x, v0.y, v1.x, v1.y, v2.x, v2.y, v0.r, v0.g, v0.b, v0.a, v2.r, v2.g, v2.b, v2.a);
+            }
+            if (!cpuTargetOk(s, te)) return false;
+            float px[3], py[3];
+            const GsVert *vs[3] = { &v0, &v1, &v2 };
+            for (int i = 0; i < 3; ++i) { px[i] = (float(int32_t(vs[i]->x)) - float(s.ofx)) / 16.0f; py[i] = (float(int32_t(vs[i]->y)) - float(s.ofy)) / 16.0f; }
+            const float area = (px[1] - px[0]) * (py[2] - py[0]) - (px[2] - px[0]) * (py[1] - py[0]);
+            if (std::fabs(area) < 1e-6f) return true;
+            int bx0 = std::max((int)std::floor(std::min({px[0], px[1], px[2]})), (int)s.scax0), bx1 = std::min((int)std::ceil(std::max({px[0], px[1], px[2]})), (int)s.scax1 + 1);
+            int by0 = std::max((int)std::floor(std::min({py[0], py[1], py[2]})), (int)s.scay0), by1 = std::min((int)std::ceil(std::max({py[0], py[1], py[2]})), (int)s.scay1 + 1);
+            if (bx1 <= bx0 || by1 <= by0 || (bx1 - bx0) * (by1 - by0) > 256 * 256) return false;
+            ++g_stamp;
+            const float inv = 1.0f / area;
+            for (int y = by0; y < by1; ++y)
+            {
+                const float cy = float(y) + 0.5f;
+                for (int x = bx0; x < bx1; ++x)
+                {
+                    const float cx = float(x) + 0.5f;
+                    float w0 = ((px[1] - cx) * (py[2] - cy) - (px[2] - cx) * (py[1] - cy)) * inv;
+                    float w1 = ((px[2] - cx) * (py[0] - cy) - (px[0] - cx) * (py[2] - cy)) * inv;
+                    float w2 = 1.0f - w0 - w1;
+                    if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;   // (top-left rule approximated: shared edges draw twice, harmless without blending)
+                    uint32_t cr, cg, cb, ca;
+                    if (s.iip)
+                    {
+                        cr = (uint32_t)std::min(255.0f, std::max(0.0f, w0 * v0.r + w1 * v1.r + w2 * v2.r + 0.5f));
+                        cg = (uint32_t)std::min(255.0f, std::max(0.0f, w0 * v0.g + w1 * v1.g + w2 * v2.g + 0.5f));
+                        cb = (uint32_t)std::min(255.0f, std::max(0.0f, w0 * v0.b + w1 * v1.b + w2 * v2.b + 0.5f));
+                        ca = (uint32_t)std::min(255.0f, std::max(0.0f, w0 * v0.a + w1 * v1.a + w2 * v2.a + 0.5f));
+                    }
+                    else { cr = v2.r; cg = v2.g; cb = v2.b; ca = v2.a; }
+                    float fu = 0.0f, fv = 0.0f;
+                    if (te)
+                    {
+                        if (s.fst) { fu = (w0 * v0.u + w1 * v1.u + w2 * v2.u) / 16.0f; fv = (w0 * v0.v + w1 * v1.v + w2 * v2.v) / 16.0f; }
+                        else
+                        {
+                            const float q = w0 * v0.q + w1 * v1.q + w2 * v2.q;
+                            const float st = w0 * v0.s + w1 * v1.s + w2 * v2.s, tt = w0 * v0.t + w1 * v1.t + w2 * v2.t;
+                            fu = (q != 0.0f ? st / q : st) * float(te->w); fv = (q != 0.0f ? tt / q : tt) * float(te->h);
+                        }
+                    }
+                    cpuShadePixel(s, te, x, y, cr, cg, cb, ca, fu, fv);
+                }
+            }
+            g_texDirty = true;
+            ++g_cpuTris;
+            return true;
         }
 
         void kick(bool draw)
@@ -421,15 +615,23 @@ namespace seamgs
                     const State s = currentState(true);
                     switch (prim)
                     {
-                    case 3: case 4: case 5: emitTriangle(&g_vq[0], &g_vq[1], &g_vq[2], s); break;
+                    case 3: case 4: case 5:
+                    {
+                        State ts = s;
+                        if (cpuTriRaster(s, g_vq[0], g_vq[1], g_vq[2])) ts.cpuRastered = 1;
+                        emitTriangle(&g_vq[0], &g_vq[1], &g_vq[2], ts);
+                        break;
+                    }
                     case 6:
                     {   // sprite: v0 top-left, v1 bottom-right; colour, z and fog from v1; texcoords per axis
                         GsVert a = g_vq[0], b = g_vq[1];
+                        const bool cpu = cpuSpriteRaster(s, a, b);
                         GsVert tr = b, bl = b;
                         tr.x = b.x; tr.y = a.y; tr.u = b.u; tr.v = a.v; tr.s = b.s; tr.t = a.t;
                         bl.x = a.x; bl.y = b.y; bl.u = a.u; bl.v = b.v; bl.s = a.s; bl.t = b.t;
                         GsVert tl = b; tl.x = a.x; tl.y = a.y; tl.u = a.u; tl.v = a.v; tl.s = a.s; tl.t = a.t; tl.q = a.q;
                         State fs = s; fs.iip = 1;   // colours already flattened to v1's
+                        if (cpu) fs.cpuRastered = 1;
                         emitTriangle(&tl, &tr, &bl, fs);
                         emitTriangle(&tr, &b, &bl, fs);
                         break;
@@ -643,9 +845,10 @@ namespace seamgs
             static uint64_t s_last = 0;
             if (g_frame - s_last < 300u) return;
             s_last = g_frame;
-            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu decodes %llu (from drawn pages %llu), cache %zu slots\n",
-                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size());
-            g_texLookups = g_texDecodes = g_texStale = 0;
+            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu\n",
+                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris);
+            g_texLookups = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = 0;
+            printTargetHist();
         }
     }
 
@@ -653,6 +856,7 @@ namespace seamgs
     {
         std::lock_guard<std::mutex> lk(g_mtx);
         ++g_frame;
+        if (g_list.draws.size() > 1500u) ++g_busyFrames;
         evictTextures();
         g_list.frame = g_frame;
         out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees);

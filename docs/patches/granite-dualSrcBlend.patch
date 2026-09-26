@@ -1,0 +1,13 @@
+diff --git a/vulkan/context.cpp b/vulkan/context.cpp
+index ded8cabc..84d027da 100644
+--- a/vulkan/context.cpp
++++ b/vulkan/context.cpp
+@@ -1980,6 +1980,8 @@ bool Context::create_device(VkPhysicalDevice gpu_, VkSurfaceKHR surface,
+ 			enabled_features.fillModeNonSolid = VK_TRUE;
+ 		if (pdf2.features.independentBlend)
+ 			enabled_features.independentBlend = VK_TRUE;
++		if (pdf2.features.dualSrcBlend)   // [seamvk] GS As/128 blend factors from a second fragment output
++			enabled_features.dualSrcBlend = VK_TRUE;
+ 		if (pdf2.features.sampleRateShading)
+ 			enabled_features.sampleRateShading = VK_TRUE;
+ 		if (pdf2.features.vertexPipelineStoresAndAtomics)

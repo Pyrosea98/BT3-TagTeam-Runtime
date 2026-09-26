@@ -36,6 +36,9 @@ namespace seamgs
         uint16_t minu = 0, maxu = 0, minv = 0, maxv = 0;
         uint32_t texW = 0, texH = 0;
         int32_t tex = -1;    // texture slot, -1 untextured
+        uint8_t cpuRastered = 0;    // also rasterised into the VRAM mirror (small scratch target)
+        uint8_t texFromDrawn = 0;   // the texture read VRAM pages the game had drawn into (mirror is stale there)
+        uint32_t tex0lo = 0, tex0hi = 0;   // raw TEX0 for diagnostics
         // SCISSOR / XYOFFSET
         uint16_t scax0 = 0, scax1 = 639, scay0 = 0, scay1 = 447;
         uint16_t ofx = 0, ofy = 0;
