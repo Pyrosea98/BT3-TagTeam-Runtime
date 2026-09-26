@@ -120,8 +120,10 @@ Two traps this move created, both fixed and worth remembering:
   `SDL_syswm.h` pulls in `<windows.h>`, whose `Rectangle` clashes with raylib's.)
 - **`fps60_sites.txt` was only staged next to the build's exe**, never into the deploy, so
   `[fps60] CANNOT ENABLE: ... not found` left the 60-fps/halfstep mode silently inert with
-  `fps60 = true` in settings. The file now also ships in the deploy (`games/bt3/fps60_sites.txt` is
-  the repo copy) and `[fps60] ON (step 1 + pacing table)` confirms 92 float sites halved.
+  `fps60 = true` in settings. The deploy now copies it next to the runner too
+  (`games/bt3/fps60_sites.txt` is the repo copy; `savedata/` stays a fallback for
+  installs staged before the move) and `[halfstep] ON: 94 float sites halved, ...` confirms
+  the table loads from beside the executable.
 
 ### B: the API naming
 
@@ -186,7 +188,7 @@ verified.
 $env:PS2X_D3D11="0"; $env:PS2X_ALTGL="1"; $env:PS2X_GPU="1"
 $env:PS2X_EXEDIR="D:\Dragon Ball Budokai Tenkaichi 3 Recompiled"
 $env:PS2X_ASSETDIR="$env:PS2X_EXEDIR\assets"
-& "$env:PS2X_EXEDIR\bt3-runner.exe" "$env:PS2X_EXEDIR\data\SLUS_216.78"
+& "$env:PS2X_EXEDIR\Dragon Ball Z Budokai Tenkaichi 3 - Recompiled.exe" "$env:PS2X_EXEDIR\data\SLUS_216.78"
 ```
 
 Success line: `[altgl] present init ok (GL 3.3.0 Core ...)`.

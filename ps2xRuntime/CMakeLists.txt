@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.20)
 
 project(PS2Runtime VERSION 0.1.0 LANGUAGES CXX)
 
@@ -97,6 +97,12 @@ else()
     # the same static build (linked after that block, see PS2X_SDL2_TARGET).
     target_compile_definitions(bt3gl PUBLIC PLATFORM_DESKTOP_SDL GRAPHICS_API_OPENGL_33)
 
+    # [audio] raylib ships SUPPORT_FILEFORMAT_FLAC commented out in its config.h, which also
+    # leaves dr_flac out of raudio.c, so LoadMusicStream() rejects a FLAC even though the vendored
+    # tree carries the decoder. The front-end menu theme is a FLAC, so switch it on here instead
+    # of editing the vendored source: config.h has the line commented, so there is no clash.
+    target_compile_definitions(bt3gl PUBLIC SUPPORT_FILEFORMAT_FLAC=1)
+
     if(WIN32)
         target_link_libraries(bt3gl PUBLIC opengl32 winmm)
     else()
@@ -132,6 +138,9 @@ else()
         "${PS2X_IMGUI_SOURCE_DIR}/imgui_demo.cpp"
     )
     target_include_directories(imgui PUBLIC "${PS2X_IMGUI_SOURCE_DIR}")
+    # [frontend] Docking is PUBLIC, not PRIVATE: IMGUI_ENABLE_DOCKING changes ImGuiContext's
+    # layout, so every TU that sees an ImGui header must agree or the ODR breaks at runtime.
+    target_compile_definitions(imgui PUBLIC IMGUI_ENABLE_DOCKING)
     # [altGL] ImGui's OpenGL3 backend, so the overlay can render through gfx::gl / raw GL instead
     # of rlImGui/rlgl (PS2X_UIGL=1). It brings its own GL loader, so it does not need rlgl.
     target_sources(imgui PRIVATE "${PS2X_IMGUI_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp")
@@ -489,8 +498,141 @@ function(ps2x_stage_ffmpeg_runtime_dlls target_name)
     )
 endfunction()
 
+# ps2x_settings es la fuente única de verdad de savedata/settings.toml para el front-end,
+# el overlay y el módulo de textures. Sin este target los tres escribiendo el mismo archivo
+# y corrompiéndose entre sí.
+add_library(ps2x_settings STATIC src/lib/ps2x_settings.cpp)
+target_include_directories(ps2x_settings PUBLIC include)
+target_link_libraries(ps2x_settings PUBLIC ${CMAKE_DL_LIBS})
+
+option(PS2X_ENABLE_FRONTEND_ARCHIVE "Embed libarchive in the runtime for the installer" ON)
+option(PS2X_BUILD_PROBES "Build the dev probes (settings, archive)" OFF)
+
+if(PS2X_ENABLE_FRONTEND_ARCHIVE AND NOT PS2X_IS_VITA)
+    set(LA_LINK "")
+    set(LA_INCLUDES "")
+    set(LA_EXTRA "")
+    find_package(LibArchive QUIET)
+    if(LibArchive_FOUND)
+        set(LA_LINK ${LibArchive_LIBRARIES})
+        set(LA_INCLUDES ${LibArchive_INCLUDE_DIRS})
+    else()
+        message(STATUS "libarchive not found: fetching pinned static build (v3.8.1)")
+        set(BUILD_SHARED_LIBS OFF)
+        set(ENABLE_TEST OFF CACHE BOOL "" FORCE)
+        set(ENABLE_TAR OFF CACHE BOOL "" FORCE)
+        set(ENABLE_CPIO OFF CACHE BOOL "" FORCE)
+        set(ENABLE_CAT OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(zlib
+            URL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+            URL_HASH SHA256=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+            EXCLUDE_FROM_ALL)
+        FetchContent_MakeAvailable(zlib)
+        set(ZLIB_INCLUDE_DIR "${zlib_SOURCE_DIR}" CACHE PATH "" FORCE)
+        set(ZLIB_LIBRARY zlibstatic CACHE STRING "" FORCE)
+        FetchContent_Declare(liblzma
+            URL https://github.com/tukaani-project/xz/releases/download/v5.6.2/xz-5.6.2.tar.gz
+            URL_HASH SHA256=8bfd20c0e1d86f0402f2497cfa71c6ab62d4cd35fd704276e3140bfb71414519
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+            EXCLUDE_FROM_ALL)
+        set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+        set(CREATE_XZ_SYMLINKS OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(liblzma)
+        set(LIBLZMA_INCLUDE_DIR "${liblzma_SOURCE_DIR}/src/liblzma/api" CACHE PATH "" FORCE)
+        set(LIBLZMA_LIBRARY liblzma CACHE STRING "" FORCE)
+        set(LIBLZMA_HAS_AUTO_DECODER 1 CACHE INTERNAL "" FORCE)
+        set(LIBLZMA_HAS_EASY_ENCODER 1 CACHE INTERNAL "" FORCE)
+        set(LIBLZMA_HAS_LZMA_PRESET 1 CACHE INTERNAL "" FORCE)
+        FetchContent_Declare(libarchive
+            URL https://github.com/libarchive/libarchive/releases/download/v3.8.1/libarchive-3.8.1.tar.gz
+            URL_HASH SHA256=bde832a5e3344dc723cfe9cc37f8e54bde04565bfe6f136bc1bd31ab352e9fab)
+        FetchContent_MakeAvailable(libarchive)
+        set(LA_LINK archive_static)
+        if(TARGET archive_static)
+            add_dependencies(archive_static liblzma)
+        endif()
+        if(TARGET archive_static AND TARGET zlibstatic)
+            target_include_directories(archive_static PRIVATE "${zlib_SOURCE_DIR}" "${zlib_BINARY_DIR}")
+            target_link_libraries(archive_static zlibstatic)
+        endif()
+        set(LA_EXTRA liblzma)
+    endif()
+
+    add_library(ps2x_archive INTERFACE)
+    target_link_libraries(ps2x_archive INTERFACE ${LA_LINK} ${LA_EXTRA})
+    if(TARGET zlibstatic)
+        target_link_libraries(ps2x_archive INTERFACE zlibstatic)
+    endif()
+    target_include_directories(ps2x_archive INTERFACE ${LA_INCLUDES})
+    target_compile_definitions(ps2x_archive INTERFACE LIBARCHIVE_STATIC)
+
+    add_library(ps2x_archive_x STATIC src/frontend/archive_x.cpp)
+    target_include_directories(ps2x_archive_x PUBLIC src/frontend)
+    target_link_libraries(ps2x_archive_x PUBLIC ps2x_archive)
+
+    add_executable(ps2x_archive_probe src/frontend/archive_x_probe.cpp)
+    target_link_libraries(ps2x_archive_probe PRIVATE ps2x_archive_x)
+endif()
+
+if(PS2X_BUILD_PROBES AND NOT PS2X_IS_VITA)
+    add_executable(ps2x_settings_probe src/frontend/ps2x_settings_probe.cpp)
+    target_link_libraries(ps2x_settings_probe PRIVATE ps2x_settings)
+
+    # [fe-probe] The perf accumulator's arithmetic: present rate, nearest-rank percentiles, and the
+    # coverage/source contract. No GL and no window, so the claims the readout makes are checkable.
+    add_executable(fe_perf_probe src/frontend/fe_perf_probe.cpp src/lib/ps2x_perf.cpp)
+    target_include_directories(fe_perf_probe PRIVATE src include)
+    # Per-toolchain warning flags, like ps2xGlProbe above: passing /W4 to gcc/clang makes it read
+    # the flag as a linker input ("/W4: linker input file not found"), so the probes could not be
+    # built at all outside MSVC -- which is where they are most useful.
+    if(MSVC)
+        target_compile_options(fe_perf_probe PRIVATE /W4)
+    else()
+        target_compile_options(fe_perf_probe PRIVATE -Wall -Wextra)
+    endif()
+
+    # [fe-probe] Drives the front-end's combo/popup widgets through real frames on ImGui's null
+    # backend and asserts the Begin/End contract holds. Needs no window and no GL, so the
+    # dropdown-cannot-open / whole-UI-unclickable class of bug is catchable in a headless run.
+    add_executable(fe_imgui_probe src/frontend/fe_imgui_probe.cpp)
+    target_include_directories(fe_imgui_probe PRIVATE src)
+    target_link_libraries(fe_imgui_probe PRIVATE imgui)
+    target_sources(imgui PRIVATE "${PS2X_IMGUI_SOURCE_DIR}/backends/imgui_impl_null.cpp")
+    if(MSVC)
+        target_compile_options(fe_imgui_probe PRIVATE /W4)
+    else()
+        target_compile_options(fe_imgui_probe PRIVATE -Wall -Wextra)
+    endif()
+
+    # [fe-probe] Same idea for the file picker, the one widget that opens a MODAL: it drives the
+    # real FilePicker through open/close/reopen and a mouse sweep on the null backend and asserts
+    # the window and popup stacks come back to their base every frame.
+    add_executable(fe_picker_probe src/frontend/fe_picker_probe.cpp src/frontend/fe_picker.cpp)
+    target_include_directories(fe_picker_probe PRIVATE src)
+    target_link_libraries(fe_picker_probe PRIVATE imgui)
+    if(MSVC)
+        target_compile_options(fe_picker_probe PRIVATE /W4)
+    else()
+        target_compile_options(fe_picker_probe PRIVATE -Wall -Wextra)
+    endif()
+
+    # Reads a disc image: directory tree, case-insensitive lookup, streamed read and the
+    # SHA-256 over the boot ELF inside the image. The installer depends on all of it.
+    add_executable(fe_iso_probe
+        src/frontend/fe_iso_probe.cpp
+        src/frontend/fe_iso9660.cpp
+        src/frontend/fe_hash.cpp)
+    target_include_directories(fe_iso_probe PRIVATE src)
+    target_link_libraries(fe_iso_probe PRIVATE ffmpeg)
+endif()
+
 add_library(ps2_runtime STATIC
-    src/lib/game_overrides.cpp
+src/lib/game_overrides.cpp
+src/lib/ps2x_dueldump.cpp       # [dueldump] total capture of the Duel menu flow
+src/lib/ps2x_net_texdump.cpp    # [netmenu] force-decode QRS textures via the runtime's PSMT8 reader
+src/lib/ps2x_duel_fields.cpp    # [duelfields] the complete Duel-setup field map + write methods
+src/lib/ps2x_injected.cpp       # [injected] function registry for cloned guest code
     src/lib/ps2_eeprof.cpp
     src/lib/ps2_stepcensus.cpp
     src/lib/ps2_fiber.cpp
@@ -507,11 +649,11 @@ src/lib/ui_sdl.cpp          # [C] ImGui platform glue on SDL2 (replaces rlImGui)
     src/lib/ps2_gs_memory.cpp
     src/lib/ps2_gs_rasterizer.cpp
     src/lib/ps2_texreplace.cpp   # [texreplace] PCSX2-compatible texture identity
-    src/lib/ps2_texcache.cpp     # [texcache] persistent write-back texture cache
-    src/lib/ps2_coverage.cpp     # [coverage] interpreter-fallback capture for the orchestrator
+        src/lib/ps2_coverage.cpp     # [coverage] interpreter-fallback capture for the orchestrator
     src/lib/ps2_iop_module.cpp   # [iop] IRX (IOP module) loader
     src/lib/ps2_fmv_override.cpp # [fmvoverride] inject a user 4K video as the opening FMV
     src/lib/ps2_netplay.cpp      # [netplay] deterministic lockstep transport
+    src/lib/ps2x_perf.cpp        # [perf] present rate, frame-time percentiles, GPU busy + its source
     src/lib/ps2_iop.cpp
     src/lib/ps2_iop_audio.cpp
     src/lib/ps2_iop_dbcman.cpp
@@ -704,7 +846,7 @@ target_include_directories(ps2_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src          # gfx/... (D3D11 device etc.)
 )
 
-target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg)
+target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2x_settings)
 
 # [d3d11] Native Direct3D 11 video device (device + DXGI swap chain), Windows-only.
 # d3dcompiler is linked now so the P3 shader port can compile HLSL at runtime.
@@ -764,7 +906,13 @@ endif()
 # [pgs] optional paraLLEl-GS backend (Vulkan compute GS, LGPLv3+): built in when the checkout is present.
 # ps2xRuntime/third_party/parallel-gs is a git-ignored symlink/checkout of https://github.com/Arntzen-Software/parallel-gs
 set(PS2X_PGS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/parallel-gs" CACHE PATH "paraLLEl-GS checkout (with its Granite submodule)")
-option(PS2X_DISABLE_PGS "Do not build the paraLLEl-GS backend even if the checkout is present" OFF)
+# [pgs] OFF by default since 2026-09-25: the AMD Vulkan ICD (amdvlk64.dll, driver 2.0.279 on an
+# RX 580) faults inside DllMain on a worker thread right after device creation, taking the whole
+# runner down at ~15 s with an access violation in vk_icdGetInstanceProcAddrSG. The backend is
+# being rewritten, so nothing selects it for now: with PS2X_HAVE_PGS undefined, applyRenderer()
+# maps a configured "parallel-gs" to the OpenGL present, so old settings files keep working. The
+# sources stay in the tree for the rewrite; -DPS2X_DISABLE_PGS=OFF brings the backend back.
+option(PS2X_DISABLE_PGS "Do not build the paraLLEl-GS backend even if the checkout is present" ON)
 # paraLLEl-GS does not compile on macOS: Granite's sleep_until_nsecs() uses
 # clock_nanosleep/TIMER_ABSTIME for everything that is not _WIN32, and macOS has
 # neither. Gate it on the platform rather than on a cache variable alone, so a
@@ -896,6 +1044,42 @@ if(NOT PS2X_IS_VITA)
             src/gfx/d3d11/ui_d3d11.cpp   # imgui_impl_dx11 backend (needs windows.h)
         )
     endif()
+    # [frontend] The in-runtime front-end (the Qt launcher's replacement). It brings its own SDL
+    # window + GL context and must stay OUT of the unity batches: it includes <SDL.h> and
+    # carries its own ImGui state, neither of which belongs in a merged TU.
+    if(TARGET imgui AND DEFINED PS2X_SDL2_TARGET)
+        set(PS2X_FRONTEND_SOURCES
+            src/frontend/fe_app.cpp
+    src/frontend/fe_afs.cpp
+    src/frontend/fe_background.cpp
+    src/frontend/fe_gpu.cpp
+    src/frontend/fe_hash.cpp
+            src/frontend/fe_hw.cpp
+            src/frontend/fe_install.cpp
+    src/frontend/fe_iso9660.cpp
+    src/frontend/fe_music.cpp
+    src/frontend/fe_pages.cpp
+            src/frontend/fe_picker.cpp
+            src/frontend/fe_window.cpp
+        )
+        if(TARGET ps2x_archive_x)
+            list(APPEND PS2X_FRONTEND_SOURCES src/frontend/archive_x.cpp)
+            target_compile_definitions(ps2EntryRunner PRIVATE PS2X_HAVE_FRONTEND_ARCHIVE=1)
+            target_link_libraries(ps2EntryRunner PRIVATE ps2x_archive_x)
+            message(STATUS "[frontend] in-process archive support: ON (libarchive + liblzma + zlib)")
+        else()
+            message(STATUS "[frontend] in-process archive support: OFF (compressed dumps/packs disabled)")
+        endif()
+        target_sources(ps2EntryRunner PRIVATE ${PS2X_FRONTEND_SOURCES})
+        set_source_files_properties(${PS2X_FRONTEND_SOURCES} PROPERTIES
+            SKIP_UNITY_BUILD_INCLUSION ON
+        )
+        target_compile_definitions(ps2EntryRunner PRIVATE PS2X_HAVE_FRONTEND=1)
+        target_link_libraries(ps2EntryRunner PRIVATE ps2x_settings)
+        message(STATUS "[frontend] in-runtime front-end: ON")
+    else()
+        message(STATUS "[frontend] in-runtime front-end: OFF (needs imgui + SDL2)")
+    endif()
     target_link_libraries(ps2EntryRunner PRIVATE imgui)
     # gamemode: request CPU governor / IO priority optimisations at startup
     # (auto-release on exit; harmless no-op if the daemon isn't running).
@@ -920,12 +1104,16 @@ endif()
 # next to the executable. The game runs from the build output, so without this the folders would
 # exist in the repo but not where a user would actually look. copy_directory MERGES, so rebuilding
 # never disturbs a pack someone has dropped in.
+# [bt3save] games/bt3/saves/ is the progressed memory-card save the front-end offers to install
+# (bug 8). Staged next to the runner so the front-end finds it in the deploy tree.
 add_custom_command(TARGET ps2EntryRunner POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/../textures" "$<TARGET_FILE_DIR:ps2EntryRunner>/data/Textures"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/../mods"     "$<TARGET_FILE_DIR:ps2EntryRunner>/mods"
-    COMMENT "Staging data/Textures and mods/ next to ps2EntryRunner"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/../games/bt3/saves" "$<TARGET_FILE_DIR:ps2EntryRunner>/saves"
+    COMMENT "Staging data/Textures, mods/ and saves/ next to ps2EntryRunner"
 )
 
 ps2x_stage_ffmpeg_runtime_dlls(ps2EntryRunner)
@@ -1002,3 +1190,5 @@ add_custom_command(TARGET ps2EntryRunner POST_BUILD
             "${CMAKE_SOURCE_DIR}/games/bt3/fps60_sites.txt"
             "$<TARGET_FILE_DIR:ps2EntryRunner>/fps60_sites.txt"
     COMMENT "Staging fps60_sites.txt next to ps2EntryRunner")
+
+

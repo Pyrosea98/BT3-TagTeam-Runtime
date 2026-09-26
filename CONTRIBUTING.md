@@ -31,7 +31,7 @@ For a quick rebuild of only the runner after a source change, reuse an existing
 | Static recompiler | `ps2xRecomp/` |
 | Runtime (EE/GS/VU1/scheduler) | `ps2xRuntime/src/lib/` |
 | GS/GPU renderer | `ps2xRuntime/src/lib/ps2_gs_gpu_renderer.cpp`, `ps2_gs_gpu.cpp` |
-| Qt launcher | `ps2xRuntime/src/launcher/` |
+| In-runtime front-end (UI, settings, install wizard) | `ps2xRuntime/src/frontend/` |
 | Build pipeline | `games/bt3/setup.py`, `scripts/` |
 
 ## Making a change
@@ -53,7 +53,7 @@ history:
 ```
 gs: <what changed>
 runtime: <what changed>
-launcher: <what changed>
+frontend: <what changed>
 iop: <what changed>
 build: <what changed>
 docs: <what changed>

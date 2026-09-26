@@ -1,2 +1,2 @@
 #include <windows.h>
-IDI_ICON1 ICON DISCARDABLE "src/launcher/assets/bt3.ico"
+IDI_ICON1 ICON DISCARDABLE "assets/bt3.ico"

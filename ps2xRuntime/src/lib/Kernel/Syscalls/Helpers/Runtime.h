@@ -1,4 +1,7 @@
 #include "ps2_waitprof.h"   // [fibers] WP_* wait points used by waitGuestUntil
+
+#include <filesystem>
+
 struct ThreadExitException final : public std::exception
 {
     const char *what() const noexcept override
@@ -593,6 +596,31 @@ inline std::string translatePs2Path(const char *ps2Path)
     }
 
     return resolveWithBase(getConfiguredCdRoot(), pathStr);
+}
+
+// The guest always asks for the disc layout (\BIN\DBZP.BIN), but the install is allowed to be
+// flat, with the same file directly under the CD root. When the exact path is not there, look
+// for the file by name one level up instead of failing the open outright: the FIO syscalls have
+// no index to fall back on, so without this a flat install cannot open anything.
+inline std::string resolvePs2HostPath(const char *ps2Path)
+{
+    const std::string exact = translatePs2Path(ps2Path);
+    if (exact.empty())
+    {
+        return exact;
+    }
+    std::error_code ec;
+    if (!ec && std::filesystem::exists(exact, ec))
+    {
+        return exact;
+    }
+    const std::filesystem::path flat = getConfiguredCdRoot() / std::filesystem::path(exact).filename();
+    ec.clear();
+    if (!ec && std::filesystem::exists(flat, ec))
+    {
+        return flat.lexically_normal().string();
+    }
+    return exact;
 }
 
 static bool localtimeSafe(const std::time_t *t, std::tm *out)

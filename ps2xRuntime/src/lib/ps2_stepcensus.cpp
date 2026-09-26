@@ -611,12 +611,14 @@ void ps2HalfStepWrite128(uint8_t *rdram, uint32_t guestAddr, uint64_t &lo, uint6
     g_hsFloat.fetch_add(1, std::memory_order_relaxed);
     lo = (uint64_t)nw[0] | ((uint64_t)nw[1] << 32); hi = (uint64_t)nw[2] | ((uint64_t)nw[3] << 32);
 }
-// [fps60] the overlay's switch. The site table ships as a data file in the save folder (savedata/); it is loaded
-// once, on the first enable, and the mode then rides on g_ps2VStepMode. Off restores stock 30 fps behaviour.
+// [fps60] the overlay's switch. The site table ships as a data file next to the runner (the build
+// stages it there and the deploy copies it there); it is loaded once, on the first enable, and the
+// mode then rides on g_ps2VStepMode. Off restores stock 30 fps behaviour. savedata/ stays a
+// fallback for installs staged before the file moved.
 void ps2Set60Fps(bool on, const char *sitesPath)
 {
     if (on && !g_hs && !g_vstepLoaded.exchange(1))
-    {   // The rules ship in the save folder (staged by the build) and in games/bt3/. A clean release build on
+    {   // The rules ship next to the runner and in games/bt3/. A clean release build on
         // 2026-09-11 had the toggle but no file, and the switch was silently inert -- so name every path tried.
         std::string exeDir;
         {   // the runner's own directory, where the build stages fps60_sites.txt (portable: Linux has no
@@ -639,16 +641,18 @@ void ps2Set60Fps(bool on, const char *sitesPath)
         std::vector<std::string> cands;
         if (sitesPath && sitesPath[0]) cands.emplace_back(sitesPath);
         if (const char *e = std::getenv("PS2X_HALFSTEP"); e && e[0]) cands.emplace_back(e);
-        {   // default location: the save folder (savedata/), where the build stages it
-            const PS2Runtime::IoPaths &io = PS2Runtime::getIoPaths();
-            if (!io.mcRoot.empty()) cands.emplace_back((io.mcRoot / "fps60_sites.txt").string());
-        }
+        // Beside the runner first: that is where the build stages it and where the deploy copies
+        // it, so an install never depends on the save folder for a build-time data file.
         for (const std::string &base : { exeDir, exeDir + "/..", exeDir + "/../..", std::string(".") })
             if (!base.empty())
             {
                 cands.emplace_back(base + "/fps60_sites.txt");
                 cands.emplace_back(base + "/games/bt3/fps60_sites.txt");
             }
+        {   // legacy: installs staged before the file moved next to the exe
+            const PS2Runtime::IoPaths &io = PS2Runtime::getIoPaths();
+            if (!io.mcRoot.empty()) cands.emplace_back((io.mcRoot / "fps60_sites.txt").string());
+        }
         bool found = false;
         for (const std::string &c : cands)
             if (FILE *f = std::fopen(c.c_str(), "r")) { std::fclose(f); ps2HalfStepEnable(c.c_str()); found = g_hs != nullptr; if (found) break; }

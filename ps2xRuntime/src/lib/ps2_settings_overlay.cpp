@@ -1,4 +1,4 @@
-#include "ps2_runtime.h"   // [fps60] ps2Set60Fps
+﻿#include "ps2_runtime.h"   // [fps60] ps2Set60Fps
 #include "runtime/ps2_texreplace.h"
 #include "ps2_settings_overlay.h"
 #include "runtime/ps2_netplay.h"   // [netplay]
@@ -14,10 +14,12 @@
 
 #include "imgui.h"
 #include "gfx/ps2x_ui.h"
-#include "runtime/ps2_video_status.h"   // [video] the status dots   // UiSetup/Begin/End: rlImGui (GL) or imgui_impl_dx11 (PS2X_D3D11)
+#include "runtime/ps2_video_status.h"   // [video] the status dots
+#include "runtime/ps2x_perf_status.h"   // [perf] the live fps / frame-time / GPU-busy readout   // UiSetup/Begin/End: rlImGui (GL) or imgui_impl_dx11 (PS2X_D3D11)
 #include "gfx/bt3gl_api.h"   // [B] bt3* API bridge
 
 #include "runtime/ps2_toml.h"
+#include "runtime/ps2x_settings.h"
 
 #include <fstream>
 #include <sstream>
@@ -29,14 +31,9 @@
 #include <cstring>
 #include <ctime>
 
-static const char *kConfigFileName = "settings.toml";        // launcher + overlay + FMV share this
+static const char *kConfigFileName = "settings.toml";        // front-end + overlay + FMV share this
 static const char *kLegacyConfigFileName = "bt3_settings.ini"; // 0.x format, migrated on first load
 static const char *kDumpFileName = "bt3_settings_dump.log";
-
-static const char *kConfigHeader =
-    "# Dragon Ball Z: Budokai Tenkaichi 3 - Recompiled\n"
-    "# User settings - written by the launcher and the in-game overlay.\n"
-    "# Delete this file to reset everything to defaults.\n\n";
 
 namespace
 {
@@ -500,6 +497,7 @@ static bool envUserSet(const char *name)
 void PS2SettingsOverlay::loadSettings()
 {
     m_sawRendererKey = false;
+    m_envLocked = 0;
     // [defaults-sync] Seed from LIVE runtime state (env + main()'s baked defaults) so a
     // missing INI -- or a key the INI doesn't mention -- never pushes this struct's
     // hardcoded values over the validated configuration.
@@ -519,7 +517,13 @@ void PS2SettingsOverlay::loadSettings()
     {
             int r = nameToRenderer(doc.getS("video.renderer", rendererName(m_settings.renderer)), m_settings.renderer);
 #if !defined(PS2X_HAVE_PGS)
-            if (r == Settings::kRendererParallelGS) r = Settings::kRendererOpenGL;
+            if (r == Settings::kRendererParallelGS)
+            {
+                r = Settings::kRendererOpenGL;
+                // Build-capability fallback, not a migration: this build simply cannot run PGS, and
+                // writing the fallback back would erase the choice for a build that can.
+                m_envLocked |= ps2x_settings::kLockRenderer;
+            }
 #endif
             // [d3d11] Direct3D 11 is retired for now: an old settings file that picks it falls back to
             // the new OpenGL present. paraLLEl-GS is a normal option on every platform again.
@@ -527,33 +531,57 @@ void PS2SettingsOverlay::loadSettings()
             if (r >= 0 && r <= 3) { m_settings.renderer = r; m_sawRendererKey = true; }
             // [display] window mode / monitor: the popup owns them, defaulted from the legacy fullscreen flag
             m_settings.windowMode = doc.getI("video.window_mode", m_settings.fullscreen ? 2 : 0);
-            m_settings.monitor = doc.getI("video.monitor", 0);
-    }
-    if (!envUserSet("PS2X_GLOW")) m_settings.glow = doc.getB("video.glow", m_settings.glow);
-    if (!envUserSet("PS2X_GLOWFIX")) m_settings.glowFix = doc.getB("video.glowfix", m_settings.glowFix);
-    if (!envUserSet("PS2X_INKSTRENGTH") && !envUserSet("PS2X_ADGS"))
-        m_settings.inkStrength = std::clamp(doc.getI("video.ink_strength", m_settings.inkStrength), 100, 400);
-    m_settings.inkWidth = std::clamp(doc.getI("video.ink_width", m_settings.inkWidth), 25, 100);
-    m_settings.inkColor = hexToColor(doc.getS("video.ink_color", colorToHex(m_settings.inkColor)), m_settings.inkColor);
-    if (!envUserSet("PS2X_BILINEAR")) m_settings.bilinear = doc.getB("video.bilinear", m_settings.bilinear);
-    if (!envUserSet("PS2X_HALFTEXEL")) m_settings.halfTexel = doc.getB("video.halftexel", m_settings.halfTexel);
-    if (!envUserSet("PS2X_SKIPPOST")) m_settings.skipPost = doc.getB("video.skippost", m_settings.skipPost);
-    if (!envUserSet("PS2X_SKIP_STALE_VRAM")) m_settings.skipStaleVram = doc.getB("video.skip_stale_vram", m_settings.skipStaleVram);
-    if (!envUserSet("PS2X_RENDER_SCALE"))
-    {
-        const int s = doc.getI("video.render_scale", m_settings.renderScale);
-        m_settings.renderScale = (s >= 1 && s <= 4) ? s : 1;
-    }
-    if (!envUserSet("PS2X_OUTLINE")) m_settings.outline = doc.getB("video.outline", m_settings.outline);
-    if (!envUserSet("PS2X_TEXPACK")) m_settings.texPack = doc.getB("video.texture_pack", m_settings.texPack);
-    if (!envUserSet("PS2X_FMV_OVERRIDE")) m_settings.introVideo = doc.getB("video.intro_video", m_settings.introVideo);
-    if (!envUserSet("PS2X_BUTTONS")) m_settings.buttonLayout = doc.getI("video.button_layout", m_settings.buttonLayout);
-    if (!envUserSet("PS2X_SHADOWS")) m_settings.shadows = doc.getB("video.shadows", m_settings.shadows);
-    if (!envUserSet("PS2X_DOFMASK")) m_settings.dofBlur = doc.getB("video.dof_blur", m_settings.dofBlur);
-    if (!envUserSet("PS2X_DOFZFAR")) m_settings.dofZFar = std::clamp(doc.getI("video.dof_zfar", m_settings.dofZFar), 20000, 800000);
+            m_settings.monitor = doc.getI("video.monitor", m_settings.monitor);
+        }
+        if (envUserSet("PS2X_GLOW")) m_envLocked |= ps2x_settings::kLockGlow;
+        else m_settings.glow = doc.getB("video.glow", m_settings.glow);
+        if (envUserSet("PS2X_GLOWFIX")) m_envLocked |= ps2x_settings::kLockGlowFix;
+        else m_settings.glowFix = doc.getB("video.glowfix", m_settings.glowFix);
+        if (envUserSet("PS2X_INKSTRENGTH") || envUserSet("PS2X_ADGS"))
+        {
+            m_envLocked |= ps2x_settings::kLockInkStrength;
+        }
+        else
+        {
+            m_settings.inkStrength = std::clamp(doc.getI("video.ink_strength", m_settings.inkStrength), 100, 400);
+        }
+        m_settings.inkWidth = std::clamp(doc.getI("video.ink_width", m_settings.inkWidth), 25, 100);
+        m_settings.inkColor = hexToColor(doc.getS("video.ink_color", colorToHex(m_settings.inkColor)), m_settings.inkColor);
+        if (envUserSet("PS2X_BILINEAR")) m_envLocked |= ps2x_settings::kLockBilinear;
+        else m_settings.bilinear = doc.getB("video.bilinear", m_settings.bilinear);
+        if (envUserSet("PS2X_HALFTEXEL")) m_envLocked |= ps2x_settings::kLockHalfTexel;
+        else m_settings.halfTexel = doc.getB("video.halftexel", m_settings.halfTexel);
+        if (envUserSet("PS2X_SKIPPOST")) m_envLocked |= ps2x_settings::kLockSkipPost;
+        else m_settings.skipPost = doc.getB("video.skippost", m_settings.skipPost);
+        if (envUserSet("PS2X_SKIP_STALE_VRAM")) m_envLocked |= ps2x_settings::kLockSkipStale;
+        else m_settings.skipStaleVram = doc.getB("video.skip_stale_vram", m_settings.skipStaleVram);
+        if (envUserSet("PS2X_RENDER_SCALE"))
+        {
+            m_envLocked |= ps2x_settings::kLockRenderScale;
+        }
+        else
+        {
+            const int s = doc.getI("video.render_scale", m_settings.renderScale);
+            m_settings.renderScale = (s >= 1 && s <= 4) ? s : 1;
+        }
+        if (envUserSet("PS2X_OUTLINE")) m_envLocked |= ps2x_settings::kLockOutline;
+        else m_settings.outline = doc.getB("video.outline", m_settings.outline);
+        if (envUserSet("PS2X_TEXPACK")) m_envLocked |= ps2x_settings::kLockTexPack;
+        else m_settings.texPack = doc.getB("video.texture_pack", m_settings.texPack);
+        if (envUserSet("PS2X_FMV_OVERRIDE")) m_envLocked |= ps2x_settings::kLockIntroVideo;
+        else m_settings.introVideo = doc.getB("video.intro_video", m_settings.introVideo);
+        if (envUserSet("PS2X_BUTTONS")) m_envLocked |= ps2x_settings::kLockButtonLay;
+        else m_settings.buttonLayout = doc.getI("video.button_layout", m_settings.buttonLayout);
+        if (envUserSet("PS2X_SHADOWS")) m_envLocked |= ps2x_settings::kLockShadows;
+        else m_settings.shadows = doc.getB("video.shadows", m_settings.shadows);
+        if (envUserSet("PS2X_DOFMASK")) m_envLocked |= ps2x_settings::kLockDofBlur;
+        else m_settings.dofBlur = doc.getB("video.dof_blur", m_settings.dofBlur);
+        if (envUserSet("PS2X_DOFZFAR")) m_envLocked |= ps2x_settings::kLockDofZFar;
+        else m_settings.dofZFar = std::clamp(doc.getI("video.dof_zfar", m_settings.dofZFar), 20000, 800000);
     m_settings.fullscreen = doc.getB("video.fullscreen", m_settings.fullscreen);
     m_settings.widescreen = doc.getB("video.widescreen", m_settings.widescreen);
-    m_settings.fps60 = doc.getB("video.fps60", m_settings.fps60);
+        m_settings.fps60 = doc.getB("video.fps60", m_settings.fps60);
+        m_settings.showPerf = doc.getB("video.show_perf", m_settings.showPerf);
     m_settings.windowW = doc.getI("video.window_w", m_settings.windowW);
     m_settings.windowH = doc.getI("video.window_h", m_settings.windowH);
     m_settings.forceBilinear = doc.getB("video.force_bilinear", m_settings.forceBilinear);
@@ -665,7 +693,7 @@ void PS2SettingsOverlay::preloadSettings()
     std::ifstream file(configPath);
     if (!file.is_open())
     {
-        // 0.x legacy INI: the launcher imports it and writes the TOML (dropping the old
+        // 0.x legacy INI: the front-end imports it and writes the TOML (dropping the old
         // file). Running the runner directly, just clear a stray leftover.
         const std::string legacy = s_configDir.empty()
             ? (std::filesystem::current_path() / kLegacyConfigFileName).string()
@@ -704,75 +732,70 @@ void PS2SettingsOverlay::preloadSettings()
 
 void PS2SettingsOverlay::saveSettings() const
 {
-    using ps2x_toml::fmtBool;
-    using ps2x_toml::fmtDbl;
-    using ps2x_toml::fmtInt;
-    using ps2x_toml::fmtIntArray;
-    using ps2x_toml::fmtStr;
+    // [settings] ONE writer for settings.toml: the front-end and this overlay both serialize
+    // through ps2x_settings, so the two cannot drift (the Qt launcher and this overlay did:
+    // the old launcher's `texcache` key was silently dropped every time a play session ended).
+    //
+    // Read-modify-write, and that is the part that matters. Default-constructing `out` made every
+    // key this overlay does not model snap back to its struct default on every save: video.gpu,
+    // and the whole [frontend] section, so the shell forgot the window size it was left at and
+    // the menu theme un-muted itself. Seeding from the file on disk carries those across, and also
+    // makes a key added later survive by default instead of needing a line here on day one.
+    ps2x_settings::Settings out;
+    ps2x_settings::loadFromFile(out, m_configPath);
 
-    std::ostringstream os;
-    os << kConfigHeader << "\n";
+    // The overlay's live values, in the shared module's own struct so the field names line up.
+    // device has no counterpart: the front-end has a single picker and P1 is what it writes.
+    ps2x_settings::Settings live;
+    live.master = m_settings.masterVolume;
+    live.music = m_settings.musicVolume;
+    live.sfx = m_settings.sfxVolume;
+    live.renderer = m_settings.renderer;
+    live.glow = m_settings.glow;
+    live.glowFix = m_settings.glowFix;
+    live.inkStrength = m_settings.inkStrength;
+    live.inkWidth = m_settings.inkWidth;
+    live.inkColor = m_settings.inkColor;
+    live.bilinear = m_settings.bilinear;
+    live.halfTexel = m_settings.halfTexel;
+    live.skipPost = m_settings.skipPost;
+    live.skipStaleVram = m_settings.skipStaleVram;
+    live.renderScale = m_settings.renderScale;
+    live.outline = m_settings.outline;
+    live.texPack = m_settings.texPack;
+    live.introVideo = m_settings.introVideo;
+    live.buttonLayout = m_settings.buttonLayout;
+    live.shadows = m_settings.shadows;
+    live.dofBlur = m_settings.dofBlur;
+    live.dofZFar = m_settings.dofZFar;
+    live.fullscreen = m_settings.fullscreen;
+    live.windowMode = m_settings.windowMode;
+    live.monitor = m_settings.monitor;
+    live.widescreen = m_settings.widescreen;
+    live.windowW = m_settings.windowW;
+    live.windowH = m_settings.windowH;
+    live.forceBilinear = m_settings.forceBilinear;
+    live.fps60 = m_settings.fps60;
+    live.showPerf = m_settings.showPerf;
+    live.hudLayout = m_settings.hudLayout;
+    live.hudOffL = m_settings.hudOffL;
+    live.hudOffC = m_settings.hudOffC;
+    live.hudOffR = m_settings.hudOffR;
+    live.device = deviceIndexForPlayer(0);   // [paddev] P1 (the front-end has one picker)
+    live.deadzone = m_settings.deadzone;
+    live.overlayEnabled = m_settings.overlayEnabled;
+    live.overlayPadBtns = ps2x_settings::formatIntCsv(m_settings.overlayPadBtns);
+    live.overlayKeys = ps2x_settings::formatIntCsv(m_settings.overlayKeys);
+    live.logLevel = m_settings.logLevel;
+    live.dumpAudio = m_dumpAudio;
+    live.dumpVideo = m_dumpVideo;
+    live.dumpControllers = m_dumpControllers;
+    live.dumpRuntime = m_dumpRuntime;
+    live.dumpGamepad = m_dumpGamepad;
 
-    os << "[audio]\n";
-    os << "master_volume = " << fmtDbl(m_settings.masterVolume) << "\n";
-    os << "music_volume = " << fmtDbl(m_settings.musicVolume) << "\n";
-    os << "sfx_volume = " << fmtDbl(m_settings.sfxVolume) << "\n\n";
+    ps2x_settings::applyOverlayValues(out, live, m_envLocked);
 
-    os << "[video]\n";
-    os << "renderer = " << fmtStr(rendererName(m_settings.renderer)) << "\n";
-    os << "glow = " << fmtBool(m_settings.glow) << "\n";
-    os << "glowfix = " << fmtBool(m_settings.glowFix) << "\n";
-    os << "ink_strength = " << fmtInt(m_settings.inkStrength) << "\n";
-    os << "ink_width = " << fmtInt(m_settings.inkWidth) << "\n";
-    os << "ink_color = " << fmtStr(colorToHex(m_settings.inkColor)) << "\n";
-    os << "bilinear = " << fmtBool(m_settings.bilinear) << "\n";
-    os << "halftexel = " << fmtBool(m_settings.halfTexel) << "\n";
-    os << "skippost = " << fmtBool(m_settings.skipPost) << "\n";
-    os << "skip_stale_vram = " << fmtBool(m_settings.skipStaleVram) << "\n";
-    os << "render_scale = " << fmtInt(m_settings.renderScale) << "\n";
-    os << "outline = " << fmtBool(m_settings.outline) << "\n";
-    os << "texture_pack = " << fmtBool(m_settings.texPack) << "\n";
-    os << "intro_video = " << fmtBool(m_settings.introVideo) << "\n";
-    os << "button_layout = " << fmtInt(m_settings.buttonLayout) << "\n";
-    os << "shadows = " << fmtBool(m_settings.shadows) << "\n";
-    os << "dof_blur = " << fmtBool(m_settings.dofBlur) << "\n";
-    os << "dof_zfar = " << fmtInt(m_settings.dofZFar) << "\n";
-    os << "fullscreen = " << fmtBool(m_settings.fullscreen) << "\n";
-    os << "widescreen = " << fmtBool(m_settings.widescreen) << "\n";
-    os << "window_w = " << fmtInt(m_settings.windowW) << "\n";
-    os << "window_h = " << fmtInt(m_settings.windowH) << "\n";
-    os << "force_bilinear = " << fmtBool(m_settings.forceBilinear) << "\n";
-    os << "window_mode = " << m_settings.windowMode << "\n";
-            os << "monitor = " << m_settings.monitor << "\n";
-            os << "fps60 = " << fmtBool(m_settings.fps60) << "\n\n";
-
-    os << "[video.hud]\n";
-    os << "layout = " << fmtInt(m_settings.hudLayout) << "\n";
-    os << "offset_left = " << fmtInt(m_settings.hudOffL) << "\n";
-    os << "offset_center = " << fmtInt(m_settings.hudOffC) << "\n";
-    os << "offset_right = " << fmtInt(m_settings.hudOffR) << "\n\n";
-
-    os << "[controllers]\n";
-    os << "device = " << fmtInt(deviceIndexForPlayer(0)) << "\n";   // [paddev] P1 (the launcher has one picker)
-    os << "deadzone = " << fmtDbl(m_settings.deadzone) << "\n";
-    os << "overlay_enabled = " << fmtBool(m_settings.overlayEnabled) << "\n\n";
-
-    os << "[controllers.hotkey]\n";
-    os << "pad_btns = " << fmtIntArray(m_settings.overlayPadBtns) << "\n";
-    os << "keys = " << fmtIntArray(m_settings.overlayKeys) << "\n\n";
-
-    os << "[logging]\n";
-    os << "log_level = " << fmtInt(m_settings.logLevel) << "\n";
-    os << "dump_audio = " << fmtBool(m_dumpAudio) << "\n";
-    os << "dump_video = " << fmtBool(m_dumpVideo) << "\n";
-    os << "dump_controllers = " << fmtBool(m_dumpControllers) << "\n";
-    os << "dump_runtime = " << fmtBool(m_dumpRuntime) << "\n";
-    os << "dump_gamepad = " << fmtBool(m_dumpGamepad) << "\n";
-
-    std::ofstream file(m_configPath, std::ios::trunc);
-    if (!file.is_open())
-        return;
-    file << os.str();
+    ps2x_settings::saveToFile(out, m_configPath);
 }
 
 void PS2SettingsOverlay::applyDeadzone()
@@ -822,6 +845,7 @@ void PS2SettingsOverlay::syncFromRuntime()
 void PS2SettingsOverlay::applySettings()
 {
     ps2Set60Fps(m_settings.fps60, nullptr);   // [fps60]
+    ps2x::SetPerfOverlayEnabled(m_settings.showPerf);   // [perf] arm the GPU timing queries at boot too
     s_widescreen = m_settings.widescreen;
     PS2AudioBackend::setMasterVolume(m_settings.masterVolume);
     PS2AudioBackend::setMusicVolume(m_settings.musicVolume);
@@ -1028,6 +1052,65 @@ void PS2SettingsOverlay::readGamepadStateForDevice(
     // Keyboard: no gamepad axes/buttons to read
 }
 
+void PS2SettingsOverlay::drawPerfHud()
+{
+    // [perf] Medidor de esquina, arriba a la derecha. Solo el numero de presents por segundo: es lo
+    // unico que se lee de un vistazo sin tapar nada. Lo demas (p50/p95, gpu, cpu) esta en la pestana
+    // Video, que se abre cuando uno quiere el detalle.
+    //
+    // El dato se actualiza una vez por segundo, asi que no tiene sentido cambiar el texto 60 veces
+    // por segundo. Se limita la ACTUALIZACION a 4 Hz, no el dibujado: una ventana de ImGui que no
+    // se abre un frame simplemente no existe ese frame, asi que throttlear con un return temprano
+    // la hacia parpadear. Se dibuja siempre, con el ultimo valor conocido.
+    static double s_lastShown = -1.0;
+    static float s_shownAt = -1.0f;
+
+    const ps2x::PerfStatus pf = ps2x::GetPerfStatus();
+    if (!pf.valid)
+        return;
+
+    const float now = ImGui::GetTime();
+    if (s_shownAt < 0.0f || now - s_shownAt >= 0.25f)
+    {
+        s_shownAt = now;
+        s_lastShown = pf.displayFps;
+    }
+
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    const float margin = ImGui::GetFontSize() * 0.75f;
+    // Pivote (1,0): la BORDE derecho de la ventana cae en el del viewport, asi el ancho variable de
+    // AlwaysAutoResize nunca la empuja fuera de la pantalla.
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - margin, vp->Pos.y + margin),
+                            ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+
+    // NoInputs es lo que garantiza que no se coma clics: sin eso la ventana se traga el raton en la
+    // esquina. NoDecoration quita borde, titulo y boton de cerrar.
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration
+                                 | ImGuiWindowFlags_NoInputs
+                                 | ImGuiWindowFlags_AlwaysAutoResize
+                                 | ImGuiWindowFlags_NoSavedSettings
+                                 | ImGuiWindowFlags_NoFocusOnAppearing;
+    if (!ImGui::Begin("##bt3_perf_hud", nullptr, flags))
+    {
+        ImGui::End();
+        return;
+    }
+
+    // Acento para el numero y apagado para la unidad, igual que el resto del panel.
+    ImGui::PushStyleColor(ImGuiCol_Text, accent());
+    ImGui::Text("%.1f", s_lastShown);
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0.0f, 3.0f);
+    ImGui::TextDisabled("fps");
+    if (pf.displayRefreshHz > 0)
+    {
+        ImGui::SameLine(0.0f, 6.0f);
+        ImGui::TextDisabled("/ %d Hz", pf.displayRefreshHz);
+    }
+
+    ImGui::End();
+}
+
 void PS2SettingsOverlay::draw(PS2Runtime &runtime)
 {
     if (!m_initialized)
@@ -1119,8 +1202,28 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
             m_animT = std::max(target, m_animT - step);
     }
 
+    // [perf] Rama propia para cuando el panel esta retraido, que es el estado normal. El HUD y el
+    // panel NUNCA coexisten, y por eso esto no necesita un segundo frame: UiBegin() hace
+    // ImGui::NewFrame() y UiEnd() hace ImGui::Render(), o sea que el par es un frame completo y
+    // solo puede haber uno por iteracion. La rama del panel de mas abajo queda intacta.
     if (m_animT <= 0.0001f)
+    {
+        if (!m_settings.showPerf)
+            return;
+        try
+        {
+            ps2x::gfx::UiBegin();
+            pushDbzTheme();
+            DbzThemeScope dbzTheme;   // pops all 40 style colours on scope exit
+            drawPerfHud();
+        }
+        catch (...)
+        {
+            // Misma politica que el panel: un fallo dibujando nunca debe matar el juego.
+        }
+        ps2x::gfx::UiEnd();
         return;
+    }
 
     const float animEase = overlayAnimEase(m_animT);
 
@@ -1135,6 +1238,12 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
 
         pushDbzTheme();
         DbzThemeScope dbzTheme;   // pops all 40 style colours on scope exit
+
+        // [perf] El HUD va ANTES del fade: ScopedStyleVar animAlpha tiene scope hasta el final del
+        // try, asi que cualquier ventana abierta despues heredaria la opacidad del panel y el medidor
+        // se desvaneceria con el. Acá va a opacidad completa siempre.
+        if (m_settings.showPerf)
+            drawPerfHud();
 
         // Fade the whole window (and the bindings popup, if open) in/out with the
         // deploy animation.
@@ -1347,6 +1456,80 @@ void PS2SettingsOverlay::drawVideoTab()
             vs.upscale == ps2x::VideoState::Ok ? "active"
           : vs.scaleNeedsRestart               ? "applies on restart"
                                                : "not available (software renderer)");
+
+        // [perf] Live frame pacing. The nominal refresh is already in hand from the Monitor row, and
+        // showing it NEXT TO the measured rate is the whole trick: a bare "60" is unreadable (vsync
+        // locked? or a coincidence?), while "59.8 / 60 Hz" says at a glance whether the present is
+        // being held to the panel's rate or is running free.
+        if (m_settings.showPerf)
+        {
+            const ps2x::PerfStatus pf = ps2x::GetPerfStatus();
+            if (!pf.valid)
+            {
+                std::snprintf(val, sizeof val, "waiting for the first frame");
+                dot(ps2x::VideoState::Fallback, "FPS", val, "");
+            }
+            else
+            {
+                std::snprintf(val, sizeof val, "%.1f", pf.displayFps);
+                std::snprintf(note, sizeof note, "%s",
+                              pf.displayRefreshHz > 0 ? "" : "  (monitor refresh unknown)");
+                if (pf.displayRefreshHz > 0)
+                    std::snprintf(note, sizeof note, "de %d Hz", pf.displayRefreshHz);
+                dot(ps2x::VideoState::Ok, "FPS", val, note);
+
+                // p50 alone hides stutter completely: a mean of 16.7 can be all 16 ms frames plus
+                // one 80 ms hitch, which is exactly what the 60fps patch and the Windows
+                // micro-freezes look like. p95 is the frame that actually happened.
+                std::snprintf(val, sizeof val, "%.1f / %.1f / %.1f ms",
+                              static_cast<double>(pf.frameMsP50), static_cast<double>(pf.frameMsP95),
+                              static_cast<double>(pf.frameMsMax));
+                std::snprintf(note, sizeof note, "p50 / p95 / max  de %d frames", pf.frameSamples);
+                dot(pf.frameMsP95 > 1000.0 / 45.0 ? ps2x::VideoState::Fallback : ps2x::VideoState::Ok,
+                    "Frame", val, note);
+
+                // The GPU line names its own source and coverage. Without that, a 0 here is
+                // unreadable -- it used to mean "not measured" on two of the three backends.
+                const bool noGpu = pf.gpuSource == ps2x::GpuSource::SoftwareCpu
+                                || pf.gpuSource == ps2x::GpuSource::None;
+                if (noGpu)
+                {
+                    std::snprintf(val, sizeof val, "n/d");
+                    std::snprintf(note, sizeof note, "%s",
+                                  pf.gpuSource == ps2x::GpuSource::SoftwareCpu
+                                      ? "rasterized by CPU, there is no GPU to measure"
+                                      : "the renderer reports no GPU timings");
+                    dot(ps2x::VideoState::Fail, "GPU", val, note);
+                }
+                else if (!pf.gpuMeasured())
+                {
+                    // The backend is live but collected nothing this window. Measured live: three
+                    // windows in a row went 61% -> 0.65% -> 0.61% only because the guest stopped
+                    // issuing draw lists. A 0% here would read as an idle GPU, which is the opposite
+                    // of the truth, so say what actually happened.
+                    std::snprintf(val, sizeof val, "no samples");
+                    std::snprintf(note, sizeof note, "the game emitted no draw list in this second");
+                    dot(ps2x::VideoState::Fallback, "GPU", val, note);
+                }
+                else
+                {
+                    std::snprintf(val, sizeof val, "%.0f %%", pf.gpuBusyPct);
+                    const char *src = pf.gpuSource == ps2x::GpuSource::VulkanTimestamps ? "Vulkan, frame completo"
+                                    : pf.gpuSource == ps2x::GpuSource::OpenGL ? "OpenGL" : "?";
+                    if (pf.gpuCoverage >= 1.0)
+                        std::snprintf(note, sizeof note, "%s  -  %.1f ms/frame, %d muestras", src, pf.gpuMsPerFrame, pf.gpuSamples);
+                    else
+                        std::snprintf(note, sizeof note,
+                                      "%s, draw-list only: it is a minimum  -  %.1f ms/frame, %d samples",
+                                      src, pf.gpuMsPerFrame, pf.gpuSamples);
+                    dot(ps2x::VideoState::Ok, "GPU", val, note);
+                }
+
+                std::snprintf(val, sizeof val, "invitado %.0f %%  submit %.0f %%", pf.guestPct, pf.submitPct);
+                std::snprintf(note, sizeof note, "of CPU time, over the real time");
+                dot(ps2x::VideoState::Ok, "CPU", val, note);
+            }
+        }
     }
 
     // [display] Display settings live in a popup so the tab stays short. Apply = live only; Save = live
@@ -1438,6 +1621,13 @@ void PS2SettingsOverlay::drawVideoTab()
             ps2Set60Fps(m_settings.fps60, nullptr);
             m_dirty = true;
         }
+        // [perf] Toggling this also arms the runtime, which is what turns the GPU timing queries on:
+        // they are not free, so nothing should pay for them unless someone is reading the numbers.
+        if (toggleSwitch("FPS meter (corner)", &m_settings.showPerf))
+        {
+            ps2x::SetPerfOverlayEnabled(m_settings.showPerf);
+            m_dirty = true;
+        }
         if (toggleSwitch("Character Shadows", &m_settings.shadows))
             m_dirty = true;
         if (toggleSwitch("Depth-of-Field Blur", &m_settings.dofBlur))
@@ -1502,11 +1692,11 @@ void PS2SettingsOverlay::drawVideoTab()
                 ImGui::TextColored(ImVec4(0.97f, 0.32f, 0.29f, 1.0f), "*");
                 ImGui::SameLine(0.0f, 8.0f);
                 ImGui::TextUnformatted("No texture pack indexed");
-                ImGui::TextDisabled("Install one from the launcher (Misc tab) or set PS2X_TEXREPLACE=<dir>.");
+                ImGui::TextDisabled("Install one from the front-end (Misc tab) or set PS2X_TEXREPLACE=<dir>.");
             }
             ImGui::Separator();
             if (!havePack) ImGui::BeginDisabled();
-            if (toggleSwitch("Video overlay (4K intro)", &m_settings.introVideo))
+            if (toggleSwitch("4K intro video", &m_settings.introVideo))
                 m_dirty = true;
             ImGui::TextDisabled("Video overlay replaces the opening movie; applies on restart.");
             ImGui::Spacing();
@@ -2125,7 +2315,7 @@ void PS2SettingsOverlay::drawBindingsPopup()
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, dbz(1.00f, 0.62f, 0.10f, 0.30f));
         if (ImGui::Button("Close", ImVec2(100, 30)))
         {   // [noapply] closing the popup saves: settings + per-action bindings (pad.conf), so bindings
-            // edited here survive a restart and reach the Qt launcher's Bindings tab.
+            // edited here survive a restart and reach the front-end's Bindings tab.
             m_showBindingsPopup = false;
             applySettings();
             saveSettings();
@@ -2303,7 +2493,7 @@ void PS2SettingsOverlay::drawAboutTab()
     ImGui::TextWrapped("z3xox - owner / lead developer");
     ImGui::TextDisabled("  recompiler, runtime (EE/GS/VU1/scheduler), renderer, game overrides, generators");
     ImGui::TextWrapped("RexxColder - supporter / colaborador");
-    ImGui::TextDisabled("  optimizacion (perf/async), launcher + install wizard, input & gamepads, "
+    ImGui::TextDisabled("  optimizacion (perf/async), front-end + install wizard, input & gamepads, "
                         "build/release, deploy, game-data (AFS/AFL), docs");
     ImGui::TextWrapped("valenvivaldi - colaborador");
     ImGui::TextDisabled("  port macOS arm64, packaging, audio");

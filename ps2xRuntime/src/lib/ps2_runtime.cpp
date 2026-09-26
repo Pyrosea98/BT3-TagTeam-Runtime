@@ -2,7 +2,8 @@
 #include "runtime/ps2_guestprof.h"
 #include "runtime/ps2_fiber.h"   // [fibers]
 #include <deque>
-#include "runtime/ps2_netplay.h" // [rollback] the netplay controller
+#include "runtime/ps2_netplay.h"
+#include "runtime/ps2x_injected.h"   // [injected] function registry for cloned guest code // [rollback] the netplay controller
 #include "runtime/ps2_statesync.h"   // [statesync] portable snapshot forms
 extern std::atomic<uint64_t> g_bt3FrameCount;   // game_overrides.cpp: the frame hook's counter
 extern "C" bool ps2xFrameStepOn();               // frame-stepped mode (defined with the frame gate below)
@@ -22,11 +23,11 @@ extern "C" int ps2xSchedTraceOn();               // PS2X_SCHEDTRACE window (defi
 #endif
 #include "ps2_host_window.h"   // [B] native window handle (SDL returns SDL_Window*, not the HWND)
 #include "runtime/ps2_texreplace.h"   // [texreplace]
-#include "runtime/ps2_texcache.h"     // [texcache]
 #include "runtime/ps2_coverage.h"     // [coverage]
 #include "runtime/ps2_iop_module.h"   // [r3000] IRX loader
-#include "runtime/ps2_toml.h"         // [texcache] settings.toml
+#include "runtime/ps2_toml.h"         // settings.toml
 #include "runtime/ps2_video_status.h"   // [video] the Video-tab status the overlay polls
+#include "runtime/ps2x_perf_status.h"   // [perf] the fps / frame-time / GPU-busy readout
 #include "runtime/ps2_toml.h"   // [winmode] startup read of [video] window_mode / monitor
 #include "runtime/ps2_fmv_override.h"  // [fmvoverride]
 #include <filesystem>
@@ -45,6 +46,7 @@ extern "C" int ps2xSchedTraceOn();               // PS2X_SCHEDTRACE window (defi
 #include "game_overrides.h"
 #include "Kernel/Stubs/Pad.h"        // [hstate]/[fightprobe]: ps2_stubs::getPadDebugSnapshot()
 #include "Kernel/Stubs/MemoryCard.h" // [hstate]: ps2_stubs::getMemoryCardDebugSnapshot()
+#include "Kernel/Syscalls/Helpers/Path.h" // [r3000] getConfiguredCdRoot() for the IRX paths
 #include "ps2_runtime_macros.h"
 #include "runtime/ps2_gs_gpu.h"
 #include "runtime/ps2_gs_gpu_renderer.h"
@@ -340,7 +342,7 @@ namespace ps2_syscalls { bool bt3WakeThreadByEntry(uint32_t entry); }
 #include <unordered_set>
 #include <mutex>
 #include <sstream>
-extern "C" double ps2xGpuMsTake(uint64_t *calls);
+    extern "C" double ps2xGpuMsTake(uint64_t *calls, uint64_t *dropped);
 extern "C" void ps2xEeProfAddCurrentThread(const char *name);   // [eeprof]   // [gputime] ps2_gs_gpu_renderer.cpp
 
 // BT3 debug tracing: extremely verbose ([main-pc] etc.). Off unless PS2X_TRACE=1.
@@ -1390,11 +1392,11 @@ PS2Runtime::~PS2Runtime()
     }
     catch (const std::exception &e)
     {
-        std::cerr << "[~PS2Runtime] cleanup exception: " << e.what() << std::endl;
+        std::cerr << "[~BTRuntime] cleanup exception: " << e.what() << std::endl;
     }
     catch (...)
     {
-        std::cerr << "[~PS2Runtime] cleanup exception: unknown" << std::endl;
+        std::cerr << "[~BTRuntime] cleanup exception: unknown" << std::endl;
     }
 }
 
@@ -1495,7 +1497,7 @@ bool PS2Runtime::initialize(const char *title)
             if (v && v[0] && v[0] != '0') bt3SetConfigFlags(FLAG_VSYNC_HINT);
         }
         // [winmode] Window mode / monitor / window size come from settings.toml [video] -- the same keys
-        // the launcher and the overlay write (window_mode, monitor, window_w, window_h). Windowed (0) is
+        // the front-end and the overlay write (window_mode, monitor, window_w, window_h). Windowed (0) is
         // resizable AND decorated: it used to come up fixed and without a title bar, which left no way to
         // move or resize the window. Borderless (1) fills the chosen monitor with no chrome; fullscreen
         // (2) uses the monitor's own mode. PS2X_WINDOW_MODE / PS2X_MONITOR / PS2X_WINDOW_W / PS2X_WINDOW_H
@@ -1573,7 +1575,7 @@ bool PS2Runtime::initialize(const char *title)
                 bt3SetWindowSize(hostWinW, hostWinH);   // moving monitors can leave the window fitted
         }
         _mark("window+monitor");
-        // [icon] Carry the launcher's icon onto the runner window. Same asset
+        // [icon] Carry the app icon onto the runner window. Same asset
         // convention as the overlay font (<exeDir>/assets/icon.png); exeDir is
         // PS2X_EXEDIR (deploy root) else the executable's own directory.
         // raylib's bt3SetWindowIcon must be called on a live (hidden) window.
@@ -1665,42 +1667,8 @@ bool PS2Runtime::initialize(const char *title)
             // extracted ISO tree; the folder is created if absent.)
             ps2tex::replacementsEnabled();
         }
-        ps2cov::init();   // [coverage] PS2X_COVERAGE: capture interpreter fallbacks
-        {   // [texcache] Persistent write-back texture cache: configure + load at startup. Filled by
-            // the write-back hook in putTexture (the FINAL payload: decode + pack replacement).
-            const char *xd = ps2xExeDirC();
-            const std::string base = (xd && xd[0]) ? xd : ".";
-            // Read the toggles that change WHAT the cache contains: texture_pack (originals vs
-            // replaced) and button_layout. They go into packHash so a change invalidates the file,
-            // otherwise a cache built with the pack OFF would keep serving originals after enabling.
-            bool tcEnabled = true, packOn = false;
-            int btnLayout = 1;
-            {
-                std::ifstream f(base + "/savedata/settings.toml");
-                if (f.is_open())
-                {
-                    ps2x_toml::Document doc; doc.parse(f);
-                    tcEnabled = doc.getB("video.texcache", true);
-                    packOn = doc.getB("video.texture_pack", false);
-                    btnLayout = doc.getI("video.button_layout", 1);
-                }
-            }
-            if (const char *v = std::getenv("PS2X_TEXCACHE_ON"); v && v[0] == '0') tcEnabled = false;
-            uint64_t packHash = 1469598103934665603ull;
-            for (const char *p = ps2tex::replacementsRoot(); p && *p; ++p)
-                packHash = (packHash ^ (uint8_t)*p) * 1099511628211ull;
-            packHash ^= (uint64_t)ps2tex::replacementsCount();
-            packHash ^= packOn ? 0x9E3779B97F4A7C15ull : 0ull;
-            packHash ^= (uint64_t)(uint32_t)btnLayout * 0xC2B2AE3D27D4EB4Full;
-            uint64_t dataHash = 1469598103934665603ull;
-            for (const char *p = base.c_str(); p && *p; ++p)
-                dataHash = (dataHash ^ (uint8_t)*p) * 1099511628211ull;
-            const std::string tcPath = base + "/data/texcache.bin";
-            ps2texcache::setConfig(tcEnabled, packHash, dataHash, tcPath.c_str());
-            ps2texcache::load();
-        }
-        _mark("texcache");
-        {   // [fps60] PS2X_FPS60=1: enable the 60-fps fight mode from the env (loads fps60_sites.txt,
+    ps2cov::init();   // [coverage] PS2X_COVERAGE: capture interpreter fallbacks
+    {   // [fps60] PS2X_FPS60=1: enable the 60-fps fight mode from the env (loads fps60_sites.txt,
             // staged next to the runner). Lets the perf A/B be run without touching settings.toml.
             const char *f60 = std::getenv("PS2X_FPS60");
             if (f60 && f60[0] && f60[0] != '0') ps2Set60Fps(true, nullptr);
@@ -1786,11 +1754,11 @@ bool PS2Runtime::initialize(const char *title)
     }
     catch (const std::exception &e)
     {
-        std::cerr << "Failed to initialize PS2 runtime: " << e.what() << std::endl;
+        std::cerr << "Failed to initialize BT3 runtime: " << e.what() << std::endl;
     }
     catch (...)
     {
-        std::cerr << "Failed to initialize PS2 runtime: unknown exception" << std::endl;
+        std::cerr << "Failed to initialize BT3 runtime: unknown exception" << std::endl;
     }
 
     return false;
@@ -2255,6 +2223,16 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
     // (out-of-code, e.g. stack-address) target appears, we can name where it came from.
     static thread_local uint32_t s_lastValidDispatch = 0;
     static thread_local uint32_t s_prevValidDispatch = 0;
+
+    // [injected] Code we bring ourselves (e.g. a cloned game module) MUST win over the generated
+    // tables: those are dense, so an address with no real code still has a slot -- and it can hold
+    // a placeholder. Checked first for that reason.
+    if (RecompiledFunction fn = ps2x_injected::find(address))
+    {
+        s_prevValidDispatch = s_lastValidDispatch;
+        s_lastValidDispatch = address;
+        return fn;
+    }
 
     if (RecompiledFunction fn = lookupGeneratedFunction(address))
     {
@@ -3219,6 +3197,40 @@ bool PS2Runtime::dispatchIopBranch(uint8_t *rdram, R5900Context *ctx, uint32_t t
 }
 
 // [r3000] Load an IRX at the next IOP base, register its recompiled functions and run its entry.
+std::string PS2Runtime::resolveIopModulePath(const std::string &fileName)
+{
+    if (fileName.empty())
+        return {};
+
+    // PS2X_IOP_DIR wins outright, exactly as before.
+    if (const char *d = std::getenv("PS2X_IOP_DIR"); d && d[0])
+    {
+        std::error_code dirEc;
+        std::filesystem::path p(d);
+        if (std::filesystem::is_directory(p, dirEc))
+            p /= fileName;
+        return p.lexically_normal().string();
+    }
+
+    // The guest names the module, the install does not have to. The CD root IS data/, so
+    // <cdRoot>/IRX/<mod> is the disc layout and <cdRoot>/<mod> the flat one. Anchored to the CD
+    // root, not the process directory, so PS2X_EXEDIR and a launch from another folder still
+    // find the modules.
+    const std::filesystem::path cd = getConfiguredCdRoot();
+    const std::filesystem::path inIrx = cd / "IRX" / fileName;
+    std::error_code ec;
+    if (std::filesystem::exists(inIrx, ec))
+        return inIrx.lexically_normal().string();
+    const std::filesystem::path flat = cd / fileName;
+    ec.clear();
+    if (std::filesystem::exists(flat, ec))
+        return flat.lexically_normal().string();
+
+    // Nothing on disk. Hand back the disc-layout path so the log names the place that was
+    // looked for, and the HLE path stays in charge.
+    return inIrx.lexically_normal().string();
+}
+
 bool PS2Runtime::loadAndRunIopModule(const char *path)
 {
     if (!path || !path[0])
@@ -3774,6 +3786,15 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
 {
     t_bjCtx = ctx; t_bjRdram = rdram;   // [thunkwatch] for the [badjump] slot dump
     ctx->pc = targetPc;
+    // [DIAG] temporary: is our injected address even reaching the branch dispatcher?
+    if (targetPc >= 0x00D00000u && targetPc < 0x00E00000u)
+    {
+        static std::atomic<int> s_dn{0};
+        if (s_dn.fetch_add(1) < 10)
+            std::fprintf(stderr, "[DIAG] branch to 0x%08x kind=%d hasFn=%d inj=%d\n",
+                         targetPc, (int)kind, hasFunction(targetPc) ? 1 : 0,
+                         ps2x_injected::find(targetPc) ? 1 : 0);
+    }
     const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
 
     // SUPER-TRACE tap (PS2X_SUPERTRACE + F10): see the rig above dispatchGuestBranch.
@@ -4422,7 +4443,11 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
 
     if (kind == GuestBranchKind::Return)
     {
-        if (!hasFunction(targetPc))
+    // [injected] Addresses we bring ourselves (a cloned game module, see runtime/ps2x_injected.h)
+    // are NOT in the generated tables, so without this they would fall into the missing-function
+    // policy below and the generated code would just continue past the branch. Treat them as
+    // present so the normal path invokes them via lookupFunction().
+    if (!hasFunction(targetPc) && !ps2x_injected::find(targetPc))
         {
             reportMissingFunction(rdram, ctx, targetPc, sourcePc, kind, debugName);
         }
@@ -4447,10 +4472,12 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
         return ctx->pc == fallthroughPc;
     }
 
-    if (!hasFunction(targetPc))
+    // [injected] Treat addresses we bring ourselves (a cloned game module, see
+    // runtime/ps2x_injected.h) as PRESENT here too: they are not in the generated tables, so
+    // without this the branch falls into the missing-function policy and never invokes them.
+    if (!hasFunction(targetPc) && !ps2x_injected::find(targetPc))
     {
         // Interpreter fallback for dynamically-loaded (overlay) code: if this is
-        // a call into a RAM address that holds plausible code, interpret it until
         // it returns to the recompiled caller (fallthroughPc).
         if (isCall && rdram)
         {
@@ -4511,6 +4538,8 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
         for (uint32_t a : s_mainCalls) if (a == targetPc) { traceThis = true; break; }
     if (traceThis)
         std::cerr << "[m>] 0x" << std::hex << targetPc << std::dec << std::endl;
+    if (targetPc >= 0x00D00000u && targetPc < 0x00E00000u)
+        std::fprintf(stderr, "[DIAG] invoking 0x%08x fn=%p pc=0x%x ra=0x%x\n", targetPc, (void *)targetFn, ctx->pc, static_cast<uint32_t>(_mm_extract_epi32(ctx->r[31], 0)));
     targetFn(rdram, ctx, this);
     if (traceThis)
         std::cerr << "[m<] 0x" << std::hex << targetPc << " ret pc=0x" << ctx->pc << std::dec << std::endl;
@@ -7381,6 +7410,171 @@ void PS2Runtime::run()
                     g_bt3StateLive.store(st, std::memory_order_relaxed);
                 }
             }
+            {   // [bt3state] Report the human-readable screen the player is in, once per transition:
+                //   [bt3state] 0x3e OPTIONS (was 0x04 MAIN_MENU)
+                //   [bt3state] 0x26 DUEL_MENU vs=1P_VS_CPU type=SINGLE dp=? (init)
+                // Names come from the retail main-menu order crossed with the reverse-engineered
+                // entry tables (menu jump table at 0x3B1100 -> per-row handler -> target state;
+                // see docs/MAIN-MENU.md). States with a '?' are provisional: verify by detonating
+                // them with PS2X_MENU_JUMP=<decimal state>.
+                // PS2X_STATE_NAMES=0 silences it.
+                static const bool s_stateNames = [](){
+                    const char *v = std::getenv("PS2X_STATE_NAMES");
+                    return !(v && v[0] && v[0] == '0');
+                }();
+                if (s_stateNames)
+                {
+                    static const auto stateName = [](uint32_t s) -> const char* {
+                        switch (s)
+                        {
+                        case 0x01u: return "BOOT";
+                        case 0x04u: return "MAIN_MENU";
+                        case 0x06u: return "LOADING";
+                        case 0x0Du: return "ULTIMATE_BATTLE";
+                        case 0x21u: return "DRAGON_WORLD_TOUR";
+                        case 0x26u: return "DUEL_MENU";
+                        case 0x27u: return "CHARACTER_SELECT";
+                        case 0x28u: return "PREFIGHT_SETUP(0x28)";
+                        case 0x29u: return "PREFIGHT_SETUP(0x29)";
+                        case 0x2Cu: return "ULTIMATE_TRAINING";
+                        case 0x2Du: return "IN_FIGHT";
+                        case 0x30u: return "EVOLUTION_Z";
+                        case 0x35u: return "DATA_CENTER";
+                        case 0x38u: return "POST_FIGHT";
+                        case 0x3Cu: return "CHARACTER_REFERENCE";
+                        case 0x3Eu: return "OPTIONS";
+                        case 0x46u: return "EXTRA(0x46)?";
+                        default:    return nullptr;
+                        }
+                    };
+                    // Duel setup sub-type (the "type inside the state"): read live from the duel
+                    // object [0x3b38e8] -- +0x110 opponent mode, +0x114 battle type, +0x118 DP limit.
+                    static const auto duelSub = [](uint32_t s, const uint8_t *rd, uint32_t &vs, uint32_t &type, uint32_t &dp) -> std::string {
+                        vs = type = dp = 0xffffffffu;
+                        if (!(s == 0x26u || s == 0x27u || s == 0x28u || s == 0x29u)) return std::string();
+                        uint32_t d = 0u;
+                        std::memcpy(&d, rd + (0x3b38e8u & PS2_RAM_MASK), 4);
+                        d &= 0x1FFFFFFFu;
+                        if (!d) return std::string(" (duelObj not up)");
+                        std::memcpy(&vs,   rd + ((d + 0x110u) & PS2_RAM_MASK), 4);
+                        std::memcpy(&type, rd + ((d + 0x114u) & PS2_RAM_MASK), 4);
+                        std::memcpy(&dp,   rd + ((d + 0x118u) & PS2_RAM_MASK), 4);
+                        // Duel decode (measured from a full capture, see dumps/duel_*):
+                        //   +0x110 vs   : 0=1P vs CPU, 1=1P vs 2P, 2=CPU vs CPU, 3=Battle Settings
+                        //   +0x114 type : 0=Single, 1=Team, 2=DP
+                        //   +0x118 dp   : DP variant when type==2 -- 0=10, 1=15, 2=20
+                        // The five combat subtypes are therefore SINGLE, TEAM, DP10, DP15, DP20.
+                        static const char *kV[4] = { "1P_VS_CPU", "1P_VS_2P", "CPU_VS_CPU", "BATTLE_SETTINGS" };
+                        static const char *kT[3] = { "SINGLE", "TEAM", "DP" };
+                        static const char *kDp[3] = { "DP10", "DP15", "DP20" };
+                        std::ostringstream o;
+                        o << " vs=";
+                        if (vs < 4u) o << kV[vs]; else o << "0x" << std::hex << vs << std::dec;
+                        o << " type=";
+                        if (type < 3u) o << kT[type]; else o << "0x" << std::hex << type << std::dec;
+                        o << " subtype=";
+                        if (type == 0u)      o << "SINGLE";
+                        else if (type == 1u) o << "TEAM";
+                        else if (type == 2u) o << (dp < 3u ? kDp[dp] : "DP") << '(' << dp << ')';
+                        else                 o << '?';
+                        o << " dp=";
+                        if (dp <= 100u) o << dp; else o << "0x" << std::hex << dp << std::dec;
+                        return o.str();
+                    };
+                    static uint32_t s_prevState = 0xffffffffu;
+                    if (const uint8_t *rd = m_memory.getRDRAM())
+                    {
+                        uint32_t p = 0u, st = 0xffffffffu;
+                        std::memcpy(&p, rd + (0x2ff10cu & PS2_RAM_MASK), 4);
+                        if (p) std::memcpy(&st, rd + (((p & 0x1FFFFFFFu) + 0x18u) & PS2_RAM_MASK), 4);
+                        if (st != 0xffffffffu && st != s_prevState)
+                        {
+                            const char *nm = stateName(st);
+                            std::ostringstream o;
+                            o << "[bt3state] 0x" << std::hex << st << std::dec << ' ' << (nm ? nm : "UNKNOWN");
+                            if (s_prevState != 0xffffffffu)
+                            {
+                                const char *pm = stateName(s_prevState);
+                                o << " (was 0x" << std::hex << s_prevState << std::dec << ' '
+                                  << (pm ? pm : "UNKNOWN") << ')';
+                            }
+                            uint32_t vs = 0u, type = 0u, dp = 0u;
+                            o << duelSub(st, rd, vs, type, dp);
+                            std::fprintf(stderr, "%s\n", o.str().c_str());
+                            s_prevState = st;
+                        }
+                    }
+                }
+            }
+            {   // [bt3cursor] Inside the main menu (0x04): report which entry the cursor is pointing at
+                // and where that entry goes, using the game's own formula (0x33643C..0x33648C):
+                //   row   = (menuObj+0x10C + menuObj+0x148 + 1) % menuObj+0x144
+                //   idx   = *(menuObj + 0x118 + 4*row)          (0..10, the jump-table index)
+                //   entry = 0x3B1100 + 4*idx                    (jump table, RAM)
+                //   handler = *(entry)                          (the per-row confirm handler)
+                // so the line is exactly the pointer/handler the game would use on confirm:
+                //   [bt3cursor] row=3 idx=3 entry=0x3B110C handler=0x3364E0 target=0x26 Duel (verified)
+                // PS2X_STATE_NAMES=0 silences it (shared switch with [bt3state]).
+                static const bool s_cursor = [](){
+                    const char *v = std::getenv("PS2X_STATE_NAMES");
+                    return !(v && v[0] && v[0] == '0');
+                }();
+                if (s_cursor)
+                {
+                    static const char *kRowName[11] = {
+                        "Dragon History?", "Ultimate Battle?", "Dragon World Tour?", "Duel (verified)",
+                        "Network Battle (hidden, no state)", "Evolution Z?", "Ultimate Training?",
+                        "Data Center?", "Character Reference?", "Options?", "Extra 0x46?" };
+                    static const uint32_t kRowState[11] = {
+                        0x06u, 0x0Du, 0x21u, 0x26u, 0xFFFFFFFFu, 0x30u, 0x2Cu, 0x35u, 0x3Cu, 0x3Eu, 0x46u };
+                    static uint32_t s_row = 0xffffffffu, s_idx = 0xffffffffu;
+                    if (const uint8_t *rd = m_memory.getRDRAM())
+                    {
+                        uint32_t p = 0u, st = 0xffffffffu;
+                        std::memcpy(&p, rd + (0x2ff10cu & PS2_RAM_MASK), 4);
+                        if (p) std::memcpy(&st, rd + (((p & 0x1FFFFFFFu) + 0x18u) & PS2_RAM_MASK), 4);
+                        if (st == 0x04u)
+                        {
+                            uint32_t mo = 0u;
+                            std::memcpy(&mo, rd + (0x3b0e80u & PS2_RAM_MASK), 4);
+                            mo &= 0x1FFFFFFFu;
+                            if (mo)
+                            {
+                                auto r32 = [&](uint32_t a) -> uint32_t {
+                                    uint32_t v = 0; std::memcpy(&v, rd + (a & PS2_RAM_MASK), 4); return v; };
+                                const uint32_t base  = r32(mo + 0x10Cu);
+                                const uint32_t cur   = r32(mo + 0x148u);
+                                const uint32_t count = r32(mo + 0x144u);
+                                if (count)
+                                {
+                                    const uint32_t row = (base + cur + 1u) % count;
+                                    const uint32_t idx = r32(mo + 0x118u + 4u * row);
+                                    if (row != s_row || idx != s_idx)
+                                    {
+                                        s_row = row; s_idx = idx;
+                                        const uint32_t entryAddr = 0x3B1100u + 4u * idx;
+                                        uint32_t handler = 0u;
+                                        if (idx < 0x100u) std::memcpy(&handler, rd + (entryAddr & PS2_RAM_MASK), 4);
+                                        std::ostringstream o;
+                                        o << "[bt3cursor] row=" << row << " idx=" << idx
+                                          << " entry=0x" << std::hex << entryAddr
+                                          << " handler=0x" << handler;
+                                        if (idx < 11u)
+                                        {
+                                            if (kRowState[idx] != 0xFFFFFFFFu)
+                                                o << " target=0x" << kRowState[idx];
+                                            o << " " << kRowName[idx];
+                                        }
+                                        o << std::dec << " sel=0x" << std::hex << (p ? r32(p + 0x2Cu) : 0u)
+                                          << std::dec;
+                                        std::fprintf(stderr, "%s\n", o.str().c_str());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             {   // [movprobe] PS2X_MOVIEPROBE=1: log the movie state block (0x00301048) and
                 // g_ps2FmvActive on every change, every heartbeat (bit3 = finished/skipped).
                 static const bool s_mp = [](){ const char *v = std::getenv("PS2X_MOVIEPROBE"); return v && v[0] && v[0] != '0'; }();
@@ -7437,19 +7631,6 @@ void PS2Runtime::run()
                                   std::memcpy(rw + (0x333990u & PS2_RAM_MASK), &tri, 4); }
                     }
 
-                    // [dragonnet] PS2X_ENABLE_DRAGONNET=1: the main menu's hidden DRAGON_NET
-                    // entry (index 4) is navigable but its State-4 CONFIRM_ACCEPT gate
-                    // checks flags at 0x330000 + 4*448 + 0x398C = 0x33408C for bits 0x600;
-                    // nothing ever writes them (overlay BSS) so the confirm is always
-                    // skipped and X on the entry does nothing. Stamp the bits each
-                    // heartbeat so the gate starts passing.
-                    static const bool s_dragonNet = [](){ const char *v=std::getenv("PS2X_ENABLE_DRAGONNET"); return v&&v[0]&&v[0]!='0'; }();
-                    if (s_dragonNet)
-                    {
-                        uint8_t *rw = m_memory.getRDRAM();
-                        uint32_t flags6 = 0x600u;
-                        if (rw) { std::memcpy(rw + (0x33408cu & PS2_RAM_MASK), &flags6, 4); }
-                    }
                     // Intro auto-advance timer: *(*(0x3b0eb8)+0xc4) counts to 0x708.
                     uint32_t p = 0u;
                     std::memcpy(&p, rd + (0x3b0eb8u & PS2_RAM_MASK), 4);
@@ -7628,7 +7809,7 @@ void PS2Runtime::run()
                                 o << std::dec;
                             }
                         }
-                        std::cerr << o.str() << std::endl;
+                        std::fprintf(stderr, "%s\n", o.str().c_str());
                     }
                 }
                 // ===================== [menuhex] Main menu state =====================
@@ -7821,6 +8002,24 @@ void PS2Runtime::run()
         // GPU mode: render the recorded GS command list into the FBO and present that
         // (its texture is bottom-up, so flip Y). Software mode: upload guest VRAM.
         const bool gpuMode = GsGpuRenderer::enabled();
+        {   // [perf] Declare what the GPU column is going to MEASURE, before anything reports a
+            // number. This is the whole point of the field: the three backends cannot measure the
+            // same thing, and a percentage with no source is a number nobody can act on.
+            //   - OpenGL: GL_TIME_ELAPSED spans renderAndGetTextureId only. Composite, ImGui and the
+            //     present happen later and on the runtime's thread, not the GL context's, so
+            //     widening it would mean moving the query across threads. Reported as a lower bound.
+            //   - paraLLEl-GS: its own GPU timestamps, which DO bracket the scanout and the readback.
+            //   - Software: no GPU. Say so, instead of printing 0% and letting it read as "idle".
+            if (!gpuMode)
+                ps2x::PerfSetGpuSource(ps2x::GpuSource::SoftwareCpu, ps2x::GpuQuality::CpuOnly);
+#if defined(PS2X_HAVE_PGS)
+            else if (ps2x_pgs::enabled())
+                ps2x::PerfSetGpuSource(ps2x::GpuSource::VulkanTimestamps, ps2x::GpuQuality::FullFrame);
+#endif
+            else
+                ps2x::PerfSetGpuSource(ps2x::GpuSource::OpenGL, ps2x::GpuQuality::DrawListOnly);
+            ps2x::PerfSetRefreshHz(bt3GetMonitorRefreshRate(bt3GetCurrentMonitor()));
+        }
 #if !defined(PLATFORM_VITA)
         {   // [truews] aspect-aware TRUE widescreen. Generalizes the community 16:9 hack
             // (SLUS-21678_428113C2.pnach: FOV floats @2fe4cc/@2fe594 x4/3, lui 0.75->0.5625
@@ -8242,6 +8441,13 @@ void PS2Runtime::run()
             }
             else if (m_debugUiInitialized && m_debugUiDrawCallback)
                 m_debugUiDrawCallback(*this, m_debugUiUserData);   // overlay via imgui_impl_dx11
+            {   // [perf] Same present-to-present tick as the GL path below, for the D3D11 present.
+                static std::chrono::steady_clock::time_point s_perfPrevPresentD3{};
+                const auto perfNow = std::chrono::steady_clock::now();
+                if (s_perfPrevPresentD3.time_since_epoch().count() != 0)
+                    ps2x::PerfTick(std::chrono::duration<double>(perfNow - s_perfPrevPresentD3).count());
+                s_perfPrevPresentD3 = perfNow;
+            }
             g_ps2xD3D11.EndFrame();
         }
         else
@@ -8535,6 +8741,19 @@ void PS2Runtime::run()
                 }
             }
             const auto tP0 = std::chrono::steady_clock::now();
+            // [perf] Present-to-present interval, which is what "display fps" means here: the delta
+            // between consecutive presents, NOT the duration of this one. The difference matters --
+            // a present that blocks on vsync spends its time INSIDE bt3EndDrawing(), so timing that
+            // call would report the swap cost and lose the frame pacing entirely. This is the one
+            // point all three backends pass through (GL here, D3D11 at its own EndFrame()), so the
+            // rate and the frame-time distribution are measured here rather than in any one renderer.
+            {
+                static std::chrono::steady_clock::time_point s_perfPrevPresent{};
+                const auto perfNow = std::chrono::steady_clock::now();
+                if (s_perfPrevPresent.time_since_epoch().count() != 0)
+                    ps2x::PerfTick(std::chrono::duration<double>(perfNow - s_perfPrevPresent).count());
+                s_perfPrevPresent = perfNow;
+            }
             bt3EndDrawing();
             // [boot] First presented frame: process start -> boot. One-shot.
             if (!g_ps2xBootLogged && g_ps2xBootT0.time_since_epoch().count() != 0)
@@ -8822,9 +9041,19 @@ void PS2Runtime::run()
                 for (auto &kv : s_mainPcHist) { tot += kv.second;
                     if (kv.second > n1) { t2=t1;n2=n1; n1=kv.second; t1=kv.first; }
                     else if (kv.second > n2) { n2=kv.second; t2=kv.first; } }
-                std::cerr << "[main] hot=0x" << std::hex << t1 << std::dec << " " << (tot?100*n1/tot:0)
-                          << "% 2nd=0x" << std::hex << t2 << std::dec << " " << (tot?100*n2/tot:0)
-                          << "% (samples=" << tot << ")" << std::endl;
+                // [logstream] fprintf, NOT std::cerr. The runtime redirects stderr to
+                // <deploy>/logs/bt3.log with freopen() at boot, and on this toolchain the
+                // std::cerr stream does not follow it: every fprintf(stderr) line lands in the log and
+                // every std::cerr line is lost. That made this always-on perf line -- and 118 other
+                // diagnostics -- invisible, which is very likely why the "GPU usage disagrees" report
+                // was never diagnosable from a log. Compose into a string and hand it to the C stream
+                // that is known to reach the file.
+                {
+                    char hot[128];
+                    std::snprintf(hot, sizeof hot, "[main] hot=0x%X %u%% 2nd=0x%X %u%% (samples=%u)",
+                                  t1, tot ? (100u * n1 / tot) : 0u, t2, tot ? (100u * n2 / tot) : 0u, tot);
+                    std::fprintf(stderr, "%s\n", hot);
+                }
                 s_mainPcHist.clear();
                 uint64_t prims = g_rasterPrimCount.load(std::memory_order_relaxed);
                 uint64_t pix = g_rasterPixelCount.load(std::memory_order_relaxed);
@@ -8839,6 +9068,15 @@ void PS2Runtime::run()
                 const double guestMs = (bf > s_lastBusyFrames) ? (double)(bn - s_lastBusyNs) / 1.0e6 / (double)(bf - s_lastBusyFrames) : 0.0;   // [guestbusy] ms of guest CPU per published frame
                 const double wallMs = (bf > s_lastBusyFrames) ? (double)(wn - s_lastWallNs) / 1.0e6 / (double)(bf - s_lastBusyFrames) : 0.0;   // [guestwall]
                 s_lastBusyNs = bn; s_lastBusyFrames = bf; s_lastWallNs = wn;
+                // [perf] Publish the CPU totals the shared readout differences, and read back what the
+                // backends have fed it. The [fps] line below now prints THESE numbers instead of its
+                // own private calculation, so the log and the overlay can never disagree.
+                ps2x::PerfPublishCpu(bn, wn, g_rlglFlushNs);
+                const ps2x::PerfStatus perf = ps2x::GetPerfStatus();
+                const char *const gpuSrcName = perf.gpuSource == ps2x::GpuSource::OpenGL ? "opengl-drawlist"
+                                       : perf.gpuSource == ps2x::GpuSource::VulkanTimestamps ? "vulkan-ts"
+                                       : perf.gpuSource == ps2x::GpuSource::SoftwareCpu ? "software-cpu"
+                                       : "none";
                 static unsigned long long s_lastGlCalls = 0, s_lastGlFlush = 0; static double s_lastFlushNs = 0.0;
                 const unsigned long long glc = g_rlglDrawCalls, glf = g_rlglBatchFlushes;
                 extern std::atomic<unsigned long> g_texDecodeCount; static unsigned long s_lastTdc = 0;
@@ -8848,37 +9086,74 @@ void PS2Runtime::run()
                 const unsigned long upc = g_gsUploadCount.load(std::memory_order_relaxed), vcc = g_gsVramCopyCount.load(std::memory_order_relaxed);
                 static unsigned long s_lastHoistTris = 0;   // [glhoist]
                 const unsigned long tdc = g_texDecodeCount.load(std::memory_order_relaxed);
-                std::cerr << "[fps] GAME=" << (double)((gameFrames - s_lastGameFrames) / dt)
-                          << " guest_ms=" << guestMs
-                          << " wall_ms=" << wallMs
-                          << " host=" << (uint32_t)(s_fpsFrames / dt)
-                          << " prims/sec=" << (uint64_t)((prims - s_lastPrims) / dt)
-                          << " glhoist/sec=" << [&]{ extern std::atomic<unsigned long> g_glHoistCmds, g_glHoistTris;   // [glhoist]
-                                 static unsigned long s_lc = 0, s_lt = 0;
-                                 const unsigned long cc = g_glHoistCmds.load(std::memory_order_relaxed), tt = g_glHoistTris.load(std::memory_order_relaxed);
-                                 const unsigned long d = (unsigned long)((cc - s_lc) / dt); s_lastHoistTris = (unsigned long)((tt - s_lt) / dt);
-                                 s_lc = cc; s_lt = tt; return d; }()
-                          << " glhoisttris/sec=" << s_lastHoistTris
-                          << " vu1pairs/sec=" << [&]{ extern std::atomic<uint64_t> g_vu1PairCount;   // [vupairs]
-                                 static uint64_t s_lastVp = 0; const uint64_t vp = g_vu1PairCount.load(std::memory_order_relaxed);
-                                 const uint64_t d = (uint64_t)((vp - s_lastVp) / dt); s_lastVp = vp; return d; }()
-                          << " Mpix/sec=" << (double)((pix - s_lastPix) / dt / 1.0e6)
-                          << " swaps/sec=" << (uint64_t)((swaps - s_lastSwaps) / dt)
-                          << " glcalls/sec=" << (uint64_t)((glc - s_lastGlCalls) / dt)
-                          << " glflush/sec=" << (uint64_t)((glf - s_lastGlFlush) / dt)
-                          << " decodes/sec=" << (uint64_t)((tdc - s_lastTdc) / dt)
-                          << " uploads/sec=" << (uint64_t)((upc - s_lastUp) / dt) << " vramcopies/sec=" << (uint64_t)((vcc - s_lastVc) / dt)   // [xferstat]
-                          << " upconftex/sec=" << (uint64_t)((uct - s_lastUct) / dt) << " upconfclut/sec=" << (uint64_t)((ucc - s_lastUcc) / dt)   // [upconf]
-                          << " flush_ms/s=" << (g_rlglFlushNs - s_lastFlushNs) / 1.0e6 / dt
-                          << " gpu_ms=" << [&]{   // [gputime] GPU execution ms per GAME frame (ps2xGpuMsTake declared at file scope: block-scope extern "C" is ill-formed on clang-cl)
-                                 uint64_t c = 0; const double ms = ps2xGpuMsTake(&c); const double gf = (double)(gameFrames - s_lastGameFrames);
-                                 return gf > 0.0 ? ms / gf : 0.0; }()
-                          << " vbring=" << g_rlglVbRingOn << [&]{   // [vbring] fence waits + ring wraps per second, MVP uploads skipped per second
-                                 static unsigned long long s_w = 0, s_r = 0, s_m = 0;
-                                 const unsigned long long w = g_rlglVbRingWaits, r = g_rlglVbRingWraps, m = g_rlglVbRingMvpSkips;
-                                 std::ostringstream o; o << " vbr_waits/s=" << (uint64_t)((w - s_w) / dt) << " vbr_wraps/s=" << (uint64_t)((r - s_r) / dt)
-                                                         << " mvpskip/s=" << (uint64_t)((m - s_m) / dt);
-                                 s_w = w; s_r = r; s_m = m; return o.str(); }() << std::endl;
+                // [gputime] Two figures, because they answer different questions and conflating them
+                // is what makes this look like a bug: gpu_ms is milliseconds of GPU work per GAME
+                // frame, useful for asking "is this machine GPU-bound against the frame budget";
+                // gpu_busy_pct is that work over the window's WALL time, which is the shape a vendor
+                // 3D-engine counter and Task Manager report, so THAT is the one to compare against
+                // them. gpu_busy_pct is a lower bound -- the queries only span
+                // renderAndGetTextureId, so compositing and the swap are not counted (see the
+                // [gputime] note in ps2_gs_gpu_renderer.cpp) -- and gpu_drop says how many samples
+                // were thrown away, so a window that lost queries cannot read as a complete one.
+                uint64_t gpuCalls = 0, gpuDrop = 0;
+                const double gpuMsWin = ps2xGpuMsTake(&gpuCalls, &gpuDrop);
+                const double gfWin = (double)(gameFrames - s_lastGameFrames);
+                // [perf] The stutter percentiles are the diagnostic bugs 4 and 5 need, but they are
+                // noise on a line that prints unconditionally, so they ride the existing opt-in gate.
+                static const bool s_frameProf = [](){ const char *v = std::getenv("PS2X_FRAMEPROF"); return !(v && v[0] && v[0] == '0'); }();
+                // [logstream] fprintf, NOT std::cerr -- see the note on the [main] line above. This is
+                // the whole always-on perf readout, and it was reaching nobody.
+                {
+                    std::ostringstream o;
+                    o << "[fps] GAME=" << (double)((gameFrames - s_lastGameFrames) / dt)
+                      << " guest_ms=" << guestMs
+                      << " wall_ms=" << wallMs
+                      << " host=" << (uint32_t)(s_fpsFrames / dt)
+                      << " prims/sec=" << (uint64_t)((prims - s_lastPrims) / dt)
+                      << " glhoist/sec=" << [&]{ extern std::atomic<unsigned long> g_glHoistCmds, g_glHoistTris;   // [glhoist]
+                             static unsigned long s_lc = 0, s_lt = 0;
+                             const unsigned long cc = g_glHoistCmds.load(std::memory_order_relaxed), tt = g_glHoistTris.load(std::memory_order_relaxed);
+                             const unsigned long d = (unsigned long)((cc - s_lc) / dt); s_lastHoistTris = (unsigned long)((tt - s_lt) / dt);
+                             s_lc = cc; s_lt = tt; return d; }()
+                      << " glhoisttris/sec=" << s_lastHoistTris
+                      << " vu1pairs/sec=" << [&]{ extern std::atomic<uint64_t> g_vu1PairCount;   // [vupairs]
+                             static uint64_t s_lastVp = 0; const uint64_t vp = g_vu1PairCount.load(std::memory_order_relaxed);
+                             const uint64_t d = (uint64_t)((vp - s_lastVp) / dt); s_lastVp = vp; return d; }()
+                      << " Mpix/sec=" << (double)((pix - s_lastPix) / dt / 1.0e6)
+                      << " swaps/sec=" << (uint64_t)((swaps - s_lastSwaps) / dt)
+                      << " glcalls/sec=" << (uint64_t)((glc - s_lastGlCalls) / dt)
+                      << " glflush/sec=" << (uint64_t)((glf - s_lastGlFlush) / dt)
+                      << " decodes/sec=" << (uint64_t)((tdc - s_lastTdc) / dt)
+                      << " uploads/sec=" << (uint64_t)((upc - s_lastUp) / dt) << " vramcopies/sec=" << (uint64_t)((vcc - s_lastVc) / dt)   // [xferstat]
+                      << " upconftex/sec=" << (uint64_t)((uct - s_lastUct) / dt) << " upconfclut/sec=" << (uint64_t)((ucc - s_lastUcc) / dt)   // [upconf]
+                      << " flush_ms/s=" << (g_rlglFlushNs - s_lastFlushNs) / 1.0e6 / dt
+                      // [perf] From here down the GPU figures come from the shared readout, so this line
+                      // and the overlay cannot drift apart. gpu_src says which backend produced it and
+                      // gpu_cov whether it covers the whole frame; without those two a 0 here is
+                      // unreadable -- it used to mean "not measured" on two of the three backends and
+                      // looked exactly like an idle GPU.
+                      << " gpu_pct=" << perf.gpuBusyPct
+                      << " gpu_ms=" << perf.gpuMsPerFrame
+                      << " gpu_src=" << gpuSrcName
+                      << " gpu_cov=" << (perf.gpuSource == ps2x::GpuSource::None ? "none"
+                                       : perf.gpuQuality == ps2x::GpuQuality::CpuOnly ? "cpu"
+                                       : perf.gpuSamples == 0 ? "unmeasured"
+                                       : perf.gpuCoverage >= 1.0 ? "full" : "partial")
+                      << " gpu_n=" << perf.gpuSamples
+                      << " gpu_drop=" << perf.gpuSamplesDropped
+                      << " fps=" << perf.displayFps
+                      << " p50=" << perf.frameMsP50 << " p95=" << perf.frameMsP95;
+                    if (s_frameProf)
+                        o << " fmax=" << perf.frameMsMax << " guest_pct=" << perf.guestPct << " submit_pct=" << perf.submitPct;
+                    o << " vbring=" << g_rlglVbRingOn << [&]{   // [vbring] fence waits + ring wraps per second, MVP uploads skipped per second
+                           static unsigned long long s_w = 0, s_r = 0, s_m = 0;
+                           const unsigned long long w = g_rlglVbRingWaits, r = g_rlglVbRingWraps, m = g_rlglVbRingMvpSkips;
+                           std::ostringstream v; v << " vbr_waits/s=" << (uint64_t)((w - s_w) / dt) << " vbr_wraps/s=" << (uint64_t)((r - s_r) / dt)
+                                                   << " mvpskip/s=" << (uint64_t)((m - s_m) / dt);
+                           s_w = w; s_r = r; s_m = m; return v.str(); }();
+                    const std::string line = o.str();
+                    std::fprintf(stderr, "%s\n", line.c_str());
+                }
                 s_lastGlCalls = glc; s_lastGlFlush = glf; s_lastTdc = tdc; s_lastUp = upc; s_lastVc = vcc; s_lastUct = uct; s_lastUcc = ucc; s_lastFlushNs = g_rlglFlushNs;
                 if (gprof::g_on)
                 {   // [guestprof] exclusive phase time on the guest thread(s), ms per second; tsc calibrated over this interval

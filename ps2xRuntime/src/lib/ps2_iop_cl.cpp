@@ -120,7 +120,7 @@ namespace
         }
 
         const std::string rootedPath = joinPs2Path(root, path);
-        const std::string translated = translatePs2Path(rootedPath.c_str());
+        const std::string translated = resolvePs2HostPath(rootedPath.c_str());
         return translated.empty() ? std::filesystem::path{} : std::filesystem::path(translated);
     }
 

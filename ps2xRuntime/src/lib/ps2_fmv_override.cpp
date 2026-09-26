@@ -97,7 +97,7 @@ namespace
         return std::filesystem::is_regular_file(p, ec);
     }
 
-    // [exeDir]/savedata/settings.toml -> the two [video] pack toggles. Cached (the launcher writes
+    // [exeDir]/savedata/settings.toml -> the two [video] pack toggles. Cached (the front-end writes
     // them before launch). texture_pack = the pack is installed; intro_video = show the 4K opening
     // override. The intro toggle applies on restart (the native PSS/ADX swap happens at loadELF).
     struct PackToggles { bool texPack = false; bool introVideo = true; };

@@ -60,10 +60,7 @@ PATCHES = [
             "    // \"Network Battle\" plate renders (equiv. to the PCSX2 cheat 00335568 000000FF).\n"
             "    ctx->pc = 0x335568u;\n"
             "    {\n"
-            "        static const bool s_revealHidden = [](){\n"
-            '            const char *v = std::getenv("PS2X_REVEAL_HIDDEN_MENU_ENTRY");\n'
-            "            return v && !(v[0] == '0' || v[0] == 'n' || v[0] == 'N');\n"
-            "        }();\n"
+            "        static const bool s_revealHidden = false;   // [netmenu] entry retired\n"
             "        static bool s_loggedOnce = false;\n"
             "        if (s_revealHidden && !s_loggedOnce) {\n"
             "            s_loggedOnce = true;\n"

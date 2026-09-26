@@ -15,12 +15,12 @@ BT3-Recomp is **GPL-3.0** (see [`LICENSE`](LICENSE)). Because it is built on
 [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs)
 (LGPL-3.0-or-later), the combined work is distributed under **GPL-3.0**.
 
-## Shipped with the runtime / launcher
+## Shipped with the runtime
 
 | Component | License | Source |
 | --- | --- | --- |
 | FFmpeg 7.1.5 — `avcodec`/`avformat`/`avutil`/`swresample`/`swscale` | LGPL-3.0 | https://ffmpeg.org |
-| Qt 6.5.3 — `Qt6*.dll` (linked dynamically) | LGPL-3.0 (or GPL-2.0+/GPL-3.0; used under LGPL-3.0) | https://www.qt.io |
+| libarchive 3.8.1 + liblzma 5.6.2 + zlib 1.3.1 (statically embedded, install wizard) | BSD-2-Clause / 0BSD | https://libarchive.org |
 | SDL2 — `SDL2.dll` | zlib | https://libsdl.org |
 | OpenEXR / Imath / Iex / IlmThread 3.3 | BSD-3-Clause | https://openexr.com |
 | libjxl — `jxl*` | BSD-3-Clause | https://github.com/libjxl/libjxl |
@@ -38,11 +38,11 @@ BT3-Recomp is **GPL-3.0** (see [`LICENSE`](LICENSE)). Because it is built on
 
 | Asset | License | Source |
 | --- | --- | --- |
-| `PZS3US1.AFL`, `PZS3US2.AFL` (NTSC-U AFS file lists) | Apache-2.0 | [ViveTheModder](https://github.com/ViveTheModder/vivethemodder.github.io) (full text in `ps2xRuntime/src/launcher/assets/NOTICE`) |
+| `PZS3US1.AFL`, `PZS3US2.AFL` (NTSC-U AFS file lists) | Apache-2.0 | [ViveTheModder](https://github.com/ViveTheModder/vivethemodder.github.io) (full text in `ps2xRuntime/assets/NOTICE`) |
 | `RussoOne-Regular.ttf` | SIL Open Font License 1.1 | https://fonts.google.com/specimen/Russo+One |
 | `background.png`, `icon.png` | project assets (see note below) | this repository |
 
-> **Note on launcher art:** if `background.png` / `icon.png` are derived from the
+> **Note on app art:** if `background.png` / `icon.png` are derived from the
 > game's art, they must be replaced with original or freely-licensed artwork
 > before distribution. Verify their origin before shipping a release.
 
@@ -55,8 +55,7 @@ Used to build from source; not necessarily shipped:
 | PS2Recomp (upstream static recompiler) | GPL-3.0 | https://github.com/ran-j/PS2Recomp |
 | nlohmann/json | MIT | https://github.com/nlohmann/json |
 | xxHash | BSD-2-Clause | https://github.com/Cyan4973/xxHash |
-| libarchive | BSD-2-Clause | https://libarchive.org |
-| aqtinstall, pefile (Qt/PE tooling) | MIT | https://github.com/miurahr/aqtinstall |
+| pefile (PE gate) | MIT | https://github.com/erocarrera/pefile |
 
 ## Game & trademark
 

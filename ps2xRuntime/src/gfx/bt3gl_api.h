@@ -16,7 +16,10 @@ using bt3Image = Image;
 using bt3Texture2D = Texture2D;
 using bt3RenderTexture2D = RenderTexture2D;
 using bt3Music = Music;
+using bt3Sound = Sound;          // [netsfx] UI sound effects for the Dragon Net menu
 using bt3AudioStream = AudioStream;
+using bt3Color = Color;          // [netmenu2d] the custom Dragon Net menu
+using bt3Font = Font;            // [netmenu2d]
 
 // ---- functions ---------------------------------------------------------------------
 #define bt3BeginBlendMode BeginBlendMode
@@ -67,6 +70,7 @@ using bt3AudioStream = AudioStream;
 #define bt3IsWindowReady IsWindowReady
 #define bt3IsWindowResized IsWindowResized
 #define bt3LoadImage LoadImage
+#define bt3LoadImageFromMemory LoadImageFromMemory
 #define bt3LoadImageFromScreen LoadImageFromScreen
 #define bt3LoadImageFromTexture LoadImageFromTexture
 #define bt3LoadShaderFromMemory LoadShaderFromMemory
@@ -207,3 +211,28 @@ using bt3AudioStream = AudioStream;
 #define BT3_FLAG_BORDERLESS_WINDOWED_MODE FLAG_BORDERLESS_WINDOWED_MODE
 #define BT3_FLAG_WINDOW_RESIZABLE FLAG_WINDOW_RESIZABLE
 #define BT3_FLAG_WINDOW_UNDECORATED FLAG_WINDOW_UNDECORATED
+
+// [netmenu2d] the custom Dragon Net menu (2D drawing via raylib, no ImGui)
+#define bt3DrawText DrawText
+#define bt3DrawTextEx DrawTextEx
+#define bt3LoadFont LoadFont
+#define bt3LoadFontEx LoadFontEx
+#define bt3GetFontDefault GetFontDefault
+#define bt3MeasureText MeasureText
+#define bt3MeasureTextEx MeasureTextEx
+#define bt3DrawRectangleRec DrawRectangleRec
+#define bt3DrawRectangleGradientV DrawRectangleGradientV
+#define bt3DrawRectangleGradientEx DrawRectangleGradientEx
+#define bt3DrawRectangleLinesEx DrawRectangleLinesEx
+#define bt3DrawRectangleRounded DrawRectangleRounded
+#define bt3DrawRectangleRoundedLinesEx DrawRectangleRoundedLinesEx
+#define bt3DrawCircleV DrawCircleV
+#define bt3DrawLineEx DrawLineEx
+#define bt3DrawTexture DrawTexture
+#define bt3DrawTextureV DrawTextureV
+#define bt3DrawTextureRec DrawTextureRec
+#define bt3Fade Fade
+#define bt3BeginScissorMode BeginScissorMode
+#define bt3EndScissorMode EndScissorMode
+#define BT3_TEXTURE_FILTER_POINT TEXTURE_FILTER_POINT
+#define BT3_TEXTURE_FILTER_BILINEAR TEXTURE_FILTER_BILINEAR

@@ -10,6 +10,8 @@ extern "C" void ps2xWinHostInfo();             // ps2_win_timer.cpp: [host] cpu 
 #include "games_database.h"
 #if !defined(PLATFORM_VITA)
 #include "ps2_settings_overlay.h"
+#include "runtime/ps2x_settings.h"     // [netmenu] the Dragon Net Menu toggle ships in settings.toml
+#include "frontend/fe_app.h"          // [frontend] in-runtime front-end (replaces the Qt launcher)
 #endif
 
 #ifdef _DEBUG
@@ -27,6 +29,9 @@ extern "C" void ps2xWinHostInfo();             // ps2_win_timer.cpp: [host] cpu 
 #include <algorithm>
 #include <cstdlib>
 #include <csignal>
+#if defined(_WIN32)
+#include <windows.h>   // GetModuleFileNameW: the real exe dir (there is no /proc/self/exe on Windows)
+#endif
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
@@ -83,19 +88,32 @@ namespace
 
     // [deploy] Resolve the directory of the running executable (via /proc/self/exe so
     // argv[0] and CWD cannot steer it). The settings overlay anchors its savedata/,
-    // assets/, fonts and settings.toml off this directory, so a launcher can be
+    // assets/, fonts and settings.toml off this directory, so the runner can be
     // double-clicked from any CWD and still find its portable files (same convention as
     // the previous single-binary deploy: <exeDir>/savedata/settings.toml).
     std::filesystem::path getExecutableDirectory()
     {
-        // [deploy] A self-extracting launcher stashes this runner in cache but its
-        // portable files (savedata/, assets/, data/) stay NEXT to the launcher; the
-        // stub passes PS2X_EXEDIR=<launcherDir> so this resolves to the real one.
+        // [deploy] A self-extracting bundle stashes this runner in cache but its
+        // portable files (savedata/, assets/, data/) stay NEXT to the bundle; the
+        // stub passes PS2X_EXEDIR=<bundleDir> so this resolves to the real one.
         if (const char *exeDir = std::getenv("PS2X_EXEDIR"))
             if (exeDir[0] != '\0')
                 return std::filesystem::path(exeDir);
         std::error_code ec;
-#if defined(__APPLE__)
+#if defined(_WIN32)
+        // GetModuleFileNameW: /proc/self/exe does not exist here, so without this the deploy
+        // root silently fell back to the CWD (the Qt launcher used to paper over it by always
+        // exporting PS2X_EXEDIR, and the front-end cannot).
+        wchar_t modulePath[MAX_PATH] = {};
+        const DWORD moduleLen = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
+        if (moduleLen > 0 && moduleLen < MAX_PATH)
+        {
+            std::filesystem::path self =
+                std::filesystem::canonical(std::filesystem::path(modulePath), ec);
+            if (!ec && !self.empty()) return self.parent_path();
+        }
+        return std::filesystem::current_path();
+#elif defined(__APPLE__)
         uint32_t size = 0;
         _NSGetExecutablePath(nullptr, &size);
         std::vector<char> path(size);
@@ -526,6 +544,7 @@ extern "C" void ps2xGsRecordOnSignal(int);
 static bool ps2xStderrIsTerminal() { return _isatty(_fileno(stderr)) != 0; }
 #else
 #include <unistd.h>
+#include <fcntl.h>
 static bool ps2xStderrIsTerminal() { return isatty(fileno(stderr)) != 0; }
 #endif
 extern "C" const char *ps2xExeDirC()
@@ -538,7 +557,7 @@ int main(int argc, char *argv[])
     // [boot] process/main start: the runtime logs start -> first frame on its first present.
     extern std::chrono::steady_clock::time_point g_ps2xBootT0;
     g_ps2xBootT0 = std::chrono::steady_clock::now();
-    const auto t_boot = g_ps2xBootT0;
+    auto t_boot = g_ps2xBootT0;
 #if defined(_WIN32)
     ps2xWinTimerBegin();   // [wintimer] 1 ms tick: timed waits stop rounding to 15.6 ms
     ps2xWinCrashHandlerInstall();
@@ -590,13 +609,54 @@ int main(int argc, char *argv[])
         // async is not the sole cause, but it is the one subsystem with known-unresolved races.
         // PS2X_ASYNC_KICK=0 opts out (def() never overwrites an explicit value).
         def("PS2X_ASYNC_KICK", "1");
+        // [reveal-hidden-entry] The game hides its 5th main-menu plate ("Network Battle", the
+        // network entry) by hardcoding the skip index to 4 (0x335568). The overlay patch disables
+        // that skip when this is set, so the entry renders (equivalent to the PCSX2 cheat
+        // 00335568 000000FF).
+        // NOT defaulted any more: the Dragon Net Menu entry is retired (docs/NEW-NETMENU.md), and
+        // revealing a plate that leads nowhere is worse than the stock menu. Set
+        // PS2X_REVEAL_HIDDEN_MENU_ENTRY=1 by hand to bring the plate back.
+        def("PS2X_REVEAL_HIDDEN_MENU_ENTRY", "0");
         setenv("PS2X_DEFAULTED", s_defaulted.c_str(), 1);
         // Deliberately NOT defaulted: PS2X_BARSTAT (diagnostic spam), PS2X_TIMERMULT.
     }
 
     try
     {
-        std::filesystem::path pathObj = getExecutablePath(argc, argv);
+        // [frontend] The in-runtime front-end IS the UI: with no argv it owns the
+        // first window, hands the chosen ELF back and tears its GL context down BEFORE the
+        // emulator creates its own (bt3gl calls SDL_Init itself on the way in). Passing the ELF
+        // as argv[1] -- what the launcher-based flow and every script did -- skips it, and
+        // PS2X_NOFRONTEND=1 forces the direct boot even with no arguments.
+        std::filesystem::path pathObj;
+#if defined(PS2X_HAVE_FRONTEND)
+        if (argc < 2 && !std::getenv("PS2X_NOFRONTEND"))
+        {
+            frontend::FeConfig cfg;
+            // Single source of truth for the product name in C++. Keep it byte-identical to
+            // PRODUCT_NAME in games/bt3/setup.py, which names the deployed executable.
+            cfg.title = "Dragon Ball Z Budokai Tenkaichi 3 - Recompiled";
+            cfg.exeDir = getExecutableDirectory().string();
+            if (const char *def = std::getenv("PS2X_DEFAULT_BOOT_ELF"))
+                cfg.defaultElf = def;
+
+            std::string chosen;
+            if (frontend::run(cfg, chosen) == frontend::FeAction::Quit)
+            {
+                std::fprintf(stderr, "[boot] front-end quit before boot\n");
+                return 0;
+            }
+            if (!chosen.empty())
+                pathObj = std::filesystem::path(chosen);
+        }
+#endif
+        if (pathObj.empty())
+            pathObj = getExecutablePath(argc, argv);
+
+        // [boot] The front-end's wall-clock time is user time, not boot time: restart the clock
+        // so the [boot] lines still measure the emulator's own startup.
+        g_ps2xBootT0 = std::chrono::steady_clock::now();
+        t_boot = g_ps2xBootT0;
 
         std::string filePathStr = pathObj.string();
         std::string elfName = pathObj.filename().string();
@@ -648,24 +708,40 @@ int main(int argc, char *argv[])
                 if (std::freopen(lf, "w", stderr))
                     std::fprintf(stderr, "[logfile] stderr -> %s\n", lf);
             }
-            else if (lvl > 0 && ps2xStderrIsTerminal())   // [mergefix] a captured stderr (rig run.log, a user's "> log 2>&1") keeps its lines
+            else if (lvl > 0)
             {
-                // [logfix] Only a CONSOLE stderr is moved to the file: a captured one (a pipe or a
-                // "> log 2>&1") already goes somewhere and used to end up empty. The launcher, which
-                // starts the runner without a console, asks for logs/bt3.log through PS2X_LOGFILE
-                // instead, so launcher runs still leave a log for reports (the [winlog] lines).
-                std::error_code ec;
-                const auto logsDir = exeDir / "logs";
-                std::filesystem::create_directories(logsDir, ec);
-                if (!ec)
+                // [logfile-gui] A double-clicked runner has no console AND nothing is capturing it,
+                // so every line was going to a handle nobody can read. That is the normal way this
+                // build is started now that the front-end IS the UI, and it left no log at all for
+                // the [netmenu]/[iop-run] lines a bug report needs. Only skip the file when the
+                // output is already going somewhere real: a terminal (keep it readable live) or a
+                // redirect the user set up ("> log 2>&1"), which is already a record.
+                bool alreadyCaptured = false;
+#if defined(_WIN32)
+                const HANDLE h = ::GetStdHandle(STD_ERROR_HANDLE);
+                DWORD mode = 0;
+                alreadyCaptured = (h != nullptr && h != INVALID_HANDLE_VALUE
+                                   && ::GetFileType(h) == FILE_TYPE_DISK
+                                   && ::GetConsoleMode(h, &mode) == 0);
+#else
+                alreadyCaptured = !ps2xStderrIsTerminal() && ::fcntl(::fileno(stderr), F_GETFD) != -1
+                                  && ::isatty(::fileno(stderr)) == 0 && ::fileno(stderr) > 2;
+#endif
+                if (!alreadyCaptured)
                 {
-                    const auto logPath = logsDir / "bt3.log";
-                    const auto prevPath = logsDir / "bt3.prev.log";
-                    std::error_code pc;
-                    std::filesystem::rename(logPath, prevPath, pc); // best-effort
-                    if (std::freopen(logPath.string().c_str(), "w", stderr))
-                        std::fprintf(stderr, "[loglevel] level=%d stderr -> %s\n",
-                                     lvl, logPath.string().c_str());
+                    std::error_code ec;
+                    const auto logsDir = exeDir / "logs";
+                    std::filesystem::create_directories(logsDir, ec);
+                    if (!ec)
+                    {
+                        const auto logPath = logsDir / "bt3.log";
+                        const auto prevPath = logsDir / "bt3.prev.log";
+                        std::error_code pc;
+                        std::filesystem::rename(logPath, prevPath, pc); // best-effort
+                        if (std::freopen(logPath.string().c_str(), "w", stderr))
+                            std::fprintf(stderr, "[loglevel] level=%d stderr -> %s\n",
+                                         lvl, logPath.string().c_str());
+                    }
                 }
             }
         }
@@ -688,7 +764,7 @@ int main(int argc, char *argv[])
 #endif
         if (!runtime.initialize(windowTitle.c_str()))
         {
-            std::cerr << "Failed to initialize PS2 runtime" << std::endl;
+            std::cerr << "Failed to initialize BT3 runtime" << std::endl;
             return 1;
         }
         std::fprintf(stderr, "[boot] start -> runtime init: %.1f ms\n",
@@ -709,11 +785,10 @@ int main(int argc, char *argv[])
         // PS2X_IOP_RUN=SIO2MAN.IRX  PS2X_IOP_DIR=<deploy>/data/IRX/
         if (const char *iopRun = std::getenv("PS2X_IOP_RUN"); iopRun && iopRun[0])
         {
-            std::string dir = "data/IRX/";
-            if (const char *d = std::getenv("PS2X_IOP_DIR"); d && d[0]) dir = d;
-            std::string path = dir + iopRun;
-            if (path.find('.') == std::string::npos) path += ".IRX";
-            runtime.loadAndRunIopModule(path.c_str());
+            std::string name = iopRun;
+            if (name.find('.') == std::string::npos) name += ".IRX";
+            const std::filesystem::path path = PS2Runtime::resolveIopModulePath(name);
+            runtime.loadAndRunIopModule(path.string().c_str());
             return 0;
         }
 

@@ -1,6 +1,6 @@
 # Video & Controllers UI
 
-The launcher and the in-game overlay share one layout language: a **STATUS** summary with colour dots,
+The front-end and the in-game overlay share one layout language: a **STATUS** summary with colour dots,
 the destructive/rarely-touched controls in **popups**, and only the switches you flip often left on the
 tab. Both write the same `savedata/settings.toml`, so a change made in either shows up in the other.
 
@@ -27,7 +27,7 @@ The dots are green / amber / red:
 | Upscale | active (paraLLEl-GS: samples per pixel) | applies on restart (OpenGL) | not available (software renderer) |
 
 The overlay reads the *live* runtime state (`runtime/ps2_video_status.h`, logged once as `[vstatus]`);
-the launcher shows what it is about to ask the runtime to run, with real monitor names from `QScreen`.
+the front-end shows what it is about to ask the runtime to run, with real monitor names from SDL2.
 
 ### Display settings...
 
@@ -46,7 +46,7 @@ Skip post, Skip stale VRAM).
 | --- | --- |
 | **Reset** | back to the values the popup opened with |
 | **Close** | discard and close |
-| **Apply** | apply live (the overlay writes `m_dirty`, the launcher writes through) |
+| **Apply** | apply live (the overlay writes `m_dirty`, the front-end writes through) |
 | **Save** | apply **and persist** to `savedata/settings.toml`, then close |
 
 ## Controllers tab

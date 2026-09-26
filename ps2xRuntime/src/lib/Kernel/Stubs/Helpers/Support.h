@@ -466,6 +466,13 @@ namespace
         return table;
     }
 
+    // [netmenu] Conditional AFS serve (implemented in game_overrides.cpp): returns 1 when it served
+    // the requested slice from the net-entry in-memory image instead of the folder file.
+    extern "C" int ps2xNetServeSwapRead(unsigned long long slotId, unsigned long long off,
+                                        unsigned char *dst, unsigned long long n);
+    // [netmenu] Non-zero only while the NET entry owns the screen (see game_overrides.cpp).
+    extern "C" int ps2xNetEntryActive();
+
     bool readFolderRange(const CdFileEntry &entry, uint64_t relOffset, uint8_t *dst, size_t byteCount)
     {
         const CdAfTable &table = *entry.afsFolder;
@@ -494,9 +501,17 @@ namespace
                 const std::string opened = slot.name.empty()
                                                ? std::string(nm)
                                                : slot.name;
-                std::printf("[slot-read] \"%s\" off=%llu n=%zu\n",
-                            (table.folder / opened).string().c_str(),
-                            static_cast<unsigned long long>(relOffset - slot.offset), byteCount);
+                // [slot-read] gated trace (PS2X_SLOTREAD=1): which AFS slot each read hits, but ONLY
+                // while the NET entry owns the screen -- the log then shows exactly the files the
+                // net-entry flow pulls in, without the rest of the game's noise.
+                static const bool s_slotReadLog = []() {
+                    const char *v = std::getenv("PS2X_SLOTREAD");
+                    return v && v[0] && v[0] != '0';
+                }();
+                if (s_slotReadLog && ps2xNetEntryActive())
+                    std::fprintf(stderr, "[slot-read] id=%llu \"%s\" off=%llu n=%zu\n",
+                                 static_cast<unsigned long long>(id), opened.c_str(),
+                                 static_cast<unsigned long long>(relOffset - slot.offset), byteCount);
             }
         }
 
@@ -557,6 +572,13 @@ namespace
             if (fromFile > 0)
             {
                 const uint64_t id = static_cast<uint64_t>(it - 1 - slots.begin());
+                // [netmenu] Conditional serve: while the net entry is active, this slot may come
+                // from our converted Wii image instead of the folder file.
+                if (ps2xNetServeSwapRead(id, inFile, dst + done, fromFile))
+                {
+                    done += room;
+                    continue;
+                }
                 char nm[32];
                 std::snprintf(nm, sizeof(nm), "%06llu", static_cast<unsigned long long>(id));
                 const std::string opened = slot.name.empty()
@@ -629,6 +651,22 @@ namespace
                 std::filesystem::is_directory(folderCandidate, e2))
             {
                 afTable = loadFolderTable(idxCandidate, folderCandidate);
+            }
+            if (!afTable)
+            {
+                // The guest always asks for \DATA\PZS3US1.AFS;1, but the install is allowed to be
+                // flat, with the converted folder at the root of data/ instead of under DATA/.
+                // Try that same pair one level up before giving up: without this, a flat install
+                // leaves the game with no data at all, because the .AFS itself is deleted once
+                // the folder exists and there is no loose file left to fall back to.
+                const std::filesystem::path root = getCdRootPath();
+                const std::filesystem::path idxFlat = root / (stem.string() + ".idx");
+                const std::filesystem::path folderFlat = root / stem;
+                if (std::filesystem::exists(idxFlat, e1) &&
+                    std::filesystem::is_directory(folderFlat, e2))
+                {
+                    afTable = loadFolderTable(idxFlat, folderFlat);
+                }
             }
         }
 

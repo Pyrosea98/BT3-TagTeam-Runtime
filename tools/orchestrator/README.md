@@ -26,7 +26,7 @@ first, and you build/validate them one (module/microprogram/overlay) at a time.
 
 ```
 # 1. play a session with capture (no autostart)
-PS2X_COVERAGE=/tmp/cov.tsv ./bt3-runner data/SLUS_216.78
+PS2X_COVERAGE=/tmp/cov.tsv ./"Dragon Ball Z Budokai Tenkaichi 3 - Recompiled" data/SLUS_216.78
 
 # 2. sample it (new units -> pending, duplicates -> discarded)
 python3 tools/orchestrator/orchestrate.py ingest /tmp/cov.tsv \

@@ -43,7 +43,7 @@ worst=(0 0 0 0)   # maxG, maxGXX, pathG, pathGXX
 maxglibc="0" maxglibcxx="0"
 maxglibc_path="" maxglibcxx_path=""
 
-mapfile -t FILES < <(find "$STAGE" -type f \( -name '*.so*' -o -name 'bt3-runner' -o -name 'Launcher' \) 2>/dev/null)
+mapfile -t FILES < <(find "$STAGE" -type f \( -name '*.so*' -o -name 'Dragon Ball Z Budokai Tenkaichi 3 - Recompiled' \) 2>/dev/null)
 
 for f in "${FILES[@]}"; do
     [[ -f "$f" ]] || continue

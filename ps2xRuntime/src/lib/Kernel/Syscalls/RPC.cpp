@@ -1467,8 +1467,6 @@ namespace ps2_syscalls
         // run its entry natively. Selectable with PS2X_IOP_MODULES (comma list of stems, or "all");
         // default is the validated set. Lets us isolate which module breaks the boot.
         {
-            std::string dir = "data/IRX/";
-            if (const char *d = std::getenv("PS2X_IOP_DIR"); d && d[0]) dir = d;
             std::string base = modulePath;
             const size_t slash = base.find_last_of("/\\");
             if (slash != std::string::npos) base = base.substr(slash + 1);
@@ -1490,7 +1488,7 @@ namespace ps2_syscalls
                 p = c + 1;
             }
             if (wantNative)
-                runtime->loadAndRunIopModule((dir + base).c_str());
+                runtime->loadAndRunIopModule(PS2Runtime::resolveIopModulePath(base).c_str());
         }
 
         setReturnS32(ctx, moduleId);

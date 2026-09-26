@@ -2,10 +2,10 @@
 """PE dependency + layout gate for the Windows release stage.
 
 Analyses every PE under <stage_dir> with pefile and verifies the "portable tree"
-contract the flat layout enforces (qt.conf + DLLs next to the executables):
+contract the flat layout enforces (DLLs next to the executable):
 
   * every import of every bundled binary resolves either inside the stage's own
-    lib/ (Qt6, FFmpeg, VC++ runtime) or to a Windows OS / driver component that
+    lib/ (FFmpeg, VC++ runtime) or to a Windows OS / driver component that
     is guaranteed present (kernels, api-set stubs, vulkan via volk, ...);
   * every required artefact sits where the tree expects it (DLLs, plugins,
     wrapper, licences, default settings).
@@ -112,24 +112,25 @@ def is_os_component(name: str) -> bool:
 
 MACHINE_AMD64 = 0x8664  # IMAGE_FILE_MACHINE_AMD64
 SUBSYSTEM_WINDOWS_GUI = 2  # IMAGE_SUBSYSTEM_WINDOWS_GUI
+# Must match PRODUCT_NAME in games/bt3/setup.py (the name the pipeline gives the exe).
+RUNNER_EXE = "dragon ball z budokai tenkaichi 3 - recompiled.exe"
 
 REQUIRED_LAYOUT = [
-    "Launcher.exe",
-    "bt3-runner.exe",
-    "qt.conf",
+    RUNNER_EXE,
     "LICENSE",
-    "COPYING.LGPLv3",
     "savedata/settings.toml",
-    "savedata/fps60_sites.txt",
-    "assets/lib/Qt6Core.dll",
-    "assets/lib/Qt6Gui.dll",
-    "assets/lib/Qt6Widgets.dll",
-    "assets/lib/Qt6Network.dll",
-    "assets/lib/qt6/plugins/platforms/qwindows.dll",
+    "fps60_sites.txt",
     "assets/lib/vcruntime140.dll",
     "assets/lib/vcruntime140_1.dll",
     "assets/lib/msvcp140.dll",
 ]
+
+# paraLLEl-GS ships under LGPL-3.0, so its licence has to travel with a build that bundles it.
+# The dependency is an optional git submodule: on a clean checkout without it the runtime builds
+# without PGS and there is nothing to license, so requiring the file unconditionally failed the
+# gate on exactly the checkouts that legitimately do not have it.
+PGS_LICENCE = "COPYING.LGPLv3"
+PGS_SOURCE = Path(__file__).resolve().parent.parent / "ps2xRuntime" / "third_party" / "parallel-gs"
 
 REQUIRED_GLOB = [
     ("assets/lib/avcodec-*.dll", "FFmpeg avcodec"),
@@ -161,6 +162,8 @@ def main() -> int:
     for rel in REQUIRED_LAYOUT:
         if not (stage / rel).is_file():
             problems.append(f"missing required artefact: {rel}")
+    if (PGS_SOURCE / "COPYING.LGPLv3").is_file() and not (stage / PGS_LICENCE).is_file():
+        problems.append(f"paraLLEl-GS is in the tree but its licence is missing: {PGS_LICENCE}")
     for pattern, what in REQUIRED_GLOB:
         hits = list(stage.glob(pattern))
         if not hits:
@@ -195,7 +198,7 @@ def main() -> int:
             subsystem = pe.OPTIONAL_HEADER.Subsystem
         except Exception:
             subsystem = None
-        if rel.name.lower() in ("launcher.exe", "bt3-runner.exe"):
+        if rel.name.lower() == RUNNER_EXE:
             if subsystem != SUBSYSTEM_WINDOWS_GUI:
                 problems.append(
                     f"{rel}: subsystem {subsystem if subsystem is not None else 'n/a'} is not Windows GUI "

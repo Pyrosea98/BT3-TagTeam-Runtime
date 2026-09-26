@@ -463,7 +463,7 @@ namespace
                 return false;
             }
 
-            out << "PS2 Runtime GS debug dump\n";
+            out << "BT3 Runtime GS debug dump\n";
             out << "path: " << path.string() << "\n";
             out << "latestFrame: " << latestFrame << "\n";
             out << "filters: currentFrameOnly=" << (currentFrameOnly ? 1u : 0u)
@@ -2303,7 +2303,7 @@ namespace
                 return false;
             }
 
-            out << "PS2 runtime log dump\n";
+            out << "BT3 runtime log dump\n";
             out << "entries=" << entries.size() << "\n";
             out << "filter=" << (filter && filter->IsActive() ? filter->InputBuf : "<none>") << "\n";
             out << "ps2_log_txt=" << ps2_log::log_path() << "\n";

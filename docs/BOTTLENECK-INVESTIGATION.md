@@ -24,6 +24,12 @@ thread-distribution problem.
   window 1440x900, fight.
 * `PS2X_PGS` (paraLLEl-GS / Vulkan compute) was **retired on Windows** during this work;
   Linux still uses it, which is a large part of why Linux is fast (see below).
+* 2026-09-25: paraLLEl-GS is no longer **built** on any platform by default
+  (`PS2X_DISABLE_PGS=ON`). The AMD Vulkan ICD (amdvlk64.dll, driver 2.0.279, RX 580) faults
+  inside `DllMain` on a worker thread right after device creation, killing the runner at ~15 s
+  with an access violation under `vk_icdGetInstanceProcAddrSG`. The backend is being rewritten;
+  with `PS2X_HAVE_PGS` undefined, `applyRenderer()` maps a configured `parallel-gs` to the
+  OpenGL present, so old settings keep working. `-DPS2X_DISABLE_PGS=OFF` brings it back.
 
 ## Measurement method
 

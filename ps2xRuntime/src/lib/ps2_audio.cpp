@@ -14,6 +14,10 @@ float PS2AudioBackend::s_masterVolume = 1.0f;
 float PS2AudioBackend::s_musicVolume = 1.0f;
 float PS2AudioBackend::s_sfxVolume = 0.4f;
 
+// [netmenu] game_overrides.cpp: 1 while the net entry keeps the game's SE stream audible even
+// though the audio is frozen (sfx volume 0), so the host menu's own effects are heard.
+extern "C" int ps2xSeMenuBypassGet();
+
 namespace ps2_vag
 {
     bool decode(const uint8_t *data, uint32_t sizeBytes,
@@ -862,7 +866,11 @@ void PS2AudioBackend::serviceStreams()
             }
             // Apply SFX volume (master * sfx) to this chunk. Mono streams carry voices and
             // effects; scaling here is cheaper than a second ring pass.
-            const float sfxVol = s_masterVolume * s_sfxVolume;
+            // [netmenu] Exception: the reserved SE stream (0xF0) stays audible at a fixed menu
+            // level while the net entry has the game audio frozen, so its own effects are heard.
+            float sfxVol = s_masterVolume * s_sfxVolume;
+            if (id == 0xF0u && ps2xSeMenuBypassGet())
+                sfxVol = s_masterVolume * 0.6f;
             if (sfxVol < 0.999f || sfxVol > 1.001f)
             {
                 std::vector<int16_t> scaled(st.ring.begin(), st.ring.begin() + static_cast<long>(chunk));

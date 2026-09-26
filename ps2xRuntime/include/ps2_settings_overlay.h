@@ -2,6 +2,7 @@
 
 #include "ps2_runtime.h"
 #include "runtime/pad_config.h"
+#include "runtime/ps2x_settings.h"   // EnvLock, for the keys the environment owns
 #include <string>
 #include <vector>
 #include <array>
@@ -46,6 +47,9 @@ public:
         bool introVideo = true; // [texui] 4K opening-video override when the pack ships it (applies on restart)
         int buttonLayout = 1;   // [texui] 0 = PS2 (Original Buttons), 1 = Xbox (Xbox Layout); applies on restart
         bool fps60 = false;   // [fps60] 60 fps mode: fight step 1 + the pacing table (applies between fights)
+    // [perf] Show the live fps / frame-time / GPU-busy block in this tab's STATUS section. Off by
+    // default because the GPU side costs a timing query per draw call.
+    bool showPerf = false;
         int inkStrength = 199;   // [inkstrength] cel-outline darkener, % of Cs (199 = hardware 255/128)
         int inkWidth = 100;      // [pgsink] paraLLEl-GS: outline stroke width, % of a PS2 texel (100 = native, 25 = thinnest)
         unsigned inkColor = 0;   // [pgsink] paraLLEl-GS: outline colour 0xRRGGBB (0 = the game's black)
@@ -69,7 +73,7 @@ public:
         bool operator==(const Settings &o) const;
     };
 
-    static bool isWidescreen() { return s_widescreen; }
+    static bool isWidescreen() { return true; }   // [netmenu] forced ON for the whole game (no env)
     static int getLogLevel() { return s_logLevel; }
     static int getStartupLogLevel() { return s_startupLogLevel; }
 
@@ -88,6 +92,12 @@ public:
 
     void initialize();
     void draw(PS2Runtime &runtime);
+    // [perf] El medidor de esquina. Se dibuja dentro del MISMO frame de ImGui que el panel: el
+    // HUD y el panel nunca coexisten, asi que draw() tiene una rama propia para cuando el panel esta
+    // retraido (el estado normal) y, cuando esta desplegandose, lo pinta antes del fade para que no
+    // herede su opacidad.
+    void drawPerfHud();
+
     void shutdown();
 
 private:
@@ -103,6 +113,16 @@ private:
     Settings m_settingsAtBoot;
     std::string m_configPath;
     int m_activeTab = 0;
+
+    // [envpersist] Which keys the environment owns this session, as a ps2x_settings::EnvLock mask
+    // (spelled ps2x_settings::kLock*, not imported: a using-declaration for a namespace enumerator
+    // is ill-formed at class scope, and GCC rejects what clang-cl accepts). loadSettings() sets the
+    // bits as it walks its own guards, so that walk stays the one definition of which keys are
+    // env-overridable, and saveSettings() hands the mask to ps2x_settings::applyOverlayValues() so
+    // a locked key keeps the file's value. Persisting an env override turns a one-session
+    // experiment into a permanent setting, and settings.toml is the only record of what the user
+    // chose.
+    uint32_t m_envLocked = 0;
 
     // Open/close deploy animation. m_animT is an eased 0..1 value: 0 = fully
     // closed/hidden, 1 = fully open. It chases m_visible every frame, so the

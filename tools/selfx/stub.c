@@ -12,13 +12,14 @@
  *    /tmp/bt3-sel-<seed>, then exec the runner. savedata/, assets/ and data/
  *    stay NEXT to this executable (PS2X_EXEDIR), written by the old launcher.
  *
- * 2) launcher mode -- payload = "Launcher" + "ps2EntryRunner" + "lib/..." +
- *    "assets/...". Extract the whole run tree to a persistent, writable
- *    per-user cache and exec the Qt Launcher from there. The Qt launcher and
- *    the runner both resolve everything from applicationDirPath()/PS2X_EXEDIR,
- *    so a read-only mount would break install/settings; the XDG cache is the
- *    writable run root. data/ and savedata/ are symlinked to a stable
- *    per-user dir so an update (new seed) keeps the installed game data.
+ * 2) front-end mode -- payload = "ps2EntryRunner" + "lib/..." + "assets/...".
+ *    Extract the whole run tree to a persistent, writable per-user cache and
+ *    exec the runner from there: the front-end lives inside it and shows up
+ *    when it gets no boot ELF on argv. The runner resolves everything from
+ *    applicationDirPath()/PS2X_EXEDIR, so a read-only mount would break
+ *    install/settings; the XDG cache is the writable run root. data/ and
+ *    savedata/ are symlinked to a stable per-user dir so an update (new seed)
+ *    keeps the installed game data.
  *
  * Usage: ./<self-extract>            (game mode boots the game)
  *        ./<self-extract> --dir-echo (print the run dir and exit, for tests)
@@ -322,11 +323,14 @@ int main(int argc, char **argv)
     extract_tar(&tar, dir);
     free(tar.data);
 
-    char launcherPath[1024];
-    snprintf(launcherPath, sizeof(launcherPath), "%s/Launcher", dir);
-    int launcherMode = (access(launcherPath, F_OK) == 0);
+    /* The front-end lives in the runner, so the only difference between the two payloads is
+     * whether assets/ came along: with it, boot with no argv (the front-end opens); without it,
+     * the caller passes the boot ELF. The CWD is not dir yet, so probe it absolutely. */
+    char assetsProbe[1024];
+    snprintf(assetsProbe, sizeof(assetsProbe), "%s/assets", dir);
+    int frontEndMode = (access(assetsProbe, F_OK) == 0);
 
-    if (launcherMode)
+    if (frontEndMode)
     {
         /* Stable per-user dirs (NO seed) for installed game data / settings, so
          * an update keeps them. Base = <XDG_DATA_HOME|~/.local/share>. */
@@ -344,7 +348,7 @@ int main(int argc, char **argv)
         mkdir_p(compatData);
         mkdir_p(compatSave);
 
-        /* The Qt launcher writes savedata/ + data/ next to itself; make it
+        /* The front-end writes savedata/ + data/ next to the runner; make it
          * land in the stable dir so updates (new seed) keep the user data. */
         char dataLink[1024], saveLink[1024];
         snprintf(dataLink, sizeof(dataLink), "%s/data", dir);
@@ -361,7 +365,7 @@ int main(int argc, char **argv)
         mkdir_p(compatIcons);
 
         char wrapper[1024];
-        snprintf(wrapper, sizeof(wrapper), "%s/bt3-launcher.sh", compatBase);
+        snprintf(wrapper, sizeof(wrapper), "%s/bt3-recomp.sh", compatBase);
         FILE *w = fopen(wrapper, "w");
         if (w)
         {
@@ -370,9 +374,8 @@ int main(int argc, char **argv)
                     "set -euo pipefail\n"
                     "cd '%s'\n"
                     "export LD_LIBRARY_PATH=\"$PWD/lib\"\n"
-                    "export QT_PLUGIN_PATH=\"$PWD/lib/qt6/plugins\"\n"
                     "export PS2X_EXEDIR=\"$PWD\"\n"
-                    "exec ./Launcher \"$@\"\n",
+                    "exec ./ps2EntryRunner \"$@\"\n",
                     dir);
             fclose(w);
             chmod(wrapper, 0755);
@@ -416,17 +419,17 @@ int main(int argc, char **argv)
     chdir(dir);
     setenv("LD_LIBRARY_PATH", "lib", 1);
 
-    if (launcherMode)
+    if (frontEndMode)
     {
-        setenv("QT_PLUGIN_PATH", "lib/qt6/plugins", 1);
-        if (access("./Launcher", X_OK) != 0)
+        /* No boot ELF on argv: the runner opens its own front-end. */
+        if (access("./ps2EntryRunner", X_OK) != 0)
         {
             snprintf(launchDir, sizeof(launchDir), "run dir: %s", dir);
             die(launchDir);
         }
-        char *launcherArgv[] = {"./Launcher", NULL};
-        execv("./Launcher", launcherArgv);
-        perror("execv Launcher");
+        char *frontArgv[] = {"./ps2EntryRunner", NULL};
+        execv("./ps2EntryRunner", frontArgv);
+        perror("execv ps2EntryRunner");
         return 1;
     }
 

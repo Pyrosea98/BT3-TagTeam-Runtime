@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="ps2xRuntime/src/launcher/assets/background.png" alt="BT3-Recomp" width="100%">
+  <img src="ps2xRuntime/assets/background.png" alt="BT3-Recomp" width="100%">
 </div>
 
 # BT3-Recomp — Dragon Ball Z: Budokai Tenkaichi 3 on PC
@@ -11,12 +11,13 @@ image** — this repository contains no game code, assets, or media.
 
 > This is not an emulator: the game's executable and its gameplay overlay are
 > recompiled into a native, portable game tree with an OpenGL renderer. Ships
-> with a Qt 6 launcher (GLFW gamepad support) for Linux, Windows and macOS.
+> with its own built-in front-end (ImGui on SDL2, gamepad support) for Linux,
+> Windows and macOS.
 
 ## Screenshots
 
 <!-- Drop PNGs into docs/screenshots/ and uncomment:
-![Launcher](docs/screenshots/launcher.png)
+![Front-end](docs/screenshots/launcher.png)
 ![Fight](docs/screenshots/fight.png)
 ![Install wizard](docs/screenshots/wizard.png)
 -->
@@ -54,7 +55,7 @@ _Screenshots are on the way._
 - x86-64 CPU with **SSE4.1**.
 - **Your own BT3 USA Disc Dump (SLUS-21678).** Other regions are not
   supported — the committed function maps are for the USA executable. The
-  launcher's install wizard extracts the game from your ISO; no game data is
+  front-end's install wizard extracts the game from your ISO; no game data is
   distributed.
 
 ### Download & run
@@ -63,19 +64,20 @@ _Screenshots are on the way._
    `BT3-Recomp-linux-x86_64.tar.gz` / `BT3-Recomp-macos-x86_64.tar.gz` elsewhere).
 2. Extract it.
 3. Launch:
-   - **Windows** — `Launcher.exe`
-   - **Linux** — `./Launcher` (or `./install game.sh` for a desktop menu entry + icon)
+   - **Windows** — `Dragon Ball Z Budokai Tenkaichi 3 - Recompiled.exe`
+   - **Linux** — `./Dragon Ball Z Budokai Tenkaichi 3 - Recompiled` (or `./install game.sh` for a desktop menu entry + icon)
    - **macOS (experimental)** — open `BT3-Recomp.app`
 
-The launcher reads your USA ISO on first run and extracts the game files into the
-deploy tree; after that it boots `bt3-runner` with the bundled libraries
-automatically. Gamepads are supported (GLFW mappings; tested with an 8BitDo pad —
-the launcher and the runner read the same mapping database).
+Run it with no arguments and the front-end opens: it reads your USA ISO on first
+run, extracts the game files into the deploy tree, and from then on it boots the game
+with the bundled libraries when you press PLAY. Gamepads are supported (SDL2
+mappings; tested with an 8BitDo pad — the front-end and the game read the same
+mapping database).
 
 > **On Windows**, `paraLLEl-GS` runs on a bundled Mesa **lavapipe** (software
 > Vulkan) ICD because several vendor Vulkan drivers (notably the AMD proprietary
 > driver on Polaris/GCN, `amdvlk64.dll`) access-violate during shader
-> compilation. If the runner still dies, the launcher retries once with the
+> compilation. If the runner still dies, the front-end retries once with the
 > OpenGL renderer and records it in `logs\vulkan-fallback.log`. Set
 > `PS2X_VK_NATIVE=1` to use the system Vulkan driver instead of lavapipe.
 
@@ -110,8 +112,7 @@ sudo pacman -S --needed base-devel cmake git python rsync libarchive ffmpeg
   (`Microsoft.VisualStudio.Component.VC.Llvm.Clang`):
   `winget install -e --id Microsoft.VisualStudio.2022.BuildTools`
 - CMake >= 3.21, Ninja, Python 3, Git for Windows
-- Qt 6.5.3 `win64_msvc2019_64` (downloaded automatically via aqtinstall on first
-  run), plus the `aqtinstall` and `pefile` Python packages
+- the `pefile` Python package (PE gate)
 
 ### Build + deploy — one command
 
@@ -124,8 +125,8 @@ cd BT3-Recomp
 ```
 
 The script prompts for the ISO and output directory if they are not given, runs
-the full `setup.py` pipeline, bundles the runner + its shared libraries into the
-deploy tree, builds a Qt 6 launcher (GLFW gamepad support), and drops
+the full `setup.py` pipeline, bundles the runner (front-end included) + its shared
+libraries into the deploy tree, and drops
 `install game.sh` for the desktop-integration step. Pass `--skip-setup` to reuse
 an existing `games/bt3/work/` tree and only rebuild the runner. The same pipeline
 produces the release artifact (`BT3-Recomp-<os>-x86_64.tar.gz` + `.sha256`) and asks
@@ -173,7 +174,7 @@ This produces `build\release-windows\out\stage\` and
 dependencies:
 
 ```sh
-brew install cmake ninja pkg-config ffmpeg qt
+brew install cmake ninja pkg-config ffmpeg
 ./scripts/build-macos.sh --iso /path/to/bt3-usa.iso --jobs 3
 open build/macos-dist/BT3-Recomp.app
 ```
@@ -188,12 +189,12 @@ not included. For development without a bundle, use
 [deployment details](docs/DEPLOY.md#macos-app-experimental) for rebuilds and
 limitations.
 
-### Run the runner directly (no launcher)
+### Run the game directly (no front-end)
 
 ```powershell
 cd build\ps2xRuntime\Release
 set PS2X_CD_IMAGE=C:\path\to\your\bt3-usa.iso
-bt3-runner.exe ..\..\..\games\bt3\work\SLUS_216.78
+"Dragon Ball Z Budokai Tenkaichi 3 - Recompiled.exe" ..\..\..\games\bt3\work\SLUS_216.78
 ```
 
 ### Project structure & developer docs
@@ -234,7 +235,7 @@ Component READMEs: [`games/bt3/README.md`](games/bt3/README.md) ·
 
 - **Native recompilation** — the game's MIPS code is translated to C++ at build
   time from your own disc image; no interpreter, no emulator.
-- **Qt 6 launcher** — install wizard, per-game settings, gamepad support, and a
+- **Built-in front-end** — install wizard, per-game settings, gamepad support, and a
   built-in overlay in the runner.
 - **Widescreen** and selectable render scale.
 - **Texture replacement & cache** — see below.
@@ -245,10 +246,10 @@ Textures are identified exactly like PCSX2 (`<TEX0Hash>-<CLUTHash>-<bits>`), so
 its existing packs work unchanged. Drop a pack in `<deploy>/data/Textures/` (see
 [textures/README.md](textures/README.md)) or set `PS2X_TEXREPLACE=<dir>`.
 
-In the launcher/overlay Video tab, **Texture Replacement…** shows the pack status
+In the front-end/overlay Video tab, **Texture Replacement…** shows the pack status
 plus **Video overlay (4K intro)** and **Buttons style (PS2/Xbox)**. Enabling and
-installing live in the launcher's **Misc** tab (**Pack Lite** = 2D only, **Pack
-Full** = 3D + 2D); the launcher opens the pack's download page (Open in browser /
+installing live in the front-end's **Misc** tab (**Pack Lite** = 2D only, **Pack
+Full** = 3D + 2D); the front-end opens the pack's download page (Open in browser /
 Copy link) and installs a locally downloaded archive with **Browse…**.
 
 The **texture cache** (`<deploy>/data/texcache.bin`) stores each texture once it
@@ -281,8 +282,8 @@ Known issues:
 | Path | What it is |
 | --- | --- |
 | `scripts/build-linux.sh` | Linux build + package wrapper around `setup.py` (ISO prompt, portable tree, tar.gz + sha256) |
-| `scripts/build-windows.ps1` | Windows native build + package wrapper (installs missing deps, builds runner + Qt launcher, PE gate, zip) |
-| `scripts/install-deps-windows.ps1` | Windows dependency installer (VS Build Tools + ClangCL, CMake, Ninja, Python, Qt, Mesa lavapipe) |
+| `scripts/build-windows.ps1` | Windows native build + package wrapper (installs missing deps, builds the runner, PE gate, zip) |
+| `scripts/install-deps-windows.ps1` | Windows dependency installer (VS Build Tools + ClangCL, CMake, Ninja, Python, Mesa lavapipe) |
 | `scripts/package-windows.ps1` | Windows release packaging from the native stage (`BT3-Recomp-win-x86_64.zip` + `.sha256`) |
 | `games/bt3/setup.py` | the single four-stage script: detect / deps / build / package (see `docs/DEPLOY.md`) |
 | `docs/DEPLOY.md` | the deploy structure and cross-platform packaging documentation |
@@ -349,7 +350,7 @@ the combination is distributed under GPL-3.0. Its licence text is
 | Dev | Role | Areas |
 | --- | --- | --- |
 | **z3xox** | Owner / Lead developer | recompiler (`ps2xRecomp`), runtime (EE/GS/VU1/scheduler), OpenGL + paraLLEl-GS renderer, game overrides, generators, docs |
-| **RexxColder** | Collaborator | optimization (perf/async, batching), Qt 6 launcher + install wizard + ISO9660, input & gamepads, build/release (floor gate, packaging), deploy layout, game data (AFS/AFL), docs |
+| **RexxColder** | Collaborator | optimization (perf/async, batching), front-end + install wizard + ISO9660, input & gamepads, build/release (floor gate, packaging), deploy layout, game data (AFS/AFL), docs |
 | **valenvivaldi** | Collaborator | macOS arm64 port, packaging, audio |
 
 ### Third-party

@@ -162,19 +162,40 @@ bool loadIrx(const std::string &path, Module &out)
             }
             else
             {
-                // Exports: a list of function pointers (vaddrs), terminated by 0.
+                // Exports: function pointers (vaddrs) from +20 on, one per ordinal -- the same
+                // layout the importer reads (fptrAddr = tableVaddr + 20 + ordinal * 4). The table
+                // may carry interior zero slots for unused ordinals, so the first zero is not
+                // necessarily the end: cutting there hid every export past the gap and a
+                // cross-module import then resolved to address 0. Accept a slot only when it
+                // points into one of this module's own segments, and end the table on the first
+                // run of two slots that do not -- that separates a single unused ordinal from
+                // the code that follows the table.
                 Export ex;
                 ex.module = nm;
                 ex.version = ver;
                 ex.mode = mode;
                 ex.tableVaddr = seg.vaddr + static_cast<uint32_t>(off);
-                while (q + 4 <= n && rdU32(p + q) != 0)
+                auto inModule = [&out](uint32_t v)
                 {
-                    ex.fptrs.push_back(seg.vaddr + rdU32(p + q));
-                    q += 4;
+                    for (const auto &s : out.segments)
+                        if (s.memsz && v >= s.vaddr && v < s.vaddr + s.memsz) return true;
+                    return false;
+                };
+                int bad = 0;
+                size_t r = q;
+                for (; r + 4 <= n; r += 4)
+                {
+                    const uint32_t abs = seg.vaddr + rdU32(p + r);
+                    if (!inModule(abs))
+                    {
+                        if (++bad >= 2) break;
+                        continue;
+                    }
+                    bad = 0;
+                    ex.fptrs.push_back(abs);
                 }
-                q += 4;
                 out.exports.push_back(std::move(ex));
+                q = r;   // resume the scan past the table, not inside it
             }
             off = q;
         }
