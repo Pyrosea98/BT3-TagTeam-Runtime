@@ -1075,6 +1075,15 @@ extern std::atomic<uint32_t> g_bt3MenuPlates;  // [mainmenu] menuObj+0x144, the 
 static bool s_mmPopupOpen = false;
 static bool s_mmGateWasOpen = false;
 
+// [mmpopup] Where the panel actually is between 0 (retracted) and 1 (deployed), so it can move
+// instead of appearing. s_mmPopupOpen stays the TARGET: the click and the gate's closing edge flip
+// the target, and this chases it, which means a click mid-animation reverses rather than restarts.
+//
+// Exponential smoothing on DeltaTime, not a per-frame step: at 30 fps a constant step would deploy
+// in half the time it takes at 144. The 0.11s constant is the time to close ~63% of the gap, so the
+// panel is most of the way out at ~0.25s and effectively done by ~0.4s.
+static float s_mmPanelAnim = 0.0f;
+
 bool PS2SettingsOverlay::mainMenuPopupWanted()
 {
     // Reading the atomic (not the whole snapshot) keeps the draw path free of guest-RAM reads: the
@@ -1219,22 +1228,46 @@ static void drawNetplayPopupBody()
 
     // The status monitor, and the four states it can be in. This drives the header pill and is the
     // only thing in the popup that says whether the last button press did anything.
-    struct Status { const char *text; ImVec4 color; };
+    struct Status { const char *text; ImVec4 color; int id; };
     Status st;
     if (!ps2NetActive())
     {
         // No session. If one was asked for and is not here, it did not come up.
-        if (g_netForm.attempted) { st = {"FAILED TO CONNECT", {0.95f, 0.34f, 0.31f, 1.0f}}; }
-        else                     { st = {"WAITING",           {0.62f, 0.68f, 0.74f, 1.0f}}; }
+        if (g_netForm.attempted) { st = {"FAILED TO CONNECT", {0.95f, 0.34f, 0.31f, 1.0f}, 3}; }
+        else                     { st = {"WAITING",           {0.62f, 0.68f, 0.74f, 1.0f}, 0}; }
     }
     else if (!ps2NetPeerConnected())
     {
-        st = {"CONNECTING", {1.00f, 0.72f, 0.20f, 1.0f}};
+        st = {"CONNECTING", {1.00f, 0.72f, 0.20f, 1.0f}, 1};
     }
     else
     {
-        st = {"CONNECTED", {0.35f, 0.88f, 0.45f, 1.0f}};
+        st = {"CONNECTED", {0.35f, 0.88f, 0.45f, 1.0f}, 2};
     }
+
+    // The pill's two animations. Both key off the state id, not off the strings, so a rename cannot
+    // silently restart the flash.
+    //
+    //   CONNECTING breathes, because it is the one state that means "something is happening and
+    //   the answer has not arrived". A steady amber pill reads as a setting; a pulsing one reads as
+    //   a wait. The other three hold still, because they are answers, not waits.
+    //   Any change of state flashes the new colour white and lets it decay, so a transition that
+    //   happens off-screen (a peer that never showed up) is still visible when you look back.
+    const float now = float(ImGui::GetTime());
+    static int   s_lastId = -1;
+    static float s_changedAt = -10.0f;
+    if (st.id != s_lastId)
+    {
+        s_lastId = st.id;
+        s_changedAt = now;
+    }
+    const float since = now - s_changedAt;
+    const float flash = since < 0.45f ? (1.0f - since / 0.45f) : 0.0f;
+    // 1.3s per breath, eased so it lingers at each end instead of sweeping linearly.
+    const float breathe = st.id == 1
+        ? 0.62f + 0.38f * (0.5f + 0.5f * std::sin(float(now / 1.3 * 6.28318530718)))
+        : 1.0f;
+    const float lum = (0.55f + 0.45f * flash) * breathe;
 
     // Header: the Namek mark, the word, and the status pill on the right. Drawn by hand rather than
     // laid out with SameLine, because the mark is an image on the draw list and the pill has to be
@@ -1259,17 +1292,29 @@ static void drawNetplayPopupBody()
     dl->AddText(ImVec2(h0.x + markW + 10.0f, midY - titleSz.y * 0.5f),
                 ImGui::ColorConvertFloat4ToU32(gold), "Netplay");
 
-    // The pill, flush right: a soft fill of the state colour, its border, and its name.
+    // The pill, flush right: a soft fill of the state colour, its border, and its name. The flash
+    // lifts the colour toward white and grows the pill a little, and the breath scales the alpha, so
+    // both show up in the border and the text and not only in the fill.
+    ImVec4 sc(st.color.x, st.color.y, st.color.z, 1.0f);
+    sc.x += (1.0f - sc.x) * flash * 0.75f;
+    sc.y += (1.0f - sc.y) * flash * 0.75f;
+    sc.z += (1.0f - sc.z) * flash * 0.75f;
+    const float grow = flash * 2.0f;
     const ImVec2 stSz = ImGui::CalcTextSize(st.text);
-    const float  pillH = stSz.y + 8.0f;
-    const float  pillW = stSz.x + 22.0f;
-    const ImVec2 p1(h0.x + hdrW - pillW, midY - pillH * 0.5f);
+    const float  pillH = stSz.y + 8.0f + grow;
+    const float  pillW = stSz.x + 22.0f + grow * 2.0f;
+    const ImVec2 p1(h0.x + hdrW - pillW * 0.5f, midY - pillH * 0.5f);
     const ImVec2 p0(p1.x - pillW, midY - pillH * 0.5f);
-    const ImU32  stCol = ImGui::ColorConvertFloat4ToU32(st.color);
+    if (flash > 0.0f)   // the halo, so the change is visible from across the screen
+        dl->AddRect(ImVec2(p0.x - 3.0f, p0.y - 3.0f), ImVec2(p1.x + 3.0f, p1.y + 3.0f),
+                    ImGui::ColorConvertFloat4ToU32(ImVec4(sc.x, sc.y, sc.z, flash * 0.35f)),
+                    pillH * 0.5f + 3.0f, 0, 1.0f);
     dl->AddRectFilled(p0, p1, ImGui::ColorConvertFloat4ToU32(
-                        ImVec4(st.color.x, st.color.y, st.color.z, 0.16f)), pillH * 0.5f);
-    dl->AddRect(p0, p1, stCol, pillH * 0.5f, 0, 1.0f);
-    dl->AddText(ImVec2(p0.x + 11.0f, p0.y + 4.0f), stCol, st.text);
+                        ImVec4(sc.x, sc.y, sc.z, 0.16f * lum)), pillH * 0.5f);
+    dl->AddRect(p0, p1, ImGui::ColorConvertFloat4ToU32(ImVec4(sc.x, sc.y, sc.z, lum)),
+                pillH * 0.5f, 0, 1.0f + flash);
+    dl->AddText(ImVec2(p0.x + 11.0f, p0.y + 4.0f),
+                ImGui::ColorConvertFloat4ToU32(ImVec4(sc.x, sc.y, sc.z, lum)), st.text);
 
     ImGui::Separator();
 
@@ -1357,33 +1402,31 @@ static void drawNetplayPopupBody()
 
 void PS2SettingsOverlay::drawMainMenuPopup()
 {
-    // [mmpopup] An icon in the bottom-right corner that unfolds a panel when clicked. The icon is
-    // the whole point for now: it proves the gate end to end without covering the menu, and it is
-    // the shape the Netplay popup will take (small affordance on screen, panel on demand).
+    // [mmpopup] The LABEL: the corner affordance that unfolds the panel. It is the word "Netplay"
+    // and the Namek plate inside one rounded gold box, and the whole thing is the button -- the
+    // plate is not a control of its own, so the label is what you call it. Small thing on screen,
+    // panel on demand; nothing about the menu behind it is covered until you ask for it.
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     const float margin  = 18.0f;
     const ImVec2 br(vp->Pos.x + vp->Size.x - margin, vp->Pos.y + vp->Size.y - margin);
 
     // NoBackground is what keeps ImGui's own frame out of it. A zero alpha only hides the fill;
     // ImGui strokes the window's border out of the same colour, so with NoDecoration alone the
-    // icon still came out with a gold line around it that nothing here had asked for. The one
-    // rectangle on screen is the pill drawn below, which is the label and the plate together.
-    //
-    const ImGuiWindowFlags iconFlags = ImGuiWindowFlags_NoDecoration |
-                                       ImGuiWindowFlags_NoBackground |
-                                       ImGuiWindowFlags_NoMove |
-                                       ImGuiWindowFlags_NoSavedSettings |
-                                       ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                       ImGuiWindowFlags_NoNav |
-                                       ImGuiWindowFlags_AlwaysAutoResize;
+    // label still came out with a second gold line around it that nothing here had asked for. The
+    // one rectangle on screen is the pill drawn below.
+    const ImGuiWindowFlags labelFlags = ImGuiWindowFlags_NoDecoration |
+                                        ImGuiWindowFlags_NoBackground |
+                                        ImGuiWindowFlags_NoMove |
+                                        ImGuiWindowFlags_NoSavedSettings |
+                                        ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                        ImGuiWindowFlags_NoNav |
+                                        ImGuiWindowFlags_AlwaysAutoResize;
 
     loadNetplayIcon();
 
-    // [mmpopup] The affordance is a label and an icon inside ONE box: "Netplay" on the left, the
-    // Namek plate on the right, one rounded gold rectangle around both, and the whole thing is the
-    // button. That is why the metrics are computed up here and not inside the window: the panel
-    // below has to know how tall the pill is to sit above it, and CalcTextSize needs a font, which
-    // only exists once the overlay's frame is open.
+    // [mmpopup] The metrics live out here, not inside the window: the panel below has to know how
+    // tall the label is to sit above it, and CalcTextSize needs a font, which only exists once the
+    // overlay's frame is open.
     static const char *kLabel = "Netplay";
     const ImVec2 labelSz = ImGui::CalcTextSize(kLabel);
     const float padX  = 15.0f;
@@ -1396,7 +1439,7 @@ void PS2SettingsOverlay::drawMainMenuPopup()
 
     bool clicked = false;
     ImGui::SetNextWindowPos(br, ImGuiCond_Always, ImVec2(1.0f, 1.0f));
-    if (ImGui::Begin("##mm_popup_icon", nullptr, iconFlags))
+    if (ImGui::Begin("##mm_popup_label", nullptr, labelFlags))
     {
         // One InvisibleButton for the whole pill, so the label is clickable too and not just the
         // artwork -- a 34px planet is a poor thing to ask someone to hit on its own.
@@ -1409,9 +1452,31 @@ void PS2SettingsOverlay::drawMainMenuPopup()
         ImDrawList *dl = ImGui::GetWindowDrawList();
         const ImU32 accent = ImGui::GetColorU32(ImVec4(1.00f, 0.80f, 0.30f,
                                                        hovered ? 1.00f : 0.72f));
-        // The box itself: border only. The menu shows through, same as the icon did on its own --
-        // a filled plate here would cover the rows it is offering to jump to.
-        dl->AddRect(a, b, accent, pillR, 0, s_mmPopupOpen ? 2.0f : 1.0f);
+        // [mmpopup] The latent glow: a soft halo of the same gold, breathing on a 3.5s sine, always
+        // on. This is not the status pill's flash -- that one answers a change of state. This one is
+        // the idle "there is something down here", the thing a corner affordance needs to be
+        // noticed at all when the menu behind it is already busy. Kept cheap on purpose: three 1px
+        // rounded strokes, no shader, no texture, nothing to allocate.
+        //
+        // It dims to a third while the panel is out. Open, the label has already done its job and a
+        // glow behind a panel you are reading is just noise.
+        const float breath = 0.5f + 0.5f * std::sin(float(ImGui::GetTime() / 3.5 * 6.28318530718));
+        const float glow   = (0.09f + 0.11f * breath) * (s_mmPopupOpen ? 0.34f : 1.0f);
+        for (int i = 3; i >= 1; --i)
+        {
+            const float e = 1.5f * float(i);
+            dl->AddRect(ImVec2(a.x - e, a.y - e), ImVec2(b.x + e, b.y + e),
+                        ImGui::ColorConvertFloat4ToU32(
+                            ImVec4(1.00f, 0.80f, 0.30f, glow * (4.0f - float(i)) / 3.0f)),
+                        pillR + e, 0, 1.0f);
+        }
+
+        // The box itself: border only. The menu shows through, same as the plate did on its own --
+        // a filled box here would cover the rows the panel is offering to jump to. The stroke picks
+        // up a little of the breath so the border and its halo are one object.
+        dl->AddRect(a, b, ImGui::GetColorU32(ImVec4(1.00f, 0.80f, 0.30f,
+                                                     (hovered ? 1.00f : 0.72f) + 0.10f * breath)),
+                    pillR, 0, s_mmPopupOpen ? 2.0f : 1.0f);
 
         // The label, left of the artwork, vertically centred on the pill.
         dl->AddText(ImVec2(a.x + padX, (a.y + b.y) * 0.5f - labelSz.y * 0.5f), accent, kLabel);
@@ -1458,7 +1523,19 @@ void PS2SettingsOverlay::drawMainMenuPopup()
     if (clicked)
         s_mmPopupOpen = !s_mmPopupOpen;
 
-    if (!s_mmPopupOpen)
+    // [mmpopup] Chase the target. A click in the middle of the animation reverses it, which is what
+    // makes a toggle feel like a toggle and not a queue of two animations.
+    {
+        const float dt = ImGui::GetIO().DeltaTime;
+        const float k  = 1.0f - std::exp(-dt / 0.11f);
+        s_mmPanelAnim += ((s_mmPopupOpen ? 1.0f : 0.0f) - s_mmPanelAnim) * k;
+        if (std::fabs(s_mmPanelAnim - (s_mmPopupOpen ? 1.0f : 0.0f)) < 0.004f)
+            s_mmPanelAnim = s_mmPopupOpen ? 1.0f : 0.0f;   // settle, so the last frame is exact
+    }
+    // Fully retracted: stop drawing. The panel has to keep being drawn on the way OUT (that is the
+    // animation), but once it is at 0 there is nothing left to show and this is the frame that lets
+    // the gate shut without the panel being a window that never ends.
+    if (s_mmPanelAnim <= 0.0f)
         return;
 
     // The panel unfolds above and to the left of the pill, so it grows into the screen instead of
@@ -1466,7 +1543,11 @@ void PS2SettingsOverlay::drawMainMenuPopup()
     // content came from is min(1080, vpW*0.96), and inline labels do not survive in anything
     // narrower, which is why the popup's labels sit above their widgets instead.
     const ImVec2 panelSize(520.0f, 0.0f);
-    ImGui::SetNextWindowPos(ImVec2(br.x, br.y - pillH - 10.0f), ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    // It comes UP out of the pill: 30px of travel, so it reads as the panel rising off the button
+    // that opened it rather than as a window fading in place.
+    const float slide = (1.0f - s_mmPanelAnim) * 30.0f;
+    ImGui::SetNextWindowPos(ImVec2(br.x, br.y - pillH - 10.0f + slide),
+                            ImGuiCond_Always, ImVec2(1.0f, 1.0f));
     ImGui::SetNextWindowSize(panelSize, ImGuiCond_Always);
     const ImGuiWindowFlags panelFlags = ImGuiWindowFlags_NoDecoration |
                                         ImGuiWindowFlags_NoMove |
@@ -1474,12 +1555,18 @@ void PS2SettingsOverlay::drawMainMenuPopup()
                                         ImGuiWindowFlags_NoBringToFrontOnFocus |
                                         ImGuiWindowFlags_NoNav |
                                         ImGuiWindowFlags_AlwaysAutoResize;
-    // Opaque, or the game shows through and the readings are unreadable over moving artwork.
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.08f, 0.96f));
+    // Opaque, or the game shows through and the readings are unreadable over moving artwork; the
+    // alpha rides the animation so the panel fades in with its travel instead of appearing at full
+    // strength and then sliding.
+    // ImGuiStyleVar_Alpha is what fades the CONTENT. There is no global alpha in ImGui, and fading
+    // each widget's colour by hand would mean finding every one of them; this multiplies them all.
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, s_mmPanelAnim);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.08f, 0.96f * s_mmPanelAnim));
     if (!ImGui::Begin("##mm_popup_panel", nullptr, panelFlags))
     {
         ImGui::End();
         ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
         return;
     }
 
@@ -1487,6 +1574,7 @@ void PS2SettingsOverlay::drawMainMenuPopup()
     drawNetplayPopupBody();
     ImGui::End();
     ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 }
 
 void PS2SettingsOverlay::drawPerfHud()
