@@ -1051,3 +1051,15 @@ namespace seamvk
         seamgs::g_hostVerts.assign(data + sizeof(DrawPacket), data + sizeof(DrawPacket) + size_t(k.count) * k.stride);
     }
 }
+
+namespace seamgs
+{
+    bool peekClut(uint32_t cbp, uint32_t cpsm, uint32_t *out256)
+    {
+        if (!seamvk::on()) return false;
+        std::lock_guard<std::mutex> lk(g_mtx);
+        uint32_t bits[16] = {};
+        readClut(cbp, cpsm, 0, g_r.texa, out256, bits);
+        return true;
+    }
+}

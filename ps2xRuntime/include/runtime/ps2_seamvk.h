@@ -54,6 +54,11 @@ namespace seamvk
 
     struct PrivRegs { uint64_t pmode = 0, dispfb1 = 0, display1 = 0, dispfb2 = 0, display2 = 0, bgcolor = 0; };
 }
+namespace seamgs
+{
+    // Diagnostics: the CSM1 palette at cbp as the VRAM mirror holds it (256 RGBA entries). False when the front-end is off.
+    bool peekClut(uint32_t cbp, uint32_t cpsm, uint32_t *out256);
+}
 
 #ifdef PS2X_HAVE_PGS
 namespace Vulkan { class Device; }

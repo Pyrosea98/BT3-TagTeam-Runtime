@@ -83,3 +83,30 @@ data, and write the native pass.
 
 The hook point for skipping a whole effect is the orchestrator; the native replacement reads
 the same parameters the orchestrator reads.
+
+## Step semantics from the one-frame transcript (docs/evidence/postchain-transcript-*.txt)
+
+Coordinates: XYOFFSET 0x7000/0x7200, so x 1792 = 0, y 1824 = 0. Sprites are 32-px vertical strips
+over the whole 512x448 frame unless noted. Palettes are the VRAM mirror's contents on that frame.
+
+| step | writes | reads | operation |
+|---|---|---|---|
+| depth mask (sub_00109848, in sub_00247578) | FRAME 0xe00 as **CT16** (psm 2, fbw 8, 512x896 view), fbmsk 0x3fff: only bits 14..15 of each 16-bit half | TEX0 Z buffer 0x1c00 as **PSMZ16** 1024x1024, decal, TEXA ta0=0 ta1=0x80 | 32 strips 8 px wide at x = 8+16k, u = 16k: copies bits 14..15 of every 16-bit half of Z into bits 14..15 of the frame halves. For the high half that is frame alpha[7:6] := Z[15:14] or Z[31:30] depending on which half lands where; needs the Z32/CT32 block tables to pin. Intent: a depth threshold into the alpha MSB (the DoF/blur mask). |
+| Z top-byte plane (sub_0024B118 first part, in FUN_0010ff40) | FRAME 0x1c00 (the Z buffer as CT32), fbmsk 0x00ffffff: alpha only | TEX0 frame 0xe00 CT32 512x512, decal, ALPHA (0,1,0,1) FIX 0x80 | Ztop(x,y) := frame.A(x,y): the scene's per-material alpha becomes an 8-bit id plane. |
+| material tint (sub_0024B118 second part) | FRAME 0xe00 RGB(A) | TEX0 **PSMT8H** at 0x1c00 (Ztop) through CLUT 0x3e94; ALPHA (0,1,0,1) | frame := mix(frame, CLUT[Ztop].rgb, CLUT[Ztop].a/128). CLUT 0x3e94: entries 0..243 = 0; 244..254 = bright colours with alpha 0x30 (ki / aura material ids). |
+| ink (FUN_00245a50 at 0x245ab8) | FRAME 0xe00 | PSMT8H Ztop through CLUT 0x3e64; ALPHA 0x48 = (0,2,0,1): Cs*As + Cd | frame.rgb += CLUT[Ztop].rgb; CLUT 0x3e64: 0..199 black (alpha 0x80), 200..255 a rising blue ramp. |
+| ink alpha (0x245b14) | FRAME 0xe00 alpha-only | PSMT8H through 0x3e64, ALPHA (0,2,0,1) FIX 0x80 | alpha plane update from the same lookup. |
+| 0x106c3c (FUN_00106ba8) | FRAME 0xe00 alpha-only | PSMT8H Ztop through CLUT 0x3e90 (all 0x00ffffff: alpha 0) | frame.A := 0 where the lookup applies (mask clear). |
+| downscale (FUN_00102120 at 0x102160) | FRAME 0x2a00 fbw 4 (256 wide), then 0x2e00 fbw 2 (128 wide), scissor 0..255 / 0..127 | frame 0xe00 CT32 512x512, CLAMP region, TEX1 bilinear (0x60) | 2:1 then 4:1 box downscales of the scene (u 0..32 -> x 0..16 per strip). Also PSMT8H through CLUT 0x3e98 into the frame with (0,1,0,1): a fading white by material id. |
+| alpha clears (0x1021a4) | FRAME 0xe00 alpha-only, untextured | | alpha := 0xff, then 0, then 0 over the whole frame (mask initialisation between steps). |
+| 16-bit mask work (FUN_00105cd8 at 0x105d44/0x105e24) | FRAME 0x2a00 as **CT16** with rgb-only masks; then FRAME 0xe00 alpha-only with ATE (!= 0) and TEXA 0x8030 | PSMT8H through CLUT 0x3e8c (grey ramp, alpha 0x80); then TEX0 0x2a00 as **CT16** 512x512 (the downscale buffer's halves) | builds the DoF/glow mask from the downscale buffer's bit fields; aliased, semantics to pin like the depth mask. |
+| glow composite (FUN_00103070 at 0x103098) | FRAME 0xe00 rgb-only; also 0x2a00 fbw 4 | frame 0xe00 CT32 (TEST ATST 5), and 0x2a00 as CT32 256x256 bilinear, ALPHA 0x54 = (0,1,1,1) FIX 0x80: dst alpha weighted | frame.rgb := mix(frame, blurred, frame.A/128): the DoF/glow blend keyed by the alpha mask. |
+| blur ping-pong (FUN_0010a218, FUN_00111e68) | 0x2a00, 0x2e00, 0x3ec0, 0x3f00 | those buffers, bilinear | separable blurs on the downscale chain; local-copy setups (BITBLTBUF 0x2a00..) precede them. |
+
+Native design: keep five planes on our targets (frame RGB, frame alpha = material id, Z24 from the
+depth image, Ztop 8-bit, the downscale/blur chain) and implement each row as a fullscreen fragment
+pass with the same blend/mask rules and the live palette (read from the mirror or the game's RAM at
+the hook). Hook points: sub_00247578, FUN_0010ff40, FUN_00247660 (skip the game's steps, run ours in
+that frame position). The two aliased rows are the only ones whose bit semantics are not yet pinned;
+PS2X_PGS_VRAMPROBE (ps2_gs_pgs.cpp) already reads the frame alpha and Z top bytes after the depth-mask
+pass under paraLLEl-GS and is the validation oracle.

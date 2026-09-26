@@ -1,6 +1,7 @@
 // [seamprobe] see include/runtime/ps2_seamprobe.h and docs/NATIVE-RENDER-SEAM.md (Phase 0).
 #include "runtime/ps2_seamprobe.h"
 #include "runtime/ps2_memory.h"
+#include "runtime/ps2_seamvk.h"
 
 #include <algorithm>
 #include <atomic>
@@ -410,14 +411,59 @@ namespace seamprobe
 
         struct GifState { uint32_t nloop = 0, nreg = 1, ri = 0, flg = 0; uint64_t regs = 0; bool lastOdd = false; uint32_t total = 0; };
         extern thread_local GifState t_gs;
+        bool g_dumpArmed = false, g_dumping = false; uint64_t g_dumpFrame = 0; int g_dumpLines = 0;
+        const char *regName(uint32_t a)
+        {
+            switch (a & 0xFF)
+            {
+            case 0x00: return "PRIM"; case 0x01: return "RGBAQ"; case 0x02: return "ST"; case 0x03: return "UV"; case 0x04: return "XYZF2"; case 0x05: return "XYZ2";
+            case 0x06: return "TEX0_1"; case 0x07: return "TEX0_2"; case 0x08: return "CLAMP_1"; case 0x09: return "CLAMP_2"; case 0x0A: return "FOG"; case 0x0C: return "XYZF3"; case 0x0D: return "XYZ3";
+            case 0x14: return "TEX1_1"; case 0x15: return "TEX1_2"; case 0x16: return "TEX2_1"; case 0x17: return "TEX2_2"; case 0x18: return "XYOFFSET_1"; case 0x19: return "XYOFFSET_2";
+            case 0x1A: return "PRMODECONT"; case 0x1B: return "PRMODE"; case 0x1C: return "TEXCLUT"; case 0x22: return "SCANMSK"; case 0x3B: return "TEXA"; case 0x3D: return "FOGCOL"; case 0x3F: return "TEXFLUSH";
+            case 0x40: return "SCISSOR_1"; case 0x41: return "SCISSOR_2"; case 0x42: return "ALPHA_1"; case 0x43: return "ALPHA_2"; case 0x44: return "DIMX"; case 0x45: return "DTHE"; case 0x46: return "COLCLAMP";
+            case 0x47: return "TEST_1"; case 0x48: return "TEST_2"; case 0x49: return "PABE"; case 0x4A: return "FBA_1"; case 0x4B: return "FBA_2"; case 0x4C: return "FRAME_1"; case 0x4D: return "FRAME_2";
+            case 0x4E: return "ZBUF_1"; case 0x4F: return "ZBUF_2"; case 0x50: return "BITBLTBUF"; case 0x51: return "TRXPOS"; case 0x52: return "TRXREG"; case 0x53: return "TRXDIR"; case 0x54: return "HWREG";
+            case 0x60: return "SIGNAL"; case 0x61: return "FINISH"; case 0x62: return "LABEL"; default: return "?";
+            }
+        }
         struct GifScan
         {
             KickSite *k; uint32_t prim = 0; uint64_t frame[2] = {}, tex0[2] = {}, test[2] = {};
             bool ate = false, date = false;
             uint32_t off = 0;   // stream byte offset of the qword being processed
+            uint32_t vr = 0, vg = 0, vb = 0, va = 0, vu = 0, vv = 0; float vq = 1.0f, vs = 0.0f, vt = 0.0f;   // latched vertex registers (transcript)
+            void vert(uint32_t x, uint32_t y, uint32_t z, bool adc)
+            {
+                if (g_dumping && g_dumpLines < 20000)
+                {
+                    ++g_dumpLines;
+                    std::fprintf(stderr, "[kickdump] %06x V%s xy %.1f %.1f z %u uv %.1f %.1f st %.4f %.4f q %.3f rgba %02x%02x%02x%02x\n", ownerAt(off), adc ? "(adc)" : "",
+                                 float(x) / 16.0f, float(y) / 16.0f, z, float(vu) / 16.0f, float(vv) / 16.0f, vs, vt, vq, vr, vg, vb, va);
+                }
+                if (!adc) reg(0x05, 0);
+            }
             void reg(uint32_t a, uint64_t v)
             {
                 k = &g_sites[ownerAt(off)];
+                if (g_dumping && g_dumpLines < 20000 && a != 0x05 && a != 0x04)
+                {
+                    ++g_dumpLines;
+                    std::fprintf(stderr, "[kickdump] %06x %s %016llx\n", ownerAt(off), regName(a), (unsigned long long)v);
+                    if ((a & 0xFF) == 0x06 || (a & 0xFF) == 0x07)
+                    {
+                        const uint32_t psm = (uint32_t)((v >> 20) & 0x3F);
+                        if (psm == 19u || psm == 20u || psm == 27u || psm == 36u || psm == 44u)
+                        {
+                            uint32_t clut[256];
+                            if (seamgs::peekClut((uint32_t)((v >> 37) & 0x3FFF), (uint32_t)((v >> 51) & 0xF), clut))
+                            {
+                                std::fprintf(stderr, "[kickdump] %06x CLUT cbp %x:", ownerAt(off), (unsigned)((v >> 37) & 0x3FFF));
+                                for (int i = 0; i < (psm == 20u || psm == 36u || psm == 44u ? 16 : 256); ++i) std::fprintf(stderr, "%s%08x", (i % 16) ? " " : "\n[kickdump]   ", clut[i]);
+                                std::fprintf(stderr, "\n");
+                            }
+                        }
+                    }
+                }
                 switch (a & 0xFF)
                 {
                 case 0x00: prim = (uint32_t)(v & 0x7FF); break;
@@ -481,7 +527,12 @@ namespace seamprobe
                     if (off + 8 > n) break;
                     uint64_t v; std::memcpy(&v, d + off, 8); off += 8;
                     const uint32_t desc = (uint32_t)((st.regs >> (4 * st.ri)) & 0xF);
-                    if (desc < 0xE) g.reg(desc, v);
+                    if (desc == 0x1) { g.vr = (uint32_t)(v & 0xFF); g.vg = (uint32_t)((v >> 8) & 0xFF); g.vb = (uint32_t)((v >> 16) & 0xFF); g.va = (uint32_t)((v >> 24) & 0xFF); uint32_t q = (uint32_t)(v >> 32); std::memcpy(&g.vq, &q, 4); }
+                    else if (desc == 0x2) { uint32_t s0 = (uint32_t)v, t0 = (uint32_t)(v >> 32); std::memcpy(&g.vs, &s0, 4); std::memcpy(&g.vt, &t0, 4); }
+                    else if (desc == 0x3) { g.vu = (uint32_t)(v & 0x3FFF); g.vv = (uint32_t)((v >> 16) & 0x3FFF); }
+                    else if (desc == 0x4 || desc == 0x5) g.vert((uint32_t)(v & 0xFFFF), (uint32_t)((v >> 16) & 0xFFFF), desc == 0x5 ? (uint32_t)(v >> 32) : (uint32_t)((v >> 32) & 0xFFFFFF), false);
+                    else if (desc == 0x0) { g.prim = (uint32_t)(v & 0x7FF); if (g_dumping && g_dumpLines < 20000) { ++g_dumpLines; std::fprintf(stderr, "[kickdump] %06x PRIM %03llx\n", ownerAt(g.off), (unsigned long long)(v & 0x7FF)); } }
+                    else if (desc < 0xE) g.reg(desc, v);
                     if (++st.ri == st.nreg) { st.ri = 0; --st.nloop; }
                     if (st.nloop == 0 && (st.total & 1)) off += 8;
                     continue;
@@ -489,10 +540,21 @@ namespace seamprobe
                 if (off + 16 > n) break;
                 uint64_t qlo, qhi; std::memcpy(&qlo, d + off, 8); std::memcpy(&qhi, d + off + 8, 8); off += 16;
                 const uint32_t desc = (uint32_t)((st.regs >> (4 * st.ri)) & 0xF);
-                if (desc == 0xE) g.reg((uint32_t)(qhi & 0xFF), qlo);
-                else if (desc == 0x0) g.prim = (uint32_t)(qlo & 0x7FF);
-                else if (desc == 0x4 || desc == 0x5) { if (!((qhi >> 47) & 1)) g.reg(desc, 0); }
-                else if (desc == 0x1 || desc == 0x2 || desc == 0x3 || desc == 0xA || desc == 0xC || desc == 0xD || desc == 0xF) {}
+                if (desc == 0xE)
+                {
+                    const uint32_t a = (uint32_t)(qhi & 0xFF);
+                    if (a == 0x01) { g.vr = (uint32_t)(qlo & 0xFF); g.vg = (uint32_t)((qlo >> 8) & 0xFF); g.vb = (uint32_t)((qlo >> 16) & 0xFF); g.va = (uint32_t)((qlo >> 24) & 0xFF); uint32_t q = (uint32_t)(qlo >> 32); std::memcpy(&g.vq, &q, 4); }
+                    else if (a == 0x02) { uint32_t s0 = (uint32_t)qlo, t0 = (uint32_t)(qlo >> 32); std::memcpy(&g.vs, &s0, 4); std::memcpy(&g.vt, &t0, 4); }
+                    else if (a == 0x03) { g.vu = (uint32_t)(qlo & 0x3FFF); g.vv = (uint32_t)((qlo >> 16) & 0x3FFF); }
+                    if (a == 0x05 || a == 0x04) g.vert((uint32_t)(qlo & 0xFFFF), (uint32_t)((qlo >> 16) & 0xFFFF), a == 0x05 ? (uint32_t)(qlo >> 32) : (uint32_t)((qlo >> 32) & 0xFFFFFF), false);
+                    else g.reg(a, qlo);
+                }
+                else if (desc == 0x0) { g.prim = (uint32_t)(qlo & 0x7FF); if (g_dumping && g_dumpLines < 20000) { ++g_dumpLines; std::fprintf(stderr, "[kickdump] %06x PRIM %03llx\n", ownerAt(g.off), (unsigned long long)(qlo & 0x7FF)); } }
+                else if (desc == 0x1) { g.vr = (uint32_t)(qlo & 0xFF); g.vg = (uint32_t)((qlo >> 32) & 0xFF); g.vb = (uint32_t)(qhi & 0xFF); g.va = (uint32_t)((qhi >> 32) & 0xFF); }
+                else if (desc == 0x2) { uint32_t s0 = (uint32_t)qlo, t0 = (uint32_t)(qlo >> 32), q0 = (uint32_t)qhi; std::memcpy(&g.vs, &s0, 4); std::memcpy(&g.vt, &t0, 4); std::memcpy(&g.vq, &q0, 4); }
+                else if (desc == 0x3) { g.vu = (uint32_t)(qlo & 0x3FFF); g.vv = (uint32_t)((qlo >> 32) & 0x3FFF); }
+                else if (desc == 0x4 || desc == 0x5) g.vert((uint32_t)(qlo & 0xFFFF), (uint32_t)((qlo >> 32) & 0xFFFF), desc == 0x5 ? (uint32_t)qhi : (uint32_t)((qhi >> 4) & 0xFFFFFF), ((qhi >> 47) & 1) != 0);
+                else if (desc == 0xA || desc == 0xC || desc == 0xD || desc == 0xF) {}
                 else g.reg(desc, qlo);
                 if (++st.ri == st.nreg) { st.ri = 0; --st.nloop; }
             }
@@ -522,6 +584,7 @@ namespace seamprobe
         void printSites()
         {
             std::fprintf(stderr, "[kickprobe] frame %llu, per frame (%zu callers):\n", (unsigned long long)g_bt3FrameCount.load(), g_sites.size());
+            if (g_sites.size() > 50u && g_dumpFrame == 0) g_dumpArmed = true;
             const double n = 300.0;
             const char *pn[8] = {"pt", "ln", "ls", "tri", "ts", "tf", "spr", "?"};
             for (auto &kv : g_sites)
@@ -596,6 +659,13 @@ namespace seamprobe
     }
     void noteDirect(uint32_t pos, const uint8_t *gif, uint32_t bytes)
     {
+        {   // PS2X_KICKPROBE_DUMP=1: transcript of one busy frame (armed by the first window with > 50 callers)
+            static const bool s_dump = [](){ const char *v = std::getenv("PS2X_KICKPROBE_DUMP"); return v && v[0] && v[0] != '0'; }();
+            const uint64_t fr = g_bt3FrameCount.load();
+            if (s_dump && g_dumpArmed && !g_dumping && g_dumpFrame == 0) { g_dumpFrame = fr + 1; }
+            if (s_dump && g_dumpFrame && fr == g_dumpFrame && !g_dumping) { g_dumping = true; std::fprintf(stderr, "[kickdump] BEGIN frame %llu\n", (unsigned long long)fr); }
+            if (g_dumping && fr > g_dumpFrame) { g_dumping = false; g_dumpArmed = false; g_dumpFrame = ~0ull; std::fprintf(stderr, "[kickdump] END (%d lines)\n", g_dumpLines); }
+        }
         uint32_t guest = 0;
         for (size_t mi = t_chainMap.size(); mi > 0; --mi)
             if (t_chainMap[mi - 1][0] <= pos) { guest = t_chainMap[mi - 1][1] + (pos - t_chainMap[mi - 1][0]); break; }
