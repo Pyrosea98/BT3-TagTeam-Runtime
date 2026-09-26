@@ -45,6 +45,11 @@ namespace frontend
         void goTo(const std::filesystem::path &p);
         void acceptCurrent();
 
+        // One dropdown of jump targets. Returns the index picked this frame, or -1. A dropdown and
+        // not a row of buttons: a machine can have a dozen mounts and a row of them runs off the
+        // edge of the modal, while the dropdown costs a fixed width no matter how many there are.
+        int placeCombo(const char *label, const std::vector<Place> &items);
+
         bool m_open = false;
         bool m_accepted = false;
         bool m_justOpened = false;
@@ -54,7 +59,8 @@ namespace frontend
         char m_pathBuffer[1024] = {};
         std::vector<std::string> m_exts;
         std::vector<Entry> m_entries;
-        std::vector<Place> m_places;
+        std::vector<Place> m_places;      // every mounted volume
+        std::vector<Place> m_shortcuts;   // the user folders under $HOME
         std::string m_result;
     };
 }

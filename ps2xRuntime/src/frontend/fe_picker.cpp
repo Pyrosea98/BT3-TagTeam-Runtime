@@ -8,6 +8,8 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <system_error>
 
 #if defined(_WIN32)
@@ -54,7 +56,7 @@ namespace
 
     // Every drive Windows currently has mounted. The old picker started at C:\ and offered no way
     // out of it, which is exactly the case this replaces.
-    void appendWindowsDrives(std::vector<std::pair<std::string, std::filesystem::path>> &out)
+    void appendVolumes(std::vector<std::pair<std::string, std::filesystem::path>> &out)
     {
         DWORD mask = GetLogicalDrives();
         for (int i = 0; i < 26; ++i)
@@ -73,8 +75,116 @@ namespace
             out.push_back({root + "  " + label, std::filesystem::path(root)});
         }
     }
+#elif defined(__APPLE__)
+    // macOS: the root volume plus every disk under /Volumes, which is also where an attached disk
+    // image shows up -- i.e. exactly where a dump usually lives.
+    void appendVolumes(std::vector<std::pair<std::string, std::filesystem::path>> &out)
+    {
+        out.push_back({"/  Macintosh HD", std::filesystem::path("/")});
+        std::error_code ec;
+        for (const auto &de : std::filesystem::directory_iterator("/Volumes", ec))
+        {
+            if (ec)
+                break;
+            if (isDir(de.path()))
+                out.push_back({de.path().filename().string(), de.path()});
+        }
+    }
 #else
-    void appendWindowsDrives(std::vector<std::pair<std::string, std::filesystem::path>> &) {}
+    // Linux/BSD: a dump is very often on a disk that is NOT under $HOME (a separate data disk, an
+    // external drive, a NAS mount). This used to list nothing at all here, so the places bar held
+    // only the $HOME folders and the sole way onto another disk was typing the path by hand.
+    //
+    // The mount table is the equivalent of what GetLogicalDrives gives on Windows: every mounted
+    // filesystem, with its device and type. Kernel/pseudo filesystems are filtered out (nowhere a
+    // user keeps a disc image), the mount point is shown next to a trimmed device name so two
+    // identically named disks stay distinguishable, and duplicates from bind mounts are dropped.
+    void appendVolumes(std::vector<std::pair<std::string, std::filesystem::path>> &out)
+    {
+        // "/" first: it is in the mount table too, but it is the one entry that must never be
+        // missing, and a trimmed /proc/mounts still beats an empty bar.
+        out.push_back({"/  raiz", std::filesystem::path("/")});
+
+        std::ifstream mounts("/proc/mounts");
+        if (!mounts)
+            return;   // no procfs (a container, or a BSD): "/" above is still there
+
+        // The root filesystem's device, so its other mount points can be skipped: on a normal
+        // desktop those are bind mounts (/home, /boot, /var/log, /var/cache/pacman/pkg), and four
+        // buttons for the same disk the "/" button already reaches is noise, not navigation.
+        std::string rootDevice;
+        {
+            std::ifstream r("/proc/mounts");
+            std::string line;
+            while (std::getline(r, line))
+            {
+                std::istringstream is(line);
+                std::string device, mountPoint, type;
+                if ((is >> device >> mountPoint >> type) && mountPoint == "/")
+                {
+                    rootDevice = device;
+                    break;
+                }
+            }
+        }
+
+        static const char *const kSkipTypes[] = {
+            "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2", "securityfs",
+            "pstore", "bpf", "configfs", "debugfs", "tracefs", "fusectl", "mqueue", "hugetlbfs",
+            "autofs", "binfmt_misc", "efivarfs", "ramfs", "squashfs", "overlay", "nfsd",
+        };
+        std::vector<std::string> seen;
+        std::string line;
+        while (std::getline(mounts, line))
+        {
+            std::istringstream is(line);
+            std::string device, mountPoint, type;
+            if (!(is >> device >> mountPoint >> type))
+                continue;
+            bool skip = false;
+            for (const char *t : kSkipTypes)
+                if (type == t) { skip = true; break; }
+            if (skip || mountPoint == "/")
+                continue;
+            // /run, /proc, /dev and /sys hold runtime plumbing, not files a user browses for a
+            // dump: the XDG document portal (/run/user/1000/doc) and a udisks2 mount both show up
+            // there and neither is somewhere you keep a disc image.
+            if (mountPoint.rfind("/run/", 0) == 0 || mountPoint.rfind("/proc/", 0) == 0 ||
+                mountPoint.rfind("/dev/", 0) == 0 || mountPoint.rfind("/sys/", 0) == 0)
+                continue;
+            if (!rootDevice.empty() && device == rootDevice)
+                continue;   // a bind mount of the root disk, not a volume of its own
+            // /proc/mounts escapes spaces and other awkward characters as \040 and friends.
+            std::string decoded;
+            for (std::size_t i = 0; i < mountPoint.size(); ++i)
+            {
+                if (mountPoint[i] == '\\' && i + 3 < mountPoint.size())
+                {
+                    const std::string hex = mountPoint.substr(i + 1, 3);
+                    decoded += (char)std::stoi(hex, nullptr, 16);
+                    i += 3;
+                }
+                else
+                    decoded += mountPoint[i];
+            }
+            const std::filesystem::path p(decoded);
+            if (!isDir(p))
+                continue;   // a stale or unreachable mount point
+            if (std::find(seen.begin(), seen.end(), decoded) != seen.end())
+                continue;   // the same mount reachable twice
+            seen.push_back(decoded);
+
+            // The device basename is the disk name the user recognises; the mount point next to it
+            // keeps two disks of the same model apart.
+            std::string dev = device;
+            const std::size_t slash = dev.find_last_of('/');
+            if (slash != std::string::npos)
+                dev = dev.substr(slash + 1);
+            if (dev.empty())
+                dev = type;
+            out.push_back({dev + "  " + decoded, p});
+        }
+    }
 #endif
 }
 
@@ -97,10 +207,11 @@ namespace frontend
     void FilePicker::buildPlaces()
     {
         m_places.clear();
-        std::vector<std::pair<std::string, std::filesystem::path>> drives;
-        appendWindowsDrives(drives);
-        for (auto &d : drives)
-            m_places.push_back({d.first, d.second});
+        m_shortcuts.clear();
+        std::vector<std::pair<std::string, std::filesystem::path>> vols;
+        appendVolumes(vols);
+        for (const auto &v : vols)
+            m_places.push_back({v.first, v.second});
 
         // The user folders people actually keep dumps in, when they exist.
         std::error_code ec;
@@ -124,8 +235,43 @@ namespace frontend
         {
             const std::filesystem::path p = home / s.sub;
             if (isDir(p))
-                m_places.push_back({s.label, p});
+                m_shortcuts.push_back({s.label, p});
         }
+    }
+
+    int FilePicker::placeCombo(const char *label, const std::vector<Place> &items)
+    {
+        // The preview is where we actually are when that is one of the entries, and a hint
+        // otherwise: showing a fixed "pick one" while sitting inside /mnt/Datos is a worse answer
+        // than naming the disk you are on.
+        int current = -1;
+        for (std::size_t i = 0; i < items.size(); ++i)
+        {
+            std::error_code ec;
+            if (std::filesystem::equivalent(m_dir, items[i].path, ec) && !ec)
+            {
+                current = (int)i;
+                break;
+            }
+        }
+        const std::string preview =
+            current >= 0 ? shortPath(items[current].path) : std::string("(elegir)");
+
+        ImGui::SetNextItemWidth(300.0f);
+        if (!ImGui::BeginCombo(label, preview.c_str()))
+            return -1;
+        int picked = -1;
+        for (std::size_t i = 0; i < items.size(); ++i)
+        {
+            const bool sel = (int)i == current;
+            if (ImGui::Selectable(items[i].label.c_str(), sel))
+                picked = (int)i;
+            if (sel)
+                ImGui::SetItemDefaultFocus();
+        }
+        // Inside the if: BeginCombo returning false opened no window, so there is nothing to end.
+        ImGui::EndCombo();
+        return picked;
     }
 
     void FilePicker::goTo(const std::filesystem::path &p)
@@ -232,21 +378,23 @@ namespace frontend
             ImGui::TextColored(fe::gold(), "%s", m_title.c_str());
             ImGui::Separator();
 
-            // Places: every mounted volume first, then the user folders.
+            // Where to jump: every mounted volume, then the user folders. Two dropdowns rather
+            // than one row of buttons, because the number of mounts is whatever the machine
+            // happens to have and a row of them runs off the edge of the modal.
             if (!m_places.empty())
             {
-                ImGui::TextDisabled("Go to:");
-                for (std::size_t i = 0; i < m_places.size(); ++i)
-                {
-                    if (i > 0)
-                        ImGui::SameLine();
-                    ImGui::PushID(static_cast<int>(i));
-                    if (ImGui::SmallButton(m_places[i].label.c_str()))
-                        goTo(m_places[i].path);
-                    ImGui::PopID();
-                }
-                ImGui::Separator();
+                const int vol = placeCombo("Discos:", m_places);
+                if (vol >= 0)
+                    goTo(m_places[vol].path);
             }
+            if (!m_shortcuts.empty())
+            {
+                ImGui::SameLine();
+                const int sc = placeCombo("Carpetas:", m_shortcuts);
+                if (sc >= 0)
+                    goTo(m_shortcuts[sc].path);
+            }
+            ImGui::Separator();
 
             ImGui::SetNextItemWidth(560.0f);
             if (ImGui::InputText("##path", m_pathBuffer, sizeof m_pathBuffer))
