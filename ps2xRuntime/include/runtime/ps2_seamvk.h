@@ -58,6 +58,8 @@ namespace seamgs
 {
     // Diagnostics: the CSM1 palette at cbp as the VRAM mirror holds it (256 RGBA entries). False when the front-end is off.
     bool peekClut(uint32_t cbp, uint32_t cpsm, uint32_t *out256);
+    bool dumpMirror(const char *path);   // diagnostics: the 4 MB VRAM mirror
+    bool peekTexel(int32_t slot, uint32_t x, uint32_t y, uint32_t &rgba);   // diagnostics: a decoded texel of a cached slot (textures up to 256x256)
 }
 
 #ifdef PS2X_HAVE_PGS

@@ -7984,6 +7984,12 @@ void PS2Runtime::run()
                         bt3Image im{}; im.data = s_pgsBuf.data(); im.width = (int)pw; im.height = (int)ph; im.mipmaps = 1; im.format = BT3_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
                         char path[512]; std::snprintf(path, sizeof(path), "%s/pgs_%05u.png", s_dumpDir, s_dumpN - 1u);
                         bt3ExportImage(im, path);
+                        auto writeAlpha = [&](const char *tag, const uint8_t *rgba, uint32_t w, uint32_t h)
+                        {   // the alpha plane as PGM: the destination-alpha masks, native vs backend
+                            char pa[512]; std::snprintf(pa, sizeof(pa), "%s/%s_%05u_a.pgm", s_dumpDir, tag, s_dumpN - 1u);
+                            if (FILE *fp = std::fopen(pa, "wb")) { std::fprintf(fp, "P5\n%u %u\n255\n", w, h); for (size_t i = 0; i < size_t(w) * h; ++i) std::fputc(rgba[i * 4u + 3u], fp); std::fclose(fp); }
+                        };
+                        writeAlpha("pgs", s_pgsBuf.data(), pw, ph);
                         {   // [seamvk] the reference backend's frame of the same swap, next to the native one
                             static std::vector<uint8_t> s_ref; uint32_t rw = 0, rh = 0;
                             if (ps2x_pgs::takeRefFrame(s_ref, rw, rh) && rw && rh && s_ref.size() >= size_t(rw) * rh * 4u)
@@ -7991,6 +7997,7 @@ void PS2Runtime::run()
                                 bt3Image ri{}; ri.data = s_ref.data(); ri.width = (int)rw; ri.height = (int)rh; ri.mipmaps = 1; ri.format = BT3_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
                                 std::snprintf(path, sizeof(path), "%s/ref_%05u.png", s_dumpDir, s_dumpN - 1u);
                                 bt3ExportImage(ri, path);
+                                writeAlpha("ref", s_ref.data(), rw, rh);
                             }
                         }
                     }

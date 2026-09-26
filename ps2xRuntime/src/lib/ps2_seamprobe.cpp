@@ -663,7 +663,9 @@ namespace seamprobe
         {   // PS2X_KICKPROBE_DUMP=1: transcript of one busy frame (armed by the first window with > 50 callers)
             static const bool s_dump = [](){ const char *v = std::getenv("PS2X_KICKPROBE_DUMP"); return v && v[0] && v[0] != '0'; }();
             const uint64_t fr = g_bt3FrameCount.load();
-            if (s_dump && g_dumpArmed && !g_dumping && g_dumpFrame == 0) { g_dumpFrame = fr + 1; }
+            static const uint64_t s_dumpAt = [](){ const char *v = std::getenv("PS2X_KICKPROBE_DUMPFRAME"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();   // explicit game frame
+            if (s_dump && s_dumpAt && g_dumpFrame == 0 && !g_dumping) g_dumpFrame = s_dumpAt;
+            else if (s_dump && !s_dumpAt && g_dumpArmed && !g_dumping && g_dumpFrame == 0) { g_dumpFrame = fr + 1; }
             if (s_dump && g_dumpFrame && fr == g_dumpFrame && !g_dumping) { g_dumping = true; std::fprintf(stderr, "[kickdump] BEGIN frame %llu\n", (unsigned long long)fr); }
             if (g_dumping && fr > g_dumpFrame) { g_dumping = false; g_dumpArmed = false; g_dumpFrame = ~0ull; std::fprintf(stderr, "[kickdump] END (%d lines)\n", g_dumpLines); }
         }

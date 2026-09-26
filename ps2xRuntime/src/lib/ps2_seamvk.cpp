@@ -19,6 +19,8 @@
 #include "sampler.hpp"
 
 #include <algorithm>
+#include <atomic>
+extern std::atomic<uint64_t> g_bt3FrameCount;   // game_overrides.cpp: the game's frame counter
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -286,6 +288,7 @@ namespace seamvk
             return false;
         }
 
+        static const int s_dateDbg = [](){ const char *v = std::getenv("PS2X_SEAMVK_DATEDBG"); return v && v[0] ? std::atoi(v) : 0; }();
         void bindDraw(Vulkan::CommandBuffer &cmd, const seamgs::Draw &d0, uint32_t sc)
         {
             static const bool s_flat = [](){ const char *v = std::getenv("PS2X_SEAMVK_FLAT"); return v && v[0] && v[0] != '0'; }();
@@ -313,6 +316,15 @@ namespace seamvk
             if ((t.fbmsk & 0x00FF0000u) != 0x00FF0000u) mask |= VK_COLOR_COMPONENT_B_BIT;
             if ((t.fbmsk & 0xFF000000u) != 0xFF000000u) mask |= VK_COLOR_COMPONENT_A_BIT;
             cmd.set_color_write_mask(mask);
+            // PS2X_SEAMVK_MASKDBG=1 (diagnostic): an alpha-only write also gets colour blend factors (0, 1), so the colour
+            // channels stay put even if the write mask were not honoured
+            static const bool s_maskDbg = [](){ const char *v = std::getenv("PS2X_SEAMVK_MASKDBG"); return v && v[0] && v[0] != '0'; }();
+            if (s_maskDbg && (t.fbmsk & 0x00FFFFFFu) == 0x00FFFFFFu)
+            {
+                cmd.set_blend_enable(true);
+                cmd.set_blend_factors(VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO);
+                cmd.set_blend_op(VK_BLEND_OP_ADD, VK_BLEND_OP_ADD);
+            }
             // Scissor in GS pixels, clipped to the target's row width (draws past it would wrap in VRAM).
             const uint32_t rowW = (t.fbw ? t.fbw : 1u) * 64u;
             uint32_t x0 = std::min<uint32_t>(t.scax0, rowW), x1 = std::min<uint32_t>(t.scax1 + 1u, rowW);
@@ -330,7 +342,7 @@ namespace seamvk
             else if (tex && (g_gpu.tex[t.tex]->get_width() != t.texW || g_gpu.tex[t.tex]->get_height() != t.texH)) ++g_gpu.texMismatch;
             pc.texInfo[0] = float(t.texW ? t.texW : 1u); pc.texInfo[1] = float(t.texH ? t.texH : 1u);
             pc.fA[0] = (tex ? 1 : 0) | (t.fst ? 2 : 0) | (t.mmag ? 8 : 0) | (t.ate ? 16 : 0) | (t.fba ? 32 : 0) | (t.tcc ? 128 : 0) | (t.fge ? 256 : 0)
-                     | (t.date ? 512 : 0) | (t.datm ? 1024 : 0);
+                     | (t.date ? 512 : 0) | (t.datm ? 1024 : 0) | ((s_dateDbg == 1 && t.date) ? 2048 : 0) | ((s_dateDbg == 2 && t.date) ? 4096 : 0) | (((s_dateDbg == 3 || (s_dateDbg == 4 && ((g_gpu.frames / 300u) & 1u))) && t.date) ? 8192 : 0);   // =4: alternate with normal rendering every 300 frames (the capture cadence)
             pc.fA[1] = t.tfx; pc.fA[2] = t.wms | (t.wmt << 2); pc.fA[3] = t.atst | (t.aref << 3) | (t.afail << 11);
             pc.fB[0] = t.minu; pc.fB[1] = t.maxu; pc.fB[2] = t.minv; pc.fB[3] = t.maxv;
             pc.fogcol[0] = (t.fogcol & 0xFFu) / 255.0f; pc.fogcol[1] = ((t.fogcol >> 8) & 0xFFu) / 255.0f; pc.fogcol[2] = ((t.fogcol >> 16) & 0xFFu) / 255.0f; pc.fogcol[3] = 1.0f;
@@ -394,8 +406,12 @@ namespace seamvk
         static const uint64_t s_dumpFrame = [](){ const char *v = std::getenv("PS2X_SEAMVK_DUMPFRAME"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
         static bool s_dumped = false;
         auto busyFight = [&]() { size_t host = 0; for (const seamgs::Draw &d : f.draws) if (d.kind == 1) ++host; return host > 200u; };
-        if (s_dumpFrame && !s_dumped && ((s_dumpFrame != 1u && g_gpu.frames == s_dumpFrame) || (s_dumpFrame == 1u && busyFight())))
+        static const uint64_t s_dumpGame = [](){ const char *v = std::getenv("PS2X_SEAMVK_DUMPGAMEFRAME"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();   // by the game's frame counter (aligns with PS2X_KICKPROBE_DUMPFRAME)
+        const bool gameHit = s_dumpGame && g_bt3FrameCount.load(std::memory_order_relaxed) >= s_dumpGame;
+        bool dumpNow = false;
+        if ((s_dumpFrame || s_dumpGame) && !s_dumped && (gameHit || (s_dumpFrame > 1u && g_gpu.frames == s_dumpFrame) || (s_dumpFrame == 1u && busyFight())))
         {
+            dumpNow = true;
             if (const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP"))
             {   // the backend's view of the targets this frame decodes from, for comparison with rt_*.ppm
                 g_gpu.dumpRt = true;
@@ -407,8 +423,48 @@ namespace seamvk
                 {   // what the GPU gets for each slot uploaded this frame
                     char path[512]; std::snprintf(path, sizeof(path), "%s/gpu_slot%03d_%ux%u.ppm", dir, u.slot, u.w, u.h);
                     if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P6\n%u %u\n255\n", u.w, u.h); for (size_t i = 0; i < size_t(u.w) * u.h; ++i) std::fwrite(u.rgba.data() + i * 4u, 1, 3, fp); std::fclose(fp); }
+                    std::snprintf(path, sizeof(path), "%s/gpu_slot%03d_%ux%u_a.pgm", dir, u.slot, u.w, u.h);
+                    if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P5\n%u %u\n255\n", u.w, u.h); for (size_t i = 0; i < size_t(u.w) * u.h; ++i) std::fputc(u.rgba[i * 4u + 3u], fp); std::fclose(fp); }
                 }
             std::fprintf(stderr, "[seamvk] frame %llu: %zu draws, %zu vertex bytes, %zu tex uploads\n", (unsigned long long)g_gpu.frames, f.draws.size(), f.verts.size(), f.texUploads.size());
+            if (const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP"))
+            {   // the mirror and the backend's VRAM at this very swap, for a byte-level diff (tools/gsvram.py)
+                char pm[512], pb[512], pt[512]; std::snprintf(pm, sizeof(pm), "%s/mirror_vram.bin", dir); std::snprintf(pb, sizeof(pb), "%s/pgs_vram.bin", dir); std::snprintf(pt, sizeof(pt), "%s/pgs_vram.txt", dir);
+                std::fprintf(stderr, "[seamvk]  vram dumps: mirror %s, backend %s\n", seamgs::dumpMirror(pm) ? "ok" : "FAILED", ps2x_pgs::dumpVramRawUnderLock(pb, pt) ? "ok" : "FAILED");
+            }
+            for (uint32_t cbp : { 0x2c8cu, 0x2cacu, 0x3e84u })
+            {   // the front-end's view of a few palettes (mirror) for comparison with the backend's VRAM
+                uint32_t cl[256]; if (!seamgs::peekClut(cbp, 0, cl)) break;
+                uint32_t hist[256] = {}; for (uint32_t i = 0; i < 256; ++i) ++hist[cl[i] >> 24];
+                std::fprintf(stderr, "[seamvk]  mirror CLUT 0x%x: e0..7 %08x %08x %08x %08x %08x %08x %08x %08x | alpha", cbp, cl[0], cl[1], cl[2], cl[3], cl[4], cl[5], cl[6], cl[7]);
+                for (uint32_t a = 0; a < 256; ++a) if (hist[a]) std::fprintf(stderr, " %02x:%u", a, hist[a]);
+                std::fprintf(stderr, "\n");
+            }
+            {   // PS2X_SEAMVK_PROBE=<x>,<y>: every GS draw whose triangles cover that pixel, in order, with the interpolated texcoord
+                static const std::pair<int,int> s_probe = [](){ const char *v = std::getenv("PS2X_SEAMVK_PROBE"); std::pair<int,int> r{-1,-1}; if (v && v[0]) { r.first = std::atoi(v); if (const char *c = std::strchr(v, ',')) r.second = std::atoi(c + 1); } return r; }();
+                if (s_probe.first >= 0)
+                {
+                    const float px = s_probe.first + 0.5f, py = s_probe.second + 0.5f;
+                    for (size_t i = 0; i < f.draws.size(); ++i)
+                    {
+                        const seamgs::Draw &d = f.draws[i]; if (d.kind != 0) continue;
+                        for (uint32_t v = 0; v + 2 < d.count; v += 3)
+                        {
+                            seamgs::Vtx a, b, c; std::memcpy(&a, f.verts.data() + d.vertOff + size_t(v) * sizeof(a), sizeof(a)); std::memcpy(&b, f.verts.data() + d.vertOff + size_t(v + 1) * sizeof(b), sizeof(b)); std::memcpy(&c, f.verts.data() + d.vertOff + size_t(v + 2) * sizeof(c), sizeof(c));
+                            const float d0 = (b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x), d1 = (c.x - b.x) * (py - b.y) - (c.y - b.y) * (px - b.x), d2 = (a.x - c.x) * (py - c.y) - (a.y - c.y) * (px - c.x);
+                            const bool inside = (d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0);
+                            if (!inside) continue;
+                            const float area = d0 + d1 + d2; const float wa = d1 / area, wb = d2 / area, wc = d0 / area;   // barycentric (a from d1 etc.)
+                            const float u = wa * a.u + wb * b.u + wc * c.u, vv = wa * a.v + wb * b.v + wc * c.v;
+                            const seamgs::State &t = d.st;
+                            uint32_t texel = 0; const bool haveTexel = t.tme && t.tex >= 0 && seamgs::peekTexel(t.tex, (uint32_t)std::max(0.0f, u - (t.mmag ? 0.5f : 0.0f)), (uint32_t)std::max(0.0f, vv - (t.mmag ? 0.5f : 0.0f)), texel);
+                            std::fprintf(stderr, "[probe] draw %zu covers (%d,%d): fbp 0x%x msk %08x tme %u fst %u tex %d %ux%u tex0 %08x%08x tfx %u tcc %u abe %u (%u,%u,%u,%u) fix %u ate %u atst %u aref %u date %u datm %u fba %u zte %u ztst %u | uv %.1f %.1f rgba %08x texel %s%08x\n",
+                                         i, s_probe.first, s_probe.second, t.fbp, t.fbmsk, t.tme, t.fst, t.tex, t.texW, t.texH, t.tex0hi, t.tex0lo, t.tfx, t.tcc, t.abe, t.aA, t.aB, t.aC, t.aD, t.fix, t.ate, t.atst, t.aref, t.date, t.datm, t.fba, t.zte, t.ztst, u, vv, a.rgba, haveTexel ? "" : "?", texel);
+                            break;
+                        }
+                    }
+                }
+            }
             for (const seamgs::FrameList::RegEvent &e : f.regEvents)
                 std::fprintf(stderr, "[seamvk]  reg before draw %u path %u%s %s %016llx\n", e.drawIndex, e.path, e.hostGif ? " (host)" : "",
                              e.addr == 0x40 ? "SCISSOR_1" : e.addr == 0x41 ? "SCISSOR_2" : e.addr == 0x4c ? "FRAME_1" : "FRAME_2", (unsigned long long)e.value);
@@ -499,6 +555,9 @@ namespace seamvk
             {   // PS2X_SEAMVK_ONLYTEX0=<hex>: render only the GS draws whose TEX0 matches (diagnostic)
                 static const uint64_t s_only = [](){ const char *v = std::getenv("PS2X_SEAMVK_ONLYTEX0"); return v && v[0] ? std::strtoull(v, nullptr, 16) : 0ull; }();
                 if (s_only && d.kind == 0 && (((uint64_t)t.tex0hi << 32) | t.tex0lo) != s_only) continue;
+                // PS2X_SEAMVK_SKIPDATE=<1|2|3>: skip DATE draws that are untextured (1), textured (2) or both (3) (diagnostic)
+                static const int s_skipDate = [](){ const char *v = std::getenv("PS2X_SEAMVK_SKIPDATE"); return v && v[0] ? std::atoi(v) : 0; }();
+                if (s_skipDate && d.kind == 0 && t.date && ((t.tme == 0 && (s_skipDate & 1)) || (t.tme != 0 && (s_skipDate & 2)))) continue;
             }
             const uint32_t zbp = (t.zte ? t.zbp : ~1u) ^ (t.fbw << 24);   // the pass key also changes with the row width
             const bool dateBarrier = t.date && !s_noDate;   // [date] handled in-pass: a by-region barrier before the draw (below)
@@ -637,6 +696,33 @@ namespace seamvk
             }
             dev.unmap_host_buffer(*prev.buf, Vulkan::MEMORY_ACCESS_READ_BIT);
             prev.live = false;
+        }
+        if (dumpNow && std::getenv("PS2X_SEAMVK_TEXDUMP"))
+        {   // the colour targets after this frame's draws, rgb + alpha (synchronous readback): the native alpha plane for
+            // comparison with the backend's VRAM dumped at the same swap (pgs_vram.bin)
+            const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP");
+            for (auto &kv : g_gpu.targets)
+            {
+                Target &ct = kv.second; if (!ct.img) continue;
+                const uint32_t w = ct.img->get_width(), h = ct.img->get_height();
+                Vulkan::BufferCreateInfo bi = {}; bi.size = VkDeviceSize(w) * h * 4u; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.domain = Vulkan::BufferDomain::CachedHost;
+                auto buf = dev.create_buffer(bi);
+                auto c2 = dev.request_command_buffer();
+                const VkImageLayout was = ct.layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_IMAGE_LAYOUT_GENERAL : ct.layout;
+                c2->image_barrier(*ct.img, was, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                c2->copy_image_to_buffer(*buf, *ct.img, 0, {}, { w, h, 1 }, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
+                c2->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+                c2->image_barrier(*ct.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, was, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+                Vulkan::Fence fe; dev.submit(c2, &fe); fe->wait();
+                const uint8_t *px = static_cast<const uint8_t *>(dev.map_host_buffer(*buf, Vulkan::MEMORY_ACCESS_READ_BIT));
+                char path[512];
+                std::snprintf(path, sizeof(path), "%s/target_%x_%ux%u.ppm", dir, kv.first, w, h);
+                if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P6\n%u %u\n255\n", w, h); for (size_t i = 0; i < size_t(w) * h; ++i) std::fwrite(px + i * 4u, 1, 3, fp); std::fclose(fp); }
+                std::snprintf(path, sizeof(path), "%s/target_%x_%ux%u_a.pgm", dir, kv.first, w, h);
+                if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P5\n%u %u\n255\n", w, h); for (size_t i = 0; i < size_t(w) * h; ++i) std::fputc(px[i * 4u + 3u], fp); std::fclose(fp); }
+                dev.unmap_host_buffer(*buf, Vulkan::MEMORY_ACCESS_READ_BIT);
+                std::fprintf(stderr, "[seamvk]  target dump fbp 0x%x %ux%u -> %s\n", kv.first, w, h, path);
+            }
         }
         if (!g_gpu.rtDumps.empty())
         {   // PS2X_SEAMVK_TEXDUMP + DUMPFRAME: the render-target decodes of this frame as rt_*.ppm (synchronous readback)

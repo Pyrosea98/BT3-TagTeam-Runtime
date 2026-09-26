@@ -35,6 +35,9 @@ namespace seamgs
         uint32_t g_pageWrite[kPages];   // stamp of the last mirror write touching the page
         uint32_t g_pageDrawn[kPages];   // stamp at the last DRAW into the page (pixels the mirror never sees)
         uint32_t g_stamp = 1;           // bumped per transfer
+        // PS2X_SEAMGS_WATCH=<lo>-<hi> (hex blocks): log the image transfers and scratch-raster writes that land in that block range
+        struct Watch { uint32_t lo = 0, hi = 0; uint32_t logged = 0; };
+        Watch g_watch = [](){ Watch w; const char *v = std::getenv("PS2X_SEAMGS_WATCH"); if (v && v[0]) { w.lo = (uint32_t)std::strtoul(v, nullptr, 16); if (const char *d = std::strchr(v, '-')) w.hi = (uint32_t)std::strtoul(d + 1, nullptr, 16); } return w; }();
         uint64_t g_frame = 0;
 
         enum : uint32_t { PSMCT32 = 0, PSMCT24 = 1, PSMCT16 = 2, PSMCT16S = 10, PSMT8 = 19, PSMT4 = 20, PSMT8H = 27, PSMT4HL = 36, PSMT4HH = 44,
@@ -385,12 +388,22 @@ namespace seamgs
             uint64_t key = fnv(&tex0, 8);
             if (needTexa) key = fnv(&g_r.texa, 8, key);
             auto it = g_texByKey.find(key);
+            // PS2X_SEAMGS_TEXTRACE=<cbp hex>: every lookup of a texture with that palette base, with the cache decision
+            static const uint32_t s_traceCbp = [](){ const char *v = std::getenv("PS2X_SEAMGS_TEXTRACE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 16) : 0xFFFFFFFFu; }();
+            const bool trace = ((uint32_t)((tex0 >> 37) & 0x3FFFu) == s_traceCbp) && g_watch.logged < 400u;
             if (it != g_texByKey.end())
             {
                 TexEntry &e = g_tex[it->second];
                 bool valid = true;
                 for (const auto &pg : e.pages) if (g_pageWrite[pg.first] != pg.second) { valid = false; break; }
                 if (valid && e.rtBased) { auto ti = g_targets.find(e.rtFbp); if (ti == g_targets.end() || ti->second.drawStamp != e.rtStamp) valid = false; }
+                if (trace)
+                {
+                    ++g_watch.logged;
+                    std::fprintf(stderr, "[textrace] frame %llu draw %zu tex0 %016llx: cached slot %d %s, %zu pages:", (unsigned long long)g_frame, g_list.draws.size(), (unsigned long long)tex0, it->second, valid ? "VALID" : "stale", e.pages.size());
+                    for (const auto &pg : e.pages) std::fprintf(stderr, " p%x(%u/%u)", pg.first, pg.second, g_pageWrite[pg.first]);
+                    const uint32_t a0 = addr32((uint32_t)((tex0 >> 37) & 0x3FFFu), 1, 0, 0); std::fprintf(stderr, " | mirror clut[0..1] %08x %08x\n", rd32(a0), rd32(a0 + 4));
+                }
                 if (valid) { e.lastUse = g_frame; g_curTexW = e.w; g_curTexH = e.h; return it->second; }
                 // Stale (the game uploaded over it): retire this slot -- draws already recorded this frame keep
                 // it, the renderer frees it after the frame -- and decode into a fresh one.
@@ -432,6 +445,19 @@ namespace seamgs
                 }
             }
             g_texByKey[key] = slot;
+            if (trace)
+            {
+                ++g_watch.logged; std::fprintf(stderr, "[textrace] frame %llu draw %zu tex0 %016llx: DECODED into slot %d, %zu pages, drawn %u clutDrawn %u; clut[0..1] %08x %08x\n", (unsigned long long)g_frame, g_list.draws.size(), (unsigned long long)tex0, slot, e.pages.size(), e.drawnPages ? 1 : 0, e.clutDrawn ? 1 : 0, e.clut[0], e.clut[1]);
+                static int s_n = 0; const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP");
+                if (dir && s_n < 12 && !rgba.empty())
+                {   // the decoded texels of a traced texture, rgb + alpha
+                    ++s_n; char path[512];
+                    std::snprintf(path, sizeof(path), "%s/trace%02d_f%llu_%016llx.ppm", dir, s_n, (unsigned long long)g_frame, (unsigned long long)tex0);
+                    if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P6\n%u %u\n255\n", e.w, e.h); for (size_t i = 0; i < size_t(e.w) * e.h; ++i) std::fwrite(rgba.data() + i * 4u, 1, 3, fp); std::fclose(fp); }
+                    std::snprintf(path, sizeof(path), "%s/trace%02d_f%llu_%016llx_a.pgm", dir, s_n, (unsigned long long)g_frame, (unsigned long long)tex0);
+                    if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P5\n%u %u\n255\n", e.w, e.h); for (size_t i = 0; i < size_t(e.w) * e.h; ++i) std::fputc(rgba[i * 4u + 3u], fp); std::fclose(fp); }
+                }
+            }
             if (e.drawnPages && rtDecodeFor(slot, e, tex0))
             {   // decoded from the target on the GPU, in stream order: no mirror upload
                 e.drawnPages = false;
@@ -593,6 +619,8 @@ namespace seamgs
         bool cpuTargetOk(const State &s, const TexEntry *&te)
         {
             te = nullptr;
+            if (g_watch.hi && s.fbp * 32u >= g_watch.lo && s.fbp * 32u < g_watch.hi && g_watch.logged < 400u)
+            { ++g_watch.logged; std::fprintf(stderr, "[seamgs-watch] frame %llu draw into fbp 0x%x (block 0x%x) fbw %u psm %u msk %08x sc %u..%u %u..%u\n", (unsigned long long)g_frame, s.fbp, s.fbp * 32u, s.fbw, s.fpsm, s.fbmsk, s.scax0, s.scax1, s.scay0, s.scay1); }
             if (s.fbp == 0u || s.fbp == 0xe00u || s.fbw > 4u) return false;
             if (s.fpsm != PSMCT32 && s.fpsm != PSMCT24 && s.fpsm != PSMCT16 && s.fpsm != PSMCT16S) return false;
             if (s.tme)
@@ -857,6 +885,8 @@ namespace seamgs
         {
             Xfer &x = g_xfer;
             if (!x.active || x.rrw == 0u) return;
+            if (g_watch.hi && x.x == 0u && x.y == 0u && x.dbp >= g_watch.lo && x.dbp < g_watch.hi && g_watch.logged < 400u)
+            { ++g_watch.logged; std::fprintf(stderr, "[seamgs-watch] frame %llu draw %zu path %u xfer -> dbp 0x%x dbw %u dpsm %u %ux%u at (%u,%u), %u bytes in this packet\n", (unsigned long long)g_frame, g_list.draws.size(), g_curPath, x.dbp, x.dbw, x.dpsm, x.rrw, x.rrh, x.dsax, x.dsay, n); }
             g_texDirty = true;
             auto put = [&](uint32_t v) {
                 if (x.y >= x.rrh) return;
@@ -1078,6 +1108,20 @@ namespace seamvk
 
 namespace seamgs
 {
+    bool peekTexel(int32_t slot, uint32_t x, uint32_t y, uint32_t &rgba)
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        if (slot < 0 || (size_t)slot >= g_tex.size()) return false;
+        const TexEntry &e = g_tex[slot]; if (e.rgbaCopy.empty() || x >= e.w || y >= e.h) return false;
+        std::memcpy(&rgba, e.rgbaCopy.data() + (size_t(y) * e.w + x) * 4u, 4); return true;
+    }
+    bool dumpMirror(const char *path)
+    {   // diagnostics: the whole VRAM mirror, same layout as the backend's VRAM (compare with ps2x_pgs::dumpVramRaw)
+        if (!seamvk::on()) return false;
+        std::lock_guard<std::mutex> lk(g_mtx);
+        FILE *f = std::fopen(path, "wb"); if (!f) return false;
+        std::fwrite(g_vram, 1, kVramBytes, f); std::fclose(f); return true;
+    }
     bool peekClut(uint32_t cbp, uint32_t cpsm, uint32_t *out256)
     {
         if (!seamvk::on()) return false;

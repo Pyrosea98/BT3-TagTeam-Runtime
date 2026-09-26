@@ -1804,10 +1804,16 @@ bool nativePostStep(int step)
     }
     return true;
 }
+static bool dumpVramRawLocked(State &s, const char *binPath, const char *regsPath);
 bool dumpVramRaw(const char *binPath, const char *regsPath)
 {
     State &s = st();
     std::lock_guard<std::mutex> lk(s.mtx);
+    return dumpVramRawLocked(s, binPath, regsPath);
+}
+bool dumpVramRawUnderLock(const char *binPath, const char *regsPath) { return dumpVramRawLocked(st(), binPath, regsPath); }   // caller holds the state lock (the swap)
+static bool dumpVramRawLocked(State &s, const char *binPath, const char *regsPath)
+{
     if (!initLocked(s)) return false;
     s.iface.flush();
     const uint8_t *v = static_cast<const uint8_t *>(s.iface.map_vram_read(0, 4u * 1024u * 1024u));
