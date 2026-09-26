@@ -605,6 +605,18 @@ if(PS2X_BUILD_PROBES AND NOT PS2X_IS_VITA)
         target_compile_options(fe_imgui_probe PRIVATE -Wall -Wextra)
     endif()
 
+    # [mainmenu-probe] The main-menu lifecycle gate (ps2x_mainmenu.cpp) against synthetic guest
+    # RAM: walks BOOT -> 0x04 -> object up -> DISPLAYED -> TRANSITIONING and asserts what
+    # popupVisible() says on each step, plus the guards that keep it from claiming a screen that
+    # is not there. No game, no window, no GL.
+    add_executable(ps2x_mainmenu_probe src/lib/ps2x_mainmenu_probe.cpp src/lib/ps2x_mainmenu.cpp)
+    target_include_directories(ps2x_mainmenu_probe PRIVATE include src)
+    if(MSVC)
+        target_compile_options(ps2x_mainmenu_probe PRIVATE /W4)
+    else()
+        target_compile_options(ps2x_mainmenu_probe PRIVATE -Wall -Wextra)
+    endif()
+
     # [fe-probe] Same idea for the file picker, the one widget that opens a MODAL: it drives the
     # real FilePicker through open/close/reopen and a mouse sweep on the null backend and asserts
     # the window and popup stacks come back to their base every frame.
@@ -632,6 +644,7 @@ src/lib/game_overrides.cpp
 src/lib/ps2x_dueldump.cpp       # [dueldump] total capture of the Duel menu flow
 src/lib/ps2x_net_texdump.cpp    # [netmenu] force-decode QRS textures via the runtime's PSMT8 reader
 src/lib/ps2x_duel_fields.cpp    # [duelfields] the complete Duel-setup field map + write methods
+src/lib/ps2x_mainmenu.cpp       # [mainmenu] the main-menu lifecycle gate (started / shown / confirming)
 src/lib/ps2x_injected.cpp       # [injected] function registry for cloned guest code
     src/lib/ps2_eeprof.cpp
     src/lib/ps2_stepcensus.cpp
