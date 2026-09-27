@@ -227,6 +227,7 @@ namespace seamgs
         std::unordered_map<uint64_t, int32_t> g_texByKey;
         bool g_forceCpuDecode = false;   // [gpudecode] cpuTargetOk: decode this one on the CPU regardless of the threshold
         bool g_texDirty = true; int32_t g_curTex = -1; uint32_t g_curTexW = 0, g_curTexH = 0;
+        uint32_t g_lastSceneFbp = 0;   // [ztopnative] the scene buffer (0x0 / 0xe00) the game last set as FRAME: the native step 2's source
         uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0, g_cpuSprites = 0, g_cpuTris = 0, g_rtDecodes = 0, g_gpuDecodes = 0;
         uint64_t g_pagesSame = 0;
         uint64_t g_swapHash = 1469598103934665603ull, g_lastSwapHash = 0, g_swapBytes = 0, g_sameSwaps = 0, g_swapsSeen = 0;   // [swaphash] is a swap's packet stream identical to the previous one?
@@ -1196,7 +1197,7 @@ namespace seamgs
             case 0x49: g_r.pabe = v; break;
             case 0x4A: g_r.ctx[0].fba = v; break;
             case 0x4B: g_r.ctx[1].fba = v; break;
-            case 0x4C: g_r.ctx[0].frame = v; break;
+            case 0x4C: g_r.ctx[0].frame = v; { const uint32_t fb = (uint32_t)(v & 0x1FFu) << 5; if (fb == 0u || fb == 0xe00u) g_lastSceneFbp = fb; } break;
             case 0x4D: g_r.ctx[1].frame = v; break;
             case 0x4E: g_r.ctx[0].zbuf = v; break;
             case 0x4F: g_r.ctx[1].zbuf = v; break;
@@ -1343,6 +1344,7 @@ namespace seamvk
         if (step >= 0 && step < 8) s_lastFrame[step] = seamgs::g_frame + 1u;
         seamgs::Draw d; d.kind = 3; d.prog = (uint8_t)step;
         d.st.fbp = (uint32_t)(seamgs::g_r.ctx[0].frame & 0x1FFu) << 5; d.st.fbw = (uint32_t)((seamgs::g_r.ctx[0].frame >> 16) & 0x3Fu);
+        d.st.tex0lo = seamgs::g_lastSceneFbp;   // [ztopnative] step 2 reads the scene buffer's alpha (its TEX0 may be in the not-yet-parsed packet)
         d.st.zbp = (uint32_t)(seamgs::g_r.ctx[0].zbuf & 0x1FFu) << 5;
         if (step == 5)
         {   // the depth ramp palette (CLUT 0x3e8c) as it is NOW: the GPU thread runs the pass later, when the mirror may hold another frame's palette

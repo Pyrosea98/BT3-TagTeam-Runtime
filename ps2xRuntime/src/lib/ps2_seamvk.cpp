@@ -77,6 +77,9 @@ namespace seamvk
         const uint32_t kDepthMaskFrag[] = {
 #include "seamvk/depthmask.frag.inc"
         };
+        const uint32_t kZtopFrag[] = {   // [ztopnative] step 2: Ztop := frame.A at native resolution
+#include "seamvk/ztop.frag.inc"
+        };
         const uint32_t kOutlineFrag[] = {
 #include "seamvk/outline.frag.inc"
         };
@@ -101,7 +104,7 @@ namespace seamvk
         struct Target { Vulkan::ImageHandle img; VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; bool cleared = false; bool aliasedDirty = false; };   // aliasedDirty: a draw through the other pixel format was skipped since the last draw of its own
         struct Gpu
         {
-            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progSeamSt = nullptr, *progGsSt = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutlineH = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progVram = nullptr;
+            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progSeamSt = nullptr, *progGsSt = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutlineH = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progZtop = nullptr, *progVram = nullptr;
             Vulkan::BufferHandle vram;          // [gpudecode] the GPU copy of GS VRAM (4 MB), pages uploaded in stream order
             Vulkan::BufferHandle cring[3]; uint8_t *cmap[3] = {}; VkDeviceSize coff = 0; uint32_t cslot = 0;   // [batch] host-visible constants ring (one per frame in flight)
             Vulkan::ImageHandle out;            // the composed frame
@@ -242,6 +245,7 @@ namespace seamvk
                 Vulkan::ResourceLayout dv = {}, df = {};   // depth mask: fullscreen triangle, depth image (1)
                 dv.output_mask = 0x0u; df.sets[0].sampled_image_mask = 1u << 1; df.sets[0].meta[1].array_size = 1; df.output_mask = 0x1u;
                 g_gpu.progDepthMask = dev.request_program(kRtVert, sizeof(kRtVert), kDepthMaskFrag, sizeof(kDepthMaskFrag), &dv, &df);
+                g_gpu.progZtop = dev.request_program(kRtVert, sizeof(kRtVert), kZtopFrag, sizeof(kZtopFrag), &dv, &df);   // [ztopnative] same layout: one sampled image
                 if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progSeamSt || !g_gpu.progGsSt || !g_gpu.progPresent || !g_gpu.progRt || !g_gpu.progAlias || !g_gpu.progOutline || !g_gpu.progOutlineH || !g_gpu.progDepthMask || !g_gpu.progVram || !g_gpu.vram) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
                 const uint32_t whitePx = 0xFFFFFFFFu;
                 Vulkan::ImageInitialData init = { &whitePx, 0, 0 };
@@ -557,6 +561,38 @@ namespace seamvk
         // [postnative] step 5: the outline mask, written straight into the frame's alpha from the Z top-byte plane
         void runNativeStep(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::FrameList &f, const seamgs::Draw &d)
         {
+            if (d.prog == 2)
+            {   // [ztopnative] Ztop := frame.A: the scene target's alpha (d.st.tex0lo = its fbp, recorded by the front end)
+                // into the Z buffer's colour view at 0x1c00 (BT3's Z buffer; the step's own FRAME register may still be
+                // unparsed when the pass is placed). Same pass shape as the depth mask; stencil follows the alpha.
+                if (!g_gpu.progZtop) return;
+                auto si = g_gpu.targets.find(d.st.tex0lo); auto di = g_gpu.targets.find(0x1c00u);
+                if (si == g_gpu.targets.end() || !si->second.img || di == g_gpu.targets.end() || !di->second.img) { static int s_n = 0; if (s_n++ < 3) std::fprintf(stderr, "[ztopnative] no target: src 0x%x %s dst 0x1c00 %s\n", d.st.tex0lo, si == g_gpu.targets.end() ? "missing" : "ok", di == g_gpu.targets.end() ? "missing" : "ok"); return; }
+                Target &st = si->second, &dt = di->second;
+                toSampled(cmd, st);
+                toAttachment(cmd, dt, false);
+                Vulkan::RenderPassInfo rp = {};
+                rp.num_color_attachments = 1; rp.color_attachments[0] = &dt.img->get_view(); rp.load_attachments = 1u << 0; rp.store_attachments = 1u << 0;
+                Target &dsA = depth(dev, d.st.zbp, d.st.fbw, 0x1c00u); toAttachment(cmd, dsA, true);
+                rp.depth_stencil = &dsA.img->get_view(); rp.op_flags = Vulkan::RENDER_PASS_OP_LOAD_DEPTH_STENCIL_BIT | Vulkan::RENDER_PASS_OP_STORE_DEPTH_STENCIL_BIT;
+                cmd.begin_render_pass(rp);
+                cmd.set_opaque_state();
+                if (stencilDate()) { cmd.set_stencil_test(true); cmd.set_stencil_ops(VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP); cmd.set_stencil_reference(0xFFu, 0xFFu, 0u); }
+                cmd.set_program(g_gpu.progZtop);
+                cmd.set_cull_mode(VK_CULL_MODE_NONE);
+                cmd.set_depth_test(false, false);
+                cmd.set_blend_enable(false);
+                cmd.set_color_write_mask(VK_COLOR_COMPONENT_A_BIT);
+                cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+                const uint32_t w = dt.img->get_width(), h = dt.img->get_height();
+                VkViewport vp = {}; vp.width = float(w); vp.height = float(h); vp.maxDepth = 1.0f; cmd.set_viewport(vp);
+                VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = h; cmd.set_scissor(sr);
+                cmd.set_texture(0, 1, st.img->get_view(), Vulkan::StockSampler::NearestClamp);
+                cmd.draw(3);
+                cmd.end_render_pass();
+                ++g_gpu.nativeSteps;
+                return;
+            }
             if (d.prog == 0)
             {   // depth mask: frame.A := Z24[15:8]
                 auto fi = g_gpu.targets.find(d.st.fbp); if (fi == g_gpu.targets.end() || !fi->second.img) return;

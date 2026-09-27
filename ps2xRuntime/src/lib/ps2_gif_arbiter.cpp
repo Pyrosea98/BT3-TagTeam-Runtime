@@ -244,7 +244,7 @@ namespace
 {
     struct NativeStep { uint32_t lo, hi; int id; bool inRun; bool marked = false; };
     NativeStep g_nativeSteps[] = { {0x109848u, 0x109938u, 0, false}, {0x106ba8u, 0x106c5cu, 1, false}, {0x24b118u, 0x24b1dcu, 2, false}, {0x245a50u, 0x245de4u, 3, false}, {0x103070u, 0x103254u, 4, false}, {0x105cd8u, 0x105f28u, 5, false} };   // 5: outline mask, native renderer only
-    const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : (seamvk::on() ? 0x21u : 0u); }();   // native renderer: depth mask + outline by default
+    const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : (seamvk::on() ? 0x25u : 0u); }();   // [ztopnative] + step 2   // native renderer: depth mask + outline by default
     // The step's packets are not dropped: their register writes (FRAME/ZBUF/SCISSOR/TEST... which the game's later draws
     // inherit) still reach the backend; only their DRAW kicks are neutralised, XYZ2/XYZF2 -> XYZ3/XYZF3 (no kick), by
     // rewriting the GIF tags' register descriptors and A+D addresses in place. Tag state persists across PATH2 payloads.
@@ -309,7 +309,7 @@ namespace
                 // The native renderer's pass goes at the step's first DRAW packet, not its first attributed packet: uploads
                 // and palette writes the step does earlier (between other owners' draws) would place it too early, and
                 // draws in between (the characters) would overwrite what it wrote (the outline vanished that way).
-                if (kick && !st.marked && seamvk::on() && (st.id >= 5 || st.id == 0)) { st.marked = true; seamvk::onNativeStep(st.id); }
+                if (kick && !st.marked && seamvk::on() && (st.id >= 5 || st.id == 0 || st.id == 2)) { st.marked = true; seamvk::onNativeStep(st.id); }   // [ztopnative] step 2 too
                 return true;
             }
         }
