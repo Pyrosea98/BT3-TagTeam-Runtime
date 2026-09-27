@@ -441,9 +441,25 @@ namespace seamgs
             return true;
         }
 
+        uint64_t g_memoHits = 0;
+        int32_t resolveTextureImpl(const Ctx &c);
+        struct ResolveMemo { uint64_t tex0 = 0, texa = 0, frame = ~0ull; uint32_t stamp = 0; int32_t slot = -1; };
+        ResolveMemo g_resolveMemo[256];   // [resolvememo] direct-mapped by TEX0: a repeat lookup with no VRAM write since (same stamp, same frame) is O(1)
         int32_t resolveTexture(const Ctx &c)
         {
             ++g_texLookups;
+            const uint64_t tex0 = c.tex0;
+            ResolveMemo &memo = g_resolveMemo[(uint32_t)((tex0 * 0x9E3779B97F4A7C15ull) >> 56)];
+            if (memo.slot >= 0 && memo.tex0 == tex0 && memo.texa == g_r.texa && memo.stamp == g_stamp && memo.frame == g_frame && (size_t)memo.slot < g_tex.size() && g_tex[memo.slot].used && !g_tex[memo.slot].rtBased)
+            {
+                ++g_memoHits; TexEntry &e = g_tex[memo.slot]; e.lastUse = g_frame; g_curTexW = e.w; g_curTexH = e.h; return memo.slot;
+            }
+            const int32_t slotOut = resolveTextureImpl(c);
+            memo.tex0 = tex0; memo.texa = g_r.texa; memo.stamp = g_stamp; memo.frame = g_frame; memo.slot = slotOut;
+            return slotOut;
+        }
+        int32_t resolveTextureImpl(const Ctx &c)
+        {
             const uint64_t tex0 = c.tex0;
             const uint32_t psm = (uint32_t)((tex0 >> 20) & 0x3Fu);
             const bool needTexa = psm == PSMCT16 || psm == PSMCT16S || psm == PSMCT24 || psm == PSMZ16 || psm == PSMZ16S || psm == PSMZ24
@@ -544,10 +560,9 @@ namespace seamgs
         // ---- draw state --------------------------------------------------------------------
         bool g_stateDirty = true; State g_stateCache[2];   // [statecache] currentState(true/false) memo, invalidated by writeReg
         State buildState(bool tex);
-        State currentState(bool tex)
-        {
-            ScopeMs _sm{g_msState};
-            if (g_stateDirty || g_texDirty) { g_stateCache[0] = buildState(false); g_stateCache[1] = buildState(true); g_stateDirty = false; }   // (buildState(true) resolves the texture and clears g_texDirty)
+        const State &currentState(bool tex)
+        {   // a reference into the memo: the kick path runs per primitive and must not copy the struct
+            if (g_stateDirty || g_texDirty) { ScopeMs _sm{g_msState}; g_stateCache[0] = buildState(false); g_stateCache[1] = buildState(true); g_stateDirty = false; }   // (buildState(true) resolves the texture and clears g_texDirty)
             return g_stateCache[tex ? 1 : 0];
         }
         State buildState(bool tex)
@@ -754,7 +769,8 @@ namespace seamgs
                 if (!pass) return;   // KEEP (other AFAIL modes not needed here)
             }
             const bool c16 = s.fpsm == PSMCT16 || s.fpsm == PSMCT16S;
-            const uint32_t dst = readPixel(s.fpsm, s.fbp, s.fbw, (uint32_t)x, (uint32_t)y);
+            const uint32_t pa = c16 ? addr16(s.fpsm, s.fbp, s.fbw, (uint32_t)x, (uint32_t)y) : addr32(s.fbp, s.fbw, (uint32_t)x, (uint32_t)y);   // one swizzle for the read and the write
+            const uint32_t dst = c16 ? (uint32_t)rd16(pa) : rd32(pa);
             uint32_t dr, dg, db, da;
             if (c16) { dr = (dst & 0x1Fu) << 3; dg = ((dst >> 5) & 0x1Fu) << 3; db = ((dst >> 10) & 0x1Fu) << 3; da = (dst & 0x8000u) ? 0x80u : 0u; }
             else { dr = dst & 0xFFu; dg = (dst >> 8) & 0xFFu; db = (dst >> 16) & 0xFFu; da = (dst >> 24) & 0xFFu; }
@@ -773,7 +789,9 @@ namespace seamgs
             if (c16) out = (r >> 3) | ((g >> 3) << 5) | ((bl >> 3) << 10) | ((al & 0x80u) ? 0x8000u : 0u);
             else out = r | (g << 8) | (bl << 16) | (al << 24);
             if (s.fbmsk) out = (out & ~s.fbmsk) | (dst & s.fbmsk);
-            writePixel(s.fpsm, s.fbp, s.fbw, (uint32_t)x, (uint32_t)y, out);
+            if (c16) wr16(pa, (uint16_t)out);
+            else if (s.fpsm == PSMCT24) wr32(pa, (dst & 0xFF000000u) | (out & 0xFFFFFFu));
+            else wr32(pa, out);
         }
 
         // [scratchraster] Sprites into small scratch targets (rendered palettes, lighting ramps) are rasterised into the
@@ -888,13 +906,13 @@ namespace seamgs
                 {   // the seam's packet: its kicks draw the pending host mesh, once per distinct state; its own vertices are not drawn
                     if (g_haveHost)
                     {
-                        const State s = currentState(true);
+                        const State &s = currentState(true);
                         if (!g_hostDrawn || !sameDrawState(s, g_hostLast)) emitHostDraw(s);
                     }
                 }
                 else
                 {
-                    const State s = currentState(true);
+                    const State &s = currentState(true);
                     switch (prim)
                     {
                     case 3: case 4: case 5:
@@ -1010,7 +1028,11 @@ namespace seamgs
         void writeReg(uint32_t addr, uint64_t v)
         {
             ScopeMs _sm{g_msReg};
-            g_stateDirty = true;
+            {   // [statedirty] only the registers the draw state reads invalidate it: vertex data (RGBAQ, ST, UV, XYZ*, FOG) does not
+                const uint32_t a = addr & 0xFFu;
+                const bool vertexReg = a == 0x01u || a == 0x02u || a == 0x03u || a == 0x04u || a == 0x05u || a == 0x0Au || a == 0x0Cu || a == 0x0Du;
+                if (!vertexReg) g_stateDirty = true;
+            }
             if ((addr >= 0x40u && addr <= 0x41u) || (addr >= 0x4cu && addr <= 0x4du) || addr == 0x3bu)
                 if (g_list.regEvents.size() < 4096u) g_list.regEvents.push_back(FrameList::RegEvent{(uint32_t)g_list.draws.size(), g_curPath, (uint8_t)(g_inHostGif ? 1 : 0), (uint8_t)addr, v});
             switch (addr & 0xFFu)
@@ -1137,9 +1159,9 @@ namespace seamgs
             s_last = g_frame;
             std::fprintf(stderr, "[seamgs] per frame: parse %.2f ms (decode %.2f, scratch raster %.2f, host draws %.2f | state %.2f, triangles %.2f, image data %.2f, vram decode lists %.2f, reg writes %.2f)\n", g_msParse / 300.0, g_msDecode / 300.0, g_msRaster / 300.0, g_msHost / 300.0, g_msState / 300.0, g_msTri / 300.0, g_msImage / 300.0, g_msVramDec / 300.0, g_msReg / 300.0);
             g_msParse = g_msDecode = g_msRaster = g_msHost = 0; g_msState = g_msTri = g_msImage = g_msVramDec = g_msReg = 0;
-            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu (pages unchanged %llu); identical swaps %llu/%llu\n",
-                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
-            g_texLookups = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
+            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu (memo hits %llu) decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu (pages unchanged %llu); identical swaps %llu/%llu\n",
+                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_memoHits, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
+            g_texLookups = g_memoHits = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
             printTargetHist();
             std::fprintf(stderr, "[seamgs] host draws in/out/dropped per prog:");
             for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %d:%llu/%llu/%llu", i, (unsigned long long)g_hostIn[i], (unsigned long long)g_hostOut[i], (unsigned long long)g_hostDropped[i]);
