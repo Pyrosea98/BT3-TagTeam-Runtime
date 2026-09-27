@@ -523,3 +523,7 @@ paraLLEl-GS 60 fps at 0.92 cores / 75% GPU. GPU: native wins. CPU: the GsThread 
 scratch raster 1.9, GIF parse + state + page hashing ~4.8) and seamvk record (2.4 ms) are the excess; next.
 Fight-load freeze (5 of ~14 runs tonight): the GameThread spins in game code (FUN_0024c958 / 0x256e00 / 0x2baae8) with the
 DMA counter frozen and every renderer thread idle -- guest-side, pre-existing; `REGWD=1 tools/regcheck.sh` leaves the dump.
+Later that night: PS2X_SEAMVK_GPUDECODE_MIN=0 (every texture on the GPU, -0.16 cores) is NOT the default: small textures at a
+block-aligned base decoded white (their pages wrap into the next page; fixed: the page after a mid-page base is listed too) and
+the opponent's HUD portrait still vanished afterwards even with cpuTargetOk decoding a GPU texture on the CPU on demand -- open.
+Default stays 65536 texels; TEX0 same-value dirty skipping was tried and reverted (no lookup reduction, stale boots texture).

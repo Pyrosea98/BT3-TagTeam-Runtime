@@ -183,6 +183,7 @@ namespace seamgs
         std::vector<TexEntry> g_tex;
         std::vector<int32_t> g_texFree;
         std::unordered_map<uint64_t, int32_t> g_texByKey;
+        bool g_forceCpuDecode = false;   // [gpudecode] cpuTargetOk: decode this one on the CPU regardless of the threshold
         bool g_texDirty = true; int32_t g_curTex = -1; uint32_t g_curTexW = 0, g_curTexH = 0;
         uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0, g_cpuSprites = 0, g_cpuTris = 0, g_rtDecodes = 0, g_gpuDecodes = 0;
         uint64_t g_pagesSame = 0;
@@ -261,8 +262,8 @@ namespace seamgs
             // [gpudecode] PS2X_SEAMVK_GPUDECODE_MIN=<texels> (default 65536; 0 = every texture, -1 = none): textures at least
             // this big are not decoded here; the renderer decodes them from its GPU copy of VRAM (rtdecode.frag FROM_VRAM),
             // this side only lists the pages (snapshotted when their write stamp moved) and reads the palette.
-            static const long long s_gpuMin = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUDECODE_MIN"); return v && v[0] ? std::atoll(v) : 0ll; }();   // default 0 since 2026-09-27: every texture on the GPU (CPU decode was 2.3 ms/frame of the parse thread; -0.16 cores, GPU unchanged)
-            const bool gpu = !anyDrawn && s_gpuMin >= 0 && (long long)w * h >= s_gpuMin;
+            static const long long s_gpuMin = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUDECODE_MIN"); return v && v[0] ? std::atoll(v) : 65536ll; }();   // (0 = every texture on the GPU saved 0.16 cores but small palette textures decoded wrong -- white boots -- 2026-09-27)
+            const bool gpu = !anyDrawn && !g_forceCpuDecode && s_gpuMin >= 0 && (long long)w * h >= s_gpuMin;
             rgba.resize((anyDrawn || gpu) ? 0u : size_t(w) * h * 4u);
             uint32_t *dst = (anyDrawn || gpu) ? nullptr : reinterpret_cast<uint32_t *>(rgba.data());
             uint32_t pagesBits[16] = {}, clutBits[16] = {};
@@ -281,6 +282,9 @@ namespace seamgs
                     {
                         const uint32_t p = pageOf(psm, tbp, tbw, x, y);
                         if (p < kPages) pagesBits[p >> 5] |= 1u << (p & 31u);
+                        // a block-aligned base (tbp & 31): the blocks of this page-sized cell wrap into the next page (small
+                        // textures at mid-page bases decoded white with the page missing from the GPU copy, 2026-09-27)
+                        if ((tbp & 31u) != 0u && p + 1u < kPages) pagesBits[(p + 1u) >> 5] |= 1u << ((p + 1u) & 31u);
                     }
             }
             const uint32_t csaOff = (psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH) ? (csa & 15u) * 16u : 0u;
@@ -705,7 +709,15 @@ namespace seamgs
             if (s.tme)
             {
                 if (s.tex < 0 || (size_t)s.tex >= g_tex.size()) return false;
-                te = &g_tex[s.tex];
+                TexEntry &ent = g_tex[s.tex];
+                if (!ent.drawnPages && ent.rgbaCopy.empty() && ent.gpuDecode && ent.w * ent.h <= 256u * 256u)
+                {   // [gpudecode] a GPU-decoded texture the scratch raster samples: decode it once here too (the HUD's portraits)
+                    std::vector<uint8_t> rgba; const uint64_t tex0 = (uint64_t)s.tex0lo | ((uint64_t)s.tex0hi << 32);
+                    g_forceCpuDecode = true; decodeTextureImpl(tex0, g_r.texa, ent, rgba); g_forceCpuDecode = false;
+                    if (!rgba.empty()) ent.rgbaCopy = rgba;
+                    ent.gpuDecode = true;   // the GPU copy stays the renderer's source for draws
+                }
+                te = &ent;
                 if (te->drawnPages || te->rgbaCopy.empty()) return false;
             }
             return true;
