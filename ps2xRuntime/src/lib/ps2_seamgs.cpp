@@ -262,7 +262,7 @@ namespace seamgs
             // [gpudecode] PS2X_SEAMVK_GPUDECODE_MIN=<texels> (default 65536; 0 = every texture, -1 = none): textures at least
             // this big are not decoded here; the renderer decodes them from its GPU copy of VRAM (rtdecode.frag FROM_VRAM),
             // this side only lists the pages (snapshotted when their write stamp moved) and reads the palette.
-            static const long long s_gpuMin = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUDECODE_MIN"); return v && v[0] ? std::atoll(v) : 65536ll; }();   // (0 = every texture on the GPU saved 0.16 cores but small palette textures decoded wrong -- white boots -- 2026-09-27)
+            static const long long s_gpuMin = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUDECODE_MIN"); return v && v[0] ? std::atoll(v) : 0ll; }();   // default 0 (every texture on the GPU) since 2026-09-27: the page listing is block-exact and hoisted decodes own their images
             const bool gpu = !anyDrawn && !g_forceCpuDecode && s_gpuMin >= 0 && (long long)w * h >= s_gpuMin;
             rgba.resize((anyDrawn || gpu) ? 0u : size_t(w) * h * 4u);
             uint32_t *dst = (anyDrawn || gpu) ? nullptr : reinterpret_cast<uint32_t *>(rgba.data());
@@ -274,17 +274,17 @@ namespace seamgs
             if (indexed) std::memcpy(e.clut, clut, sizeof(clut));
             e.gpuDecode = gpu;
             if (gpu)
-            {   // the pages the texture rect spans, by page corners (page size by format: 64x32, 64x64, 128x64, 128x128)
-                const uint32_t pw = (psm == PSMT8 || psm == PSMT4) ? 128u : 64u;
-                const uint32_t ph = psm == PSMT4 ? 128u : (psm == PSMT8 || psm == PSMCT16 || psm == PSMCT16S || psm == PSMZ16 || psm == PSMZ16S) ? 64u : 32u;
-                for (uint32_t y = 0; y < h; y += ph)
-                    for (uint32_t x = 0; x < w; x += pw)
+            {   // the pages the texture rect spans, sampled per block (block size by format: 8x8, 16x8, 16x16, 32x16): exact
+                // even for a block-aligned base whose blocks wrap into the next page (white boots) -- and no page the
+                // texture does not touch (page-corner sampling + "next page" listed a drawn HUD page for the opponent's
+                // portrait, which then went through the feedback skip and vanished; 2026-09-27)
+                const uint32_t bw_ = (psm == PSMT8) ? 16u : (psm == PSMT4) ? 32u : (psm == PSMCT16 || psm == PSMCT16S || psm == PSMZ16 || psm == PSMZ16S) ? 16u : 8u;
+                const uint32_t bh_ = (psm == PSMT8 || psm == PSMT4) ? 16u : 8u;
+                for (uint32_t y = 0; y < h; y += bh_)
+                    for (uint32_t x = 0; x < w; x += bw_)
                     {
                         const uint32_t p = pageOf(psm, tbp, tbw, x, y);
                         if (p < kPages) pagesBits[p >> 5] |= 1u << (p & 31u);
-                        // a block-aligned base (tbp & 31): the blocks of this page-sized cell wrap into the next page (small
-                        // textures at mid-page bases decoded white with the page missing from the GPU copy, 2026-09-27)
-                        if ((tbp & 31u) != 0u && p + 1u < kPages) pagesBits[(p + 1u) >> 5] |= 1u << ((p + 1u) & 31u);
                     }
             }
             const uint32_t csaOff = (psm == PSMT4 || psm == PSMT4HL || psm == PSMT4HH) ? (csa & 15u) * 16u : 0u;

@@ -329,7 +329,12 @@ namespace seamvk
 
         void freeTextures(const seamgs::FrameList &f)
         {   // after the frame's draws: retired slots may still be referenced by them
-            for (int32_t s : f.texFrees) if (s >= 0 && (size_t)s < g_gpu.tex.size()) g_gpu.tex[s].reset();
+            for (int32_t s : f.texFrees)
+                if (s >= 0 && (size_t)s < g_gpu.tex.size() && g_gpu.tex[s])
+                {   // [hoist] a decode image (render target usage) goes back through the retire ring; an uploaded texture is dropped
+                    if ((g_gpu.tex[s]->get_create_info().usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && !g_gpu.hoistRetire.empty()) g_gpu.hoistRetire.back().push_back(g_gpu.tex[s]);
+                    g_gpu.tex[s].reset();
+                }
         }
         void depthToSampled(Vulkan::CommandBuffer &cmd, Target &t)
         {
