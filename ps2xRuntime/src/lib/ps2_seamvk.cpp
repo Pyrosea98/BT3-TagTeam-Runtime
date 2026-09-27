@@ -714,7 +714,7 @@ namespace seamvk
             VkViewport vp = {}; vp.width = float(w); vp.height = float(h); vp.maxDepth = 1.0f; cmd.set_viewport(vp);
             VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = h; cmd.set_scissor(sr);
             cmd.set_texture(0, 1, zt.img->get_view(), Vulkan::StockSampler::NearestClamp);
-            cmd.set_texture(0, 2, g_gpu.outlineH->get_view(), Vulkan::StockSampler::LinearClamp);   // [outlinegame] the game's bilinear read-back
+            cmd.set_texture(0, 2, g_gpu.outlineH->get_view(), Vulkan::StockSampler::NearestClamp);
             uint32_t *cl = static_cast<uint32_t *>(cmd.allocate_constant_data(0, 0, 256u * 4u));
             if (d.rt >= 0 && (size_t)d.rt < f.stepCluts.size()) std::memcpy(cl, f.stepCluts[d.rt].data(), 1024); else std::memset(cl, 0, 1024);
             cmd.push_constants(pcv, 0, sizeof(pcv));
