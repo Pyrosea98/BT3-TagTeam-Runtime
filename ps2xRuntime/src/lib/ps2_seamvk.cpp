@@ -106,7 +106,8 @@ namespace seamvk
             Vulkan::BufferHandle readback;
             struct TsMark { uint8_t cat; Vulkan::QueryPoolHandle q; };   // [gputime] GPU timestamps: cat = the category that STARTS at this mark
             struct Pending { Vulkan::BufferHandle buf; Vulkan::Fence fence; uint32_t w = 0, h = 0; bool live = false; std::vector<TsMark> ts; };
-            std::vector<Vulkan::ImageHandle> hoistPool;   // [hoist] one image per hoisted decode of the frame, reused by index
+            std::vector<Vulkan::ImageHandle> hoistFree;   // [hoist] images no draw in flight references any more, by size
+            std::deque<std::vector<Vulkan::ImageHandle>> hoistRetire;   // [hoist] images replaced in a slot, per frame; free after 3 frames
             std::vector<TsMark> tsCur; double gpuMs[8] = {}; uint32_t gpuFrames = 0; std::deque<std::vector<TsMark>> tsPending;   // [gputime] frames whose queries are not signalled yet   // [gputime] per category, ms; 0 main draws, 1 rt decodes, 2 alias16, 3 native steps, 4 compose, 5 uploads
             Pending ring[3]; uint32_t ringNext = 0;
             std::map<uint32_t, Target> targets; // by fbp
@@ -936,6 +937,12 @@ namespace seamvk
         // stream reaches the decode, so a slot decoded twice in a frame still binds the right version.
         static const bool s_hoist = [](){ const char *v = std::getenv("PS2X_SEAMVK_HOIST"); return !(v && v[0] == '0'); }();
         std::vector<Vulkan::ImageHandle> hoistImg;
+        g_gpu.hoistRetire.emplace_back();
+        while (g_gpu.hoistRetire.size() > 3u)
+        {
+            for (Vulkan::ImageHandle &h : g_gpu.hoistRetire.front()) if (g_gpu.hoistFree.size() < 96u) g_gpu.hoistFree.push_back(h);
+            g_gpu.hoistRetire.pop_front();
+        }
         if (s_hoist && !f.rtDecodes.empty() && !g_gpu.dumpRt)
         {
             hoistImg.resize(f.rtDecodes.size());
@@ -943,10 +950,16 @@ namespace seamvk
             for (const seamgs::Draw &d : f.draws)
                 if (d.kind == 2 && d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size() && f.rtDecodes[d.rt].fromVram)
                 {
-                    if (k >= g_gpu.hoistPool.size()) g_gpu.hoistPool.resize(k + 1u);
-                    runRtDecode(*cmd, dev, f, f.rtDecodes[d.rt], &g_gpu.hoistPool[k]);
-                    g_gpu.decTexels += uint64_t(f.rtDecodes[d.rt].w) * f.rtDecodes[d.rt].h;
-                    hoistImg[d.rt] = g_gpu.hoistPool[k]; ++k; ++g_gpu.decHoisted;
+                    // its own image (a slot keeps its image across frames while cached, so a per-index pool would be
+                    // overwritten by the next frame's hoist -- the opponent's HUD portrait vanished that way): recycled
+                    // through a 3-frame retire ring once the slot moves on
+                    const seamgs::RtDecode &r = f.rtDecodes[d.rt];
+                    Vulkan::ImageHandle img;
+                    for (size_t i = 0; i < g_gpu.hoistFree.size(); ++i)
+                        if (g_gpu.hoistFree[i]->get_width() == r.w && g_gpu.hoistFree[i]->get_height() == r.h) { img = g_gpu.hoistFree[i]; g_gpu.hoistFree[i] = g_gpu.hoistFree.back(); g_gpu.hoistFree.pop_back(); break; }
+                    runRtDecode(*cmd, dev, f, r, &img);
+                    g_gpu.decTexels += uint64_t(r.w) * r.h;
+                    hoistImg[d.rt] = img; ++k; ++g_gpu.decHoisted;
                 }
             tsMark(*cmd, 0);
         }
@@ -989,6 +1002,7 @@ namespace seamvk
             {   // [hoist] decoded before the first pass: point the slot at that image, no pass break
                 const int32_t slot = f.rtDecodes[d.rt].slot;
                 if ((size_t)slot >= g_gpu.tex.size()) g_gpu.tex.resize(size_t(slot) + 1u);
+                if (g_gpu.tex[slot]) g_gpu.hoistRetire.back().push_back(g_gpu.tex[slot]);   // draws recorded before this point still read it
                 g_gpu.tex[slot] = hoistImg[d.rt];
                 continue;
             }
@@ -1293,9 +1307,9 @@ namespace seamvk
 
         if ((++g_gpu.frames % 300u) == 0u)
         {
-            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws (%.1f on host meshes), %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f VRAM pages up, %.1f batches of %.0f chunks, %.1f aliased-format draws skipped per frame; %.1f decodes hoisted (%llu pool); %zu targets %zu depths\n",
+            std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws (%.1f on host meshes), %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f VRAM pages up, %.1f batches of %.0f chunks, %.1f aliased-format draws skipped per frame; %.1f decodes hoisted (%llu free images); %zu targets %zu depths\n",
                          (unsigned long long)g_gpu.frames, double(g_gpu.draws) / 300.0, double(g_gpu.verts) / 300.0, double(g_gpu.passes) / 300.0,
-                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.dateHost) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.nativeSteps) / 300.0, double(g_gpu.vramPagesUp) / 300.0, double(g_gpu.batches) / 300.0, double(g_gpu.chunksBatched) / 300.0, double(g_gpu.aliasedDraws) / 300.0, double(g_gpu.decHoisted) / 300.0, (unsigned long long)g_gpu.hoistPool.size(), g_gpu.targets.size(), g_gpu.depths.size());
+                         double(g_gpu.texUploads) / 300.0, double(g_gpu.dateDraws) / 300.0, double(g_gpu.dateHost) / 300.0, double(g_gpu.skippedDrawn) / 300.0, double(g_gpu.texMissing) / 300.0, double(g_gpu.texMismatch) / 300.0, double(g_gpu.rtDecodes) / 300.0, double(g_gpu.rtDecodesStale) / 300.0, double(g_gpu.aliasDraws) / 300.0, double(g_gpu.nativeSteps) / 300.0, double(g_gpu.vramPagesUp) / 300.0, double(g_gpu.batches) / 300.0, double(g_gpu.chunksBatched) / 300.0, double(g_gpu.aliasedDraws) / 300.0, double(g_gpu.decHoisted) / 300.0, (unsigned long long)g_gpu.hoistFree.size(), g_gpu.targets.size(), g_gpu.depths.size());
             const double rtDecPer = double(g_gpu.rtDecodes) / 300.0;
             g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.dateHost = 0; g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = g_gpu.nativeSteps = g_gpu.vramPagesUp = g_gpu.batches = g_gpu.chunksBatched = g_gpu.decHoisted = g_gpu.hoistSkippedFrames = 0;
             std::fprintf(stderr, "[seamvk] per frame: take %.2f ms, record %.2f ms, submit %.2f ms, wait %.2f ms\n", g_gpu.msTake / 300.0, g_gpu.msRecord / 300.0, g_gpu.msSubmit / 300.0, g_gpu.msWait / 300.0);
