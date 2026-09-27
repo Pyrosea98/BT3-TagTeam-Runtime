@@ -209,7 +209,7 @@ void GifArbiter::takeQueue(GifArbiterBatch &out)
 }
 // [pktoracle] PS2X_PKTORACLE=<lo>-<hi>[:<nth>][,<lo>-<hi>[:<nth>]...] (hex guest addresses, default the 200th entry): the run
 // of consecutive packets whose owner (the code that built them, PS2X_KICKPROBE=1) lies in [lo, hi) is bracketed with VRAM
-// dumps of the backend in stream order: oracle_<lo>_before.bin/.txt before its first packet, oracle_<lo>_after.bin/.txt
+// dumps of the backend in stream order: oracle_<lo>_<nth>_before.bin/.txt before its first packet, oracle_<lo>_<nth>_after.bin/.txt
 // after its last, into PS2X_STEPORACLE_DIR (default /tmp). The pass's exact semantics can then be read off the two dumps
 // offline (tools/gsvram.py, tools/oracle_diff.py). The packets themselves are processed unchanged.
 namespace
@@ -226,10 +226,10 @@ namespace
             p = comma ? comma + 1 : nullptr;
         }
         return out; }();
-    void pktOracleDump(uint32_t lo, const char *what)
-    {
+    void pktOracleDump(uint32_t lo, uint32_t nth, const char *what)
+    {   // several brackets of the same range (e.g. the outline's two runs per frame: nth and nth+1) get distinct files
         static const char *s_dir = [](){ const char *v = std::getenv("PS2X_STEPORACLE_DIR"); return v && v[0] ? v : "/tmp"; }();
-        char b[512], t[512]; std::snprintf(b, sizeof(b), "%s/oracle_%x_%s.bin", s_dir, lo, what); std::snprintf(t, sizeof(t), "%s/oracle_%x_%s.txt", s_dir, lo, what);
+        char b[512], t[512]; std::snprintf(b, sizeof(b), "%s/oracle_%x_%u_%s.bin", s_dir, lo, nth, what); std::snprintf(t, sizeof(t), "%s/oracle_%x_%u_%s.txt", s_dir, lo, nth, what);
 #ifdef PS2X_HAVE_PGS
         const bool ok = ps2x_pgs::dumpVramRaw(b, t);
 #else
@@ -324,8 +324,8 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
         {   // (before the native intercept: a natively replaced step is bracketed the same way, so its output is verified)
             if (o.done) continue;
             const bool in = pkt.owner >= o.lo && pkt.owner < o.hi;
-            if (in && !o.inRun) { o.inRun = true; if (++o.entries == o.nth) pktOracleDump(o.lo, "before"); }
-            else if (!in && o.inRun) { o.inRun = false; if (o.entries == o.nth) { pktOracleDump(o.lo, "after"); o.done = true; } }
+            if (in && !o.inRun) { o.inRun = true; if (++o.entries == o.nth) pktOracleDump(o.lo, o.nth, "before"); }
+            else if (!in && o.inRun) { o.inRun = false; if (o.entries == o.nth) { pktOracleDump(o.lo, o.nth, "after"); o.done = true; } }
         }
     if (g_nativeMask && pkt.pathId == GifPathId::Path2) nativeIntercept(pkt);   // [postnative] the host pass ran; the packet goes on with its kicks neutralised
     uint8_t pathId = static_cast<uint8_t>(pkt.pathId);
