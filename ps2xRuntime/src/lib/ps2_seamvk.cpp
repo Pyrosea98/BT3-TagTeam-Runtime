@@ -807,7 +807,9 @@ namespace seamvk
             cmd.push_constants(&pc, 0, sizeof(pc));
             {   // [hwfilter] bilinear with plain REPEAT or CLAMP on both axes: let the sampler filter (4 manual fetches + wrap math otherwise)
                 const bool hw = tex && t.mmag && t.wms <= 1u && t.wmt == t.wms;
-                const Vulkan::StockSampler smp = hw ? (mipsOn() ? (t.wms == 0u ? Vulkan::StockSampler::TrilinearWrap : Vulkan::StockSampler::TrilinearClamp)
+                // [mipsate] no mip chain for alpha-TESTED draws: the leaf cards' alpha averages below the test at the smaller
+                // levels and the foliage thins out (the tree behind the fight lost half its leaves vs paraLLEl-GS, 2026-09-28)
+                const Vulkan::StockSampler smp = hw ? ((mipsOn() && !t.ate) ? (t.wms == 0u ? Vulkan::StockSampler::TrilinearWrap : Vulkan::StockSampler::TrilinearClamp)
                                                                 : (t.wms == 0u ? Vulkan::StockSampler::LinearWrap : Vulkan::StockSampler::LinearClamp)) : Vulkan::StockSampler::NearestClamp;   // [mips] minified textures filter across the chain (far stage surfaces aliased at level 0)
                 cmd.set_texture(0, 1, tex ? g_gpu.tex[t.tex]->get_view() : g_gpu.white->get_view(), smp);
                 if (hw) { pc.fA[0] |= 32768; cmd.push_constants(&pc, 0, sizeof(pc)); }
