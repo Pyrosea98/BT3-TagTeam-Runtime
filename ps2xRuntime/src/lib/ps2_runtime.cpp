@@ -32,6 +32,9 @@ extern "C" int ps2xSchedTraceOn();               // PS2X_SCHEDTRACE window (defi
 #include <filesystem>
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_gs_pgs.h"   // [pgs]
+#if defined(PS2X_HAVE_PGS)
+#include "runtime/ps2_seamvk.h"   // [dumpkey] seamvk::requestDump
+#endif
 #include <iomanip>
 #include <cstdlib>
 #include <array>
@@ -320,6 +323,14 @@ namespace
         ps2tex::megaArm(d.c_str(), 6.0);
         ps2tex::megaDumpIndex();
         std::fprintf(stderr, "[texmega] armed -> %s\n", d.c_str());
+    }
+    // [dumpkey] F10: the native renderer dumps the frame being rendered (PS2X_SEAMVK=1; files under
+    // PS2X_SEAMVK_TEXDUMP). For bugs reproduced by hand where the frame number is unknowable.
+    void seamvkDumpHotkey()
+    {
+#if defined(PS2X_HAVE_PGS)
+        if (seamvk::on() && bt3IsKeyPressed(BT3_KEY_F10)) { seamvk::requestDump(); std::fprintf(stderr, "[seamvk] F10: frame dump requested\n"); }
+#endif
     }
 }
 
@@ -8090,6 +8101,7 @@ void PS2Runtime::run()
             }
             {   // [texmega] F9 arms the texture-replacement mega dump (shared with the ALTGL path).
                 texmegaHotkey();
+                seamvkDumpHotkey();
             }
             static const bool s_uiTest = [](){ const char *v = std::getenv("PS2X_UI_TEST"); return v && v[0] && v[0] != '0'; }();
             const ps2x::gfx::Color d3dClear = s_uiTest
@@ -8266,6 +8278,7 @@ void PS2Runtime::run()
         bt3BeginDrawing();
 #if defined(_WIN32)
         texmegaHotkey();   // [texmega] F9 works here too (the D3D11 branch has its own call)
+        seamvkDumpHotkey();   // [dumpkey] F10
 #endif
         {   // [winlog] Log every size the window takes, so a "wrong at startup, right after maximize"
             // report can be read straight from the log: the first line plus any later change.
@@ -8865,6 +8878,7 @@ void PS2Runtime::run()
                 static unsigned long s_lastHoistTris = 0;   // [glhoist]
                 const unsigned long tdc = g_texDecodeCount.load(std::memory_order_relaxed);
                 std::cerr << "[fps] GAME=" << (double)((gameFrames - s_lastGameFrames) / dt)
+                          << " gframe=" << g_bt3FrameCount.load(std::memory_order_relaxed)   // [dumpkey] the game frame at this line: maps a replay's wall clock to PS2X_SEAMVK_DUMPGAMEFRAME
                           << " guest_ms=" << guestMs
                           << " wall_ms=" << wallMs
                           << " host=" << (uint32_t)(s_fpsFrames / dt)

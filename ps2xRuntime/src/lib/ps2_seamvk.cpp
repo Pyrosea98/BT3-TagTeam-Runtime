@@ -788,6 +788,8 @@ namespace seamvk
         static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK"); return v && v[0] && v[0] != '0'; }();
         return s;
     }
+    static std::atomic<bool> g_dumpReq{false};   // [dumpkey] set from the main loop (F10), consumed by renderFrame
+    void requestDump() { g_dumpReq.store(true, std::memory_order_release); }
 
     bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h)
     {
@@ -815,16 +817,29 @@ namespace seamvk
         auto busyFight = [&]() { size_t host = 0; for (const seamgs::Draw &d : f.draws) if (d.kind == 1) ++host; return host > 200u; };
         static const uint64_t s_dumpGame = [](){ const char *v = std::getenv("PS2X_SEAMVK_DUMPGAMEFRAME"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();   // by the game's frame counter (aligns with PS2X_KICKPROBE_DUMPFRAME)
         const bool gameHit = s_dumpGame && g_bt3FrameCount.load(std::memory_order_relaxed) >= s_dumpGame;
+        // [dumpkey] requestDump() (F10 in the runtime's main loop): dump THIS frame, any number of times per run
+        // (later dumps overwrite the files). For a bug the user reproduces by hand (charge an aura, transform)
+        // where the game frame number is unknowable in advance.
+        // [dumpkey] PS2X_SEAMVK_DUMPGAMEFRAMES=a,b,c: request a dump at each listed game frame (same path as F10;
+        // the target files carry a _g<frame> suffix so the dumps do not overwrite each other).
+        static const std::vector<uint64_t> s_dumpList = [](){ std::vector<uint64_t> v; if (const char *e = std::getenv("PS2X_SEAMVK_DUMPGAMEFRAMES")) for (const char *c = e; *c; ) { v.push_back((uint64_t)std::strtoull(c, (char **)&c, 10)); while (*c == ',' || *c == ' ') ++c; if (c == e) break; } return v; }();
+        static size_t s_dumpNext = 0;
+        const uint64_t gnow = g_bt3FrameCount.load(std::memory_order_relaxed);
+        if (s_dumpNext < s_dumpList.size() && gnow >= s_dumpList[s_dumpNext]) { ++s_dumpNext; g_dumpReq.store(true, std::memory_order_release); }
+        const bool reqHit = g_dumpReq.exchange(false, std::memory_order_acq_rel);
+        char reqSuf[32] = ""; if (reqHit) std::snprintf(reqSuf, sizeof(reqSuf), "_g%llu", (unsigned long long)gnow);
         bool dumpNow = false;
-        if ((s_dumpFrame || s_dumpGame) && !s_dumped && (gameHit || (s_dumpFrame > 1u && g_gpu.frames == s_dumpFrame) || (s_dumpFrame == 1u && busyFight())))
+        if (reqHit || ((s_dumpFrame || s_dumpGame) && !s_dumped && (gameHit || (s_dumpFrame > 1u && g_gpu.frames == s_dumpFrame) || (s_dumpFrame == 1u && busyFight()))))
         {
             dumpNow = true;
+            if (reqHit) std::fprintf(stderr, "[seamvk] DUMP requested (F10): game frame %llu, seamvk frame %llu\n",
+                                     (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed), (unsigned long long)g_gpu.frames);
             if (const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP"))
             {   // the backend's view of the targets this frame decodes from, for comparison with rt_*.ppm
                 g_gpu.dumpRt = true;
                 for (const seamgs::RtDecode &r : f.rtDecodes) { ps2x_pgs::TargetDumpReq q; q.fbp = r.srcFbp; q.fbw = r.srcFbw; q.w = r.srcFbw * 64u; q.h = r.srcRows * 32u; q.dir = dir; ps2x_pgs::requestTargetDump(q); }
             }   // PS2X_SEAMVK_DUMPFRAME=<n>: what the front-end produced for that frame (=1: the first frame with > 200 seam meshes, i.e. a fight)
-            s_dumped = true;
+            if (!reqHit) s_dumped = true;
             if (const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP"))
                 for (const seamgs::TexUpload &u : f.texUploads)
                 {   // what the GPU gets for each slot uploaded this frame
@@ -1339,7 +1354,7 @@ namespace seamvk
             dev.unmap_host_buffer(*prev.buf, Vulkan::MEMORY_ACCESS_READ_BIT);
             prev.live = false;
         }
-        if (dumpNow && std::getenv("PS2X_SEAMVK_TEXDUMP")) dumpTargets(dev, std::getenv("PS2X_SEAMVK_TEXDUMP"), "");
+        if (dumpNow && std::getenv("PS2X_SEAMVK_TEXDUMP")) dumpTargets(dev, std::getenv("PS2X_SEAMVK_TEXDUMP"), reqSuf);
         g_gpu.dumpRt = false;   // one frame only (left on, every later decode allocated a fresh image and the dump loop below ran every frame: 4 fps)
         if (!g_gpu.rtDumps.empty())
         {   // PS2X_SEAMVK_TEXDUMP + DUMPFRAME: the render-target decodes of this frame as rt_*.ppm (synchronous readback)

@@ -16,6 +16,7 @@
 namespace seamvk
 {
     bool on();
+    void requestDump();   // [dumpkey] dump the next rendered frame (draw list, targets, textures under PS2X_SEAMVK_TEXDUMP)
 
     // std140 mirror of the seam vertex shader's Consts block: 30 vec4.
     struct Consts
