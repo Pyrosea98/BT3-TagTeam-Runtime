@@ -18,6 +18,7 @@ struct Consts
     vec4 colA, colB;   // constant colours (0..128)
     vec4 misc;         // x = program, y = pass index within the packet, z = qw16.x scale (effects), w = flat-colour debug
     vec4 view;         // ofx, ofy, width, height in GS pixels
+    vec4 range;        // x = first vertex index of this chunk within the batch
 };
 // [batch] up to 128 chunks share one draw: each vertex carries its chunk's index in inA3.w (pc.texInfo.z = 1), so the
 // per-chunk constants (bone matrices, pass index) come from this array instead of one draw per VU chunk.
@@ -35,7 +36,15 @@ vec4 xfw(vec4 r[4], vec4 v) { return r[0] * v.x + r[1] * v.y + r[2] * v.z + r[3]
 
 void main()
 {
-    const int ci = (pc.texInfo.z > 0.5) ? int(inA3.w + 0.5) : 0;
+    // [batch] the chunk this vertex belongs to: the last chunk whose range.x <= gl_VertexIndex (pc.texInfo.w = chunk count)
+    int ci = 0;
+    if (pc.texInfo.z > 0.5)
+    {
+        int lo = 0, hi = int(pc.texInfo.w + 0.5) - 1;
+        const float vi = float(gl_VertexIndex);
+        while (lo < hi) { int mid = (lo + hi + 1) >> 1; if (vi >= ca.arr[mid].range.x) lo = mid; else hi = mid - 1; }
+        ci = lo;
+    }
 #define c ca.arr[ci]
     const int prog = int(c.misc.x);
     vec4 screen;      // GS pixel space * w

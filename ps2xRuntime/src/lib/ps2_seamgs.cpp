@@ -482,7 +482,7 @@ namespace seamgs
             return true;
         }
 
-        uint64_t g_memoHits = 0, g_stateBuilds = 0, g_imgBytes = 0;
+        uint64_t g_memoHits = 0, g_stateBuilds = 0, g_imgBytes = 0, g_imgRepeat = 0, g_imgByPsm[64] = {}; std::unordered_map<uint64_t, uint64_t> g_imgHash;
         int32_t resolveTextureImpl(const Ctx &c);
         struct ResolveMemo { uint64_t tex0 = 0, texa = 0, frame = ~0ull; uint32_t stamp = 0; int32_t slot = -1; };
         ResolveMemo g_resolveMemo[256];   // [resolvememo] direct-mapped by TEX0: a repeat lookup with no VRAM write since (same stamp, same frame) is O(1)
@@ -1039,7 +1039,13 @@ namespace seamgs
             ScopeMs _sm{g_msImage};
             Xfer &x = g_xfer;
             if (!x.active || x.rrw == 0u) return;
-            g_imgBytes += n;
+            g_imgBytes += n; g_imgByPsm[x.dpsm & 63u] += n;
+            {   // [uploadstat] how much of the stream is byte-identical to the previous upload of the same destination chunk
+                uint64_t h = 1469598103934665603ull; for (uint32_t i = 0; i + 8 <= n; i += 8) { uint64_t w; std::memcpy(&w, d + i, 8); h ^= w; h *= 1099511628211ull; }
+                const uint64_t key = ((uint64_t)x.dbp << 40) | ((uint64_t)(x.dsay + x.y) << 24) | ((uint64_t)(x.dsax + x.x) << 8) | (n & 0xFFu);
+                uint64_t &slot = g_imgHash[key];
+                if (slot == h) g_imgRepeat += n; slot = h;
+            }
             if (g_watch.hi && x.x == 0u && x.y == 0u && x.dbp >= g_watch.lo && x.dbp < g_watch.hi && g_watch.logged < 400u)
             { ++g_watch.logged; std::fprintf(stderr, "[seamgs-watch] frame %llu draw %zu path %u xfer -> dbp 0x%x dbw %u dpsm %u %ux%u at (%u,%u), %u bytes in this packet\n", (unsigned long long)g_frame, g_list.draws.size(), g_curPath, x.dbp, x.dbw, x.dpsm, x.rrw, x.rrh, x.dsax, x.dsay, n); }
             g_texDirty = true;
@@ -1229,9 +1235,9 @@ namespace seamgs
             s_last = g_frame;
             std::fprintf(stderr, "[seamgs] per frame: parse %.2f ms (decode %.2f, scratch raster %.2f, host draws %.2f | state %.2f, triangles %.2f, image data %.2f, vram decode lists %.2f, reg writes %.2f)\n", g_msParse / 300.0, g_msDecode / 300.0, g_msRaster / 300.0, g_msHost / 300.0, g_msState / 300.0, g_msTri / 300.0, g_msImage / 300.0, g_msVramDec / 300.0, g_msReg / 300.0);
             g_msParse = g_msDecode = g_msRaster = g_msHost = 0; g_msState = g_msTri = g_msImage = g_msVramDec = g_msReg = 0;
-            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu (memo hits %llu, state builds %llu, upload KB %llu) decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu (pages unchanged %llu); identical swaps %llu/%llu\n",
-                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_memoHits, (unsigned long long)g_stateBuilds, (unsigned long long)(g_imgBytes >> 10), (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
-            g_texLookups = g_memoHits = g_stateBuilds = g_imgBytes = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
+            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu (memo hits %llu, state builds %llu, upload KB %llu, repeat KB %llu, ct32 %llu t8 %llu t4 %llu c16 %llu other %llu) decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu (pages unchanged %llu); identical swaps %llu/%llu\n",
+                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_memoHits, (unsigned long long)g_stateBuilds, (unsigned long long)(g_imgBytes >> 10), (unsigned long long)(g_imgRepeat >> 10), (unsigned long long)(g_imgByPsm[0] >> 10), (unsigned long long)(g_imgByPsm[19] >> 10), (unsigned long long)(g_imgByPsm[20] >> 10), (unsigned long long)((g_imgByPsm[2] + g_imgByPsm[10]) >> 10), (unsigned long long)((g_imgBytes - g_imgByPsm[0] - g_imgByPsm[19] - g_imgByPsm[20] - g_imgByPsm[2] - g_imgByPsm[10]) >> 10), (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
+            std::memset(g_imgByPsm, 0, sizeof(g_imgByPsm)); g_texLookups = g_memoHits = g_stateBuilds = g_imgBytes = g_imgRepeat = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
             printTargetHist();
             std::fprintf(stderr, "[seamgs] host draws in/out/dropped per prog:");
             for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %d:%llu/%llu/%llu", i, (unsigned long long)g_hostIn[i], (unsigned long long)g_hostOut[i], (unsigned long long)g_hostDropped[i]);

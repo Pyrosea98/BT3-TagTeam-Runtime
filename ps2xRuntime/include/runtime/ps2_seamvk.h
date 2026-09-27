@@ -22,8 +22,9 @@ namespace seamvk
     {
         float A[4][4], B[4][4], E[4][4], F[4][4], C[4][4], D[4][4];
         float pivA[4], pivB[4], colA[4], colB[4], misc[4], view[4];
+        float range[4];   // [batch] x = first vertex of this chunk in the batch's vertex buffer (the shader finds its chunk by gl_VertexIndex)
     };
-    static_assert(sizeof(Consts) == 30 * 16, "Consts must match the shader's std140 block");
+    static_assert(sizeof(Consts) == 31 * 16, "Consts must match the shader's std140 block");
 
     // HostDraw packet 'SVKD': this header followed by count*stride bytes of raw list vertices.
     // The seam submits it immediately BEFORE the host-transformed GIF packet of the same chunk

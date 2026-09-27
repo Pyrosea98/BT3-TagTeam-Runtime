@@ -157,7 +157,7 @@ namespace seamvk
             const uint32_t s = g_gpu.cslot;
             if (!g_gpu.cring[s])
             {
-                Vulkan::BufferCreateInfo bi = {}; bi.size = kCringBytes; bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; bi.domain = Vulkan::BufferDomain::LinkedDeviceHost;   // [perf] device-local + host-visible (BAR): every vertex reads its chunk's 496-byte Consts, 22 MB/frame that used to cross PCIe from system memory
+                Vulkan::BufferCreateInfo bi = {}; bi.size = kCringBytes; bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; bi.domain = Vulkan::BufferDomain::Host;   // system memory: the GPU-side read cost was nil in BAR memory while the CPU writes (2 MB/frame) crossed PCIe
                 g_gpu.cring[s] = dev.create_buffer(bi);
                 g_gpu.cmap[s] = static_cast<uint8_t *>(dev.map_host_buffer(*g_gpu.cring[s], Vulkan::MEMORY_ACCESS_WRITE_BIT));
             }
@@ -1178,25 +1178,27 @@ namespace seamvk
                     cmd->set_vertex_attrib(0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0);
                     cmd->set_vertex_attrib(1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16);
                     cmd->set_vertex_attrib(2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 32);
-                    cmd->set_vertex_attrib(3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 48);
+                    cmd->set_vertex_attrib(3, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0);   // (unused by batched programs; keep it inside the 48-byte stride)
                     static std::vector<Consts> cvec; cvec.resize(b.size()); Consts *carr = cvec.data();
                     uint32_t total = 0; for (uint32_t k : b) total += f.draws[k].count + 2u;
-                    uint8_t *vb = static_cast<uint8_t *>(cmd->allocate_vertex_data(0, VkDeviceSize(64) * total, 64));
+                    // vertices stay at their 48-byte source stride, one block copy per chunk; the chunk index is found by
+                    // vertex range in the shader (Consts.range.x), so nothing is written per vertex
+                    uint8_t *vb = static_cast<uint8_t *>(cmd->allocate_vertex_data(0, VkDeviceSize(48) * total, 48));
                     static const bool s_flat = [](){ const char *v = std::getenv("PS2X_SEAMVK_FLAT"); return v && v[0] && v[0] != '0'; }();
                     uint32_t o = 0;
                     for (size_t k = 0; k < b.size(); ++k)
                     {
                         const seamgs::Draw &e = f.draws[b[k]];
                         std::memcpy(&carr[k], &e.c, sizeof(Consts)); carr[k].misc[1] = float(e.hostPass); if (s_flat) carr[k].misc[3] = 1.0f;
-                        const uint8_t *src = f.verts.data() + e.vertOff; const float idx = float(k);
-                        auto put = [&](uint32_t v) { uint8_t *dst = vb + size_t(o++) * 64u; std::memcpy(dst, src + size_t(v) * 48u, 48u); std::memset(dst + 48, 0, 12); std::memcpy(dst + 60, &idx, 4); };
-                        if (k) put(0);                          // degenerate join: repeat this chunk's first vertex ...
-                        for (uint32_t v = 0; v < e.count; ++v) put(v);
-                        if (k + 1 < b.size()) put(e.count - 1u);   // ... and its last one before the next chunk
+                        carr[k].range[0] = float(o); carr[k].range[1] = carr[k].range[2] = carr[k].range[3] = 0.0f;
+                        const uint8_t *src = f.verts.data() + e.vertOff;
+                        if (k) { std::memcpy(vb + size_t(o) * 48u, src, 48u); ++o; }                                              // degenerate join: this chunk's first vertex ...
+                        std::memcpy(vb + size_t(o) * 48u, src, size_t(e.count) * 48u); o += e.count;
+                        if (k + 1 < b.size()) { std::memcpy(vb + size_t(o) * 48u, src + size_t(e.count - 1u) * 48u, 48u); ++o; }   // ... and its last one before the next chunk
                         g_gpu.verts += e.count;
                     }
                     if (!bindConsts(*cmd, dev, carr, b.size())) return;
-                    const float one = 1.0f; cmd->push_constants(&one, offsetof(PC, texInfo) + 8u, 4u);   // texInfo.z = 1: chunk index in inA3.w
+                    const float zw[2] = { 1.0f, float(b.size()) }; cmd->push_constants(zw, offsetof(PC, texInfo) + 8u, 8u);   // texInfo.z = 1: batched; .w = chunk count
                     cmd->draw(o);
                     ++g_gpu.draws; ++g_gpu.batches;
                 };
