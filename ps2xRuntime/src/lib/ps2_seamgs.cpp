@@ -441,7 +441,7 @@ namespace seamgs
             return true;
         }
 
-        uint64_t g_memoHits = 0;
+        uint64_t g_memoHits = 0, g_stateBuilds = 0;
         int32_t resolveTextureImpl(const Ctx &c);
         struct ResolveMemo { uint64_t tex0 = 0, texa = 0, frame = ~0ull; uint32_t stamp = 0; int32_t slot = -1; };
         ResolveMemo g_resolveMemo[256];   // [resolvememo] direct-mapped by TEX0: a repeat lookup with no VRAM write since (same stamp, same frame) is O(1)
@@ -558,12 +558,15 @@ namespace seamgs
         }
 
         // ---- draw state --------------------------------------------------------------------
-        bool g_stateDirty = true; State g_stateCache[2];   // [statecache] currentState(true/false) memo, invalidated by writeReg
+        bool g_stateDirty = true; State g_stateCache[2]; bool g_stateValid[2] = { false, false };   // [statecache] currentState(true/false) memo, invalidated by writeReg
         State buildState(bool tex);
         const State &currentState(bool tex)
-        {   // a reference into the memo: the kick path runs per primitive and must not copy the struct
-            if (g_stateDirty || g_texDirty) { ScopeMs _sm{g_msState}; g_stateCache[0] = buildState(false); g_stateCache[1] = buildState(true); g_stateDirty = false; }   // (buildState(true) resolves the texture and clears g_texDirty)
-            return g_stateCache[tex ? 1 : 0];
+        {   // a reference into the memo: the kick path runs per primitive and must not copy the struct; each variant built on demand
+            if (g_stateDirty) { g_stateValid[0] = g_stateValid[1] = false; g_stateDirty = false; }
+            if (g_texDirty) g_stateValid[1] = false;   // (buildState(true) resolves the texture and clears g_texDirty)
+            const int i = tex ? 1 : 0;
+            if (!g_stateValid[i]) { ScopeMs _sm{g_msState}; g_stateCache[i] = buildState(tex); g_stateValid[i] = true; ++g_stateBuilds; }
+            return g_stateCache[i];
         }
         State buildState(bool tex)
         {
@@ -1028,10 +1031,35 @@ namespace seamgs
         void writeReg(uint32_t addr, uint64_t v)
         {
             ScopeMs _sm{g_msReg};
-            {   // [statedirty] only the registers the draw state reads invalidate it: vertex data (RGBAQ, ST, UV, XYZ*, FOG) does not
+            {   // [statedirty] only a state register whose value CHANGES invalidates the draw state: vertex data (RGBAQ, ST, UV, XYZ*,
+                // FOG) never does, and the seam rewrites TEST/ALPHA/FRAME... per chunk with the same values (10k rebuilds a frame)
                 const uint32_t a = addr & 0xFFu;
                 const bool vertexReg = a == 0x01u || a == 0x02u || a == 0x03u || a == 0x04u || a == 0x05u || a == 0x0Au || a == 0x0Cu || a == 0x0Du;
-                if (!vertexReg) g_stateDirty = true;
+                if (!vertexReg)
+                {
+                    uint64_t cur; bool known = true;
+                    switch (a)
+                    {
+                    case 0x00: cur = g_r.prim; break;
+                    case 0x06: cur = g_r.ctx[0].tex0; break; case 0x07: cur = g_r.ctx[1].tex0; break;
+                    case 0x08: cur = g_r.ctx[0].clamp; break; case 0x09: cur = g_r.ctx[1].clamp; break;
+                    case 0x14: cur = g_r.ctx[0].tex1; break; case 0x15: cur = g_r.ctx[1].tex1; break;
+                    case 0x18: cur = g_r.ctx[0].xyoffset; break; case 0x19: cur = g_r.ctx[1].xyoffset; break;
+                    case 0x1A: cur = g_r.prmodecont ? 1u : 0u; v &= 1u; break;
+                    case 0x1B: cur = g_r.prmode; break;
+                    case 0x3B: cur = g_r.texa; break; case 0x3D: cur = g_r.fogcol; break;
+                    case 0x40: cur = g_r.ctx[0].scissor; break; case 0x41: cur = g_r.ctx[1].scissor; break;
+                    case 0x42: cur = g_r.ctx[0].alpha; break; case 0x43: cur = g_r.ctx[1].alpha; break;
+                    case 0x46: cur = g_r.colclamp; break;
+                    case 0x47: cur = g_r.ctx[0].test; break; case 0x48: cur = g_r.ctx[1].test; break;
+                    case 0x49: cur = g_r.pabe; break;
+                    case 0x4A: cur = g_r.ctx[0].fba; break; case 0x4B: cur = g_r.ctx[1].fba; break;
+                    case 0x4C: cur = g_r.ctx[0].frame; break; case 0x4D: cur = g_r.ctx[1].frame; break;
+                    case 0x4E: cur = g_r.ctx[0].zbuf; break; case 0x4F: cur = g_r.ctx[1].zbuf; break;
+                    default: known = false; cur = 0; break;
+                    }
+                    if (!known || cur != v) g_stateDirty = true;
+                }
             }
             if ((addr >= 0x40u && addr <= 0x41u) || (addr >= 0x4cu && addr <= 0x4du) || addr == 0x3bu)
                 if (g_list.regEvents.size() < 4096u) g_list.regEvents.push_back(FrameList::RegEvent{(uint32_t)g_list.draws.size(), g_curPath, (uint8_t)(g_inHostGif ? 1 : 0), (uint8_t)addr, v});
@@ -1159,9 +1187,9 @@ namespace seamgs
             s_last = g_frame;
             std::fprintf(stderr, "[seamgs] per frame: parse %.2f ms (decode %.2f, scratch raster %.2f, host draws %.2f | state %.2f, triangles %.2f, image data %.2f, vram decode lists %.2f, reg writes %.2f)\n", g_msParse / 300.0, g_msDecode / 300.0, g_msRaster / 300.0, g_msHost / 300.0, g_msState / 300.0, g_msTri / 300.0, g_msImage / 300.0, g_msVramDec / 300.0, g_msReg / 300.0);
             g_msParse = g_msDecode = g_msRaster = g_msHost = 0; g_msState = g_msTri = g_msImage = g_msVramDec = g_msReg = 0;
-            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu (memo hits %llu) decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu (pages unchanged %llu); identical swaps %llu/%llu\n",
-                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_memoHits, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
-            g_texLookups = g_memoHits = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
+            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu (memo hits %llu, state builds %llu) decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu (pages unchanged %llu); identical swaps %llu/%llu\n",
+                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_memoHits, (unsigned long long)g_stateBuilds, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
+            g_texLookups = g_memoHits = g_stateBuilds = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
             printTargetHist();
             std::fprintf(stderr, "[seamgs] host draws in/out/dropped per prog:");
             for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %d:%llu/%llu/%llu", i, (unsigned long long)g_hostIn[i], (unsigned long long)g_hostOut[i], (unsigned long long)g_hostDropped[i]);

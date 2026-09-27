@@ -392,6 +392,18 @@ namespace seamxform
     // consts = VU1 qw0..11 as uploaded per frame, fanTag = words 1..3 of the list's setup qw.
     // out receives every kick in order; kicks their offsets/lengths; stMask the byte offsets of
     // ST w lanes (stale VU register in the real output, zero here). Returns false only on a bad count.
+    // [hdronly] PS2X_SEAM_HDRONLY=1 (native renderer alone): the front end draws the recorded chunk itself and only needs the
+    // packet's register headers and one kick per pass, so the CPU transform (0.9 us/chunk, 3.7 ms/frame) is skipped: each
+    // vertex tag is rewritten to 3 loops of zero vertices (a kick that draws nothing of its own).
+    static void hdrOnlyTag(std::vector<uint8_t> &out, const uint8_t *tag16)
+    {
+        uint64_t lo, hi; std::memcpy(&lo, tag16, 8); std::memcpy(&hi, tag16 + 8, 8);
+        uint32_t nreg = (uint32_t)((lo >> 60) & 0xFu); if (nreg == 0u) nreg = 16u;
+        lo = (lo & ~0x7FFFull) | 3u;
+        const size_t o = out.size(); out.resize(o + 16u + size_t(3u) * nreg * 16u, 0u);
+        std::memcpy(out.data() + o, &lo, 8); std::memcpy(out.data() + o + 8, &hi, 8);
+    }
+    bool hdrOnlyOn() { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAM_HDRONLY"); return v && v[0] && v[0] != '0'; }(); return s; }
     bool stageChunk(const uint8_t *consts, const uint32_t *fanTag, const uint8_t *hdr, const uint8_t *verts, uint32_t nvec,
                     std::vector<uint8_t> &out, std::vector<Kick> &kicks, std::vector<uint32_t> &stMask)
     {
@@ -958,7 +970,45 @@ namespace seam
         }
         bool ok;
         uint32_t clip = t_hostClip; t_clipIn = clip;
-        if (isStage)
+        // [xformprof] the CPU chunk transform's share of the kick worker (PS2X_SEAMXFORM_PROF=1 prints per 4096 chunks)
+        static const bool s_xprof = [](){ const char *v = std::getenv("PS2X_SEAMXFORM_PROF"); return v && v[0] && v[0] != '0'; }();
+        static double s_xms = 0; static uint32_t s_xn = 0;
+        struct XT { bool on; std::chrono::steady_clock::time_point t; ~XT() { if (!on) return; s_xms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); if (++s_xn == 4096u) { std::fprintf(stderr, "[seamxform] %.3f ms per 4096 chunks (%.1f us/chunk)\n", s_xms, s_xms * 1000.0 / 4096.0); s_xms = 0; s_xn = 0; } } } xt{s_xprof, std::chrono::steady_clock::now()};
+        if (seamxform::hdrOnlyOn() && seamvk::on())
+        {   // [hdronly] headers + one empty kick per pass, no transform
+            std::vector<uint8_t> &o = t_run.expect; o.clear(); t_run.kicks.clear(); t_run.stMask.clear(); t_run.dontCare.clear();
+            uint32_t countRaw; std::memcpy(&countRaw, c.hdr + (isStage || isFx ? 32 : isChar1 ? 64 : 48), 4);
+            const uint32_t count = countRaw & 0x7FFFu;
+            ok = count != 0u && count <= 300u;
+            if (ok && isStage)
+            {
+                o.insert(o.end(), c.hdr, c.hdr + 32); t_run.kicks.push_back(seamxform::Kick{0u, 32u});
+                seamxform::hdrOnlyTag(o, c.hdr + 32); t_run.kicks.push_back(seamxform::Kick{32u, (uint32_t)o.size() - 32u});
+            }
+            else if (ok && isFx)
+            {
+                std::memcpy(t_liveVu, vuData, sizeof(t_liveVu));
+                ps2xSeamVu1Q(&t_vuQ, &t_vuPendingQ, &t_vuQWait);
+                t_fxChunk = &c;
+                seamxform::hdrOnlyTag(o, c.hdr + 32); t_run.kicks.push_back(seamxform::Kick{0u, (uint32_t)o.size()});
+            }
+            else if (ok && isChar1)
+            {
+                o.insert(o.end(), c.hdr, c.hdr + 32); seamxform::hdrOnlyTag(o, c.hdr + 64);
+                t_run.kicks.push_back(seamxform::Kick{0u, (uint32_t)o.size()});
+            }
+            else if (ok)
+            {   // char2 / char3: pass A then pass B
+                o.insert(o.end(), c.hdr, c.hdr + 32); seamxform::hdrOnlyTag(o, c.hdr + 48);
+                o.insert(o.end(), c.hdr, c.hdr + 16);
+                if (isChar2) o.insert(o.end(), c.hdr + 32, c.hdr + 48);
+                else { const size_t q = o.size(); o.resize(q + 16); _mm_storeu_ps(reinterpret_cast<float *>(o.data() + q), t_c3.tex26); }
+                seamxform::hdrOnlyTag(o, c.hdr + 64);
+                t_run.kicks.push_back(seamxform::Kick{0u, (uint32_t)o.size()});
+            }
+            if (ok) { t_run.clipOut = clip; t_run.hasClipOut = true; }
+        }
+        else if (isStage)
         {   // The stage program's constants live at qw0..11 for the whole frame; read them live.
             const uint32_t *fanTag = reinterpret_cast<const uint32_t *>(t_mesh->setup) + 1;
             ok = seamxform::stageChunk(vuData, fanTag, c.hdr, c.verts.data(), c.nvec, t_run.expect, t_run.kicks, t_run.stMask);
