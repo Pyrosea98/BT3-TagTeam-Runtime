@@ -19,4 +19,10 @@ namespace ps2x::gfx
     // [d3d11 uitest] Draws a tiny debug window (UiBegin + a window + UiEnd). Proves the
     // imgui_impl_dx11 path renders without involving the real overlay. Used by PS2X_UI_TEST=1.
     void UiDrawTestWindow();
+
+    // [netplay] Upload tightly packed RGBA8 (top-down, as GsDecodeImageRGBA8 returns it) and
+    // return the ImGui texture id. Kept next to UiBegin/UiEnd because the texture is only valid
+    // for the backend currently drawing, so it has to be created through the same path that will
+    // sample it. Returns nullptr on failure and never throws.
+    unsigned long long UiLoadTextureRgba(const void *rgba, int w, int h);
 }

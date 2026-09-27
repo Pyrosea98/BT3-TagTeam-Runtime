@@ -11,6 +11,9 @@
 #include <vector>
 
 float PS2AudioBackend::s_masterVolume = 1.0f;
+// [netjump] 1 = audible. Multiplied in at the three mix points, so one flag silences the BGM and
+// the SFX together instead of each needing its own switch.
+float PS2AudioBackend::s_curtainMute = 1.0f;
 float PS2AudioBackend::s_musicVolume = 1.0f;
 float PS2AudioBackend::s_sfxVolume = 0.4f;
 
@@ -667,7 +670,7 @@ void PS2AudioBackend::serviceStreams()
 
         if (L.started)
         {
-            const float musicVol = s_masterVolume * s_musicVolume;
+            const float musicVol = s_masterVolume * s_musicVolume * s_curtainMute;
             std::vector<int16_t> inter(kStreamChunkFrames * 2u);
             while (ps2x_audio::streamProcessed(s) &&
                    std::min(L.ring.size(), R.ring.size()) >= kStreamChunkFrames)
@@ -868,9 +871,9 @@ void PS2AudioBackend::serviceStreams()
             // effects; scaling here is cheaper than a second ring pass.
             // [netmenu] Exception: the reserved SE stream (0xF0) stays audible at a fixed menu
             // level while the net entry has the game audio frozen, so its own effects are heard.
-            float sfxVol = s_masterVolume * s_sfxVolume;
+            float sfxVol = s_masterVolume * s_sfxVolume * s_curtainMute;
             if (id == 0xF0u && ps2xSeMenuBypassGet())
-                sfxVol = s_masterVolume * 0.6f;
+                sfxVol = s_masterVolume * 0.6f * s_curtainMute;
             if (sfxVol < 0.999f || sfxVol > 1.001f)
             {
                 std::vector<int16_t> scaled(st.ring.begin(), st.ring.begin() + static_cast<long>(chunk));
@@ -976,7 +979,7 @@ void PS2AudioBackend::playDecodedSample(uint32_t sampleKey, DecodedSample &sampl
     }
 
     const ps2x_audio::Sound snd = ps2x_audio::playSound(sample.pcm.data(), sample.pcm.size(), sample.sampleRate,
-                                                        pitch, volume * s_masterVolume * s_sfxVolume);
+                                                        pitch, volume * s_masterVolume * s_sfxVolume * s_curtainMute);
     if (!snd)
         return;
     m_impl->activeSounds.push_back({snd, sampleKey});

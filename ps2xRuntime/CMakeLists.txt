@@ -15,7 +15,19 @@ if(NOT DEFINED PS2X_TARGET_PROCESSOR)
 endif()
 
 option(PS2X_ENABLE_RUNNER_UNITY_BUILD "Build ps2EntryRunner with CMake unity build" ON)
-set(PS2X_RUNNER_UNITY_BUILD_BATCH_SIZE 8 CACHE STRING "Unity build batch size for ps2EntryRunner")
+# FORCE, and that is the whole point of the word.
+#
+# set(... CACHE ...) WITHOUT FORCE does not write when the cache entry already exists -- it is a
+# "set the default if unset", not a "set". This tree was on 4 from an older default, so the 8 below
+# never took effect and the runner built 1963 unity batches for 7808 sources instead of 976. Every
+# build since then paid for 1000 extra translation units, roughly double the compile time, for
+# exactly the same output. Nothing in git recorded a change to the default, which is what made it
+# look like the object count had grown overnight: it had not, the batch size had silently halved.
+#
+# The cost of FORCE: -DPS2X_RUNNER_UNITY_BUILD_BATCH_SIZE=N on the command line is overwritten on the
+# next configure. To use a different size, edit the cache entry after configuring, or change the
+# number here.
+set(PS2X_RUNNER_UNITY_BUILD_BATCH_SIZE 8 CACHE STRING "Unity build batch size for ps2EntryRunner" FORCE)
 option(PS2X_ENABLE_SCCACHE "Use sccache as compiler launcher when available" ON)
 
 option(PS2X_ENABLE_RUNTIME_LOGS "Enable PS2 runtime logs" OFF)
@@ -605,6 +617,32 @@ if(PS2X_BUILD_PROBES AND NOT PS2X_IS_VITA)
         target_compile_options(fe_imgui_probe PRIVATE -Wall -Wextra)
     endif()
 
+    # [mainmenu-probe] The main-menu lifecycle gate (ps2x_mainmenu.cpp) against synthetic guest
+    # RAM: walks BOOT -> 0x04 -> object up -> DISPLAYED -> TRANSITIONING and asserts what
+    # popupVisible() says on each step, plus the guards that keep it from claiming a screen that
+    # is not there. No game, no window, no GL.
+    add_executable(ps2x_mainmenu_probe src/lib/ps2x_mainmenu_probe.cpp src/lib/ps2x_mainmenu.cpp)
+    target_include_directories(ps2x_mainmenu_probe PRIVATE include src)
+    if(MSVC)
+        target_compile_options(ps2x_mainmenu_probe PRIVATE /W4)
+    else()
+        target_compile_options(ps2x_mainmenu_probe PRIVATE -Wall -Wextra)
+    endif()
+
+    # [netplay-flush-probe] The [flush] latch and the teardown's residue, driven through the same
+    # g_bt3StateLive the run loop keeps fresh. Needs no peer: the socket is bound, nothing answers,
+    # and the latch turns on the state alone. No game, no window, no GL.
+    add_executable(ps2x_netplay_probe src/lib/ps2x_netplay_probe.cpp src/lib/ps2_netplay.cpp)
+    target_include_directories(ps2x_netplay_probe PRIVATE include src)
+    if(MSVC)
+        target_compile_options(ps2x_netplay_probe PRIVATE /W4)
+    else()
+        target_compile_options(ps2x_netplay_probe PRIVATE -Wall -Wextra)
+    endif()
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(ps2x_netplay_probe PRIVATE pthread)
+    endif()
+
     # [fe-probe] Same idea for the file picker, the one widget that opens a MODAL: it drives the
     # real FilePicker through open/close/reopen and a mouse sweep on the null backend and asserts
     # the window and popup stacks come back to their base every frame.
@@ -632,6 +670,7 @@ src/lib/game_overrides.cpp
 src/lib/ps2x_dueldump.cpp       # [dueldump] total capture of the Duel menu flow
 src/lib/ps2x_net_texdump.cpp    # [netmenu] force-decode QRS textures via the runtime's PSMT8 reader
 src/lib/ps2x_duel_fields.cpp    # [duelfields] the complete Duel-setup field map + write methods
+src/lib/ps2x_mainmenu.cpp       # [mainmenu] the main-menu lifecycle gate (started / shown / confirming)
 src/lib/ps2x_injected.cpp       # [injected] function registry for cloned guest code
     src/lib/ps2_eeprof.cpp
     src/lib/ps2_stepcensus.cpp

@@ -138,6 +138,9 @@ namespace
         applyRenderer(s, ps2x_settings::nameToRenderer(
                             doc.getS("video.renderer", ps2x_settings::rendererName(s.renderer)),
                             s.renderer));
+        // [netplay] The environment is the default and the checkbox is the override, so a run with
+        // NET_OVERLAY=1 and a saved "off" still starts off -- the setting is the user's last word.
+        s.netOverlay = doc.getB("netplay.overlay", s.netOverlay);
         s.glow = doc.getB("video.glow", s.glow);
         s.glowFix = doc.getB("video.glowfix", s.glowFix);
         s.inkStrength = doc.getI("video.ink_strength", s.inkStrength);
@@ -232,6 +235,10 @@ namespace
                 if (key == "master_volume") s.master = asFloat(s.master);
                 else if (key == "music_volume") s.music = asFloat(s.music);
                 else if (key == "sfx_volume") s.sfx = asFloat(s.sfx);
+            }
+            else if (section == "netplay")
+            {
+                if (key == "overlay") s.netOverlay = asBool();
             }
             else if (section == "video")
             {
@@ -392,6 +399,11 @@ namespace ps2x_settings
         os << "master_volume = " << fmtDbl(s.master) << "\n";
         os << "music_volume = " << fmtDbl(s.music) << "\n";
         os << "sfx_volume = " << fmtDbl(s.sfx) << "\n\n";
+
+        os << "[netplay]\n";
+        os << "# The corner label, the panel behind it, and the automatic character-select\n"
+              "# transition with its curtain. NET_OVERLAY is the default when this key is absent.\n";
+        os << "overlay = " << fmtBool(s.netOverlay) << "\n\n";
 
         os << "[video]\n";
         os << "renderer = " << fmtStr(rendererName(s.renderer)) << "\n";

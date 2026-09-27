@@ -90,6 +90,14 @@ public:
     static void setMasterVolume(float v) { s_masterVolume = v; }
     static float masterVolume() { return s_masterVolume; }
 
+    // [netjump] A global silence that is NOT a volume setting. The settings panel owns
+    // masterVolume and rewrites it from the ini, so borrowing that one float for the transition
+    // curtain would mean two owners fighting over it -- and a panel that is NoInputs while the
+    // curtain is up still reads it. This is a separate factor the mixer multiplies in, nothing else
+    // writes it, and the curtain is the only thing that turns it on.
+    static void setCurtainMute(bool on) { s_curtainMute = on ? 0.0f : 1.0f; }
+    static float curtainMute() { return s_curtainMute; }
+
     // Per-category volume (multiplied on top of master). Music = the BGM stereo pair
     // (streams 0+1); SFX = mono streams (voices, effects) and VAG one-shots.
     static void setMusicVolume(float v) { s_musicVolume = v; }
@@ -99,6 +107,7 @@ public:
 
 private:
     static float s_masterVolume;
+    static float s_curtainMute;   // [netjump] 1 = audible, 0 = silenced by the transition curtain
     static float s_musicVolume;
     static float s_sfxVolume;
     struct DecodedSample

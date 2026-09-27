@@ -15,6 +15,11 @@ class PS2SettingsOverlay
 public:
     struct Settings
     {
+        // [netplay] The Netplay overlay: the corner label, the panel behind it and the automatic
+        // character-select transition with its curtain. The launcher's Misc page has the same switch
+        // and both read and write the same settings.toml key, so the two cannot disagree; see
+        // ps2x_settings::Settings::netOverlay, which is the same field on the front-end's side.
+        bool netOverlay = false;
         float masterVolume = 1.0f;
         float musicVolume = 1.0f;
         float sfxVolume = 0.4f;
@@ -97,6 +102,15 @@ public:
     // retraido (el estado normal) y, cuando esta desplegandose, lo pinta antes del fade para que no
     // herede su opacidad.
     void drawPerfHud();
+
+    // [mmpopup] The main-menu popup: an icon in the bottom-right corner that unfolds a panel.
+    // Wanted() is what the draw() early-out asks, so a retracted panel with the perf HUD off still
+    // opens a frame for it (UiBegin/UiEnd may only happen once per iteration). It is also where
+    // the panel's open state is reset: the draw function only runs while the gate is OPEN, so the
+    // closing edge has to be caught here or the panel would come back open after leaving the
+    // menu. Off unless PS2X_MAINMENU_POPUP_TEST=1.
+    static bool mainMenuPopupWanted();
+    void drawMainMenuPopup();
 
     void shutdown();
 
