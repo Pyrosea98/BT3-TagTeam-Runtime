@@ -16,6 +16,8 @@
 //   PS2X_NET=<host>:<port>   connect to a peer        PS2X_NET_LISTEN=<port>   wait for one
 //   PS2X_NET_PLAYER=1|2      which player is local    PS2X_NET_DELAY=<frames>  default 4
 //   PS2X_NET_TIMEOUT=<ms>    stall limit, default 2000
+#include "runtime/ps2x_notify.h"   // [notify] the session cards and their sounds
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -328,6 +330,17 @@ void pump()
             if (g.syncOn) { g.synced = false; g.syncOffered = false; g.syncDone = false; }   // [statesync] inputs wait for the state
             // host drives; the joiner just follows the inputs it receives
             if (g.listening) { if (const char *a = std::getenv("PS2X_NET_AUTOSTART")) ps2NetBeginAutoStart(a); }
+            // [notify] Announced from the packet path rather than from the UI, because this is the
+            // one place it is true no matter what the player is looking at. A session that comes up
+            // during a fight is exactly the case worth telling them about, and that is the case a
+            // panel-scoped observer would miss.
+            {
+                char body[96];
+                std::snprintf(body, sizeof body, "Player %u is in. The session is live.",
+                              (unsigned)p.player);
+                const NotifyEvent ev{NotifyKind::Netplay, NotifyTone::Good, "Connected", body};
+                ps2xNotifyPush(ev);
+            }
         }
         g.rx.fetch_add(1, std::memory_order_relaxed);
         if (p.kind == 1u)
@@ -436,18 +449,64 @@ static bool netStart(const char *conn, int listenPort, int player)
     return true;
 }
 
-bool ps2NetHost(int port, int player)              { return netStart(nullptr, port, player); }
-bool ps2NetJoin(const char *hostPort, int player)  { return netStart(hostPort, 0, player); }
+// [notify] One card per attempt, decided from netStart()'s single return value rather than
+// annotated onto each of its five failure paths. Those paths each already log their own reason to
+// the console -- a bad address, a taken port, a dead socket -- and the card does not need to
+// restate which one it was; the player pressed a button and it did not work.
+static void netStartAnnounce(bool ok, bool hosting, int player)
+{
+    if (ok)
+    {
+        const NotifyEvent ev{NotifyKind::Netplay, NotifyTone::Info, "Waiting for the other player",
+                             hosting ? "Listening. The session starts when someone joins."
+                                     : "Looking for the host."};
+        ps2xNotifyPush(ev);
+    }
+    else
+    {
+        const NotifyEvent ev{NotifyKind::Netplay, NotifyTone::Bad, "Could not start the session",
+                             "Check the address and the port, then try again."};
+        ps2xNotifyPush(ev);
+        (void)player;
+    }
+}
+
+bool ps2NetHost(int port, int player)
+{
+    const bool ok = netStart(nullptr, port, player);
+    netStartAnnounce(ok, true, player);
+    return ok;
+}
+
+bool ps2NetJoin(const char *hostPort, int player)
+{
+    const bool ok = netStart(hostPort, 0, player);
+    netStartAnnounce(ok, false, player);
+    return ok;
+}
+
 bool ps2NetPeerConnected()                         { return g.connected; }
 
 // [netplay] The overlay switch. Seeded from the environment once, then owned by whoever last set it.
 static std::atomic<int> g_netOverlay{0};
+static bool g_netOverlayEnvSet = false;   // the environment spoke, or the player did
 static bool ps2xNetOverlayInit()
 {
+    // Presence, not truthiness. The saved default is "on" now, so a plain "is it non-zero" test
+    // would make NET_OVERLAY=0 a no-op: the seed would be 0, applySettings() would push the saved
+    // "on" over it, and the one-session override would stop working. Same shape as the
+    // achievements module's ACHIEVEMENTS handling.
     static const int seeded = [](){ const char *v = std::getenv("NET_OVERLAY");
-                                     return (v && v[0] && v[0] != '0') ? 1 : 0; }();
-    g_netOverlay.store(seeded, std::memory_order_relaxed);
-    return seeded != 0;
+                                     if (!v || !v[0]) return -1;   // not set: the file decides
+                                     return (v[0] != '0') ? 1 : 0; }();
+    // Only seed when there is something to seed. -1 means "leave it alone", and the setting is
+    // offered by ps2xNetOverlayApplyDefault() right after this runs on the load path.
+    if (seeded >= 0)
+    {
+        g_netOverlay.store(seeded, std::memory_order_relaxed);
+        g_netOverlayEnvSet = true;
+    }
+    return g_netOverlay.load(std::memory_order_relaxed) != 0;
 }
 bool ps2xNetOverlayEnabled()
 {
@@ -458,6 +517,19 @@ bool ps2xNetOverlayEnabled()
 void ps2xSetNetOverlayEnabled(bool on)
 {
     ps2xNetOverlayInit();   // so a later enable does not get clobbered by the seed
+    g_netOverlayEnvSet = true;   // the player has spoken; the environment is done
+    g_netOverlay.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
+void ps2xNetOverlayApplyDefault(bool on)
+{
+    // The saved value, offered at boot. Not ps2xSetNetOverlayEnabled(), for the same reason the
+    // achievements module has a second entry point: that one is the player's click and gives up the
+    // environment, and applySettings() runs on the load path. Sharing it would make NET_OVERLAY=0 a
+    // no-op on the one boot it is supposed to apply to.
+    ps2xNetOverlayInit();
+    if (g_netOverlayEnvSet)
+        return;
     g_netOverlay.store(on ? 1 : 0, std::memory_order_relaxed);
 }
 
@@ -483,6 +555,12 @@ static void sendBye()
 void ps2NetDisconnect(const char *why)
 {
     if (!g.active) return;
+    // [notify] Captured before the teardown clears it. A disconnect is announced even when the
+    // session never connected -- the player pressed Disconnect or Join failed, and either way the
+    // thing they asked for is not happening, which is worth one card. `why` goes on the card
+    // because it is already a short phrase written for a human, and it is more useful than
+    // inventing a second string for the same event.
+    const bool wasLive = g.connected;
     sendBye();
     std::lock_guard<std::mutex> lk(g.mtx);
     if (g.sock != INVALID_SOCKET) { PS2X_CLOSESOCK(g.sock); g.sock = INVALID_SOCKET; }
@@ -517,6 +595,13 @@ void ps2NetDisconnect(const char *why)
     netFlushForget();   // [flush] the latch belonged to the session that just ended
 
     std::fprintf(stderr, "[netplay] disconnected (%s) -- local pads restored, session state flushed\n", why ? why : "requested");
+
+    if (wasLive)
+    {
+        const NotifyEvent ev{NotifyKind::Netplay, NotifyTone::Bad, "Session ended",
+                             why ? why : "The session was closed."};
+        ps2xNotifyPush(ev);
+    }
 }
 
 // [netjump] Whether a successful connection should take both sides to character select.

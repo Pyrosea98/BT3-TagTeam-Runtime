@@ -12,6 +12,7 @@
 #include "raylib.h"
 #include "runtime/pad_config.h"
 #include "runtime/ps2_host_pad.h"
+#include "runtime/ps2x_achieve.h"   // [ach] the counts the Misc page shows
 
 #include <algorithm>
 #include <cstdio>
@@ -797,9 +798,37 @@ namespace frontend
                          "Netplay tab both write the same saved setting, so they never disagree."))
     {
         fe::toggleSwitch("Netplay overlay", &s.netOverlay);
-        fe::hint("Off by default. Turning it on puts a label in the corner of the main menu and "
-                 "nothing else; the panel and the transition only appear once a session is live, "
-                 "and only while you are in that menu.");
+        fe::hint("On by default. It puts a label in the corner of the main menu and nothing else; "
+                 "the panel and the transition only appear once a session is live, and only while "
+                 "you are in that menu. NET_OVERLAY=0 turns it off for one run.");
+    }
+
+    // [ach] Its own section rather than a line under the netplay one: the two share nothing but
+    // the shape of the switch, and putting them together would read as "achievements are a netplay
+    // feature". They are not -- this one is single-player and never opens a socket.
+    if (fe::beginSection("ACHIEVEMENTS", false,
+                         "RetroAchievements, tracked locally. The 154 definitions are a file in "
+                         "assets/ and your progress is a file in savedata/ -- no account, no "
+                         "network, nothing sent anywhere. The five whose memory addresses are "
+                         "mapped work; the rest are listed and cannot be earned by playing yet, "
+                         "because they read an address this build does not use. On by default; "
+                         "ACHIEVEMENTS=0 turns it off for one run. The achievements, the badges "
+                         "and the rcheevos library that evaluates them are RetroAchievements' work."))
+    {
+        fe::toggleSwitch("Achievements", &s.achievements);
+        const int total = ps2xAchTotal();
+        char buf[192];
+        if (total > 0)
+            std::snprintf(buf, sizeof buf,
+                          "%d of %d tracked, %d of %d points. On by default; ACHIEVEMENTS=0 turns "
+                          "it off for one run. The list, the badges and the progress file are all "
+                          "RetroAchievements' definitions and their work -- see the overlay's "
+                          "Achievements tab.", ps2xAchUnlocked(), total,
+                          ps2xAchPointsEarned(), ps2xAchPointsTotal());
+        else
+            std::snprintf(buf, sizeof buf,
+                          "Nothing loaded yet -- the counts appear once the game has run a frame.");
+        fe::hint(buf);
     }
 }
 

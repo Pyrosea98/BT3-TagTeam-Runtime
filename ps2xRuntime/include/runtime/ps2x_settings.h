@@ -26,10 +26,15 @@ namespace ps2x_settings
         int renderer = kRendererParallelGS;
 #endif
         // [netplay] The Netplay overlay: the corner label, the panel behind it and the automatic
-        // character-select transition with its curtain. Default comes from NET_OVERLAY at load, and
-        // the checkbox lives in the launcher's Misc page and in the overlay's own Netplay tab, so
-        // the switch is reachable without touching the environment.
-        bool netOverlay = false;
+        // character-select transition with its curtain. The checkbox lives in the launcher's Misc page
+        // and in the overlay's own Netplay tab, so the switch is reachable without touching the
+        // environment. NET_OVERLAY=0 still turns it off for one session, which is the point of having
+        // an environment at all.
+        bool netOverlay = true;
+        // [ach] The local achievement tracker. On by default, like the Netplay overlay: the cost is
+        // one condition evaluation per frame against RAM the game already has in cache, and the
+        // switch is in the same two places. ACHIEVEMENTS=0 turns it off for one session.
+        bool achievements = true;
         bool glow = true;
         bool glowFix = true;
         bool bilinear = true;

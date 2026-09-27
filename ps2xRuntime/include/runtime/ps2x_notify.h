@@ -80,8 +80,8 @@ int ps2xNotifyPending();
 // keep in sync and nothing to unregister. Use it from a shell like this -- the temp file plus
 // rename is what makes the write atomic, so the runtime can never read a half-written request:
 //
-//     printf 'ach great Hello :: World\n' > "$D/savedata/.notify.tmp" \
-//         && mv "$D/savedata/.notify.tmp" "$D/savedata/notify.request"
+//     printf 'ach great Hello :: World\n' > "$D/savedata/.notify.tmp"
+//     && mv "$D/savedata/.notify.tmp" "$D/savedata/notify.request"
 //
 // `dump` is why the poller takes the guest RAM: it is the same buffer PS2X_DUMPKEY + F9 writes,
 // reachable from a terminal instead of only from a keypress. That is the entire input surface a

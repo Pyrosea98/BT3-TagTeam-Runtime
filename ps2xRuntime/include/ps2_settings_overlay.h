@@ -2,6 +2,7 @@
 
 #include "ps2_runtime.h"
 #include "runtime/pad_config.h"
+#include "runtime/ps2x_notify.h"     // [notify] NotifyKind, for the popup stack
 #include "runtime/ps2x_settings.h"   // EnvLock, for the keys the environment owns
 #include <string>
 #include <vector>
@@ -19,7 +20,11 @@ public:
         // character-select transition with its curtain. The launcher's Misc page has the same switch
         // and both read and write the same settings.toml key, so the two cannot disagree; see
         // ps2x_settings::Settings::netOverlay, which is the same field on the front-end's side.
-        bool netOverlay = false;
+        bool netOverlay = true;
+        // [ach] The local RetroAchievements tracker. Same relationship as netOverlay above: this
+        // switch and the launcher's Misc page write the same settings.toml key. See
+        // ps2x_settings::Settings::achievements.
+        bool achievements = true;
         float masterVolume = 1.0f;
         float musicVolume = 1.0f;
         float sfxVolume = 0.4f;
@@ -146,8 +151,14 @@ private:
 
     // Capsule HUD display font (Russo One), loaded once in initialize().
     // Null (falls back to the default ImGui font) if the .ttf couldn't be found.
-    ImFont *m_fontHudTitle = nullptr; // title bar
-    ImFont *m_fontHudLabel = nullptr; // tab labels + section headers
+    //
+    // REMOVED. Both were never assigned -- initialize() puts Russo One at Fonts[0] with
+    // io.Fonts->Clear() first, so the default font IS the HUD face and every caller gets it from
+    // ImGui::GetFont() without a member. A member that is always null is worse than no member: it
+    // reads like a loaded font, and handing it to ImDrawList::AddText() dereferences null and draws
+    // "???" where the text should be. That is exactly what happened to the [notify] cards.
+    //
+    // (Title bar and tab labels both render in the default font today, unchanged.)
 
     // Settings dump logging — which areas are captured to the dump log.
     bool m_dumpAudio = true;
@@ -183,6 +194,21 @@ private:
     // Whether the Bindings / Overlay-settings sub-window (popup) is open.
     bool m_showBindingsPopup = false;
 
+    // [notify] One card in the top-left stack. Held here rather than drawn straight out of the
+    // bus's queue, because a card has a life measured in seconds and the queue is drained once per
+    // frame: drawing from the queue directly would make a card vanish the frame it arrived, and two
+    // events in the same frame would overwrite each other instead of stacking.
+    struct Card
+    {
+        NotifyKind kind = NotifyKind::Netplay;
+        std::string title;
+        std::string body;
+        float age = 0.0f;    // seconds on screen, drives slide and fade
+        float hold = 3.0f;   // how long it stays fully opaque
+        float y = 0.0f;      // eased toward its slot, so a new card pushes the stack smoothly
+    };
+    std::vector<Card> m_cards;   // newest first
+
     void toggleVisible();
     void resetCaptureState();
     void loadSettings();
@@ -203,6 +229,8 @@ private:
     void drawLoggingTab();
     void drawAboutTab();
     void drawNetplayTab();   // [netplay]
+    void drawAchTab();       // [ach] the achievement list
+    void drawNotifyStack();  // [notify] the top-left popup stack, over whatever else is up
     void drawGamepadTestArea(const std::array<uint8_t, 32> &btnDown,
                              const std::array<float, 6> &axis);
     void drawBindingsTable();

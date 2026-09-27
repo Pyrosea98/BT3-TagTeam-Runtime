@@ -28,6 +28,11 @@ void     ps2AchFrame(uint8_t *rdram);
 bool     ps2xAchEnabled();
 void     ps2xSetAchEnabled(bool on);
 
+// Offers the saved value at boot, without giving up the environment. ps2xSetAchEnabled is the
+// player's action and always wins; this is what applySettings() calls, and it exists separately
+// because sharing one setter would make the one-session environment override a no-op.
+void     ps2xAchApplyDefault(bool on);
+
 // Counts. Unlocked/total/points are 0 before the patch has loaded, which the UI renders as "..."
 // rather than "0/0" so an unloaded tracker is not mistaken for an empty one.
 int      ps2xAchTotal();

@@ -47,6 +47,29 @@ extern "C" unsigned long long ps2xWinThreadCpuNs();
 #include "Kernel/Stubs/MemoryCard.h"   // [savestate] getMemoryCardDebugSnapshot (deferred quickload)
 #include "runtime/ps2x_dueldump.h"
 #include "runtime/ps2_netplay.h"   // [netplay]
+#include "runtime/ps2x_achieve.h"  // [ach]
+#include "runtime/ps2x_notify.h"   // [notify] the drop box
+
+// [notify] Where the drop box lives: <exeDir>/savedata, the same directory settings.toml is in.
+// The CWD is tried first because the front-end runs with the deploy as its working directory and a
+// dev build run from the build tree should find the tree's savedata; the exe dir is the fallback for
+// a launch from anywhere else. The current_path() branch is only taken if savedata actually exists
+// there, so a stray savedata in an unrelated working directory cannot shadow the real one.
+extern "C" const char *ps2xDropBoxDir()
+{
+    static const std::string s_dir = []() {
+        std::error_code ec;
+        const std::filesystem::path cwd = std::filesystem::current_path() / "savedata";
+        if (std::filesystem::is_directory(cwd, ec) && !ec)
+            return cwd.string();
+        extern const char *ps2xExeDirC();   // main.cpp: <exeDir> (honors PS2X_EXEDIR)
+        const char *xd = ps2xExeDirC();
+        if (xd && xd[0])
+            return (std::filesystem::path(xd) / "savedata").string();
+        return cwd.string();
+    }();
+    return s_dir.c_str();
+}
 
 // [netjump] Frames of display HOLD remaining. While non-zero, GsGpuRenderer::swapFrame() returns
 // immediately, so the screen keeps showing the last presented frame. The menu transition needs a
@@ -3014,9 +3037,9 @@ namespace
     }
 
     // The current top-level state, or 0 when the state object does not exist yet (still booting).
-    // Resolved through the pointer at 0x2ff10c on purpose: the RetroAchievements addresses do not
-    // transfer to this build, that region is heap, and our allocator places it differently than
-    // PCSX2 does.
+    // Resolved through the pointer at 0x2ff10c on purpose: it survives whatever the allocator does,
+    // whereas the [ach] tracker reads the state object's fields as flat addresses, which is fine
+    // because the layout is deterministic but would break the moment it is not.
     static uint32_t bt3CurState(uint8_t *rdram)
     {
         const uint32_t so = sndRd32(rdram, 0x2ff10cu) & 0x1FFFFFFFu;
@@ -6009,12 +6032,18 @@ namespace
     }
 
     // [dumpkey] PS2X_DUMPKEY=<prefix>: press F9 to write EE RAM to "<prefix>.<n>.bin".
-    // Needed because the RetroAchievements addresses do NOT transfer to this build: everything
-    // at 0x6afxxx is HEAP (the ELF's loaded segments end at 0x334bf8), and our recompilation
-    // runs its own allocator, so the game's menu objects land at different addresses than they
-    // do under PCSX2. Our own layout IS stable run to run (the state object is at 0x6b3180 every
-    // time), so the equivalents can be found -- but only by dumping at KNOWN screens and diffing,
-    // which means letting the player mark the moment.
+    // Needed to find the RetroAchievements addresses that are NOT the state object. The state
+    // object's are already translated: the achievements were written against PCSX2, where it sat at
+    // 0x6af180, and in this build it is at 0x6b3180 -- a flat +0x4000, confirmed from two
+    // directions because 0x006af7a0/0x006af7a4 land on stateObj+0x620/+0x624, which is where mode
+    // and battle type were already known to live. See scripts/gen_ach_patch.py, whose VERIFIED list
+    // is where that translation is applied and where the rest of the set is held back.
+    //
+    // The remaining regions are still HEAP (the ELF's loaded segments end at 0x334bf8) and still
+    // land at different addresses than under PCSX2, and our layout IS stable run to run, so the
+    // equivalents can be found by dumping at KNOWN screens and diffing -- which means letting the
+    // player mark the moment. PS2X_ACH_TRACE=1 logs every address the tracker reads, which is the
+    // other half of the same job.
     extern "C" bool IsKeyPressed(int key);   // raylib; KEY_F9 == 298
     static void bt3DumpKey(uint8_t *rdram)
     {
@@ -6330,6 +6359,16 @@ namespace
         ps2x_dueldump::tickTime(rdram);        // [dueltime] PS2X_DUELTIME=1
         ps2NetInit();   // [netplay] no-op unless PS2X_NET / PS2X_NET_LISTEN is set
         ps2NetFrame(static_cast<uint32_t>(g_bt3FrameCount.load(std::memory_order_relaxed)));
+        // [ach] One condition evaluation per presented frame, next to the netplay tick because it
+        // is the same kind of guest-RAM observer. It is a no-op unless the tracker is on, and it
+        // runs on this thread rather than from swapFrame() so that the [netjump] freeze, which
+        // returns early in swapFrame() before reaching the renderer, cannot skip a frame of
+        // evaluation while the screen is held.
+        ps2AchFrame(rdram);
+        // [notify] The drop box, polled from here rather than from the overlay's draw(). The tick
+        // runs every frame whatever the UI is doing, and it is the only place with the guest RAM in
+        // hand -- which the box's `dump` verb needs. The module throttles the actual stat().
+        ps2xNotifyPollDropBox(ps2xDropBoxDir(), rdram);
         ps2DetHashFrame(rdram, ctx->vu0_r);   // [dethash]
         if (g_ps2StepCensus.load(std::memory_order_relaxed)) ps2StepCensusFrame(ctx);   // [stepcensus]
         ps2HalfStepFrame(ctx);        // [halfstep] (no-op unless configured; raises the macro switch on fight frames only)
