@@ -15,7 +15,19 @@ if(NOT DEFINED PS2X_TARGET_PROCESSOR)
 endif()
 
 option(PS2X_ENABLE_RUNNER_UNITY_BUILD "Build ps2EntryRunner with CMake unity build" ON)
-set(PS2X_RUNNER_UNITY_BUILD_BATCH_SIZE 8 CACHE STRING "Unity build batch size for ps2EntryRunner")
+# FORCE, and that is the whole point of the word.
+#
+# set(... CACHE ...) WITHOUT FORCE does not write when the cache entry already exists -- it is a
+# "set the default if unset", not a "set". This tree was on 4 from an older default, so the 8 below
+# never took effect and the runner built 1963 unity batches for 7808 sources instead of 976. Every
+# build since then paid for 1000 extra translation units, roughly double the compile time, for
+# exactly the same output. Nothing in git recorded a change to the default, which is what made it
+# look like the object count had grown overnight: it had not, the batch size had silently halved.
+#
+# The cost of FORCE: -DPS2X_RUNNER_UNITY_BUILD_BATCH_SIZE=N on the command line is overwritten on the
+# next configure. To use a different size, edit the cache entry after configuring, or change the
+# number here.
+set(PS2X_RUNNER_UNITY_BUILD_BATCH_SIZE 8 CACHE STRING "Unity build batch size for ps2EntryRunner" FORCE)
 option(PS2X_ENABLE_SCCACHE "Use sccache as compiler launcher when available" ON)
 
 option(PS2X_ENABLE_RUNTIME_LOGS "Enable PS2 runtime logs" OFF)
