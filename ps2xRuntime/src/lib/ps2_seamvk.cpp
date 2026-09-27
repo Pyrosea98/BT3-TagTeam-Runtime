@@ -657,16 +657,13 @@ namespace seamvk
             if (zi == g_gpu.targets.end() || !zi->second.img || fi == g_gpu.targets.end() || !fi->second.img) return;
             Target &zt = zi->second, &ft = fi->second;
             toSampled(cmd, zt);
-            // radii in GS pixels (PS2X_SEAMVK_OUTLINE=<core>,<fringe>, default 1,1.5), scaled to native pixels: the same look at any scale
-            static const float s_core = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); return v && v[0] ? (float)std::atof(v) : 1.0f; }();
-            static const float s_fringe = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); if (v) if (const char *c = std::strchr(v, ',')) return (float)std::atof(c + 1); return 1.5f; }();
-            // [outlineaa] third value: the ramp-difference threshold that counts as an edge. Default 0 = ANY difference, the
-            // game's rule: the CLUT 0x3e8c ramp is bit-permuted, not monotonic (background 255 -> 0, a leg's Ztop 1 -> 8, the
-            // torso's 3 -> 72), so a threshold of 16 dropped the legs' silhouette while keeping the torso's (2026-09-28).
-            static const uint32_t s_thr = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); if (v) if (const char *c = std::strchr(v, ',')) if (const char *c2 = std::strchr(c + 1, ',')) return (uint32_t)std::atoi(c2 + 1); return 0u; }();
-            const uint32_t pcv[4] = { g_gpu.scale, (uint32_t)std::lround(s_core * g_gpu.scale), (uint32_t)std::lround(s_fringe * g_gpu.scale), s_thr };
+            // [outlinegame] the game's ink alphas: PS2X_SEAMVK_OUTLINE=<core>,<fringe> (default 0x80,0x30 = the TEXA TA0 of the
+            // read-back phases 7 and 5); the band geometry is the game's, scaled (see outline.frag)
+            static const uint32_t s_core = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : 0x80u; }();
+            static const uint32_t s_fringe = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); if (v) if (const char *c = std::strchr(v, ',')) return (uint32_t)std::strtoul(c + 1, nullptr, 0); return 0x30u; }();
+            const uint32_t pcv[4] = { g_gpu.scale, s_core, s_fringe, 0u };
             const uint32_t w = ft.img->get_width(), h = ft.img->get_height();
-            {   // pass A: horizontal min/max of the ramp into a target-sized image (separable kernel: taps grow with the radius, not its square)
+            {   // pass A: the edge buffer (one-sided ramp difference) into a target-sized image
                 if (!g_gpu.outlineH || g_gpu.outlineH->get_width() != w || g_gpu.outlineH->get_height() != h)
                 {
                     auto ci = Vulkan::ImageCreateInfo::render_target(w, h, VK_FORMAT_R8G8B8A8_UNORM); ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -709,7 +706,7 @@ namespace seamvk
             VkViewport vp = {}; vp.width = float(w); vp.height = float(h); vp.maxDepth = 1.0f; cmd.set_viewport(vp);
             VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = h; cmd.set_scissor(sr);
             cmd.set_texture(0, 1, zt.img->get_view(), Vulkan::StockSampler::NearestClamp);
-            cmd.set_texture(0, 2, g_gpu.outlineH->get_view(), Vulkan::StockSampler::NearestClamp);
+            cmd.set_texture(0, 2, g_gpu.outlineH->get_view(), Vulkan::StockSampler::LinearClamp);   // [outlinegame] the game's bilinear read-back
             uint32_t *cl = static_cast<uint32_t *>(cmd.allocate_constant_data(0, 0, 256u * 4u));
             if (d.rt >= 0 && (size_t)d.rt < f.stepCluts.size()) std::memcpy(cl, f.stepCluts[d.rt].data(), 1024); else std::memset(cl, 0, 1024);
             cmd.push_constants(pcv, 0, sizeof(pcv));

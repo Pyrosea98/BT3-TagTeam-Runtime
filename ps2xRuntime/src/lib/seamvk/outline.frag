@@ -1,39 +1,33 @@
 #version 450
-// [seamvk] Native outline pass (the post chain's FUN_00105cd8 replaced at the engine seam): the ink alpha the game's
-// ink draw subtracts with (Cd - 100 * Ad/128) is written straight from the depth ramp's edges, at native resolution
-// and on both sides of an edge, instead of the game's 16-bit scratch-view recipe (draw the ramp, draw it shifted,
-// subtract, read back three rows). Alpha 0x80 on the edge core, 0x30 on the fringe, untouched elsewhere.
-// [outlineaa] The core/fringe decision is by the exact distance to the nearest edge pixel (see outline_h.frag) and the
-// alpha fades over the last pixel of each band, so the line is anti-aliased instead of a 1-px staircase; an edge is a
-// ramp difference above the threshold (the CLUT ramp steps by 8; every step inked the far character solid).
-layout(set = 0, binding = 1) uniform sampler2D uZtop;                     // the Z top-byte plane (alpha of the 0x1c00 colour view)
-layout(set = 0, binding = 0, std140) uniform Clut { uvec4 clut[64]; } uClut;   // CLUT 0x3e8c: Ztop -> depth ramp
-layout(push_constant) uniform PC { uvec4 p; } pc;                         // scale, core radius (native px), fringe radius, ramp threshold
+// [seamvk] Native outline pass B (the post chain's FUN_00105cd8 at the engine seam): the ink alpha the game's ink draw
+// consumes, written straight into the frame's alpha, at native resolution.
+// [outlinegame] The game's read-back of its edge buffer, exactly (packet oracle, docs/evidence/postchain-transcript-steps.txt
+// 1031-1110): three bilinear full-frame reads of the 16-bit edge buffer, alpha-only, ATE "alpha != 0", AEM giving alpha
+// TA0 per non-zero texel: (5) at GS offset (+0.5, +0.5) with TA0 0x30, (6) at (+0.5, +1.5) with 0x30, (7) at (+0.5, +1.5)
+// with 0x80 -- (7) overwrites everything (6) wrote, so: A = core > 0 ? 0x80 * core : fringe > 0 ? 0x30 * fringe : 0, with
+// core = E sampled bilinearly at p + (0.5, 1.5) GS px and fringe = E at p + (0.5, 0.5) GS px (offsets scale with the
+// render scale, one GS px = pc.p.x native px). This is what paraLLEl-GS renders at its scale: the band stays one GS pixel
+// wide while the bodies scale, which is why a far character is readable there and a solid blob at GS resolution.
+layout(set = 0, binding = 1) uniform sampler2D uZtop;
+layout(set = 0, binding = 0, std140) uniform Clut { uvec4 clut[64]; } uClut;
+layout(push_constant) uniform PC { uvec4 p; } pc;   // scale, core alpha (0x80), fringe alpha (0x30), unused
 #extension GL_ARB_shader_stencil_export : require
 out int gl_FragStencilRefARB;   // [stencildate]
 layout(location = 0) out vec4 outColor;
-layout(set = 0, binding = 2) uniform sampler2D uH;   // pass A: (horizontal edge distance, ramp) per pixel
+layout(set = 0, binding = 2) uniform sampler2D uH;   // pass A: edge per pixel (linear sampler: the game's bilinear read-back)
+float edgeAt(vec2 q)   // bilinear sample of the edge buffer at native texel coordinate q (texel centres at .5)
+{
+    vec2 sz = vec2(textureSize(uH, 0));
+    return texture(uH, (q + 0.5) / sz).x;
+}
 void main()
 {
-    ivec2 p = ivec2(gl_FragCoord.xy);
-    float core = float(pc.p.y), fringe = float(pc.p.z);
-    int ifringe = int(pc.p.z), thr = int(pc.p.w);
-    ivec2 sz = textureSize(uH, 0);
-    ivec2 h0 = ivec2(texelFetch(uH, clamp(p, ivec2(0), sz - 1), 0).xy * 255.0 + 0.5);
-    int r = h0.y;
-    float dist = float(h0.x);   // this row: its own horizontal distance
-    for (int dy = 1; dy <= ifringe; ++dy)
-    {
-        ivec2 a = ivec2(texelFetch(uH, clamp(p + ivec2(0, dy), ivec2(0), sz - 1), 0).xy * 255.0 + 0.5);
-        ivec2 b = ivec2(texelFetch(uH, clamp(p - ivec2(0, dy), ivec2(0), sz - 1), 0).xy * 255.0 + 0.5);
-        float da = abs(a.y - r) > thr ? float(dy) : sqrt(float(dy * dy + a.x * a.x));
-        float db = abs(b.y - r) > thr ? float(dy) : sqrt(float(dy * dy + b.x * b.x));
-        dist = min(dist, min(da, db));
-    }
-    if (dist > fringe + 0.5) discard;
-    float coreCov = clamp(core + 0.5 - dist, 0.0, 1.0);      // 1 inside the core band, fading over its last pixel
-    float fringeCov = clamp(fringe + 0.5 - dist, 0.0, 1.0);
-    float a = max(128.0 * coreCov, 48.0 * fringeCov);
-    gl_FragStencilRefARB = coreCov > 0.5 ? 1 : 0;
+    vec2 p = vec2(gl_FragCoord.xy) - 0.5;   // this pixel's texel coordinate
+    float s = float(pc.p.x);
+    float core = edgeAt(p + vec2(0.5 * s, 1.5 * s));
+    float fringe = edgeAt(p + vec2(0.5 * s, 0.5 * s));
+    float a = core > 0.0 ? float(pc.p.y) * core : (fringe > 0.0 ? float(pc.p.z) * fringe : 0.0);
+    if (a <= 0.0) discard;
+    gl_FragStencilRefARB = core >= 0.5 ? 1 : 0;
     outColor = vec4(0.0, 0.0, 0.0, a / 255.0);
 }
