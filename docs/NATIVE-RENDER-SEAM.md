@@ -527,3 +527,15 @@ Later that night: PS2X_SEAMVK_GPUDECODE_MIN=0 (every texture on the GPU, -0.16 c
 block-aligned base decoded white (their pages wrap into the next page; fixed: the page after a mid-page base is listed too) and
 the opponent's HUD portrait still vanished afterwards even with cpuTargetOk decoding a GPU texture on the CPU on demand -- open.
 Default stays 65536 texels; TEX0 same-value dirty skipping was tried and reverted (no lookup reduction, stale boots texture).
+
+## 2026-09-27 (morning): CPU work and the scale benchmark
+
+CPU (60 fps fight, plugged in): 1.56 -> 1.24 cores. Parse thread: every texture decoded on the GPU (page listing block-exact;
+hoisted decodes own their images), resolve memo, state invalidated only by value changes and built per variant on demand,
+per-page swizzle offset tables (verified at start-up), paired CT32 mirror writes, sub-timers behind PS2X_SEAMGS_PROF.
+Record: 48-byte-stride block copies, chunk index by vertex range, constants ring in system memory (BAR writes cost 0.4 ms).
+Kick worker: PS2X_SEAM_HDRONLY=1 sends register headers + one empty kick per pass instead of CPU-transformed vertices.
+Per-thread (regcheck): GsThread 0.56, GameThread 0.37, KickWorker 0.20. The reference's 0.92 total is the remaining gap.
+Scale: 2x 60 fps / 40% GPU; 3x 60 fps / 82%; 4x was 35 fps because the outline kernel (a square of taps whose radius
+scales) cost 18.6 ms -- now separable (outline_h.frag: horizontal min/max of the ramp; outline.frag: vertical min/max = the
+square's min/max, an exact equivalent): 4x runs at 60 fps / 69% GPU, native steps 3.2 ms.

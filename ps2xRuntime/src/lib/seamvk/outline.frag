@@ -18,22 +18,22 @@ int rampAt(ivec2 p)
     uint zt = uint(texelFetch(uZtop, p, 0).a * 255.0 + 0.5);
     return int(clutEntry(zt) & 0xFFu);
 }
+layout(set = 0, binding = 2) uniform sampler2D uH;   // pass A: (minC, maxC, minF, maxF) over the horizontal windows
 void main()
 {
     ivec2 p = ivec2(gl_FragCoord.xy);
     int r = rampAt(p);
     int core = int(pc.p.y), fringe = int(pc.p.z);
-    bool onCore = false, onFringe = false;
+    ivec2 sz = textureSize(uH, 0);
+    int minC = 255, maxC = 0, minF = 255, maxF = 0;
     for (int dy = -fringe; dy <= fringe; ++dy)
-        for (int dx = -fringe; dx <= fringe; ++dx)
-        {
-            if (dx == 0 && dy == 0) continue;
-            if (rampAt(p + ivec2(dx, dy)) != r)
-            {
-                if (abs(dx) <= core && abs(dy) <= core) onCore = true;
-                onFringe = true;
-            }
-        }
+    {   // vertical min/max of the horizontal min/max = min/max over the square window
+        ivec4 h = ivec4(texelFetch(uH, clamp(p + ivec2(0, dy), ivec2(0), sz - 1), 0) * 255.0 + 0.5);
+        minF = min(minF, h.z); maxF = max(maxF, h.w);
+        if (abs(dy) <= core) { minC = min(minC, h.x); maxC = max(maxC, h.y); }
+    }
+    bool onCore = (minC != r) || (maxC != r);
+    bool onFringe = (minF != r) || (maxF != r);
     if (!onFringe) discard;
     gl_FragStencilRefARB = onCore ? 1 : 0;
     outColor = vec4(0.0, 0.0, 0.0, onCore ? 128.0 / 255.0 : 48.0 / 255.0);

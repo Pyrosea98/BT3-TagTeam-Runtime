@@ -49,7 +49,7 @@ namespace seamgs
         // the reference address functions and verified against them at start-up (fallback to them on any mismatch).
         struct Swz
         {
-            uint16_t ct32[64 * 32], t8[128 * 64], t4[128 * 128], c16[64 * 64], c16s[64 * 64], z16[64 * 64], z16s[64 * 64]; bool ok = false;
+            uint16_t ct32[64 * 32], t8[128 * 64], t4[128 * 128], c16[64 * 64], c16s[64 * 64], z16[64 * 64], z16s[64 * 64]; bool ok = false, pair32 = false;
             Swz()
             {
                 for (uint32_t y = 0; y < 32; ++y) for (uint32_t x = 0; x < 64; ++x) ct32[y * 64 + x] = (uint16_t)GSPSMCT32::addrPSMCT32(0, 1, x, y);
@@ -73,6 +73,8 @@ namespace seamgs
                     if (a16(PSMZ16S, b, bw, x, y) != (GSPSMCT16::addrPSMZ16S(b, bw, x, y) & kVramMask)) ok = false;
                 }
                 if (!ok) std::fprintf(stderr, "[seamgs] swizzle tables disagree with the reference address functions: using the slow path\n");
+                pair32 = ok;   // CT32: pixels (2k, 2k+1) of a row are adjacent words -> one 8-byte store per pair in imageData
+                for (uint32_t y = 0; y < 32 && pair32; ++y) for (uint32_t x = 0; x < 64; x += 2) if (ct32[y * 64 + x + 1] != ct32[y * 64 + x] + 4u) { pair32 = false; break; }
             }
             inline uint32_t a32(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) const { const uint32_t ppr = bw ? bw : 1u; return ((((block >> 5) + (y >> 5) * ppr + (x >> 6)) << 13) + (block & 31u) * 256u + ct32[(y & 31u) * 64u + (x & 63u)]) & kVramMask; }
             inline uint32_t a8(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) const { const uint32_t ppr = (bw >> 1) ? (bw >> 1) : 1u; return ((((block >> 5) + (y >> 6) * ppr + (x >> 7)) << 13) + (block & 31u) * 256u + t8[(y & 63u) * 128u + (x & 127u)]) & kVramMask; }
@@ -210,7 +212,7 @@ namespace seamgs
         // ---- texture cache -----------------------------------------------------------------
         struct TexEntry
         {
-            uint64_t key = 0; uint32_t w = 0, h = 0; uint64_t lastUse = 0; bool used = false;
+            uint64_t key = 0; uint32_t w = 0, h = 0; uint64_t lastUse = 0; bool used = false; uint32_t decodeId = 0;   // decodeId: serial of the decode that filled this entry
             std::vector<uint8_t> rgbaCopy;                      // kept for textures the CPU scratch raster may sample (<= 256x256)
             std::vector<std::pair<uint16_t, uint32_t>> pages;   // (page, write stamp seen)
             bool drawnPages = false;                            // texture pages the game had drawn into (stale mirror)
@@ -423,8 +425,10 @@ namespace seamgs
                 static const bool s_hash = [](){ const char *v = std::getenv("PS2X_SEAMGS_PAGEHASH"); return !(v && v[0] == '0'); }();   // =0: upload every changed page without hashing it first
                 if (s_hash)
                 {   // same bytes as the GPU copy already holds (restreamed texture): nothing to upload
-                    uint64_t h = 1469598103934665603ull; const uint64_t *q = reinterpret_cast<const uint64_t *>(g_vram + size_t(p) * 8192u);
-                    for (uint32_t i = 0; i < 1024u; ++i) { h ^= q[i]; h *= 1099511628211ull; }
+                    const uint64_t *q = reinterpret_cast<const uint64_t *>(g_vram + size_t(p) * 8192u);
+                    uint64_t h0 = 1469598103934665603ull, h1 = 0x9E3779B97F4A7C15ull, h2 = 0xC2B2AE3D27D4EB4Full, h3 = 0x165667B19E3779F9ull;   // 4 lanes: no serial multiply chain
+                    for (uint32_t i = 0; i < 1024u; i += 4) { h0 = (h0 ^ q[i]) * 1099511628211ull; h1 = (h1 ^ q[i + 1]) * 1099511628211ull; h2 = (h2 ^ q[i + 2]) * 1099511628211ull; h3 = (h3 ^ q[i + 3]) * 1099511628211ull; }
+                    const uint64_t h = ((h0 ^ (h1 >> 7)) * 1099511628211ull) ^ ((h2 ^ (h3 << 9)) * 0x9E3779B97F4A7C15ull);
                     if (h == g_pageHash[p]) { ++g_pagesSame; continue; }
                     g_pageHash[p] = h;
                 }
@@ -482,6 +486,8 @@ namespace seamgs
             return true;
         }
 
+        struct ScratchMemo { uint64_t hash = 0; uint32_t p0 = 0, p1 = 0; }; ScratchMemo g_scratchMemo[128]; uint64_t g_scratchSkips = 0; uint32_t g_scratchSeqIdx = 0; bool g_scratchSeqOk = true;
+        uint32_t g_pageScratch[kPages] = {};   // [scratchrepeat] write stamp of the last scratch raster into each page
         uint64_t g_memoHits = 0, g_stateBuilds = 0, g_imgBytes = 0, g_imgRepeat = 0, g_imgByPsm[64] = {}; std::unordered_map<uint64_t, uint64_t> g_imgHash;
         int32_t resolveTextureImpl(const Ctx &c);
         struct ResolveMemo { uint64_t tex0 = 0, texa = 0, frame = ~0ull; uint32_t stamp = 0; int32_t slot = -1; };
@@ -537,7 +543,7 @@ namespace seamgs
             e = TexEntry(); e.key = key; e.used = true; e.lastUse = g_frame;
             std::vector<uint8_t> rgba;
             decodeTexture(tex0, g_r.texa, e, rgba);
-            ++g_texDecodes;
+            ++g_texDecodes; e.decodeId = (uint32_t)g_texDecodes + (uint32_t)(g_frame << 12);
             if (e.drawnPages) ++g_texStale;
             if (e.w * e.h <= 256u * 256u && !rgba.empty()) e.rgbaCopy = rgba; else e.rgbaCopy.clear();
             {   // PS2X_SEAMVK_TEXDUMP=<dir>: every first decode as a PPM (rgb) + PGM (alpha), named by its TEX0 fields
@@ -866,7 +872,26 @@ namespace seamgs
             if (y1 < y0) std::swap(y0, y1);
             const int cx0 = std::max(x0, (int)s.scax0), cx1 = std::min(x1, (int)s.scax1 + 1), cy0 = std::max(y0, (int)s.scay0), cy1 = std::min(y1, (int)s.scay1 + 1);
             if (cx1 <= cx0 || cy1 <= cy0 || (cx1 - cx0) * (cy1 - cy0) > 256 * 256) return false;
+            // [scratchrepeat] the HUD rasterises the same palettes every frame: while this frame's sequence of scratch sprites
+            // (state, vertices, texture decode) matches last frame's from the first one on, and every target page's last writer
+            // was a scratch raster, the mirror already holds the result
+            uint64_t sh = 1469598103934665603ull;
+            auto mixb = [&](const void *d, size_t n) { const uint8_t *q = static_cast<const uint8_t *>(d); for (size_t i = 0; i < n; ++i) { sh ^= q[i]; sh *= 1099511628211ull; } };
+            mixb(&s, sizeof(State)); mixb(&a, sizeof(GsVert)); mixb(&b, sizeof(GsVert)); if (te) { mixb(&te->key, sizeof(te->key)); mixb(&te->decodeId, sizeof(te->decodeId)); }
+            uint32_t p0 = pageOf(s.fpsm, s.fbp, s.fbw, (uint32_t)cx0, (uint32_t)cy0), p1 = pageOf(s.fpsm, s.fbp, s.fbw, (uint32_t)cx1 - 1u, (uint32_t)cy1 - 1u);
+            if (p1 < p0) std::swap(p0, p1);
+            const uint32_t idx = g_scratchSeqIdx++;
+            if (idx < 128u)
+            {
+                ScratchMemo &sm = g_scratchMemo[idx];
+                bool same = g_scratchSeqOk && sm.hash == sh && sm.p0 == p0 && sm.p1 == p1;
+                for (uint32_t p = p0; p <= p1 && same && p < kPages; ++p) if (g_pageWrite[p] != g_pageScratch[p]) same = false;
+                if (same) { ++g_scratchSkips; return true; }
+                sm.hash = sh; sm.p0 = p0; sm.p1 = p1;
+            }
+            g_scratchSeqOk = false;
             ++g_stamp;
+            struct MarkPages { uint32_t p0, p1; ~MarkPages() { for (uint32_t p = p0; p <= p1 && p < kPages; ++p) g_pageScratch[p] = g_pageWrite[p]; } } markPages{p0, p1};
             const float du = (x1 > x0) ? (float(b.u) - float(a.u)) / 16.0f / float(x1 - x0) : 0.0f;
             const float dv = (y1 > y0) ? (float(b.v) - float(a.v)) / 16.0f / float(y1 - y0) : 0.0f;
             for (int y = cy0; y < cy1; ++y)
@@ -1057,7 +1082,24 @@ namespace seamgs
             uint32_t i = 0;
             switch (x.dpsm)
             {
-            case PSMCT32: case PSMZ32: for (; i + 4 <= n; i += 4) { uint32_t v; std::memcpy(&v, d + i, 4); put(v); } break;
+            case PSMCT32: case PSMZ32:
+                if (g_swz.pair32)
+                {   // [swztab] pairs of pixels at even x are adjacent: one address, one 8-byte store, one page stamp
+                    for (; i + 4 <= n;)
+                    {
+                        if (x.y >= x.rrh) { i = n; break; }
+                        const uint32_t px = (x.dsax + x.x) & 0x7FFu, py = (x.dsay + x.y) & 0x7FFu;
+                        if (i + 8 <= n && (px & 1u) == 0u && x.x + 1u < x.rrw && (px & 63u) != 63u)
+                        {
+                            const uint32_t a = addr32(x.dbp, x.dbw, px, py);
+                            std::memcpy(g_vram + a, d + i, 8); g_pageWrite[a >> 13] = g_stamp;
+                            i += 8; x.x += 2u; if (x.x >= x.rrw) { x.x = 0; ++x.y; }
+                        }
+                        else { uint32_t v; std::memcpy(&v, d + i, 4); put(v); i += 4; }
+                    }
+                }
+                else for (; i + 4 <= n; i += 4) { uint32_t v; std::memcpy(&v, d + i, 4); put(v); }
+                break;
             case PSMCT24: case PSMZ24:
             {
                 while (i < n)
@@ -1235,9 +1277,9 @@ namespace seamgs
             s_last = g_frame;
             std::fprintf(stderr, "[seamgs] per frame: parse %.2f ms (decode %.2f, scratch raster %.2f, host draws %.2f | state %.2f, triangles %.2f, image data %.2f, vram decode lists %.2f, reg writes %.2f)\n", g_msParse / 300.0, g_msDecode / 300.0, g_msRaster / 300.0, g_msHost / 300.0, g_msState / 300.0, g_msTri / 300.0, g_msImage / 300.0, g_msVramDec / 300.0, g_msReg / 300.0);
             g_msParse = g_msDecode = g_msRaster = g_msHost = 0; g_msState = g_msTri = g_msImage = g_msVramDec = g_msReg = 0;
-            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu (memo hits %llu, state builds %llu, upload KB %llu, repeat KB %llu, ct32 %llu t8 %llu t4 %llu c16 %llu other %llu) decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu (pages unchanged %llu); identical swaps %llu/%llu\n",
-                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_memoHits, (unsigned long long)g_stateBuilds, (unsigned long long)(g_imgBytes >> 10), (unsigned long long)(g_imgRepeat >> 10), (unsigned long long)(g_imgByPsm[0] >> 10), (unsigned long long)(g_imgByPsm[19] >> 10), (unsigned long long)(g_imgByPsm[20] >> 10), (unsigned long long)((g_imgByPsm[2] + g_imgByPsm[10]) >> 10), (unsigned long long)((g_imgBytes - g_imgByPsm[0] - g_imgByPsm[19] - g_imgByPsm[20] - g_imgByPsm[2] - g_imgByPsm[10]) >> 10), (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
-            std::memset(g_imgByPsm, 0, sizeof(g_imgByPsm)); g_texLookups = g_memoHits = g_stateBuilds = g_imgBytes = g_imgRepeat = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
+            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu (memo hits %llu, state builds %llu, upload KB %llu, repeat KB %llu, ct32 %llu t8 %llu t4 %llu c16 %llu other %llu) decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu (skipped %llu) tris %llu, rt decodes %llu, gpu decodes %llu (pages unchanged %llu); identical swaps %llu/%llu\n",
+                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_memoHits, (unsigned long long)g_stateBuilds, (unsigned long long)(g_imgBytes >> 10), (unsigned long long)(g_imgRepeat >> 10), (unsigned long long)(g_imgByPsm[0] >> 10), (unsigned long long)(g_imgByPsm[19] >> 10), (unsigned long long)(g_imgByPsm[20] >> 10), (unsigned long long)((g_imgByPsm[2] + g_imgByPsm[10]) >> 10), (unsigned long long)((g_imgBytes - g_imgByPsm[0] - g_imgByPsm[19] - g_imgByPsm[20] - g_imgByPsm[2] - g_imgByPsm[10]) >> 10), (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_scratchSkips, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
+            std::memset(g_imgByPsm, 0, sizeof(g_imgByPsm)); g_texLookups = g_memoHits = g_stateBuilds = g_imgBytes = g_imgRepeat = g_texDecodes = g_texStale = g_cpuSprites = g_scratchSkips = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
             printTargetHist();
             std::fprintf(stderr, "[seamgs] host draws in/out/dropped per prog:");
             for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %d:%llu/%llu/%llu", i, (unsigned long long)g_hostIn[i], (unsigned long long)g_hostOut[i], (unsigned long long)g_hostDropped[i]);
@@ -1259,6 +1301,7 @@ namespace seamgs
         g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear(); g_list.rtDecodes.clear(); g_list.vramPages.clear(); g_list.vramBytes.clear(); g_list.stepCluts.clear(); g_list.regEvents.clear();
         g_texFree.insert(g_texFree.end(), g_retired.begin(), g_retired.end()); g_retired.clear();
         g_texDirty = true;   // a new frame: re-resolve (the renderer may have dropped slots)
+        seamgs::g_scratchSeqIdx = 0; seamgs::g_scratchSeqOk = true;   // [scratchrepeat] a new sequence
         report();
     }
 

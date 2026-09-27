@@ -79,6 +79,9 @@ namespace seamvk
         const uint32_t kOutlineFrag[] = {
 #include "seamvk/outline.frag.inc"
         };
+        const uint32_t kOutlineHFrag[] = {
+#include "seamvk/outline_h.frag.inc"
+        };
         struct RtPC { uint32_t tex[4], clut[4], src[4], texa[4]; };
         struct AliasPC { uint32_t tgt[4], v16[4]; int32_t fA[4], blend[4], texInfo[4]; float col[4]; };   // alias16.frag
 
@@ -97,11 +100,12 @@ namespace seamvk
         struct Target { Vulkan::ImageHandle img; VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; bool cleared = false; bool aliasedDirty = false; };   // aliasedDirty: a draw through the other pixel format was skipped since the last draw of its own
         struct Gpu
         {
-            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progSeamSt = nullptr, *progGsSt = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progVram = nullptr;
+            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progSeamSt = nullptr, *progGsSt = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutlineH = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progVram = nullptr;
             Vulkan::BufferHandle vram;          // [gpudecode] the GPU copy of GS VRAM (4 MB), pages uploaded in stream order
             Vulkan::BufferHandle cring[3]; uint8_t *cmap[3] = {}; VkDeviceSize coff = 0; uint32_t cslot = 0;   // [batch] host-visible constants ring (one per frame in flight)
             Vulkan::ImageHandle out;            // the composed frame
             Vulkan::ImageHandle white;          // 1x1 for untextured draws
+            Vulkan::ImageHandle outlineH;       // [outline] pass A output (minC, maxC, minF, maxF), target-sized
             Vulkan::ImageHandle snap;           // destination snapshot for DATE draws
             Vulkan::BufferHandle readback;
             struct TsMark { uint8_t cat; Vulkan::QueryPoolHandle q; };   // [gputime] GPU timestamps: cat = the category that STARTS at this mark
@@ -228,11 +232,13 @@ namespace seamvk
                 of.sets[0].uniform_buffer_mask = 1u << 0; of.sets[0].meta[0].array_size = 1;
                 of.sets[0].sampled_image_mask = 1u << 1; of.sets[0].meta[1].array_size = 1;
                 of.output_mask = 0x1u; of.push_constant_size = 16;
+                g_gpu.progOutlineH = dev.request_program(kRtVert, sizeof(kRtVert), kOutlineHFrag, sizeof(kOutlineHFrag), &ov, &of);   // pass A: same inputs
+                of.sets[0].sampled_image_mask |= 1u << 2; of.sets[0].meta[2].array_size = 1;   // pass B also reads pass A's image
                 g_gpu.progOutline = dev.request_program(kRtVert, sizeof(kRtVert), kOutlineFrag, sizeof(kOutlineFrag), &ov, &of);
                 Vulkan::ResourceLayout dv = {}, df = {};   // depth mask: fullscreen triangle, depth image (1)
                 dv.output_mask = 0x0u; df.sets[0].sampled_image_mask = 1u << 1; df.sets[0].meta[1].array_size = 1; df.output_mask = 0x1u;
                 g_gpu.progDepthMask = dev.request_program(kRtVert, sizeof(kRtVert), kDepthMaskFrag, sizeof(kDepthMaskFrag), &dv, &df);
-                if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progSeamSt || !g_gpu.progGsSt || !g_gpu.progPresent || !g_gpu.progRt || !g_gpu.progAlias || !g_gpu.progOutline || !g_gpu.progDepthMask || !g_gpu.progVram || !g_gpu.vram) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
+                if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progSeamSt || !g_gpu.progGsSt || !g_gpu.progPresent || !g_gpu.progRt || !g_gpu.progAlias || !g_gpu.progOutline || !g_gpu.progOutlineH || !g_gpu.progDepthMask || !g_gpu.progVram || !g_gpu.vram) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
                 const uint32_t whitePx = 0xFFFFFFFFu;
                 Vulkan::ImageInitialData init = { &whitePx, 0, 0 };
                 g_gpu.white = dev.create_image(Vulkan::ImageCreateInfo::immutable_2d_image(1, 1, VK_FORMAT_R8G8B8A8_UNORM), &init);
@@ -570,6 +576,37 @@ namespace seamvk
             if (zi == g_gpu.targets.end() || !zi->second.img || fi == g_gpu.targets.end() || !fi->second.img) return;
             Target &zt = zi->second, &ft = fi->second;
             toSampled(cmd, zt);
+            // radii in GS pixels (PS2X_SEAMVK_OUTLINE=<core>,<fringe>, default 1,1.5), scaled to native pixels: the same look at any scale
+            static const float s_core = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); return v && v[0] ? (float)std::atof(v) : 1.0f; }();
+            static const float s_fringe = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); if (v) if (const char *c = std::strchr(v, ',')) return (float)std::atof(c + 1); return 1.5f; }();
+            const uint32_t pcv[4] = { g_gpu.scale, (uint32_t)std::lround(s_core * g_gpu.scale), (uint32_t)std::lround(s_fringe * g_gpu.scale), 0u };
+            const uint32_t w = ft.img->get_width(), h = ft.img->get_height();
+            {   // pass A: horizontal min/max of the ramp into a target-sized image (separable kernel: taps grow with the radius, not its square)
+                if (!g_gpu.outlineH || g_gpu.outlineH->get_width() != w || g_gpu.outlineH->get_height() != h)
+                {
+                    auto ci = Vulkan::ImageCreateInfo::render_target(w, h, VK_FORMAT_R8G8B8A8_UNORM); ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+                    g_gpu.outlineH = dev.create_image(ci);
+                }
+                cmd.image_barrier(*g_gpu.outlineH, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+                Vulkan::RenderPassInfo ra = {};
+                ra.num_color_attachments = 1; ra.color_attachments[0] = &g_gpu.outlineH->get_view(); ra.clear_attachments = 1u << 0; ra.store_attachments = 1u << 0;
+                cmd.begin_render_pass(ra);
+                cmd.set_opaque_state();
+                cmd.set_program(g_gpu.progOutlineH);
+                cmd.set_cull_mode(VK_CULL_MODE_NONE);
+                cmd.set_depth_test(false, false);
+                cmd.set_blend_enable(false);
+                cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+                VkViewport vpa = {}; vpa.width = float(w); vpa.height = float(h); vpa.maxDepth = 1.0f; cmd.set_viewport(vpa);
+                VkRect2D sra = {}; sra.extent.width = w; sra.extent.height = h; cmd.set_scissor(sra);
+                cmd.set_texture(0, 1, zt.img->get_view(), Vulkan::StockSampler::NearestClamp);
+                uint32_t *cla = static_cast<uint32_t *>(cmd.allocate_constant_data(0, 0, 256u * 4u));
+                if (d.rt >= 0 && (size_t)d.rt < f.stepCluts.size()) std::memcpy(cla, f.stepCluts[d.rt].data(), 1024); else std::memset(cla, 0, 1024);
+                cmd.push_constants(pcv, 0, sizeof(pcv));
+                cmd.draw(3);
+                cmd.end_render_pass();
+                cmd.image_barrier(*g_gpu.outlineH, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            }
             toAttachment(cmd, ft, false);
             Vulkan::RenderPassInfo rp = {};
             rp.num_color_attachments = 1; rp.color_attachments[0] = &ft.img->get_view(); rp.load_attachments = 1u << 0; rp.store_attachments = 1u << 0;
@@ -584,16 +621,12 @@ namespace seamvk
             cmd.set_blend_enable(false);
             cmd.set_color_write_mask(VK_COLOR_COMPONENT_A_BIT);
             cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-            const uint32_t w = ft.img->get_width(), h = ft.img->get_height();
             VkViewport vp = {}; vp.width = float(w); vp.height = float(h); vp.maxDepth = 1.0f; cmd.set_viewport(vp);
             VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = h; cmd.set_scissor(sr);
             cmd.set_texture(0, 1, zt.img->get_view(), Vulkan::StockSampler::NearestClamp);
+            cmd.set_texture(0, 2, g_gpu.outlineH->get_view(), Vulkan::StockSampler::NearestClamp);
             uint32_t *cl = static_cast<uint32_t *>(cmd.allocate_constant_data(0, 0, 256u * 4u));
             if (d.rt >= 0 && (size_t)d.rt < f.stepCluts.size()) std::memcpy(cl, f.stepCluts[d.rt].data(), 1024); else std::memset(cl, 0, 1024);
-            // radii in GS pixels (PS2X_SEAMVK_OUTLINE=<core>,<fringe>, default 1,1.5), scaled to native pixels: the same look at any scale
-            static const float s_core = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); return v && v[0] ? (float)std::atof(v) : 1.0f; }();
-            static const float s_fringe = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); if (v) if (const char *c = std::strchr(v, ',')) return (float)std::atof(c + 1); return 1.5f; }();
-            const uint32_t pcv[4] = { g_gpu.scale, (uint32_t)std::lround(s_core * g_gpu.scale), (uint32_t)std::lround(s_fringe * g_gpu.scale), 0u };
             cmd.push_constants(pcv, 0, sizeof(pcv));
             cmd.draw(3);
             cmd.end_render_pass();
