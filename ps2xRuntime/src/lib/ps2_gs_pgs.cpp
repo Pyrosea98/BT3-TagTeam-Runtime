@@ -629,6 +629,19 @@ static void wsHudKickLocked(State &s, uint8_t *data, float inv)
             h.maskNeutralized++;
         }
     }
+    {   // [nodashblur] PS2X_NODASHBLUR=1: the dash motion blur -- while dashing the game replaces the frame with its 4:1
+        // box downscale (16 full-frame sprites reading the 128-px CT32 buffer at 0x2e00 into fbp 0/112 with ALPHA
+        // (0,1,0,1), vertex alpha 0x80) before the characters are drawn. Vertex alpha := 0 makes the blend a no-op
+        // (Cv = Cd); the sprites still run, nothing else changes. The native renderer skips the same draws.
+        static const bool s_noDash = [](){ const char *v = std::getenv("PS2X_NODASHBLUR"); return v && v[0] && v[0] != '0'; }();
+        const bool tmeD = ((attr >> 4) & 1u) != 0;
+        if (s_noDash && isSprite && tmeD && (c.fbp == 0u || c.fbp == 112u) && (c.fpsm == 0u || c.fpsm == 1u)
+            && uint32_t(c.tex0 & 0x3FFFu) == 0x2e00u && uint32_t((c.tex0 >> 20) & 0x3Fu) == 0u && uint32_t((c.tex0 >> 26) & 0xFu) == 7u)
+        {
+            for (int i = 0; i < h.rgbaN; i++) { uint8_t *q = data + h.rgba[i].off; if (h.rgba[i].packed) q[12] = 0x00; else q[3] = 0x00; }
+            h.maskNeutralized++;
+        }
+    }
     {   // [pgsfx] Character Shadows / Depth-of-Field Blur toggles (the OpenGL renderer's draw classes, ps2_gs_gpu_renderer.cpp
         // PS2X_NODECAL=1 and PS2X_NODOF): the shadow decal tiles are triangles sampling block 10752 as PSMCT24 256x256 into
         // the scene; the DoF composite samples block 10752 as PSMCT32 into the scene. Off = collapse the primitive.

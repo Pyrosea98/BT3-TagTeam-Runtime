@@ -1118,7 +1118,22 @@ namespace seamvk
                     continue;
                 }
             }
-            {   // PS2X_SEAMVK_ONLYTEX0=<hex>: render only the GS draws whose TEX0 matches (diagnostic)
+            {   // PS2X_SEAMVK_NOBLURCOMP: skip the game's full-frame blur composites into the scene buffers (fbp 0 / 0xe00).
+                //   1: the dash motion blur -- 16 full-frame strips that replace the frame with its 4:1 box downscale
+                //      (the 128-px buffer at 0x2e00, CT32) before the characters are drawn; only present while dashing.
+                //   2: also the 2:1 buffer's composites (0x2a00 CT32/CT24 256x256 into the scene): the DoF blend and the
+                //      glow. NOT the 8-bit reads of that region: those are the stage's own textures.
+                // Under the native renderer those buffers are at GS resolution, so the composites smear the whole picture.
+                // PS2X_NODASHBLUR=1 = level 1 here and the same neutralisation in paraLLEl-GS's packet walk (ps2_gs_pgs.cpp).
+                static const int s_noBlurComp = [](){ const char *v = std::getenv("PS2X_SEAMVK_NOBLURCOMP"); if (v && v[0]) return std::atoi(v);
+                                                      const char *d = std::getenv("PS2X_NODASHBLUR"); return (d && d[0] && d[0] != '0') ? 1 : 0; }();
+                if (s_noBlurComp && d.kind == 0 && t.tme && (t.fbp == 0u || t.fbp == 0xe00u))   // fbp in blocks (0xe00 = the second scene buffer)
+                {
+                    const uint32_t tbp = t.tex0lo & 0x3FFFu, tpsm = (t.tex0lo >> 20) & 0x3Fu, tw = (t.tex0lo >> 26) & 0xFu;
+                    const bool ct = tpsm == 0u || tpsm == 1u;
+                    if ((ct && tbp == 0x2e00u && tw == 7u) || (s_noBlurComp >= 2 && ct && tbp == 0x2a00u && tw == 8u)) { ++g_gpu.skippedDrawn; continue; }
+                }
+                // PS2X_SEAMVK_ONLYTEX0=<hex>: render only the GS draws whose TEX0 matches (diagnostic)
                 static const uint64_t s_only = [](){ const char *v = std::getenv("PS2X_SEAMVK_ONLYTEX0"); return v && v[0] ? std::strtoull(v, nullptr, 16) : 0ull; }();
                 if (s_only && d.kind == 0 && (((uint64_t)t.tex0hi << 32) | t.tex0lo) != s_only) continue;
                 // PS2X_SEAMVK_SKIPDATE=<1|2|3>: skip DATE draws that are untextured (1), textured (2) or both (3) (diagnostic)
