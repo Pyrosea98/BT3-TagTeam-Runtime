@@ -1,6 +1,6 @@
 #version 450
 // [seamvk] CRTC circuit blit: a quad covering dst (NDC) sampling src (normalised) of the display target.
-layout(push_constant) uniform PCP { vec4 src; vec4 dst; vec4 alpha; } pc;
+layout(push_constant) uniform PCP { vec4 src; vec4 dst; vec4 alpha; vec4 taps; } pc;
 layout(location = 0) out vec2 vUv;
 void main()
 {

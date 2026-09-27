@@ -91,7 +91,7 @@ namespace seamvk
 
         struct PC { float view[4]; float texInfo[4]; int32_t fA[4]; int32_t fB[4]; float fogcol[4]; int32_t blend[4]; };   // [shaderblend] + packed GS blend
         static_assert(sizeof(PC) == 96, "push constants");
-        struct PresentPC { float src[4], dst[4], alpha[4]; };
+        struct PresentPC { float src[4], dst[4], alpha[4], taps[4]; };   // [outscale] taps = (footprint u, footprint v, K, 0): K x K box over one output pixel
 
         constexpr uint32_t kLogicalW = 1024, kLogicalH = 512;
         constexpr uint32_t kOutW = 640, kOutH = 448;
@@ -183,6 +183,14 @@ namespace seamvk
             return s;
         }
 
+        // [outscale] The composed output image is the CRTC size x min(render scale, PS2X_SEAMVK_OUTSCALE (default 2)), like
+        // paraLLEl-GS's 2x scanout: a 3x/4x render is BOX-FILTERED down to it by the circuit blit (supersampling), instead
+        // of a 1920x1344 image the host then mip-blurs into a 720p window (scale 3 presented softer than scale 2).
+        uint32_t outScale(uint32_t sc)
+        {
+            static const uint32_t cap = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTSCALE"); return v && v[0] ? std::max(1u, std::min(8u, (uint32_t)std::atoi(v))) : 2u; }();
+            return std::min(sc, cap);
+        }
         uint32_t scale()
         {
             // [seamscale] Default = the settings' Render Scale (video.render_scale, the same number paraLLEl-GS runs
@@ -195,7 +203,7 @@ namespace seamvk
         bool ensureGpu(Vulkan::Device &dev)
         {
             if (g_gpu.failed) return false;
-            const uint32_t sc = scale(), w = kOutW * sc, h = kOutH * sc;
+            const uint32_t sc = scale(), osc = outScale(sc), w = kOutW * osc, h = kOutH * osc;
             if (!g_gpu.progGs)
             {
                 Vulkan::ResourceLayout vl = {}, fl = {};
@@ -262,7 +270,7 @@ namespace seamvk
                 bi.domain = Vulkan::BufferDomain::CachedHost;
                 g_gpu.readback = dev.create_buffer(bi);
                 g_gpu.w = w; g_gpu.h = h; g_gpu.scale = sc;
-                std::fprintf(stderr, "[seamvk] native output %ux%u (scale %u), targets %ux%u\n", w, h, sc, kLogicalW * sc, kLogicalH * sc);
+                std::fprintf(stderr, "[seamvk] native output %ux%u (scale %u, output scale %u), targets %ux%u\n", w, h, sc, osc, kLogicalW * sc, kLogicalH * sc);
             }
             return g_gpu.out && g_gpu.readback && g_gpu.white;
         }
@@ -859,6 +867,11 @@ namespace seamvk
             p.src[0] = float(dbx) / lw; p.src[1] = float(dby) / kLogicalH; p.src[2] = float(srcW) / lw; p.src[3] = float(srcH) / kLogicalH;
             p.dst[0] = -1.0f; p.dst[1] = -1.0f; p.dst[2] = 1.0f; p.dst[3] = 1.0f;
             p.alpha[0] = alpha;
+            {   // [outscale] one output pixel's footprint in the target, as uv and as a tap count (K x K box when the target is larger)
+                const float rx = float(srcW) * float(g_gpu.scale) / float(g_gpu.w), ry = float(srcH) * float(g_gpu.scale) / float(g_gpu.h);
+                const float k = std::ceil(std::max(rx, ry) - 0.05f);
+                p.taps[0] = p.src[2] / float(g_gpu.w); p.taps[1] = p.src[3] / float(g_gpu.h); p.taps[2] = std::max(1.0f, std::min(4.0f, k)); p.taps[3] = 0.0f;
+            }
             cmd.set_blend_enable(blend);
             if (blend) { cmd.set_blend_factors(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA); cmd.set_blend_op(VK_BLEND_OP_ADD); }
             cmd.push_constants(&p, 0, sizeof(p));
