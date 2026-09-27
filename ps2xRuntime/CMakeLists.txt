@@ -629,6 +629,20 @@ if(PS2X_BUILD_PROBES AND NOT PS2X_IS_VITA)
         target_compile_options(ps2x_mainmenu_probe PRIVATE -Wall -Wextra)
     endif()
 
+    # [netplay-flush-probe] The [flush] latch and the teardown's residue, driven through the same
+    # g_bt3StateLive the run loop keeps fresh. Needs no peer: the socket is bound, nothing answers,
+    # and the latch turns on the state alone. No game, no window, no GL.
+    add_executable(ps2x_netplay_probe src/lib/ps2x_netplay_probe.cpp src/lib/ps2_netplay.cpp)
+    target_include_directories(ps2x_netplay_probe PRIVATE include src)
+    if(MSVC)
+        target_compile_options(ps2x_netplay_probe PRIVATE /W4)
+    else()
+        target_compile_options(ps2x_netplay_probe PRIVATE -Wall -Wextra)
+    endif()
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(ps2x_netplay_probe PRIVATE pthread)
+    endif()
+
     # [fe-probe] Same idea for the file picker, the one widget that opens a MODAL: it drives the
     # real FilePicker through open/close/reopen and a mouse sweep on the null backend and asserts
     # the window and popup stacks come back to their base every frame.
