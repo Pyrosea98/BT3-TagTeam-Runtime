@@ -556,6 +556,29 @@ namespace seamvk
                 dev.unmap_host_buffer(*buf, Vulkan::MEMORY_ACCESS_READ_BIT);
                 std::fprintf(stderr, "[seamvk]  target dump fbp 0x%x %ux%u -> %s\n", kv.first, w, h, path);
             }
+            for (auto &kv : g_gpu.depths)
+            {   // [zdump] each depth image as Z24: the top byte (Z24[23:16]... no: the byte the depth mask uses, Z24[15:8]) as a PGM
+                // and the full 24-bit value as a raw little-endian u32 array, for a numeric diff against a paraLLEl-GS VRAM dump
+                Target &dt = kv.second; if (!dt.img) continue;
+                const uint32_t w = dt.img->get_width(), h = dt.img->get_height();
+                Vulkan::BufferCreateInfo bi = {}; bi.size = VkDeviceSize(w) * h * 4u; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.domain = Vulkan::BufferDomain::CachedHost;
+                auto buf = dev.create_buffer(bi);
+                auto c2 = dev.request_command_buffer();
+                const VkImageLayout was = dt.layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_IMAGE_LAYOUT_GENERAL : dt.layout;
+                c2->image_barrier(*dt.img, gl(dt, was), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                c2->copy_image_to_buffer(*buf, *dt.img, 0, {}, { w, h, 1 }, 0, 0, { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 });
+                c2->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+                c2->image_barrier(*dt.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, gl(dt, was), VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+                Vulkan::Fence fe; dev.submit(c2, &fe); fe->wait();
+                const float *dz = static_cast<const float *>(dev.map_host_buffer(*buf, Vulkan::MEMORY_ACCESS_READ_BIT));
+                char path[512];
+                std::snprintf(path, sizeof(path), "%s/depth_%llx_%ux%u%s_z24.bin", dir, (unsigned long long)kv.first, w, h, suffix);
+                if (FILE *fp = std::fopen(path, "wb")) { for (size_t i = 0; i < size_t(w) * h; ++i) { const float z = dz[i]; const uint32_t zi = (uint32_t)(std::min(std::max(z, 0.0f), 1.0f) * 16777216.0f + 0.5f) & 0xFFFFFFu; std::fwrite(&zi, 4, 1, fp); } std::fclose(fp); }
+                std::snprintf(path, sizeof(path), "%s/depth_%llx_%ux%u%s_ztop.pgm", dir, (unsigned long long)kv.first, w, h, suffix);
+                if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P5\n%u %u\n255\n", w, h); for (size_t i = 0; i < size_t(w) * h; ++i) { const float z = dz[i]; const uint32_t zi = (uint32_t)(std::min(std::max(z, 0.0f), 1.0f) * 16777216.0f + 0.5f) & 0xFFFFFFu; std::fputc((zi >> 8) & 0xFF, fp); } std::fclose(fp); }
+                dev.unmap_host_buffer(*buf, Vulkan::MEMORY_ACCESS_READ_BIT);
+                std::fprintf(stderr, "[seamvk]  depth dump key 0x%llx %ux%u -> %s\n", (unsigned long long)kv.first, w, h, path);
+            }
         }
 
         // [postnative] step 5: the outline mask, written straight into the frame's alpha from the Z top-byte plane
@@ -807,9 +830,12 @@ namespace seamvk
             cmd.push_constants(&pc, 0, sizeof(pc));
             {   // [hwfilter] bilinear with plain REPEAT or CLAMP on both axes: let the sampler filter (4 manual fetches + wrap math otherwise)
                 const bool hw = tex && t.mmag && t.wms <= 1u && t.wmt == t.wms;
-                // [mipsate] no mip chain for alpha-TESTED draws: the leaf cards' alpha averages below the test at the smaller
-                // levels and the foliage thins out (the tree behind the fight lost half its leaves vs paraLLEl-GS, 2026-09-28)
-                const Vulkan::StockSampler smp = hw ? ((mipsOn() && !t.ate) ? (t.wms == 0u ? Vulkan::StockSampler::TrilinearWrap : Vulkan::StockSampler::TrilinearClamp)
+                // [mipsate] no mip chain for draws whose TEXTURE ALPHA gates or weights the pixel (alpha test, or a blend
+                // with As as the factor, TCC on): averaged down the chain the leaf cards' alpha thins the foliage (the tree
+                // behind the fight had visibly fewer leaves than under paraLLEl-GS, 2026-09-28: its crown is drawn with
+                // (0,1,0,1) blends, not alpha-tested). Opaque / FIX-weighted draws (the far stage surfaces) keep the chain.
+                const bool texAlpha = t.tcc && (t.ate || (t.abe && t.aC == 0u));
+                const Vulkan::StockSampler smp = hw ? ((mipsOn() && !texAlpha) ? (t.wms == 0u ? Vulkan::StockSampler::TrilinearWrap : Vulkan::StockSampler::TrilinearClamp)
                                                                 : (t.wms == 0u ? Vulkan::StockSampler::LinearWrap : Vulkan::StockSampler::LinearClamp)) : Vulkan::StockSampler::NearestClamp;   // [mips] minified textures filter across the chain (far stage surfaces aliased at level 0)
                 cmd.set_texture(0, 1, tex ? g_gpu.tex[t.tex]->get_view() : g_gpu.white->get_view(), smp);
                 if (hw) { pc.fA[0] |= 32768; cmd.push_constants(&pc, 0, sizeof(pc)); }
