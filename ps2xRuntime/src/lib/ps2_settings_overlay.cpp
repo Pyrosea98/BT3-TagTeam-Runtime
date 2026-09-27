@@ -19,6 +19,8 @@
 #include "runtime/ps2x_mainmenu.h"      // [mmpopup] phase names + the plate-count the gate is made of
 #include "gfx/bt3gl_api.h"   // [B] bt3* API bridge
 #include "gfx/image_io.h"    // [netplay] PNG decode for the icon art
+#include <atomic>            // [netjump] g_netCurtainWant, raised by the transition
+#include <cfloat>            // [netjump] FLT_MAX for CalcTextSizeA
 
 #include "runtime/ps2_toml.h"
 #include "runtime/ps2x_settings.h"
@@ -134,6 +136,14 @@ namespace
     {
         return ImVec4(r, g, b, a);
     }
+    // [surface] #001B39 -- RGB 0, 27, 57. Every background in the overlay is painted with this one
+    // colour, so the settings panel, the main-menu popup, the popups, the tab strip, the table rows
+    // and the scrollbar read as the same navy. They used to be five different near-blacks
+    // (0.04/0.06/0.08 and friends) that were close enough to look like an accident rather than a
+    // choice. One constant, so the next change is one edit.
+    constexpr float kSurfR = 0.000f, kSurfG = 0.106f, kSurfB = 0.224f;   // 27/255, 57/255
+    ImVec4 surface(float a = 1.0f) { return dbz(kSurfR, kSurfG, kSurfB, a); }
+
     ImVec4 accent(float a = 1.0f) { return dbz(DBZ_R, DBZ_G, DBZ_B, a); }
     ImVec4 gold(float a = 1.0f)   { return dbz(GOLD_R, GOLD_G, GOLD_B, a); }
 
@@ -168,14 +178,14 @@ namespace
         {
             // Capsule HUD: near-black navy panel, thin orange edges, flat readout
             // rows instead of the previous purple-tinted "glow" surfaces.
-            ImGui::PushStyleColor(ImGuiCol_WindowBg,            dbz(0.04f, 0.06f, 0.08f, 0.97f));
-            ImGui::PushStyleColor(ImGuiCol_ChildBg,             dbz(0.06f, 0.08f, 0.10f, 0.60f));
-            ImGui::PushStyleColor(ImGuiCol_PopupBg,             dbz(0.04f, 0.06f, 0.08f, 0.98f));
+            ImGui::PushStyleColor(ImGuiCol_WindowBg,            surface(0.97f));
+            ImGui::PushStyleColor(ImGuiCol_ChildBg,             surface(0.60f));
+            ImGui::PushStyleColor(ImGuiCol_PopupBg,             surface(0.98f));
             ImGui::PushStyleColor(ImGuiCol_Border,              accent(0.55f));
             ImGui::PushStyleColor(ImGuiCol_BorderShadow,        dbz(0.0f, 0.0f, 0.0f, 0.0f));
-            ImGui::PushStyleColor(ImGuiCol_TitleBg,             dbz(0.04f, 0.06f, 0.08f));
-            ImGui::PushStyleColor(ImGuiCol_TitleBgActive,       dbz(0.04f, 0.06f, 0.08f));
-            ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed,    dbz(0.04f, 0.06f, 0.08f));
+            ImGui::PushStyleColor(ImGuiCol_TitleBg,             surface(1.0f));
+            ImGui::PushStyleColor(ImGuiCol_TitleBgActive,       surface(1.0f));
+            ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed,    surface(1.0f));
             ImGui::PushStyleColor(ImGuiCol_Text,                dbz(0.84f, 0.89f, 0.92f));
             ImGui::PushStyleColor(ImGuiCol_TextDisabled,        dbz(0.29f, 0.39f, 0.44f));
             ImGui::PushStyleColor(ImGuiCol_TextSelectedBg,      accent(0.30f));
@@ -197,15 +207,15 @@ namespace
             // Flat "ghost" tabs with a thin orange border (TabBarBorderSize above)
             // instead of a filled rounded-pill active tab — reads as a HUD section
             // switcher rather than a browser-style tab strip.
-            ImGui::PushStyleColor(ImGuiCol_Tab,                 dbz(0.04f, 0.06f, 0.08f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_Tab,                 surface(0.0f));
             ImGui::PushStyleColor(ImGuiCol_TabHovered,          accent(0.20f));
             ImGui::PushStyleColor(ImGuiCol_TabActive,           accent(0.14f));
-            ImGui::PushStyleColor(ImGuiCol_TabUnfocused,        dbz(0.04f, 0.06f, 0.08f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_TabUnfocused,        surface(0.0f));
             ImGui::PushStyleColor(ImGuiCol_TabUnfocusedActive,  accent(0.10f));
-            ImGui::PushStyleColor(ImGuiCol_TableHeaderBg,       dbz(0.08f, 0.10f, 0.12f));
-            ImGui::PushStyleColor(ImGuiCol_TableRowBg,          dbz(0.05f, 0.07f, 0.09f, 0.50f));
+            ImGui::PushStyleColor(ImGuiCol_TableHeaderBg,       surface(1.0f));
+            ImGui::PushStyleColor(ImGuiCol_TableRowBg,          surface(0.50f));
             ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt,       dbz(1.00f, 0.62f, 0.10f, 0.04f));
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarBg,         dbz(0.04f, 0.06f, 0.08f, 0.60f));
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarBg,         surface(0.60f));
             ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab,       accent(0.45f));
             ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered,accent(0.70f));
             ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, gold());
@@ -1068,6 +1078,12 @@ void PS2SettingsOverlay::readGamepadStateForDevice(
 extern std::atomic<uint32_t> g_bt3MenuShown;   // [mainmenu] ps2_runtime.cpp: 1 while the menu is up
 extern std::atomic<uint32_t> g_bt3MenuPhase;   // [mainmenu] the ps2x::mainmenu::Phase value
 extern std::atomic<uint32_t> g_bt3MenuPlates;  // [mainmenu] menuObj+0x144, the build counter
+extern "C" void ps2xNetJumpSimulateFailure();   // [netjump] game_overrides.cpp: test hook, forces the give-up
+extern "C" int  ps2xNetJumpState();             // [netjump] the jump's phase: 1 armed, 2 settled, 3 returning
+// [netjump] The curtain's TARGET. The level is integrated by drawNetCurtain() below, which is also
+// where this is declared for its own use; the label and the panel need it too, to know whether to
+// take input, and a window behind a curtain must not be clickable.
+extern std::atomic<int> g_netCurtainWant;   // game_overrides.cpp: 1 = cover the screen
 
 // [mmpopup] The panel's open state, plus the gate's previous value. File scope rather than a local
 // so the closing edge can be seen from mainMenuPopupWanted(): the draw function only runs while the
@@ -1208,6 +1224,14 @@ struct NetplayForm
 };
 static NetplayForm g_netForm;
 
+// [netjump] The test affordances are off unless the environment asks for them, read once.
+static bool netplayTestHooksOn()
+{
+    static const bool on = [](){ const char *e = std::getenv("PS2X_NET_FAKE");
+                                 return e && e[0] && e[0] != '0'; }();
+    return on;
+}
+
 // A label above its widget, for the popup's narrow columns. The tab draws labels inline to the
 // left, which is fine at the 1080px the settings window is and does not fit the popup's 520.
 static void netLabel(const char *label)
@@ -1230,13 +1254,15 @@ static void drawNetplayPopupBody()
     // only thing in the popup that says whether the last button press did anything.
     struct Status { const char *text; ImVec4 color; int id; };
     Status st;
-    if (!ps2NetActive())
+    // [netjump] A faked session reads as connected here too, or the header would say WAITING while
+    // the curtain is up and the game is walking to character select.
+    if (!ps2NetActive() && !ps2NetFakeConnect())
     {
         // No session. If one was asked for and is not here, it did not come up.
         if (g_netForm.attempted) { st = {"FAILED TO CONNECT", {0.95f, 0.34f, 0.31f, 1.0f}, 3}; }
         else                     { st = {"WAITING",           {0.62f, 0.68f, 0.74f, 1.0f}, 0}; }
     }
-    else if (!ps2NetPeerConnected())
+    else if (!ps2NetPeerConnected() && !ps2NetFakeConnect())
     {
         st = {"CONNECTING", {1.00f, 0.72f, 0.20f, 1.0f}, 1};
     }
@@ -1398,6 +1424,179 @@ static void drawNetplayPopupBody()
     }
     ImGui::TextDisabled("HOST: press Host and give the other player your IP and this port.");
     ImGui::TextDisabled("JOIN: type the host's IP above, then press Join.");
+
+    // [netjump] TEST AFFORDANCE, not a feature. Two checkboxes behind PS2X_NET_FAKE, so the popup in
+    // a normal run cannot lie about being connected: a control that fakes a session has no business
+    // being one click away in something people ship. They exist because the character-select
+    // transition needs a live session and a second machine, and neither is a good reason to not test
+    // a fade. Both go away with the transition work; nothing else in the tree reads them.
+    if (netplayTestHooksOn())
+    {
+        ImGui::Separator();
+        ImGui::TextDisabled("TEST (PS2X_NET_FAKE) -- not part of netplay");
+        bool fake = ps2NetFakeConnect();
+        if (ImGui::Checkbox("Fake a session (walks the jump, no peer)", &fake))
+        {
+            ps2NetSetFakeConnect(fake);
+            // [netjump] The jump's mode comes from ps2NetAutoJump(), which normally gets its value
+            // from the Host/Join buttons -- and faking presses neither. The rest of the setup needs
+            // the same treatment or the whole test runs as Single Battle / 10 DP / delay 2 no matter
+            // what these combos say, which is exactly what happened: DP was selected and the log
+            // said "type -> 0".
+            if (fake)
+            {
+                ps2NetSetAutoJump(g_netForm.jump);
+                ps2NetSetDelay(g_netForm.delay);
+                ps2NetSetBattleType(g_netForm.battle);
+                ps2NetSetTimeLimit(g_netForm.time);
+                ps2NetSetDpLimit(g_netForm.dp);
+                std::fprintf(stderr, "[netjump] fake session: type=%d dp=%d delay=%u tlimit=%d\n",
+                             g_netForm.battle, g_netForm.dp, (unsigned)g_netForm.delay,
+                             g_netForm.time);
+            }
+        }
+        // Firing this makes step 2 take its give-up branch on the next tick, which is the only way
+        // to reach the reverse trip without waiting 20 s for a real timeout to happen on its own.
+        if (ps2NetFakeConnect() && ImGui::Button("Simulate a failed transition"))
+            ps2xNetJumpSimulateFailure();
+    }
+}
+
+// [netjump] The curtain: a black rectangle over the game with "Loading..." on it, while the netplay
+// transition walks the menus from the main menu to character select.
+//
+// It answers g_netCurtainWant, which bt3NetJumpCharSelect raises and lowers. The WANT is the
+// contract; the LEVEL is integrated here, because a fade needs a frame clock and the state machine
+// that raises it is the guest's, running at its own pace. Same exponential-on-DeltaTime chase as the
+// panel's, so the two never disagree about how fast things move, and a raise during a lower (or the
+// reverse) reverses rather than queueing.
+//
+// Drawn from BOTH frame paths. The early one is the usual in-game case -- no settings panel open --
+// and the late one is when the player had the panel up, where the curtain has to land on top of it
+// or the transition happens behind a settings window full of controls.
+//
+// A rectangle, not a swapFrame() hold: the hold stops the frame being published, which freezes the
+// picture on whatever was there. This covers it with something that says what is happening, and it
+// costs one full-screen quad. The game keeps rendering underneath, which is the cost of choosing
+// the overlay over the renderer.
+// The integrated level, at namespace scope so the frame function can ask whether the curtain still
+// needs drawing. It is the whole reason the curtain is not gated behind the popup test env any more:
+// see netCurtainBusy() below.
+static float s_curtainLevel = 0.0f;
+
+// True while the curtain is up OR still on its way down. The fade has to keep running after the
+// target drops, so "the target is 0" is not the same question as "is there nothing to draw".
+static bool netCurtainBusy()
+{
+    extern std::atomic<int> g_netCurtainWant;   // game_overrides.cpp: the target, not the level
+    return s_curtainLevel > 0.0f || g_netCurtainWant.load(std::memory_order_relaxed) != 0;
+}
+
+static void drawNetCurtain()
+{
+    const float want = g_netCurtainWant.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+    const float dt = ImGui::GetIO().DeltaTime;
+    s_curtainLevel += (want - s_curtainLevel) * (1.0f - std::exp(-dt / 0.28f));
+    if (std::fabs(s_curtainLevel - want) < 0.004f)
+        s_curtainLevel = want;   // settle, so the last frame of a fade is exactly opaque
+    const float s_level = s_curtainLevel;
+
+    // [netjump] The game is silenced for as long as the curtain is up. Deliberately not a volume
+    // change: the settings panel owns masterVolume and rewrites it from the ini, so this is a
+    // separate factor the mixer multiplies in. BGM and SFX both, because the point is not to hear
+    // the menus being operated under the black.
+    //
+    // BEFORE the early return below, which is the whole fix: the level settles to exactly 0 on the
+    // last frame of a fade, that frame returned before this block, and so the unmute never ran --
+    // the game came back from the transition silent and stayed that way. The mute has to be
+    // released on the frame the curtain reaches zero, which is the frame that draws nothing.
+    {
+        static bool s_muted = false;
+        const bool wantMute = s_level > 0.001f;
+        if (wantMute != s_muted)
+        {
+            s_muted = wantMute;
+            PS2AudioBackend::setCurtainMute(wantMute);   // global namespace: see ps2_audio.h
+        }
+    }
+    if (s_level <= 0.0f)
+        return;
+
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    const ImVec2 a = vp->Pos;
+    const ImVec2 b(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
+
+    // [mmpopup] Hidden from ImGui, drawn with the FRONT draw list. A window cannot do this job: a
+    // fullscreen NoDecoration window still gets whatever WindowBg the theme set, and the theme's
+    // alpha is not ours to push to 1 without unbalancing the style stack the theme pushed.
+    ImDrawList *dl = ImGui::GetForegroundDrawList();   // the main viewport, which is the one we sized
+    if (!dl)
+        return;
+    dl->AddRectFilled(a, b, ImGui::ColorConvertFloat4ToU32(ImVec4(0.0f, 0.0f, 0.0f, s_level)));
+
+    // Both strings ride the level, and their alpha leads the black slightly on the way in and trails
+    // it on the way out, so the text does not sit on a half-black screen looking like a rendering
+    // fault.
+    const float ta = std::min(1.0f, s_level * 1.6f) * 0.55f;   // under half opacity at full black
+    const ImU32 goldA = ImGui::ColorConvertFloat4ToU32(ImVec4(1.0f, 0.80f, 0.30f, ta));
+    const ImU32 greyA = ImGui::ColorConvertFloat4ToU32(ImVec4(0.72f, 0.76f, 0.80f, ta * 0.85f));
+    ImFont *font = ImGui::GetFont();
+    const float  cx   = (a.x + b.x) * 0.5f;
+    const float  cy   = (a.y + b.y) * 0.5f;
+    const float  edge = 34.0f;   // the same inset the corner label uses, so they line up
+
+    // "Loading...", dead centre, with the dots cycling at two per second.
+    // [netjump] Which half of the journey this is. g_netJumpState is the jump's own phase, and 3 is
+    // the one that means "heading back to the main menu" -- set by every give-up, whether it was
+    // the player, a lost session, a desync or the timeout. Saying so matters: a black screen that
+    // says "Loading..." while the game is walking backwards is the player wondering whether
+    // anything is happening, and "Aborting..." is the difference between a wait and a mistake.
+    // Through the accessor, not the variable: g_netJumpState lives in game_overrides.cpp's anonymous
+    // namespace, so it has internal linkage and there is nothing to link against.
+    const bool returning = ps2xNetJumpState() == 3;
+    const char *dots[4] = {"", ".", "..", "..."};
+    static const double s_t0 = ImGui::GetTime();
+    const int n = int((ImGui::GetTime() - s_t0) * 2.0) & 3;
+    char load[32];
+    std::snprintf(load, sizeof load, "%s%s", returning ? "Aborting" : "Loading", dots[n]);
+    // The size argument needs a face to draw with, not a number: the theme registered one font, so
+    // this scales that one rather than asking for a size that does not exist.
+    const float fsize = ImGui::GetFontSize() * 1.6f;
+    const ImVec2 lsz = font->CalcTextSizeA(fsize, FLT_MAX, 0.0f, load);
+    dl->AddText(font, fsize, ImVec2(cx - lsz.x * 0.5f, cy - lsz.y * 0.5f), goldA, load);
+
+    // "Press O circle to cancel", bottom right. Grey rather than gold: it is an instruction, not
+    // the state of things, and the eye should go to the centre first. Only drawn while the curtain
+    // is going UP or fully up -- once it starts coming down the transition is over one way or the
+    // other and offering a cancel would be a lie.
+    //
+    // Circle is true now: the transition arms the project's own pad gate with CIRCLE as the only
+    // allowed bit, so it is the one key the player has, and the seam hands its press to the jump
+    // instead of the game.
+    //
+    // F10 is the third way out, and it is on screen because it has to be: the test hook was a button
+    // in this panel, which the curtain covers. It is a key for the same reason -- you cannot click
+    // what you cannot see.
+    if (want > 0.0f)
+    {
+        // Two different hints, because the two phases ask for different things.
+        //
+        // Going: one press asks for the trip back. F10 is here because it only works in that phase
+        // (the give-up lives in step 2) -- mentioning it while returning would be a lie, so the
+        // returning line does not carry it.
+        //
+        // Returning: TWO presses, and it says what the second one cancels. The first press keeps
+        // the curtain up while the game walks back through the Duel Menu, and a player who cannot
+        // get out of a black screen by pressing the same button again has been told to wait for a
+        // watchdog. Naming the screen is the part that makes it legible: "cancel" alone does not
+        // say what is being cancelled.
+        static const char *kCancel = returning
+            ? "press 2 times O to cancel (Go to Duel Menu)"
+            : "Press O circle to cancel  ·  F10 to test the failure path";
+        const float csz = ImGui::GetFontSize();
+        const ImVec2 cs = font->CalcTextSizeA(csz, FLT_MAX, 0.0f, kCancel);
+        dl->AddText(font, csz, ImVec2(b.x - edge - cs.x, b.y - edge - cs.y), greyA, kCancel);
+    }
 }
 
 void PS2SettingsOverlay::drawMainMenuPopup()
@@ -1414,13 +1613,20 @@ void PS2SettingsOverlay::drawMainMenuPopup()
     // ImGui strokes the window's border out of the same colour, so with NoDecoration alone the
     // label still came out with a second gold line around it that nothing here had asked for. The
     // one rectangle on screen is the pill drawn below.
-    const ImGuiWindowFlags labelFlags = ImGuiWindowFlags_NoDecoration |
-                                        ImGuiWindowFlags_NoBackground |
-                                        ImGuiWindowFlags_NoMove |
-                                        ImGuiWindowFlags_NoSavedSettings |
-                                        ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                        ImGuiWindowFlags_NoNav |
-                                        ImGuiWindowFlags_AlwaysAutoResize;
+    // [netjump] NoInputs while the curtain is up. The curtain is a rectangle on the foreground draw
+    // list, which is paint only -- ImGui hit-tests by window rectangle, not by z-order -- so
+    // without this the label and the panel stay clickable while being invisible behind the black.
+    // A click there would land on a control nobody can see.
+    const bool curtainUp = g_netCurtainWant.load(std::memory_order_relaxed) != 0;
+    ImGuiWindowFlags labelFlags = ImGuiWindowFlags_NoDecoration |
+                                  ImGuiWindowFlags_NoBackground |
+                                  ImGuiWindowFlags_NoMove |
+                                  ImGuiWindowFlags_NoSavedSettings |
+                                  ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                  ImGuiWindowFlags_NoNav |
+                                  ImGuiWindowFlags_AlwaysAutoResize;
+    if (curtainUp)
+        labelFlags |= ImGuiWindowFlags_NoInputs;
 
     loadNetplayIcon();
 
@@ -1549,19 +1755,21 @@ void PS2SettingsOverlay::drawMainMenuPopup()
     ImGui::SetNextWindowPos(ImVec2(br.x, br.y - pillH - 10.0f + slide),
                             ImGuiCond_Always, ImVec2(1.0f, 1.0f));
     ImGui::SetNextWindowSize(panelSize, ImGuiCond_Always);
-    const ImGuiWindowFlags panelFlags = ImGuiWindowFlags_NoDecoration |
-                                        ImGuiWindowFlags_NoMove |
-                                        ImGuiWindowFlags_NoSavedSettings |
-                                        ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                        ImGuiWindowFlags_NoNav |
-                                        ImGuiWindowFlags_AlwaysAutoResize;
+    ImGuiWindowFlags panelFlags = ImGuiWindowFlags_NoDecoration |
+                                  ImGuiWindowFlags_NoMove |
+                                  ImGuiWindowFlags_NoSavedSettings |
+                                  ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                  ImGuiWindowFlags_NoNav |
+                                  ImGuiWindowFlags_AlwaysAutoResize;
+    if (curtainUp)   // [netjump] same reason as the label: behind the curtain, unreachable
+        panelFlags |= ImGuiWindowFlags_NoInputs;
     // Opaque, or the game shows through and the readings are unreadable over moving artwork; the
     // alpha rides the animation so the panel fades in with its travel instead of appearing at full
     // strength and then sliding.
     // ImGuiStyleVar_Alpha is what fades the CONTENT. There is no global alpha in ImGui, and fading
     // each widget's colour by hand would mean finding every one of them; this multiplies them all.
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, s_mmPanelAnim);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.06f, 0.08f, 0.96f * s_mmPanelAnim));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, surface(0.96f * s_mmPanelAnim));
     if (!ImGui::Begin("##mm_popup_panel", nullptr, panelFlags))
     {
         ImGui::End();
@@ -1737,7 +1945,13 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
         // and the perf HUD is off, which is the usual state on the main menu. Without this the
         // function returns before UiBegin() and the plate never appears at all.
         const bool mmPopup = mainMenuPopupWanted();
-        if (!m_settings.showPerf && !mmPopup)
+        // [netjump] The curtain is NOT behind the popup test env. It was, which meant that in a real
+        // two-instance session -- where PS2X_MAINMENU_POPUP_TEST is not set -- mainMenuPopupWanted()
+        // was false, this function returned before UiBegin(), and the transition ran with no curtain
+        // and no "Loading..." at all. A test switch controlling a shipping behaviour is the wrong way
+        // round; the curtain answers the netjump and nothing else.
+        const bool curtain = netCurtainBusy();
+        if (!m_settings.showPerf && !mmPopup && !curtain)
             return;
         try
         {
@@ -1748,6 +1962,9 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
                 drawPerfHud();
             if (mmPopup)
                 drawMainMenuPopup();
+            // [netjump] Last, so it covers the label and the panel: during the transition the player
+            // must not be able to see, or click, the popup that started it.
+            drawNetCurtain();
         }
         catch (...)
         {
@@ -1913,6 +2130,7 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
         ImGui::End();
         if (wasVisible && !m_visible)
             ps2_stubs::PadConfig::setInputSuspended(false);
+        drawNetCurtain();   // [netjump] over the settings panel too
     }
     catch (...)
     {
