@@ -1,67 +1,61 @@
-diff --git a/Granite b/Granite
---- a/Granite
-+++ b/Granite
-@@ -1 +1 @@
--Subproject commit 16e7395f6a4858c1783dbf6f521f90b9d5f82ac5
-+Subproject commit 16e7395f6a4858c1783dbf6f521f90b9d5f82ac5-dirty
-diff --git a/gs/gs_interface.cpp b/gs/gs_interface.cpp
-index 10120fb..d3d70b2 100644
---- a/gs/gs_interface.cpp
-+++ b/gs/gs_interface.cpp
-@@ -4316,6 +4316,7 @@ void GSInterface::flush()
- {
- 	flush_pending_transfer(true);
- 	uint64_t value = tracker.mark_submission_timeline();
-+	renderer.frame_boundary_flush = true;   // [gcframe] this one IS the frame boundary
- 	renderer.flush_submit(value);
- 	if (debug_mode.deterministic_timeline_query)
- 		renderer.wait_timeline(value);
-diff --git a/gs/gs_renderer.cpp b/gs/gs_renderer.cpp
-index 29452b2..35508c3 100644
---- a/gs/gs_renderer.cpp
-+++ b/gs/gs_renderer.cpp
-@@ -4,6 +4,8 @@
- // SPDX-License-Identifier: LGPL-3.0+
+diff --git a/vulkan/context.cpp b/vulkan/context.cpp
+index ded8cabc..dd7b4f2f 100644
+--- a/vulkan/context.cpp
++++ b/vulkan/context.cpp
+@@ -1333,6 +1333,8 @@ bool Context::create_device(VkPhysicalDevice gpu_, VkSurfaceKHR surface,
+ 		enabled_extensions.push_back(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+ 	}
  
- #include "gs_renderer.hpp"
++	if (has_extension(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME))   // [seamvk] the native renderer mirrors the stored alpha's top bit in stencil (GS DATE without barriers)
++		enabled_extensions.push_back(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
+ 	if (has_extension(VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME))
+ 	{
+ 		enabled_extensions.push_back(VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
+@@ -1980,6 +1982,10 @@ bool Context::create_device(VkPhysicalDevice gpu_, VkSurfaceKHR surface,
+ 			enabled_features.fillModeNonSolid = VK_TRUE;
+ 		if (pdf2.features.independentBlend)
+ 			enabled_features.independentBlend = VK_TRUE;
++		if (pdf2.features.dualSrcBlend)   // [seamvk] GS As/128 blend factors from a second fragment output
++			enabled_features.dualSrcBlend = VK_TRUE;
++		if (pdf2.features.shaderClipDistance)   // [seamvk] the VU1 programs' clip volume as gl_ClipDistance
++			enabled_features.shaderClipDistance = VK_TRUE;
+ 		if (pdf2.features.sampleRateShading)
+ 			enabled_features.sampleRateShading = VK_TRUE;
+ 		if (pdf2.features.vertexPipelineStoresAndAtomics)
+diff --git a/vulkan/device.cpp b/vulkan/device.cpp
+index 4ee4f963..b545d229 100644
+--- a/vulkan/device.cpp
++++ b/vulkan/device.cpp
+@@ -22,6 +22,8 @@
+ 
+ #define NOMINMAX
+ #include "device.hpp"
 +#include <cstdlib>
 +#include <cstdio>
- #include "logging.hpp"
- #include "gs_interface.hpp"
- #include "gs_registers_debug.hpp"
-@@ -1212,7 +1214,22 @@ void GSRenderer::flush_submit(uint64_t value)
+ #ifdef GRANITE_VULKAN_FOSSILIZE
+ #include "device_fossilize.hpp"
+ #endif
+@@ -972,7 +974,22 @@ void Device::set_context(const Context &context)
+ 	init_workarounds();
+ 	init_pipeline_cache();
+ 	init_timeline_semaphores();
+-	init_frame_contexts(2); // By default, regular double buffer between CPU and GPU.
++	{   // [framectx] BT3-Recomp: the frame-context ring is FLUSH-depth, not frame-depth. paraLLEl-GS
++		// calls flush_submit ~7-8 times per frame at BT3's packet rate, and each advance blocks in
++		// Device::PerFrame::wait until the GPU retires the context it reuses. At the upstream depth
++		// of 2 that is a wait on work two flushes old -- a quarter of a frame -- which surfaced as
++		// 1-10 ms stalls inside gif_transfer on packets as small as 208 bytes, with the GPU only
++		// ~40% busy. Measured 2 -> 16: 1P vs COM 52.5 -> 59.8 fps, splitscreen ~42 -> 45.6, worst
++		// single gif_transfer call 10.66 -> 3.0 ms. Cost: PerFrame::begin() is also where deferred
++		// Vulkan destruction happens, so resources retire N advances later (~2 frames at depth 16).
++		// PS2X_PGS_FRAMECTX overrides; 2 restores upstream behaviour.
++		const char *v = getenv("PS2X_PGS_FRAMECTX");
++		unsigned n = (v && v[0]) ? unsigned(atoi(v)) : 16u;
++		if (n < 2u) n = 2u;
++		if (n > 32u) n = 32u;
++		fprintf(stderr, "[framectx] frame contexts = %u (PS2X_PGS_FRAMECTX, default 16)\n", n);
++		init_frame_contexts(n);
++	} // By default, regular double buffer between CPU and GPU.
  
- 	// If we have a timeline trace, we'd like it to be somewhat readable.
- 	// Only do garbage collection at frame boundaries.
--	if (!device->get_system_handles().timeline_trace_file)
-+	//
-+	// [gcframe] BT3-Recomp: flush_submit is NOT a frame boundary in this integration. Measured at
-+	// 7.0 calls per frame -- one from GSInterface::flush() (the real boundary) and the rest from
-+	// FlushReason::HostAccess sync points, where the CPU needs VRAM the GPU may still be writing.
-+	// Every advance waits in Device::PerFrame::wait for the context it reuses, which cost 4.3 ms
-+	// per swap of blocking against a GPU that was 41% idle. Advancing only at the true boundary:
-+	//   3x  1P vs COM   52.3 -> 58.8 fps (holds 60)     4x  39.4 -> 41.6
-+	//   splitscreen 2x  45.6 -> 49.2, window spread 41-55 -> 46-51
-+	// PS2X_PGS_GCFRAME=0 restores an advance on every flush_submit.
-+	static const bool s_gcframe = [](){ const char *v = getenv("PS2X_PGS_GCFRAME");
-+		const bool on = !(v && v[0] == '0');
-+		fprintf(stderr, "[gcframe] PS2X_PGS_GCFRAME=%d (1 = advance the frame context only at frame boundaries)\n", on ? 1 : 0);
-+		return on; }();
-+	const bool advance = !s_gcframe || frame_boundary_flush;
-+	frame_boundary_flush = false;
-+	if (!device->get_system_handles().timeline_trace_file && advance)
- 		device->next_frame_context();
- 
- 	log_timestamps();
-diff --git a/gs/gs_renderer.hpp b/gs/gs_renderer.hpp
-index efb7bee..b6a444f 100644
---- a/gs/gs_renderer.hpp
-+++ b/gs/gs_renderer.hpp
-@@ -314,6 +314,7 @@ public:
- 
- 	// Submit to GPU and signal when done.
- 	void flush_submit(uint64_t timeline);
-+	bool frame_boundary_flush = false;   // [gcframe] set by GSInterface::flush()
- 
- 	// Wait until timeline reaches value. After waiting, it may be safe to read from host VRAM.
- 	void wait_timeline(uint64_t value);
+ 	managers.memory.init(this);
+ 	managers.semaphore.init(this);
