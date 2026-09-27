@@ -85,8 +85,8 @@ namespace seamvk
         struct RtPC { uint32_t tex[4], clut[4], src[4], texa[4]; };
         struct AliasPC { uint32_t tgt[4], v16[4]; int32_t fA[4], blend[4], texInfo[4]; float col[4]; };   // alias16.frag
 
-        struct PC { float view[4]; float texInfo[4]; int32_t fA[4]; int32_t fB[4]; float fogcol[4]; };
-        static_assert(sizeof(PC) == 80, "push constants");
+        struct PC { float view[4]; float texInfo[4]; int32_t fA[4]; int32_t fB[4]; float fogcol[4]; int32_t blend[4]; };   // [shaderblend] + packed GS blend
+        static_assert(sizeof(PC) == 96, "push constants");
         struct PresentPC { float src[4], dst[4], alpha[4]; };
 
         constexpr uint32_t kLogicalW = 1024, kLogicalH = 512;
@@ -675,6 +675,14 @@ namespace seamvk
             if (t.aA == t.aB)                                { sf = t.aD == 0u ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO; df = t.aD == 1u ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO; return true; }   // D only
             return false;
         }
+        // [shaderblend] A blend the factors cannot express, e.g. (1,2,0,1) = Cd * As/128 + Cd (the aura / ki-charge glow
+        // sprites): the fragment shader computes it against the destination read in-pass (flag 65536; the draw takes the
+        // DATE-style by-region barrier) and hardware blending stays off. Such draws used to be written OPAQUE.
+        bool blendInShader(const seamgs::State &t)
+        {
+            VkBlendFactor sf, df; VkBlendOp op;
+            return t.abe != 0u && !blendFor(t, sf, df, op);
+        }
 
         static const int s_dateDbg = [](){ const char *v = std::getenv("PS2X_SEAMVK_DATEDBG"); return v && v[0] ? std::atoi(v) : 0; }();
         void bindDraw(Vulkan::CommandBuffer &cmd, const seamgs::Draw &d0, uint32_t sc, int mode = 0)
@@ -741,9 +749,10 @@ namespace seamvk
             else if (tex && (g_gpu.tex[t.tex]->get_width() != t.texW || g_gpu.tex[t.tex]->get_height() != t.texH)) ++g_gpu.texMismatch;
             pc.texInfo[0] = float(t.texW ? t.texW : 1u); pc.texInfo[1] = float(t.texH ? t.texH : 1u);
             pc.fA[0] = (tex ? 1 : 0) | (t.fst ? 2 : 0) | (t.mmag ? 8 : 0) | (t.ate ? 16 : 0) | (t.fba ? 32 : 0) | (t.tcc ? 128 : 0) | (t.fge ? 256 : 0)
-                     | ((t.date && !stencilDate()) ? 512 : 0) | (t.datm ? 1024 : 0) | ((t.abe && t.aC == 1u) ? 16384 : 0) | ((s_dateDbg == 1 && t.date) ? 2048 : 0) | ((s_dateDbg == 2 && t.date) ? 4096 : 0) | (((s_dateDbg == 3 || (s_dateDbg == 4 && ((g_gpu.frames / 300u) & 1u))) && t.date) ? 8192 : 0);   // =4: alternate with normal rendering every 300 frames (the capture cadence)
+                     | ((t.date && !stencilDate()) ? 512 : 0) | (t.datm ? 1024 : 0) | ((t.abe && t.aC == 1u) ? 16384 : 0) | (blendInShader(t) ? 65536 : 0) | ((s_dateDbg == 1 && t.date) ? 2048 : 0) | ((s_dateDbg == 2 && t.date) ? 4096 : 0) | (((s_dateDbg == 3 || (s_dateDbg == 4 && ((g_gpu.frames / 300u) & 1u))) && t.date) ? 8192 : 0);   // =4: alternate with normal rendering every 300 frames (the capture cadence)
             pc.fA[1] = t.tfx; pc.fA[2] = t.wms | (t.wmt << 2); pc.fA[3] = t.atst | (t.aref << 3) | (t.afail << 11);
             pc.fB[0] = t.minu; pc.fB[1] = t.maxu; pc.fB[2] = t.minv; pc.fB[3] = t.maxv;
+            pc.blend[0] = t.abe; pc.blend[1] = int32_t(t.aA | (t.aB << 2) | (t.aC << 4) | (t.aD << 6)); pc.blend[2] = t.fix; pc.blend[3] = t.colclamp;   // [shaderblend]
             pc.fogcol[0] = (t.fogcol & 0xFFu) / 255.0f; pc.fogcol[1] = ((t.fogcol >> 8) & 0xFFu) / 255.0f; pc.fogcol[2] = ((t.fogcol >> 16) & 0xFFu) / 255.0f; pc.fogcol[3] = 1.0f;
             cmd.push_constants(&pc, 0, sizeof(pc));
             {   // [hwfilter] bilinear with plain REPEAT or CLAMP on both axes: let the sampler filter (4 manual fetches + wrap math otherwise)
@@ -1109,7 +1118,7 @@ namespace seamvk
             uint32_t pfbw = t.fbw;   // the pass target's row width: an alias16 draw keeps the target's own (its FRAME names the 16-bit view's)
             if (alias16) { auto it = g_gpu.targets.find(t.fbp); if (it != g_gpu.targets.end() && it->second.img) pfbw = it->second.img->get_width() / (g_gpu.scale * 64u); }
             const uint32_t zbp = (t.zte ? t.zbp : ~1u) ^ (pfbw << 24);   // the pass key also changes with the row width
-            const bool dateBarrier = (t.date && !s_noDate && !stencilDate()) || (t.abe && t.aC == 1u) || alias16;   // [date] handled in-pass: a by-region barrier before the draw (below); Ad blends read the destination the same way
+            const bool dateBarrier = (t.date && !s_noDate && !stencilDate()) || (t.abe && t.aC == 1u) || blendInShader(t) || alias16;   // [date] handled in-pass: a by-region barrier before the draw (below); Ad blends read the destination the same way
             if (t.fbp != curFbp || zbp != curZbp)
             {
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
@@ -1157,7 +1166,7 @@ namespace seamvk
                 continue;
             }
             if (gpuTimeFull()) tsMark(*cmd, d.kind == 1 ? 6 : 0);   // [gputime] =2: GS packet draws (0) vs seam meshes (6)
-            const bool dateSplit = stencilDate() && t.date != 0u && !(t.abe && t.aC == 1u);   // [stencildate] colour pass (stencil test) + stencil pass (write)
+            const bool dateSplit = stencilDate() && t.date != 0u && !(t.abe && t.aC == 1u) && !blendInShader(t);   // [stencildate] colour pass (stencil test) + stencil pass (write)
             auto issue = [&](int mode)
             {
                 bindDraw(*cmd, d, sc, mode);
@@ -1220,7 +1229,7 @@ namespace seamvk
                 {
                     const seamgs::Draw &e = f.draws[j];
                     if (e.kind != 1 || e.stride != 48u || e.prog != d.prog) break;
-                    if (j != di0 && ((e.st.date && !sameBindState(e.st, t)) || (e.st.abe && e.st.aC == 1u) || e.st.texFromDrawn)) break;   // DATE chunks: only with the run's own state (one barrier per batch; tiles rarely overlap)
+                    if (j != di0 && ((e.st.date && !sameBindState(e.st, t)) || (e.st.abe && e.st.aC == 1u) || blendInShader(e.st) || e.st.texFromDrawn)) break;   // DATE chunks: only with the run's own state (one barrier per batch; tiles rarely overlap)
                     if (nrun >= 1024u) break;
                     std::vector<Grp> &gs = e.hostPass == 0u ? grpA : grpB;
                     Grp *g = nullptr;

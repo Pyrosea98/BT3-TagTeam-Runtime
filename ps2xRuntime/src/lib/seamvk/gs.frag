@@ -103,5 +103,19 @@ void main()
     outColor = vec4(c.rgb, aStored / 255.0);
     float fac = a255 / 128.0;
     if ((flags & 16384) != 0) fac = subpassLoad(uDst).a * (255.0 / 128.0);   // Ad: the destination alpha, read in-pass like DATE (was Ad/255)
+    if ((flags & 65536) != 0)
+    {   // [shaderblend] a GS blend (A - B) * C + D the fixed-function factors cannot express (e.g. (1,2,0,1) = Cd * As + Cd,
+        // the aura / ki-charge glow sprites): computed here against the destination read in-pass (the draw got the same
+        // by-region barrier as a DATE draw) and written with hardware blending OFF. Before this, such draws were drawn
+        // opaque -- the glow's black texture square around the character.
+        vec4 dst = subpassLoad(uDst);
+        int aA = pc.blend.y & 3, aB = (pc.blend.y >> 2) & 3, aC = (pc.blend.y >> 4) & 3, aD = (pc.blend.y >> 6) & 3;
+        vec3 A = aA == 0 ? c.rgb : aA == 1 ? dst.rgb : vec3(0.0);
+        vec3 B = aB == 0 ? c.rgb : aB == 1 ? dst.rgb : vec3(0.0);
+        float C = aC == 0 ? a255 / 128.0 : aC == 1 ? dst.a * (255.0 / 128.0) : float(pc.blend.z) / 128.0;
+        vec3 D = aD == 0 ? c.rgb : aD == 1 ? dst.rgb : vec3(0.0);
+        vec3 res = (A - B) * C + D;
+        outColor.rgb = pc.blend.w != 0 ? clamp(res, 0.0, 1.0) : fract(res);   // COLCLAMP: saturate, else wrap
+    }
     outBlend = vec4(0.0, 0.0, 0.0, min(fac, 1.0));
 }
