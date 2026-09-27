@@ -182,7 +182,10 @@ namespace seamvk
 
         uint32_t scale()
         {
-            static const uint32_t s = [](){ const char *v = std::getenv("PS2X_SEAMVK_SCALE"); const int n = v && v[0] ? std::atoi(v) : 2; return (uint32_t)(n < 1 ? 1 : n > 8 ? 8 : n); }();
+            // [seamscale] Default = the settings' Render Scale (video.render_scale, the same number paraLLEl-GS runs
+            // at), so the native renderer is not compared at 2x against a 3x/4x reference. PS2X_SEAMVK_SCALE=<1..8>
+            // overrides (the seam goes past the overlay's 4).
+            static const uint32_t s = [](){ const char *v = std::getenv("PS2X_SEAMVK_SCALE"); const int n = v && v[0] ? std::atoi(v) : GsGpuRenderer::renderScale(); return (uint32_t)(n < 1 ? 1 : n > 8 ? 8 : n); }();
             return s;
         }
 
