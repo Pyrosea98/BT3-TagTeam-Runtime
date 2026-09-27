@@ -539,3 +539,7 @@ Per-thread (regcheck): GsThread 0.56, GameThread 0.37, KickWorker 0.20. The refe
 Scale: 2x 60 fps / 40% GPU; 3x 60 fps / 82%; 4x was 35 fps because the outline kernel (a square of taps whose radius
 scales) cost 18.6 ms -- now separable (outline_h.frag: horizontal min/max of the ramp; outline.frag: vertical min/max = the
 square's min/max, an exact equivalent): 4x runs at 60 fps / 69% GPU, native steps 3.2 ms.
+Mipmaps (2026-09-27 afternoon): far stage surfaces were blocky because every native texture image had one level and the
+hardware path sampled it linearly; the reference filters across the game's mip chain. Now every uploaded and decoded
+texture gets a full chain generated on the GPU (Granite generate_mipmap after the decode pass; mipmapped upload) and the
+hardware path samples trilinearly (PS2X_SEAMVK_MIPS=0 restores level 0). GPU frame at 2x: 6.5 -> 8.6 ms.

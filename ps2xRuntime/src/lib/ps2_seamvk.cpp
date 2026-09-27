@@ -260,7 +260,8 @@ namespace seamvk
         }
 
         uint32_t targetW(uint32_t fbw) { return std::max(1u, std::min(fbw, 16u)) * 64u; }   // logical pixels: the row width
-        bool generalTargets();
+        bool mipsOn() { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_MIPS"); return !(v && v[0] == '0'); }(); return s; }   // [mips] PS2X_SEAMVK_MIPS=0: level 0 only, linear
+        bool generalTargets(); bool mipsOn();
         Target &target(Vulkan::Device &dev, uint32_t fbp, uint32_t fbw)
         {
             Target &t = g_gpu.targets[fbp];
@@ -394,16 +395,28 @@ namespace seamvk
             {
                 auto ci = Vulkan::ImageCreateInfo::render_target(r.w, r.h, VK_FORMAT_R8G8B8A8_UNORM);
                 ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+                if (mipsOn()) { ci.levels = 0; ci.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT; }   // [mips] full chain, generated after the decode
                 img = dev.create_image(ci);
             }
+            auto finishDecode = [&]()
+            {   // the decoded level 0 -> the rest of the chain (box filtered) -> sampled
+                if (mipsOn() && img->get_create_info().levels > 1u)
+                {
+                    cmd.barrier_prepare_generate_mipmap(*img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, true);
+                    cmd.generate_mipmap(*img);
+                    cmd.image_barrier(*img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                }
+                else
+                    cmd.image_barrier(*img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            };
             cmd.image_barrier(*img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
             Vulkan::RenderPassInfo rp = {};
             rp.num_color_attachments = 1; rp.color_attachments[0] = &img->get_view(); rp.clear_attachments = 1u << 0; rp.store_attachments = 1u << 0;
             if (srcp && srcp->aliasedDirty)
             {   // the pages were last written through the other pixel format (skipped): read back as nothing
                 cmd.begin_render_pass(rp); cmd.end_render_pass();
-                cmd.image_barrier(*img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                finishDecode();
                 ++g_gpu.rtDecodesStale;
                 if (g_gpu.dumpRt) g_gpu.rtDumps.push_back({ img, r });
                 return;
@@ -437,8 +450,7 @@ namespace seamvk
             std::memcpy(ub, r.clut, sizeof(r.clut));
             cmd.draw(3);
             cmd.end_render_pass();
-            cmd.image_barrier(*img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            finishDecode();
             ++g_gpu.rtDecodes;
             if (g_gpu.dumpRt) g_gpu.rtDumps.push_back({ img, r });
         }
@@ -640,7 +652,7 @@ namespace seamvk
                 if (u.slot < 0 || u.w == 0 || u.h == 0) continue;
                 if ((size_t)u.slot >= g_gpu.tex.size()) g_gpu.tex.resize(size_t(u.slot) + 1u);
                 Vulkan::ImageInitialData init = { u.rgba.data(), 0, 0 };
-                g_gpu.tex[u.slot] = dev.create_image(Vulkan::ImageCreateInfo::immutable_2d_image(u.w, u.h, VK_FORMAT_R8G8B8A8_UNORM), &init);
+                g_gpu.tex[u.slot] = dev.create_image(Vulkan::ImageCreateInfo::immutable_2d_image(u.w, u.h, VK_FORMAT_R8G8B8A8_UNORM, mipsOn()), &init);   // [mips] full chain, generated at upload
                 ++g_gpu.texUploads;
             }
         }
@@ -736,7 +748,8 @@ namespace seamvk
             cmd.push_constants(&pc, 0, sizeof(pc));
             {   // [hwfilter] bilinear with plain REPEAT or CLAMP on both axes: let the sampler filter (4 manual fetches + wrap math otherwise)
                 const bool hw = tex && t.mmag && t.wms <= 1u && t.wmt == t.wms;
-                const Vulkan::StockSampler smp = hw ? (t.wms == 0u ? Vulkan::StockSampler::LinearWrap : Vulkan::StockSampler::LinearClamp) : Vulkan::StockSampler::NearestClamp;
+                const Vulkan::StockSampler smp = hw ? (mipsOn() ? (t.wms == 0u ? Vulkan::StockSampler::TrilinearWrap : Vulkan::StockSampler::TrilinearClamp)
+                                                                : (t.wms == 0u ? Vulkan::StockSampler::LinearWrap : Vulkan::StockSampler::LinearClamp)) : Vulkan::StockSampler::NearestClamp;   // [mips] minified textures filter across the chain (far stage surfaces aliased at level 0)
                 cmd.set_texture(0, 1, tex ? g_gpu.tex[t.tex]->get_view() : g_gpu.white->get_view(), smp);
                 if (hw) { pc.fA[0] |= 32768; cmd.push_constants(&pc, 0, sizeof(pc)); }
             }
