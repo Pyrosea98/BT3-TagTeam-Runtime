@@ -1142,8 +1142,18 @@ namespace seamvk
                 // (pass A writes depth with GEQUAL, pass B tests it: a later chunk's pass B lands only where its own pass A is
                 // the visible surface, as in the interleaved order). Another program, a DATE / destination-alpha / feedback
                 // state, or 128 chunks end the run. Each vertex carries its chunk index in inA3.w; the constants come from an array.
-                struct Grp { std::vector<uint32_t> idx; };
+                struct Grp { std::vector<uint32_t> idx; uint64_t key; };
                 static std::vector<Grp> grpA, grpB; grpA.clear(); grpB.clear();
+                // [batch] a bind-state hash keyed lookup instead of a linear sameBindState scan over the groups (4101 chunks x ~20 groups x 40 fields a frame)
+                auto bindKey = [](const seamgs::State &a) {
+                    uint64_t h = 1469598103934665603ull;
+                    auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ull; };
+                    mix(a.fbp); mix(a.fbw); mix(a.fpsm); mix(a.fbmsk); mix(a.zbp); mix(a.zmsk | (a.zte << 1) | (a.ztst << 2) | (a.ate << 4) | (a.atst << 5) | (a.aref << 8) | (a.afail << 16) | (a.date << 18) | (a.datm << 19));
+                    mix(a.abe | (a.aA << 1) | (a.aB << 3) | (a.aC << 5) | (a.aD << 7) | (a.fix << 9) | (a.fba << 17) | (a.tme << 18) | (a.fst << 19) | (a.mmag << 20) | (a.tcc << 21) | (a.fge << 22) | (a.tfx << 23) | (a.wms << 25) | (a.wmt << 27));
+                    mix((uint64_t)(uint32_t)a.tex | ((uint64_t)a.minu << 32) | ((uint64_t)a.maxu << 48)); mix((uint64_t)a.minv | ((uint64_t)a.maxv << 16) | ((uint64_t)a.texW << 32)); mix(a.texH);
+                    mix((uint64_t)a.scax0 | ((uint64_t)a.scax1 << 16) | ((uint64_t)a.scay0 << 32) | ((uint64_t)a.scay1 << 48)); mix((uint64_t)a.ofx | ((uint64_t)a.ofy << 16) | ((uint64_t)a.fogcol << 32)); mix(a.texFromDrawn);
+                    return h;
+                };
                 uint32_t nrun = 0; size_t j = di0;
                 for (; j < f.draws.size(); ++j)
                 {
@@ -1153,8 +1163,9 @@ namespace seamvk
                     if (nrun >= 1024u) break;
                     std::vector<Grp> &gs = e.hostPass == 0u ? grpA : grpB;
                     Grp *g = nullptr;
-                    for (Grp &c : gs) if (sameBindState(f.draws[c.idx[0]].st, e.st)) { g = &c; break; }
-                    if (!g) { gs.push_back(Grp()); g = &gs.back(); }
+                    const uint64_t key = bindKey(e.st);
+                    for (Grp &c : gs) if (c.key == key && sameBindState(f.draws[c.idx[0]].st, e.st)) { g = &c; break; }
+                    if (!g) { gs.push_back(Grp()); g = &gs.back(); g->key = key; }
                     g->idx.push_back((uint32_t)j); ++nrun;
                 }
                 di0 = j - 1;

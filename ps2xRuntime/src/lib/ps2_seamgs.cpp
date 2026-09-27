@@ -45,9 +45,49 @@ namespace seamgs
         enum : uint32_t { PSMCT32 = 0, PSMCT24 = 1, PSMCT16 = 2, PSMCT16S = 10, PSMT8 = 19, PSMT4 = 20, PSMT8H = 27, PSMT4HL = 36, PSMT4HH = 44,
                           PSMZ32 = 48, PSMZ24 = 49, PSMZ16 = 50, PSMZ16S = 58 };
 
-        inline uint32_t addr32(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) { return GSPSMCT32::addrPSMCT32(block, bw, x, y) & kVramMask; }
+        // [swztab] per-page swizzle offset tables: a GS address is page base + block-aligned base + one table lookup. Built from
+        // the reference address functions and verified against them at start-up (fallback to them on any mismatch).
+        struct Swz
+        {
+            uint16_t ct32[64 * 32], t8[128 * 64], t4[128 * 128], c16[64 * 64], c16s[64 * 64], z16[64 * 64], z16s[64 * 64]; bool ok = false;
+            Swz()
+            {
+                for (uint32_t y = 0; y < 32; ++y) for (uint32_t x = 0; x < 64; ++x) ct32[y * 64 + x] = (uint16_t)GSPSMCT32::addrPSMCT32(0, 1, x, y);
+                for (uint32_t y = 0; y < 64; ++y) for (uint32_t x = 0; x < 128; ++x) t8[y * 128 + x] = (uint16_t)GSPSMT8::addrPSMT8(0, 1, x, y);
+                for (uint32_t y = 0; y < 128; ++y) for (uint32_t x = 0; x < 128; ++x) t4[y * 128 + x] = (uint16_t)GSPSMT4::addrPSMT4(0, 1, x, y);
+                for (uint32_t y = 0; y < 64; ++y) for (uint32_t x = 0; x < 64; ++x)
+                {
+                    c16[y * 64 + x] = (uint16_t)GSPSMCT16::addrPSMCT16(0, 1, x, y); c16s[y * 64 + x] = (uint16_t)GSPSMCT16::addrPSMCT16S(0, 1, x, y);
+                    z16[y * 64 + x] = (uint16_t)GSPSMCT16::addrPSMZ16(0, 1, x, y); z16s[y * 64 + x] = (uint16_t)GSPSMCT16::addrPSMZ16S(0, 1, x, y);
+                }
+                ok = true;
+                static const uint32_t bws[] = { 1, 2, 4, 8, 10, 16 }, blocks[] = { 0, 1, 16, 31, 32, 0x2c10, 0x3e8c };
+                for (uint32_t bw : bws) for (uint32_t b : blocks) for (uint32_t y = 0; y < 200 && ok; y += 3) for (uint32_t x = 0; x < 300 && ok; x += 7)
+                {
+                    if (a32(b, bw, x, y) != (GSPSMCT32::addrPSMCT32(b, bw, x, y) & kVramMask)) ok = false;
+                    if (a8(b, bw, x, y) != (GSPSMT8::addrPSMT8(b, bw, x, y) & kVramMask)) ok = false;
+                    if (a4(b, bw, x, y) != (GSPSMT4::addrPSMT4(b, bw, x, y) & (kVramMask * 2u + 1u))) ok = false;
+                    if (a16(PSMCT16, b, bw, x, y) != (GSPSMCT16::addrPSMCT16(b, bw, x, y) & kVramMask)) ok = false;
+                    if (a16(PSMCT16S, b, bw, x, y) != (GSPSMCT16::addrPSMCT16S(b, bw, x, y) & kVramMask)) ok = false;
+                    if (a16(PSMZ16, b, bw, x, y) != (GSPSMCT16::addrPSMZ16(b, bw, x, y) & kVramMask)) ok = false;
+                    if (a16(PSMZ16S, b, bw, x, y) != (GSPSMCT16::addrPSMZ16S(b, bw, x, y) & kVramMask)) ok = false;
+                }
+                if (!ok) std::fprintf(stderr, "[seamgs] swizzle tables disagree with the reference address functions: using the slow path\n");
+            }
+            inline uint32_t a32(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) const { const uint32_t ppr = bw ? bw : 1u; return ((((block >> 5) + (y >> 5) * ppr + (x >> 6)) << 13) + (block & 31u) * 256u + ct32[(y & 31u) * 64u + (x & 63u)]) & kVramMask; }
+            inline uint32_t a8(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) const { const uint32_t ppr = (bw >> 1) ? (bw >> 1) : 1u; return ((((block >> 5) + (y >> 6) * ppr + (x >> 7)) << 13) + (block & 31u) * 256u + t8[(y & 63u) * 128u + (x & 127u)]) & kVramMask; }
+            inline uint32_t a4(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) const { const uint32_t ppr = (bw >> 1) ? (bw >> 1) : 1u; return ((((block >> 5) + (y >> 7) * ppr + (x >> 7)) << 14) + (block & 31u) * 512u + t4[(y & 127u) * 128u + (x & 127u)]) & (kVramMask * 2u + 1u); }
+            inline uint32_t a16(uint32_t psm, uint32_t block, uint32_t bw, uint32_t x, uint32_t y) const
+            {
+                const uint32_t ppr = bw ? bw : 1u; const uint16_t *t = psm == PSMCT16S ? c16s : psm == PSMZ16 ? z16 : psm == PSMZ16S ? z16s : c16;
+                return ((((block >> 5) + (y >> 6) * ppr + (x >> 6)) << 13) + (block & 31u) * 256u + t[(y & 63u) * 64u + (x & 63u)]) & kVramMask;
+            }
+        };
+        const Swz g_swz;
+        inline uint32_t addr32(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) { return g_swz.ok ? g_swz.a32(block, bw, x, y) : (GSPSMCT32::addrPSMCT32(block, bw, x, y) & kVramMask); }
         inline uint32_t addr16(uint32_t psm, uint32_t block, uint32_t bw, uint32_t x, uint32_t y)
         {
+            if (g_swz.ok) return g_swz.a16(psm, block, bw, x, y);
             switch (psm)
             {
             case PSMCT16S: return GSPSMCT16::addrPSMCT16S(block, bw, x, y) & kVramMask;
@@ -56,8 +96,8 @@ namespace seamgs
             default:       return GSPSMCT16::addrPSMCT16(block, bw, x, y) & kVramMask;
             }
         }
-        inline uint32_t addr8(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) { return GSPSMT8::addrPSMT8(block, bw, x, y) & kVramMask; }
-        inline uint32_t addr4(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) { return GSPSMT4::addrPSMT4(block, bw, x, y) & (kVramMask * 2u + 1u); }   // nibble address
+        inline uint32_t addr8(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) { return g_swz.ok ? g_swz.a8(block, bw, x, y) : (GSPSMT8::addrPSMT8(block, bw, x, y) & kVramMask); }
+        inline uint32_t addr4(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) { return g_swz.ok ? g_swz.a4(block, bw, x, y) : (GSPSMT4::addrPSMT4(block, bw, x, y) & (kVramMask * 2u + 1u)); }   // nibble address
 
         inline uint32_t rd32(uint32_t a) { uint32_t v; std::memcpy(&v, g_vram + a, 4); return v; }
         inline void wr32(uint32_t a, uint32_t v) { std::memcpy(g_vram + a, &v, 4); g_pageWrite[a >> 13] = g_stamp; }
@@ -190,7 +230,8 @@ namespace seamgs
         uint64_t g_swapHash = 1469598103934665603ull, g_lastSwapHash = 0, g_swapBytes = 0, g_sameSwaps = 0, g_swapsSeen = 0;   // [swaphash] is a swap's packet stream identical to the previous one?
         double g_msParse = 0, g_msDecode = 0, g_msRaster = 0, g_msHost = 0;
         double g_msState = 0, g_msTri = 0, g_msImage = 0, g_msVramDec = 0, g_msReg = 0;   // [parseprof] sub-timers of the parse
-        struct ScopeMs { double &acc; std::chrono::steady_clock::time_point t = std::chrono::steady_clock::now(); ~ScopeMs() { acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); } };
+        bool profOn() { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMGS_PROF"); return v && v[0] && v[0] != '0'; }(); return s; }   // the sub-timers cost ~10% of the parse thread in clock reads
+        struct ScopeMs { double &acc; bool on = profOn(); std::chrono::steady_clock::time_point t = on ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point(); ~ScopeMs() { if (on) acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); } };
         uint32_t g_busyFrames = 0;   // frames so far with > 1500 draws (a fight): PS2X_SEAMVK_TEXDUMP_FROM=1 starts there
         std::vector<int32_t> g_retired;   // slots freed by the renderer after this frame; reusable from the next
 
@@ -441,7 +482,7 @@ namespace seamgs
             return true;
         }
 
-        uint64_t g_memoHits = 0, g_stateBuilds = 0;
+        uint64_t g_memoHits = 0, g_stateBuilds = 0, g_imgBytes = 0;
         int32_t resolveTextureImpl(const Ctx &c);
         struct ResolveMemo { uint64_t tex0 = 0, texa = 0, frame = ~0ull; uint32_t stamp = 0; int32_t slot = -1; };
         ResolveMemo g_resolveMemo[256];   // [resolvememo] direct-mapped by TEX0: a repeat lookup with no VRAM write since (same stamp, same frame) is O(1)
@@ -998,6 +1039,7 @@ namespace seamgs
             ScopeMs _sm{g_msImage};
             Xfer &x = g_xfer;
             if (!x.active || x.rrw == 0u) return;
+            g_imgBytes += n;
             if (g_watch.hi && x.x == 0u && x.y == 0u && x.dbp >= g_watch.lo && x.dbp < g_watch.hi && g_watch.logged < 400u)
             { ++g_watch.logged; std::fprintf(stderr, "[seamgs-watch] frame %llu draw %zu path %u xfer -> dbp 0x%x dbw %u dpsm %u %ux%u at (%u,%u), %u bytes in this packet\n", (unsigned long long)g_frame, g_list.draws.size(), g_curPath, x.dbp, x.dbw, x.dpsm, x.rrw, x.rrh, x.dsax, x.dsay, n); }
             g_texDirty = true;
@@ -1187,9 +1229,9 @@ namespace seamgs
             s_last = g_frame;
             std::fprintf(stderr, "[seamgs] per frame: parse %.2f ms (decode %.2f, scratch raster %.2f, host draws %.2f | state %.2f, triangles %.2f, image data %.2f, vram decode lists %.2f, reg writes %.2f)\n", g_msParse / 300.0, g_msDecode / 300.0, g_msRaster / 300.0, g_msHost / 300.0, g_msState / 300.0, g_msTri / 300.0, g_msImage / 300.0, g_msVramDec / 300.0, g_msReg / 300.0);
             g_msParse = g_msDecode = g_msRaster = g_msHost = 0; g_msState = g_msTri = g_msImage = g_msVramDec = g_msReg = 0;
-            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu (memo hits %llu, state builds %llu) decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu (pages unchanged %llu); identical swaps %llu/%llu\n",
-                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_memoHits, (unsigned long long)g_stateBuilds, (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
-            g_texLookups = g_memoHits = g_stateBuilds = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
+            std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu (memo hits %llu, state builds %llu, upload KB %llu) decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu tris %llu, rt decodes %llu, gpu decodes %llu (pages unchanged %llu); identical swaps %llu/%llu\n",
+                         (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_memoHits, (unsigned long long)g_stateBuilds, (unsigned long long)(g_imgBytes >> 10), (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
+            g_texLookups = g_memoHits = g_stateBuilds = g_imgBytes = g_texDecodes = g_texStale = g_cpuSprites = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
             printTargetHist();
             std::fprintf(stderr, "[seamgs] host draws in/out/dropped per prog:");
             for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %d:%llu/%llu/%llu", i, (unsigned long long)g_hostIn[i], (unsigned long long)g_hostOut[i], (unsigned long long)g_hostDropped[i]);
