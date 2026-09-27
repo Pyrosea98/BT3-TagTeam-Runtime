@@ -26,6 +26,13 @@ void     ps2NetBeginAutoStart(const char *path);       // host: replay a canned 
 bool     ps2NetAutoInput(Ps2xNetInput &out);           // next canned input, if any
 bool     ps2NetAutoStartActive();
 bool     ps2NetActive();
+// [netjump] TEST ONLY, not shipped behaviour. Pretends a session exists so the character-select
+// transition can be exercised on ONE machine, with no second instance and no peer. Deliberately NOT
+// wired into ps2NetActive(): the input path asks that question every frame boundary to decide
+// whether to stall waiting for a remote pad, and a lie there would stall the game against a socket
+// that was never opened. Only the jump's own gate and the popup's status read this.
+void     ps2NetSetFakeConnect(bool on);
+bool     ps2NetFakeConnect();
 int      ps2NetLocalPlayer();                 // 1 or 2
 uint32_t ps2NetDelay();
 void     ps2NetSubmitLocal(uint32_t frame, const Ps2xNetInput &in);
