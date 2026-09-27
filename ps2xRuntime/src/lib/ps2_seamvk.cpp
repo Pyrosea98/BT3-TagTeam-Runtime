@@ -9,6 +9,7 @@
 // At the swap the CRTC circuits (DISPFB/DISPLAY) are composed into a 640x448*scale frame,
 // read back and handed to the present thread.
 #include "runtime/ps2_seamvk.h"
+#include "runtime/ps2_gs_gpu_renderer.h"   // [dofoff] GsGpuRenderer::dofBlurEnabled
 #include "runtime/ps2_gs_pgs.h"   // [targetdump] the backend's view of a target
 #include "seamvk/seamgs_internal.h"
 
@@ -578,6 +579,12 @@ namespace seamvk
                 VkViewport vp = {}; vp.width = float(w); vp.height = float(h); vp.maxDepth = 1.0f; cmd.set_viewport(vp);
                 VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = h; cmd.set_scissor(sr);
                 cmd.set_texture(0, 1, zt.img->get_view(), Vulkan::StockSampler::NearestClamp);
+                {   // [dofoff] the overlay's "Depth-of-Field Blur" switch (live): off = the mask writes "near" everywhere,
+                    // the same neutralisation paraLLEl-GS applies to the game's mask sprites. Without this the native
+                    // renderer ignored the switch and the far field stayed blurred (and blocky: the blur buffer is GS-res).
+                    const uint32_t pcd[4] = { GsGpuRenderer::dofBlurEnabled() ? 0u : 1u, 0u, 0u, 0u };
+                    cmd.push_constants(pcd, 0, sizeof(pcd));
+                }
                 cmd.draw(3);
                 cmd.end_render_pass();
                 ++g_gpu.nativeSteps;
