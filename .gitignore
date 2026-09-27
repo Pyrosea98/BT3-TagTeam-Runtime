@@ -70,6 +70,15 @@ launcher-build-log.txt
 games/bt3/savedata/
 imgui.ini
 
+# [ach] The probe's own output when it runs from the source tree, same as any other savedata.
+ps2xRuntime/savedata/
+
+# [ach] Badge images, downloaded by scripts/gen_ach_patch.py at build time. Not committed: they are
+# RetroAchievements' artwork, not ours to vend -- the generator is the reproducible source, and a
+# checkout without network gets the 5 achievements that do not need a badge. Pass --no-badges to skip
+# the fetch on a machine that has none.
+ps2xRuntime/assets/badges/
+
 # orchestrator runtime state (dev-local corpus)
 tools/orchestrator/state.json
 tools/orchestrator/corpus/

@@ -617,6 +617,22 @@ if(PS2X_BUILD_PROBES AND NOT PS2X_IS_VITA)
         target_compile_options(fe_imgui_probe PRIVATE -Wall -Wextra)
     endif()
 
+    # [ach-probe] The offline tracker against a synthetic RAM buffer: asserts the generated patch is
+    # accepted by rcheevos and that a condition fires through the rewritten addresses. The only
+    # check in the tree that can catch a malformed MemAddr expression or a bad address rewrite
+    # without a recomp, a disc and a window. Needs neither.
+    add_executable(ps2x_achieve_probe
+        src/frontend/ps2x_achieve_probe.cpp
+        src/lib/ps2x_achieve.cpp
+        src/lib/ps2x_notify.cpp)   # the bus, so an unlock really goes through it
+    target_include_directories(ps2x_achieve_probe PRIVATE include src)
+    target_link_libraries(ps2x_achieve_probe PRIVATE rcheevos)
+    if(MSVC)
+        target_compile_options(ps2x_achieve_probe PRIVATE /W4)
+    else()
+        target_compile_options(ps2x_achieve_probe PRIVATE -Wall -Wextra)
+    endif()
+
     # [mainmenu-probe] The main-menu lifecycle gate (ps2x_mainmenu.cpp) against synthetic guest
     # RAM: walks BOOT -> 0x04 -> object up -> DISPLAYED -> TRANSITIONING and asserts what
     # popupVisible() says on each step, plus the guards that keep it from claiming a screen that
@@ -665,6 +681,17 @@ if(PS2X_BUILD_PROBES AND NOT PS2X_IS_VITA)
     target_link_libraries(fe_iso_probe PRIVATE ffmpeg)
 endif()
 
+# [ach] rcheevos, vendored at third_party/rcheevos (MIT, RetroAchievements.org). Same reasoning as
+# the raylib block above: it is a plain directory in the tree, so configuring needs no network and
+# no FetchContent. Its own CMakeLists is 50 lines of add_library + include dirs + a few defines --
+# no project(), no options, no install rules -- so add_subdirectory is safe and keeps the vendored
+# source list in sync with upstream instead of restating 50 filenames here.
+#
+# It is the reference implementation of the MemAddr expression language the achievement patch is
+# written in. Nothing in this tree talks to the RA server: the patch is a file under assets/ and
+# the only callback the guest provides is read_memory.
+add_subdirectory(third_party/rcheevos EXCLUDE_FROM_ALL)
+
 add_library(ps2_runtime STATIC
 src/lib/game_overrides.cpp
 src/lib/ps2x_dueldump.cpp       # [dueldump] total capture of the Duel menu flow
@@ -692,6 +719,9 @@ src/lib/ui_sdl.cpp          # [C] ImGui platform glue on SDL2 (replaces rlImGui)
     src/lib/ps2_iop_module.cpp   # [iop] IRX (IOP module) loader
     src/lib/ps2_fmv_override.cpp # [fmvoverride] inject a user 4K video as the opening FMV
     src/lib/ps2_netplay.cpp      # [netplay] deterministic lockstep transport
+    src/lib/ps2x_achieve.cpp     # [ach] RetroAchievements, evaluated locally against guest RAM
+    src/lib/ps2x_notify.cpp      # [notify] the popup bus
+    src/lib/ps2x_notify_sound.cpp # [notify] the synthesised UI sounds (audio backend dependent)
     src/lib/ps2x_perf.cpp        # [perf] present rate, frame-time percentiles, GPU busy + its source
     src/lib/ps2_iop.cpp
     src/lib/ps2_iop_audio.cpp
@@ -886,6 +916,11 @@ target_include_directories(ps2_runtime PUBLIC
 )
 
 target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2x_settings)
+
+# [ach] rcheevos carries its own include/ as an INTERFACE include dir, so this one line is the whole
+# wiring. PRIVATE would work too, except the probe targets below include ps2x_achieve.h and nothing
+# else, so PUBLIC keeps them from having to know where the headers came from.
+target_link_libraries(ps2_runtime PUBLIC rcheevos)
 
 # [d3d11] Native Direct3D 11 video device (device + DXGI swap chain), Windows-only.
 # d3dcompiler is linked now so the P3 shader port can compile HLSL at runtime.
