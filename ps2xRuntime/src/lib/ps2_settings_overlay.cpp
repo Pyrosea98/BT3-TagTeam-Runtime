@@ -545,6 +545,12 @@ void PS2SettingsOverlay::loadSettings()
             m_settings.windowMode = doc.getI("video.window_mode", m_settings.fullscreen ? 2 : 0);
             m_settings.monitor = doc.getI("video.monitor", m_settings.monitor);
         }
+        // [netplay] The same key the front-end writes, so the launcher's Misc switch and this one
+        // are the same setting. NET_OVERLAY stays the default for a run with no saved value, which
+        // is why it is not env-locked the way the video switches are: a saved "off" is the user
+        // saying no, and a saved "on" is the user saying yes, and an environment default should
+        // not outvote either.
+        m_settings.netOverlay = doc.getB("netplay.overlay", m_settings.netOverlay);
         if (envUserSet("PS2X_GLOW")) m_envLocked |= ps2x_settings::kLockGlow;
         else m_settings.glow = doc.getB("video.glow", m_settings.glow);
         if (envUserSet("PS2X_GLOWFIX")) m_envLocked |= ps2x_settings::kLockGlowFix;
@@ -759,6 +765,7 @@ void PS2SettingsOverlay::saveSettings() const
     // The overlay's live values, in the shared module's own struct so the field names line up.
     // device has no counterpart: the front-end has a single picker and P1 is what it writes.
     ps2x_settings::Settings live;
+    live.netOverlay = m_settings.netOverlay;   // [netplay] the same key the front-end's Misc writes
     live.master = m_settings.masterVolume;
     live.music = m_settings.musicVolume;
     live.sfx = m_settings.sfxVolume;
@@ -1073,12 +1080,13 @@ void PS2SettingsOverlay::readGamepadStateForDevice(
 // docs/MAIN-MENU.md section 7 gives for that do not resolve in this build (*(0x3B38D8) reads 0),
 // so a gate built on them would never open.
 //
-// PS2X_MAINMENU_POPUP_TEST=1 turns it on. Off by default: it is a scaffold for the Netplay popup,
-// not something to ship on.
+// NET_OVERLAY, or the checkbox in the launcher's Misc page / this overlay's Netplay tab, turns the
+// whole feature on: the label, this panel, and the automatic transition with its curtain. Off by
+// default -- it is a new feature and a corner of someone's game screen is not something to put in
+// front of them unasked.
 extern std::atomic<uint32_t> g_bt3MenuShown;   // [mainmenu] ps2_runtime.cpp: 1 while the menu is up
 extern std::atomic<uint32_t> g_bt3MenuPhase;   // [mainmenu] the ps2x::mainmenu::Phase value
 extern std::atomic<uint32_t> g_bt3MenuPlates;  // [mainmenu] menuObj+0x144, the build counter
-extern "C" void ps2xNetJumpSimulateFailure();   // [netjump] game_overrides.cpp: test hook, forces the give-up
 extern "C" int  ps2xNetJumpState();             // [netjump] the jump's phase: 1 armed, 2 settled, 3 returning
 // [netjump] The curtain's TARGET. The level is integrated by drawNetCurtain() below, which is also
 // where this is declared for its own use; the label and the panel need it too, to know whether to
@@ -1114,11 +1122,9 @@ bool PS2SettingsOverlay::mainMenuPopupWanted()
         s_mmPopupOpen = false;
     s_mmGateWasOpen = open;
 
-    static const bool s_on = [](){
-        const char *v = std::getenv("PS2X_MAINMENU_POPUP_TEST");
-        return v && v[0] && v[0] != '0';
-    }();
-    return s_on && open;
+    // Read the switch every call, not once: the two settings UIs flip it while the game is running
+    // and there is no frame to notice it in otherwise.
+    return ps2xNetOverlayEnabled() && open;
 }
 
 // [mmpopup] The Netplay icon: the Namek planet with a cloud drifting around it.
@@ -1224,14 +1230,6 @@ struct NetplayForm
 };
 static NetplayForm g_netForm;
 
-// [netjump] The test affordances are off unless the environment asks for them, read once.
-static bool netplayTestHooksOn()
-{
-    static const bool on = [](){ const char *e = std::getenv("PS2X_NET_FAKE");
-                                 return e && e[0] && e[0] != '0'; }();
-    return on;
-}
-
 // A label above its widget, for the popup's narrow columns. The tab draws labels inline to the
 // left, which is fine at the 1080px the settings window is and does not fit the popup's 520.
 static void netLabel(const char *label)
@@ -1254,15 +1252,13 @@ static void drawNetplayPopupBody()
     // only thing in the popup that says whether the last button press did anything.
     struct Status { const char *text; ImVec4 color; int id; };
     Status st;
-    // [netjump] A faked session reads as connected here too, or the header would say WAITING while
-    // the curtain is up and the game is walking to character select.
-    if (!ps2NetActive() && !ps2NetFakeConnect())
+    if (!ps2NetActive())
     {
         // No session. If one was asked for and is not here, it did not come up.
         if (g_netForm.attempted) { st = {"FAILED TO CONNECT", {0.95f, 0.34f, 0.31f, 1.0f}, 3}; }
         else                     { st = {"WAITING",           {0.62f, 0.68f, 0.74f, 1.0f}, 0}; }
     }
-    else if (!ps2NetPeerConnected() && !ps2NetFakeConnect())
+    else if (!ps2NetPeerConnected())
     {
         st = {"CONNECTING", {1.00f, 0.72f, 0.20f, 1.0f}, 1};
     }
@@ -1425,41 +1421,6 @@ static void drawNetplayPopupBody()
     ImGui::TextDisabled("HOST: press Host and give the other player your IP and this port.");
     ImGui::TextDisabled("JOIN: type the host's IP above, then press Join.");
 
-    // [netjump] TEST AFFORDANCE, not a feature. Two checkboxes behind PS2X_NET_FAKE, so the popup in
-    // a normal run cannot lie about being connected: a control that fakes a session has no business
-    // being one click away in something people ship. They exist because the character-select
-    // transition needs a live session and a second machine, and neither is a good reason to not test
-    // a fade. Both go away with the transition work; nothing else in the tree reads them.
-    if (netplayTestHooksOn())
-    {
-        ImGui::Separator();
-        ImGui::TextDisabled("TEST (PS2X_NET_FAKE) -- not part of netplay");
-        bool fake = ps2NetFakeConnect();
-        if (ImGui::Checkbox("Fake a session (walks the jump, no peer)", &fake))
-        {
-            ps2NetSetFakeConnect(fake);
-            // [netjump] The jump's mode comes from ps2NetAutoJump(), which normally gets its value
-            // from the Host/Join buttons -- and faking presses neither. The rest of the setup needs
-            // the same treatment or the whole test runs as Single Battle / 10 DP / delay 2 no matter
-            // what these combos say, which is exactly what happened: DP was selected and the log
-            // said "type -> 0".
-            if (fake)
-            {
-                ps2NetSetAutoJump(g_netForm.jump);
-                ps2NetSetDelay(g_netForm.delay);
-                ps2NetSetBattleType(g_netForm.battle);
-                ps2NetSetTimeLimit(g_netForm.time);
-                ps2NetSetDpLimit(g_netForm.dp);
-                std::fprintf(stderr, "[netjump] fake session: type=%d dp=%d delay=%u tlimit=%d\n",
-                             g_netForm.battle, g_netForm.dp, (unsigned)g_netForm.delay,
-                             g_netForm.time);
-            }
-        }
-        // Firing this makes step 2 take its give-up branch on the next tick, which is the only way
-        // to reach the reverse trip without waiting 20 s for a real timeout to happen on its own.
-        if (ps2NetFakeConnect() && ImGui::Button("Simulate a failed transition"))
-            ps2xNetJumpSimulateFailure();
-    }
 }
 
 // [netjump] The curtain: a black rectangle over the game with "Loading..." on it, while the netplay
@@ -1581,18 +1542,18 @@ static void drawNetCurtain()
     {
         // Two different hints, because the two phases ask for different things.
         //
-        // Going: one press asks for the trip back. F10 is here because it only works in that phase
-        // (the give-up lives in step 2) -- mentioning it while returning would be a lie, so the
-        // returning line does not carry it.
+        // Two lines because the two phases ask for different things.
         //
-        // Returning: TWO presses, and it says what the second one cancels. The first press keeps
-        // the curtain up while the game walks back through the Duel Menu, and a player who cannot
-        // get out of a black screen by pressing the same button again has been told to wait for a
-        // watchdog. Naming the screen is the part that makes it legible: "cancel" alone does not
-        // say what is being cancelled.
+        // Going: one press asks for the trip back.
+        //
+        // Returning: TWO, and it says what the second one cancels. The first press keeps the curtain
+        // up while the game walks back through the Duel Menu, and a player who cannot get out of a
+        // black screen by pressing the same button again has been told to wait for a watchdog.
+        // Naming the screen is the part that makes it legible: "cancel" alone does not say what is
+        // being cancelled.
         static const char *kCancel = returning
             ? "press 2 times O to cancel (Go to Duel Menu)"
-            : "Press O circle to cancel  ·  F10 to test the failure path";
+            : "Press O circle to cancel";
         const float csz = ImGui::GetFontSize();
         const ImVec2 cs = font->CalcTextSizeA(csz, FLT_MAX, 0.0f, kCancel);
         dl->AddText(font, csz, ImVec2(b.x - edge - cs.x, b.y - edge - cs.y), greyA, kCancel);
@@ -3089,6 +3050,17 @@ void PS2SettingsOverlay::drawNetplayTab()
 
     ImGui::TextUnformatted("Online play (deterministic lockstep)");
     ImGui::Separator();
+
+    // [netplay] The overlay switch, first thing in the tab, because everything else on this screen
+    // only matters if it is on: the main-menu label, the panel and the automatic transition. Reads
+    // and writes the same saved setting as the launcher's Misc page, so the two cannot disagree.
+    if (toggleSwitch("Netplay overlay", &m_settings.netOverlay))
+    {
+        ps2xSetNetOverlayEnabled(m_settings.netOverlay);
+        m_dirty = true;
+    }
+    ImGui::TextDisabled("A Netplay label in the corner of the main menu, and the walk to character "
+                        "select with a black curtain when a session connects. Default: NET_OVERLAY.");
 
     if (ps2NetActive())
     {

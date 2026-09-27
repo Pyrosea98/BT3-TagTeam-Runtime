@@ -8,6 +8,18 @@ struct Ps2xNetInput { uint16_t buttons; uint8_t rx, ry, lx, ly; };   // 6 bytes 
 #pragma pack(pop)
 
 void     ps2NetInit();
+
+// The Netplay overlay, as one switch: the corner label, the panel behind it, AND the automatic
+// character-select transition with its curtain. They are one feature, not three -- the panel without
+// the transition is a settings page, and the transition without the curtain is the game being driven
+// while the player watches nothing happen.
+//
+// NET_OVERLAY is the default, like every other PS2X_* here, and the checkbox in the launcher's Misc
+// page and in the overlay's Netplay tab is the runtime override; both persist to settings.toml. A
+// plain getenv read would not do, because the two UIs have to be able to flip it while the game is
+// running and an env var is fixed at exec.
+bool     ps2xNetOverlayEnabled();
+void     ps2xSetNetOverlayEnabled(bool on);
 bool     ps2NetHost(int port, int player);            // start hosting at runtime (overlay)
 bool     ps2NetJoin(const char *hostPort, int player); // "1.2.3.4:7777"
 bool     ps2NetPeerConnected();                        // a peer's packets have arrived
@@ -26,13 +38,6 @@ void     ps2NetBeginAutoStart(const char *path);       // host: replay a canned 
 bool     ps2NetAutoInput(Ps2xNetInput &out);           // next canned input, if any
 bool     ps2NetAutoStartActive();
 bool     ps2NetActive();
-// [netjump] TEST ONLY, not shipped behaviour. Pretends a session exists so the character-select
-// transition can be exercised on ONE machine, with no second instance and no peer. Deliberately NOT
-// wired into ps2NetActive(): the input path asks that question every frame boundary to decide
-// whether to stall waiting for a remote pad, and a lie there would stall the game against a socket
-// that was never opened. Only the jump's own gate and the popup's status read this.
-void     ps2NetSetFakeConnect(bool on);
-bool     ps2NetFakeConnect();
 int      ps2NetLocalPlayer();                 // 1 or 2
 uint32_t ps2NetDelay();
 void     ps2NetSubmitLocal(uint32_t frame, const Ps2xNetInput &in);

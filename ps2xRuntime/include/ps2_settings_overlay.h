@@ -15,6 +15,11 @@ class PS2SettingsOverlay
 public:
     struct Settings
     {
+        // [netplay] The Netplay overlay: the corner label, the panel behind it and the automatic
+        // character-select transition with its curtain. The launcher's Misc page has the same switch
+        // and both read and write the same settings.toml key, so the two cannot disagree; see
+        // ps2x_settings::Settings::netOverlay, which is the same field on the front-end's side.
+        bool netOverlay = false;
         float masterVolume = 1.0f;
         float musicVolume = 1.0f;
         float sfxVolume = 0.4f;

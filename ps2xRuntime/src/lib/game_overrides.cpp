@@ -68,30 +68,7 @@ std::atomic<int> g_netJumpHold{0};
 // from being seen operated, the curtain is what the player looks at while it happens.
 std::atomic<int> g_netCurtainWant{0};
 
-// [netjump] Set by the give-up path, consumed below in step 4: go back to the main menu. A separate
-// flag rather than a step, because the step is what STOPS the forward machine and this is what the
-// return trip runs on -- they would otherwise both be trying to be s_step.
-// [netjump] TEST ONLY. Makes step 2 take the give-up branch on its next tick, so the reverse trip
-// (curtain down, back to the main menu) can be exercised without waiting out the 600-frame timeout
-// -- and, more to the point, without hoping the transition misbehaves on its own. Cleared by the
-// exchange, so it fires once.
-std::atomic<int> g_netJumpForceFail{0};
-extern "C" void ps2xNetJumpSimulateFailure() { g_netJumpForceFail.store(1, std::memory_order_relaxed); }
 
-// [netjump] F10, for the same reason the button in the popup was not enough: the curtain covers
-// the panel, so a button behind it is invisible. The draw list is only paint -- ImGui's hit
-// testing goes by window rectangle -- so it stays clickable while you cannot see it, which is
-// worse than not having it. F9 is the RAM dump and F6/F7 are the savestate keys, so F10 is free.
-// raylib.h: KEY_F9 = 298, KEY_F10 = 299, KEY_F11 = 300 -- they are consecutive from 290, and the
-// F9/F6/F7 hooks in this file already use 298/295/296. The 303 this was first written with is
-// KEY_F14, so the key did nothing and the give-up always came from the 600-frame timeout instead,
-// which is exactly what the log showed.
-extern "C" bool IsKeyPressed(int key);   // raylib; KEY_F10 == 299
-extern "C" void ps2xNetJumpForceFailKey()
-{
-    if (IsKeyPressed(299))
-        ps2xNetJumpSimulateFailure();
-}
 #define XXH_INLINE_ALL
 #include "thirdparty/xxhash.h"   // [dethash]
 #include "runtime/ps2_gs_gpu_renderer.h"
@@ -789,11 +766,7 @@ extern "C" int ps2xNetServeSwapRead(unsigned long long slotId, unsigned long lon
         b0 = static_cast<uint8_t>(b0 & ~(uint8_t)(m & 0xFFu));
         b1 = static_cast<uint8_t>(b1 & ~(uint8_t)((m >> 8) & 0xFFu));
     }
-    // [netjump] The fake counts here as well as in the jump's own gate. Without it the whole
-    // [netjump] block below is unreachable under a faked session: the state machine runs and arms
-    // its press, and nobody consumes it. That is exactly how the first test sat at 0x26 for 600
-    // frames and reported "stuck" while the curtain was up and nothing was driving it.
-    if (ps2NetActive() || ps2NetFakeConnect())
+    if (ps2NetActive())
         {
             const uint32_t frame = static_cast<uint32_t>(g_bt3FrameCount.load(std::memory_order_relaxed));
             const int pl = static_cast<int>(socket & 3u) + 1;          // socket 0/1 -> player 1/2
@@ -5618,10 +5591,13 @@ namespace
         // override for headless runs. Mode 2 (straight to 0x27) is env-only -- it cannot set the
         // versus mode, because the duel object that holds it is freed before character select.
         const int s_mode = s_env > 0 ? s_env : (ps2NetAutoJump() ? 1 : 0);
-        // [netjump] The gate accepts a faked session so the whole transition can be walked on one
-        // machine (ps2NetFakeConnect). It does NOT make ps2NetActive() lie -- see that flag's
-        // header: the frame-boundary controller asks the real one every frame.
-        const bool live = (ps2NetActive() && ps2NetPeerConnected()) || ps2NetFakeConnect();
+        // The whole feature is behind NET_OVERLAY, transition included. The curtain lives in the
+        // overlay, so a jump without it would drive the menus while the player watches an unexplained
+        // sequence of screens -- the transition is not useful on its own, it is useful next to the
+        // thing that says what is happening.
+        if (!ps2xNetOverlayEnabled())
+            return;
+        const bool live = ps2NetActive() && ps2NetPeerConnected();
         // [netjump] `live` is NOT an entry gate any more, and that is the fix for the curtain that
         // never came down. It used to be one, and every path that CLEARS the curtain sits below
         // here -- so the moment the session died (Disconnect, the peer leaving, the fake switched
@@ -5843,7 +5819,6 @@ namespace
                 const uint32_t desyncNow = ps2NetDesyncFrame();
                 const bool desync = desyncNow != 0u && desyncNow != s_desyncBase;
                 if (cancelled || lost || desync ||
-                    g_netJumpForceFail.exchange(0, std::memory_order_relaxed) ||
                     now - s_pulseStart > 600u)     // ~20 s: something is wrong, stop hiding it
                 {
                     // One reason, one line. The desync case carries its frame because the frame
@@ -5855,8 +5830,6 @@ namespace
                         std::snprintf(why, sizeof why, "cancelled by the player");
                     else if (lost)
                         std::snprintf(why, sizeof why, "session lost");
-                    else if (g_netJumpForceFail.load(std::memory_order_relaxed))
-                        std::snprintf(why, sizeof why, "test hook");
                     else
                         std::snprintf(why, sizeof why, "no progress");
                     std::fprintf(stderr, "[netjump] giving up (%s) at state 0x%02x, duelObj=0x%x\n",
@@ -6350,7 +6323,6 @@ namespace
         bt3MemBlock(rdram);          // [memblock]
         bt3DumpKey(rdram);           // [dumpkey]
         if (bt3StateLogOn()) bt3StateLogFrame(rdram);   // [statelog] one line per screen change
-        ps2xNetJumpForceFailKey();                       // [netjump] F10 = force the give-up branch
         bt3NetJumpCharSelect(rdram, ctx, runtime); // [netjump]
         bt3MenuJumpFrame(rdram, ctx, runtime);     // [menujump] PS2X_MENU_JUMP + P+L / LMB+RMB combo
         ps2x_dueldump::tick(rdram, runtime);   // [dueldump] PS2X_DUELDUMP=1

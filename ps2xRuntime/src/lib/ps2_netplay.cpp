@@ -420,37 +420,28 @@ bool ps2NetHost(int port, int player)              { return netStart(nullptr, po
 bool ps2NetJoin(const char *hostPort, int player)  { return netStart(hostPort, 0, player); }
 bool ps2NetPeerConnected()                         { return g.connected; }
 
-// [netjump] see the header: a test-only flag, read by the jump and the popup's status and by nothing
-// else. g_fakeSession gives it a changing session id, because the jump arms on a session change and
-// a constant one would leave the state machine stuck in whatever step it was in.
-static int g_fakeOn = 0;
-static int g_fakeSession = 0;
-void ps2NetSetFakeConnect(bool on)
+// [netplay] The overlay switch. Seeded from the environment once, then owned by whoever last set it.
+static std::atomic<int> g_netOverlay{0};
+static bool ps2xNetOverlayInit()
 {
-    if (on && !g_fakeOn) ++g_fakeSession;
-    g_fakeOn = on ? 1 : 0;
-    // [netjump] Push the caller's chosen setup into the session as well. The battle type, the DP
-    // limit, the time limit and the input delay only reach the session when HOST or JOIN is
-    // pressed, because those are the only two places that call the setters -- and the fake path
-    // presses neither. So a fake connect silently ran every test as Single Battle with 10 DP and
-    // delay 2, whatever the popup's combos said. The checkboxes exist to exercise a setup, so the
-    // setup has to arrive.
-    if (on)
-    {
-        g_autoJump.store(true, std::memory_order_relaxed);
-        netEnvDefaults();   // the env defaults first, so the caller's setters override them
-    }
+    static const int seeded = [](){ const char *v = std::getenv("NET_OVERLAY");
+                                     return (v && v[0] && v[0] != '0') ? 1 : 0; }();
+    g_netOverlay.store(seeded, std::memory_order_relaxed);
+    return seeded != 0;
 }
-bool ps2NetFakeConnect() { return g_fakeOn != 0; }
-// [netjump] Reports the FAKE session too, and that is load-bearing rather than cosmetic. The jump
-// arms on a session CHANGE (see its reset), and g.session only ever moves on a real connect -- so
-// with a faked session the number never changed, the reset never ran, and the state machine sat at
-// "done" for the rest of the process. The symptom was a fake connect that worked exactly once.
-uint32_t ps2NetSession()
+bool ps2xNetOverlayEnabled()
 {
-    // 0xF0000000 is far above any real session, so a fake can never collide with one.
-    return g_fakeOn ? (0xF0000000u | (uint32_t)g_fakeSession) : g.session;
+    static const bool seeded = ps2xNetOverlayInit();
+    (void)seeded;
+    return g_netOverlay.load(std::memory_order_relaxed) != 0;
 }
+void ps2xSetNetOverlayEnabled(bool on)
+{
+    ps2xNetOverlayInit();   // so a later enable does not get clobbered by the seed
+    g_netOverlay.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
+uint32_t ps2NetSession()                           { return g.session; }
 
 // A "bye" is an ordinary packet with player = 0xFF. Sending one means the peer tears down at
 // once instead of discovering us gone via the stall timeout, which would otherwise freeze their

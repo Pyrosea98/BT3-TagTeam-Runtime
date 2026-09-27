@@ -788,6 +788,19 @@ namespace frontend
                  "and GPU usage, measured from what the renderer has and labelled with the "
                  "coverage it actually has.");
     }
+
+    if (fe::beginSection("NETPLAY OVERLAY", false,
+                         "A Netplay label in the corner of the main menu, the panel behind it, and "
+                         "the automatic walk to character select when a session connects -- with a "
+                         "black curtain and \"Loading...\" while it happens. The default is the "
+                         "NET_OVERLAY environment variable; this switch and the overlay's own "
+                         "Netplay tab both write the same saved setting, so they never disagree."))
+    {
+        fe::toggleSwitch("Netplay overlay", &s.netOverlay);
+        fe::hint("Off by default. Turning it on puts a label in the corner of the main menu and "
+                 "nothing else; the panel and the transition only appear once a session is live, "
+                 "and only while you are in that menu.");
+    }
 }
 
     void drawAboutPage(PageContext &ctx)
