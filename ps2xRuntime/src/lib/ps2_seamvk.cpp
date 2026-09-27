@@ -637,8 +637,10 @@ namespace seamvk
             // radii in GS pixels (PS2X_SEAMVK_OUTLINE=<core>,<fringe>, default 1,1.5), scaled to native pixels: the same look at any scale
             static const float s_core = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); return v && v[0] ? (float)std::atof(v) : 1.0f; }();
             static const float s_fringe = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); if (v) if (const char *c = std::strchr(v, ',')) return (float)std::atof(c + 1); return 1.5f; }();
-            // [outlineaa] third value: the ramp-difference threshold that counts as an edge (the CLUT ramp steps by 8; default 16)
-            static const uint32_t s_thr = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); int n = 0; if (v) if (const char *c = std::strchr(v, ',')) if (const char *c2 = std::strchr(c + 1, ',')) return (uint32_t)std::atoi(c2 + 1); (void)n; return 16u; }();
+            // [outlineaa] third value: the ramp-difference threshold that counts as an edge. Default 0 = ANY difference, the
+            // game's rule: the CLUT 0x3e8c ramp is bit-permuted, not monotonic (background 255 -> 0, a leg's Ztop 1 -> 8, the
+            // torso's 3 -> 72), so a threshold of 16 dropped the legs' silhouette while keeping the torso's (2026-09-28).
+            static const uint32_t s_thr = [](){ const char *v = std::getenv("PS2X_SEAMVK_OUTLINE"); if (v) if (const char *c = std::strchr(v, ',')) if (const char *c2 = std::strchr(c + 1, ',')) return (uint32_t)std::atoi(c2 + 1); return 0u; }();
             const uint32_t pcv[4] = { g_gpu.scale, (uint32_t)std::lround(s_core * g_gpu.scale), (uint32_t)std::lround(s_fringe * g_gpu.scale), s_thr };
             const uint32_t w = ft.img->get_width(), h = ft.img->get_height();
             {   // pass A: horizontal min/max of the ramp into a target-sized image (separable kernel: taps grow with the radius, not its square)
