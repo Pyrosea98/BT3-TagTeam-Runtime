@@ -90,6 +90,7 @@ uint8_t    *s_rdram = nullptr;
 std::atomic<bool> s_enabled{false};
 std::atomic<bool> s_loaded{false};
 bool s_wantEnabled = false;         // requested before init ran
+bool s_envSet = false;              // the environment was present, so it wins over the setting
 bool s_listed = false;              // the list snapshot is taken once per load, not per frame
 bool s_trace = false;               // PS2X_ACH_TRACE=1: log every read the engine makes
 bool s_prepared = false;            // ps2AchInit resolved the files; the client is made later
@@ -131,6 +132,32 @@ extern "C" uint32_t RC_CCONV achReadMemory(uint32_t address, uint8_t *buffer, ui
         std::fprintf(stderr, "%s\n", line);
     }
     return n;
+}
+
+// One unsigned field out of a urlencoded POST body. rcheevos builds these by hand and the answers
+// below have to quote back what they were asked, so a small reader is worth having. Only digits are
+// accepted: every numeric field in this API is a count or an id, and nothing here is ever signed or
+// fractional. Returns 0 when the field is absent, which for every caller means "not specified" --
+// the request never sends 0 for the one field that matters, because rc_api_init_award_achievement
+// rejects achievement_id == 0 outright.
+static uint32_t postParam(const char *post, char key)
+{
+    if (!post)
+        return 0;
+
+    // "&a=", never a bare "a=" substring: r=awardachievement also carries m=<md5 hash>, and hex
+    // digests contain the letter a. Anchoring on the separator is what keeps those apart.
+    for (const char *p = post; (p = std::strchr(p, '&')) != nullptr; ++p)
+    {
+        if (p[1] != key || p[2] != '=')
+            continue;
+        p += 3;
+        uint32_t v = 0;
+        while (*p >= '0' && *p <= '9')
+            v = v * 10 + static_cast<uint32_t>(*p++ - '0');
+        return v;
+    }
+    return 0;
 }
 
 // rcheevos' load path is a four-step conversation with a server: log in, resolve the disc hash to
@@ -201,11 +228,40 @@ extern "C" void RC_CCONV achServerCall(const rc_api_request_t *request,
         body = kPong.c_str();
         len = kPong.size();
     }
+    else if (std::strstr(post, "r=awardachievement"))
+    {
+        // Sent on every unlock, once per achievement, and it used to be refused -- which was not
+        // merely noisy. rcheevos reads a failure here as "the server rejected the award", logs
+        // "Error awarding achievement N", and drops the pending-award list, so the honest local
+        // unlock got reported as a server error every single time.
+        //
+        // Answering Success is not a lie about a network that does not exist: the award DID happen,
+        // recorded in savedata/achievements.unlocked, and this is the only endpoint that would ever
+        // have told anyone else.
+        //
+        // The id has to come back. rc_client_award_achievement_callback compares the response's
+        // AchievementID against the id it asked about and logs "Awarded achievement N instead of M"
+        // when they differ, so a bare {"Success":true} trades one error line for a worse one --
+        // "instead of 0" on every unlock. Score is left out rather than zeroed: a total computed
+        // from nothing is a number the game could later show as a rank.
+        //
+        // With this answered, a local client makes nothing else. The rest of rcheevos' API --
+        // submitcodenote, uploadachievement, submitlbentry, submitrichpresence, getfriendlist,
+        // allprogress, unlocks, achievementwondata, submitgametitle -- belongs to the developer's
+        // web UI and to the server, and none of them is reachable without one. If one ever does show
+        // up in the log below, that is a code path to look at, not an endpoint to stub.
+        char awarded[96];
+        const int k = std::snprintf(awarded, sizeof awarded,
+                                    R"({"Success":true,"AchievementID":%u})", postParam(post, 'a'));
+        body = awarded;
+        len = (k > 0 && static_cast<size_t>(k) < sizeof awarded) ? static_cast<size_t>(k) : 0;
+    }
     else
     {
-        // Anything else -- an unlock, a score submit, a progress ping -- is a request this build
-        // has no business making. Refusing rather than staying silent is deliberate: silence looks
-        // like a network stall, rcheevos retries it, and one missing feature becomes a retry loop.
+        // Anything else -- a score submit, a code note, a rich presence ping -- is a request this
+        // build has no business making. Refusing rather than staying silent is deliberate: silence
+        // looks like a network stall, rcheevos retries it, and one missing feature becomes a retry
+        // loop.
         //
         // The name of the request goes to the log, once. If the load ever fails with "offline
         // build" the line above it is the answer, and having to add a print to find that out is
@@ -522,12 +578,21 @@ void ps2AchInit(const char *exeDir)
 
     const std::filesystem::path root = deployRoot(exeDir);
 
-    // The env is the default and the settings key is the override, matching every other PS2X_*
-    // switch in the tree, so a one-session experiment does not have to touch settings.toml.
-    s_wantEnabled = s_wantEnabled || []() {
-        const char *v = std::getenv("ACHIEVEMENTS");
-        return v && v[0] && v[0] != '0';
-    }();
+    // The environment is the DEFAULT and the settings key is the override, matching every other
+    // PS2X_* switch in the tree -- except that the default is now "on", so the env has to be able to
+    // say "off" as well as "on". A plain OR cannot: it would make ACHIEVEMENTS=0 a no-op, because the
+    // settings value it is OR-ing against is already true. So presence is what counts, and the
+    // variable's value is read as a boolean. A one-session experiment is exactly the case this is
+    // for, and "I turned it off for one run" has to work on a build that ships it on.
+    if (const char *v = std::getenv("ACHIEVEMENTS"); v && v[0])
+    {
+        s_wantEnabled = (v[0] != '0');
+        s_envSet = true;
+    }
+    // Applied here, before the asset lookup, and that ordering is the point. Whether the tracker is
+    // ON is a different question from whether its patch was found, and the two early returns below
+    // would otherwise leave s_enabled at its initial false with the environment's answer discarded.
+    s_enabled.store(s_wantEnabled, std::memory_order_relaxed);
     if (const char *t = std::getenv("PS2X_ACH_TRACE"); t && t[0] && t[0] != '0')
         s_trace = true;
 
@@ -564,9 +629,6 @@ void ps2AchInit(const char *exeDir)
     s_verifiedPath = findAsset(root, kVerifiedFile);
     loadVerified();
     loadUnlocked();
-
-    // A caller that asked for it before init (the launcher does) still gets what it asked for.
-    s_enabled.store(s_wantEnabled, std::memory_order_relaxed);
 }
 
 // Creating the client is deferred to the first frame, and that is not a style choice.
@@ -691,12 +753,31 @@ bool ps2xAchEnabled() { return s_enabled.load(std::memory_order_relaxed); }
 
 void ps2xSetAchEnabled(bool on)
 {
+    // The player flipped the switch, so it wins over the environment, including when it turns things
+    // OFF. Otherwise ACHIEVEMENTS=0 would be a switch the overlay could not operate: the player would
+    // toggle it on and the next frame the env would turn it off again. The env is for "this run
+    // only, from the shell"; the switch is for "from now on, and I can still change it".
     s_wantEnabled = on;
+    s_envSet = false;
     s_enabled.store(on, std::memory_order_relaxed);
     if (on)
         ps2AchInit(nullptr);
     else
         saveProgress();
+}
+
+void ps2xAchApplyDefault(bool on)
+{
+    // The saved value, offered at boot. Deliberately NOT ps2xSetAchEnabled(): that one is the
+    // player's action and gives up the environment, and applySettings() runs right after init on the
+    // load path -- so sharing the setter would make ACHIEVEMENTS=0 a no-op on exactly the boot it is
+    // meant to apply to. The environment still wins here; only a deliberate click clears it.
+    if (s_envSet)
+        return;
+    s_wantEnabled = on;
+    s_enabled.store(on, std::memory_order_relaxed);
+    if (on)
+        ps2AchInit(nullptr);
 }
 
 bool ps2xAchLoaded() { return s_loaded.load(std::memory_order_relaxed); }
