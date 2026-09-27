@@ -69,3 +69,18 @@ bool     ps2NetSyncFetch(std::vector<uint8_t> &out);            // joiner: pull 
 void     ps2NetSyncApplied(uint32_t frameAbs);                   // joiner: state adopted; sets the base, sends DONE
 uint32_t ps2NetCheckEvery();      // PS2X_NET_CHECKEVERY: confirmed-state checksum interval (default 60)
 uint32_t ps2NetDesyncFrame();     // [desyncdump] the first frame whose confirmed hashes differed, 0 = none
+
+// [flush] What the last teardown left behind. Read-only, and counted rather than exposed field by
+// field, because "the maps are empty" is the assertion and a getter per field would be nine
+// functions to keep in step with the list in ps2NetDisconnect -- and that list is the part most
+// likely to drift, which is how the residue got here in the first place. Used by
+// ps2x_netplay_probe; nothing in the runtime reads it.
+struct Ps2xNetResidue
+{
+    uint32_t predicted = 0, held = 0, local = 0, remote = 0, peerHash = 0, ourHash = 0;
+    uint32_t rollbackTo = 0xFFFFFFFFu, lastSent = 0, desyncFrame = 0;
+    bool     autoRunning = false;
+    bool     armed = false;        // the [flush] latch, which must not outlive its session
+    int      menuFrames = 0;       // the debounce counter
+};
+Ps2xNetResidue ps2NetResidue();
