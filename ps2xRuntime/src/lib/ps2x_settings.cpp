@@ -141,6 +141,10 @@ namespace
         // [netplay] The environment is the default and the checkbox is the override, so a run with
         // NET_OVERLAY=1 and a saved "off" still starts off -- the setting is the user's last word.
         s.netOverlay = doc.getB("netplay.overlay", s.netOverlay);
+        // [ach] Same relationship as netplay.overlay: the environment is the default and the
+        // checkbox is the override, so ACHIEVEMENTS=0 with a saved "on" still starts off. Both ship
+        // on, which is why the modules read those variables by presence rather than truthiness.
+        s.achievements = doc.getB("achievements.enabled", s.achievements);
         s.glow = doc.getB("video.glow", s.glow);
         s.glowFix = doc.getB("video.glowfix", s.glowFix);
         s.inkStrength = doc.getI("video.ink_strength", s.inkStrength);
@@ -240,6 +244,10 @@ namespace
             {
                 if (key == "overlay") s.netOverlay = asBool();
             }
+            else if (section == "achievements")
+            {
+                if (key == "enabled") s.achievements = asBool();
+            }
             else if (section == "video")
             {
                 const bool b = asBool();
@@ -306,8 +314,14 @@ namespace ps2x_settings
         // feWidth/feHeight are intentionally NOT compared: they track the shell
         // window the user dragged, so they would report "cambios sin guardar" for
         // something that is not a game setting.
+        // [ach] compared, so the front-end's unsaved-changes check sees a toggle of the tracker.
+        // netOverlay is deliberately NOT here: the overlay sets m_dirty itself when that switch
+        // moves, and adding it would make the shell report unsaved changes for a setting the
+        // overlay has already written. Left alone rather than tidied up -- that is a separate
+        // question about the netplay switch, not about this one.
         return a.master == b.master && a.music == b.music && a.sfx == b.sfx &&
-               a.renderer == b.renderer && a.glow == b.glow && a.glowFix == b.glowFix &&
+               a.renderer == b.renderer && a.achievements == b.achievements &&
+               a.glow == b.glow && a.glowFix == b.glowFix &&
                a.bilinear == b.bilinear && a.halfTexel == b.halfTexel && a.skipPost == b.skipPost &&
                a.skipStaleVram == b.skipStaleVram && a.renderScale == b.renderScale &&
                a.outline == b.outline && a.inkStrength == b.inkStrength && a.inkWidth == b.inkWidth &&
@@ -404,6 +418,15 @@ namespace ps2x_settings
         os << "# The corner label, the panel behind it, and the automatic character-select\n"
               "# transition with its curtain. NET_OVERLAY is the default when this key is absent.\n";
         os << "overlay = " << fmtBool(s.netOverlay) << "\n\n";
+
+        os << "[achievements]\n";
+        os << "# The local RetroAchievements tracker. It reads a patch from assets/ and writes\n"
+              "# progress to savedata/; it never contacts a server. The achievements, their badges\n"
+              "# and the rcheevos library that evaluates them are RetroAchievements' work. Most of\n"
+              "# the 154 read an address this build does not use, so they are listed but cannot be\n"
+              "# earned by playing yet -- see docs/ACHIEVEMENTS.md.\n"
+              "# On by default; ACHIEVEMENTS=0 turns it off for one run.\n";
+        os << "enabled = " << fmtBool(s.achievements) << "\n\n";
 
         os << "[video]\n";
         os << "renderer = " << fmtStr(rendererName(s.renderer)) << "\n";

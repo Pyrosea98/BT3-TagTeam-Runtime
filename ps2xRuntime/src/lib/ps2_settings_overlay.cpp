@@ -2,6 +2,7 @@
 #include "runtime/ps2_texreplace.h"
 #include "ps2_settings_overlay.h"
 #include "runtime/ps2_netplay.h"   // [netplay]
+#include "runtime/ps2x_achieve.h"  // [ach]
 #include "runtime/ps2_gs_pgs.h"   // [pgsink] backend ink width
 #include "runtime/ps2_gs_gpu_renderer.h"
 #include "runtime/ps2_render_scale.h"
@@ -467,6 +468,10 @@ bool PS2SettingsOverlay::Settings::operator==(const Settings &o) const
            hudOffR == o.hudOffR &&
            overlayPadBtns == o.overlayPadBtns &&
            overlayKeys == o.overlayKeys &&
+           // [ach] netOverlay is absent from this comparison, and that is pre-existing: the
+           // overlay writes it through m_dirty when the switch moves. This one is here because
+           // the same tab owns the whole tracker and a change to it should read as unsaved.
+           achievements == o.achievements &&
            logLevel == o.logLevel;
 }
 
@@ -551,6 +556,9 @@ void PS2SettingsOverlay::loadSettings()
         // saying no, and a saved "on" is the user saying yes, and an environment default should
         // not outvote either.
         m_settings.netOverlay = doc.getB("netplay.overlay", m_settings.netOverlay);
+        // [ach] The same key the front-end's Misc page writes. Seeded here rather than only in
+        // applySettings() so the switch shows the saved value before the tab is ever opened.
+        m_settings.achievements = doc.getB("achievements.enabled", m_settings.achievements);
         if (envUserSet("PS2X_GLOW")) m_envLocked |= ps2x_settings::kLockGlow;
         else m_settings.glow = doc.getB("video.glow", m_settings.glow);
         if (envUserSet("PS2X_GLOWFIX")) m_envLocked |= ps2x_settings::kLockGlowFix;
@@ -766,6 +774,7 @@ void PS2SettingsOverlay::saveSettings() const
     // device has no counterpart: the front-end has a single picker and P1 is what it writes.
     ps2x_settings::Settings live;
     live.netOverlay = m_settings.netOverlay;   // [netplay] the same key the front-end's Misc writes
+    live.achievements = m_settings.achievements;   // [ach] likewise
     live.master = m_settings.masterVolume;
     live.music = m_settings.musicVolume;
     live.sfx = m_settings.sfxVolume;
@@ -864,6 +873,19 @@ void PS2SettingsOverlay::syncFromRuntime()
 void PS2SettingsOverlay::applySettings()
 {
     ps2Set60Fps(m_settings.fps60, nullptr);   // [fps60]
+    // [ach] Both switches are applied here, not only where they are drawn, so a saved value takes
+    // effect at boot without the player having to open the tab first. applySettings() runs on the
+    // load path, so the tracker is armed before the first frame is evaluated.
+    //
+    // The ApplyDefault pair, not the plain setters: those are the player's click and give up the
+    // environment, and applySettings() runs right after init -- sharing one entry point would make
+    // NET_OVERLAY=0 and ACHIEVEMENTS=0 no-ops on the one boot they exist for.
+    //
+    // netOverlay is applied here too, which it was not before. It used to be pushed only from
+    // drawNetplayTab(), which meant the environment was the effective value at boot while the tab
+    // showed the saved one -- the two could disagree and nothing would say so.
+    ps2xNetOverlayApplyDefault(m_settings.netOverlay);
+    ps2xAchApplyDefault(m_settings.achievements);
     ps2x::SetPerfOverlayEnabled(m_settings.showPerf);   // [perf] arm the GPU timing queries at boot too
     s_widescreen = m_settings.widescreen;
     PS2AudioBackend::setMasterVolume(m_settings.masterVolume);
@@ -1280,6 +1302,10 @@ static void drawNetplayPopupBody()
     static float s_changedAt = -10.0f;
     if (st.id != s_lastId)
     {
+        // The flash, and only the flash. The matching card and sound are raised by ps2NetFrame() in
+        // the netplay module, which runs on every frame of the game; this function only runs while
+        // the panel is open, so a session that connected during a fight would never be announced
+        // from here. One edge detector, in the one place that is always awake.
         s_lastId = st.id;
         s_changedAt = now;
     }
@@ -1912,7 +1938,11 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
         // and no "Loading..." at all. A test switch controlling a shipping behaviour is the wrong way
         // round; the curtain answers the netjump and nothing else.
         const bool curtain = netCurtainBusy();
-        if (!m_settings.showPerf && !mmPopup && !curtain)
+        // [notify] A card on screen is a reason to open a frame here even with nothing else to
+        // draw: an unlock can land in a fight, where the panel is retracted and the main-menu popup
+        // does not apply at all, and a session can connect while the player is anywhere.
+        if (!m_settings.showPerf && !mmPopup && !curtain && m_cards.empty() &&
+            ps2xNotifyPending() == 0)
             return;
         try
         {
@@ -1926,6 +1956,13 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
             // [netjump] Last, so it covers the label and the panel: during the transition the player
             // must not be able to see, or click, the popup that started it.
             drawNetCurtain();
+            // [notify] Above the curtain, on purpose, and this is the one place the two overlap.
+            // The curtain is the netplay transition and it deliberately hides the thing that
+            // started it; but "your session connected" is the reason the curtain is up, and hiding
+            // that would leave the player looking at a black screen with no explanation. The card is
+            // in the opposite corner from the netplay label, so nothing of the curtain's own
+            // furniture is uncovered.
+            drawNotifyStack();
         }
         catch (...)
         {
@@ -2042,6 +2079,12 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
                     drawNetplayTab();
                     ImGui::EndTabItem();
                 }
+                if (ImGui::BeginTabItem("  Achievements"))
+                {
+                    m_activeTab = 5;
+                    drawAchTab();
+                    ImGui::EndTabItem();
+                }
                 if (ImGui::BeginTabItem("  Logging"))
                 {
                     m_activeTab = 3;
@@ -2092,6 +2135,10 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
         if (wasVisible && !m_visible)
             ps2_stubs::PadConfig::setInputSuspended(false);
         drawNetCurtain();   // [netjump] over the settings panel too
+        // [notify] Outside the alpha scope above, for the same reason the perf meter is: a card
+        // would otherwise inherit the panel's deploy fade and be unreadable while the panel is
+        // animating, and the two things it reports are not the panel's business.
+        drawNotifyStack();
     }
     catch (...)
     {
@@ -2125,6 +2172,22 @@ void PS2SettingsOverlay::drawAudioTab()
     volumeSlider("Music", &m_settings.musicVolume);
     volumeSlider("SFX", &m_settings.sfxVolume);
     ImGui::TextDisabled("Music = BGM streams. SFX = voices, effects and one-shots.");
+
+    // [notify] The notification sounds ride the SFX slider, so they belong in the same section as
+    // the thing they ride rather than in a tab named after whichever feature happens to raise the
+    // most of them. There is one switch for all of them: a player who wants the game quiet does not
+    // want a chime from a feature they have never turned on.
+    ImGui::Spacing();
+    {
+        bool sound = ps2xNotifySoundEnabled();
+        if (toggleSwitch("Notification sounds", &sound))
+        {
+            ps2xNotifySetSoundEnabled(sound);
+            m_dirty = true;
+        }
+        ImGui::TextDisabled("The short tones that go with the popups in the top-left corner "
+                            "(netplay, achievements). On by default; follows the SFX volume above.");
+    }
 
     ImGui::Spacing();
 }
@@ -3145,6 +3208,406 @@ void PS2SettingsOverlay::drawNetplayTab()
     ImGui::TextWrapped("HOST: just press Host -- leave the address blank, give the other player "
                        "your IP and this port. JOIN: type the host's IP above, then press Join. "
                        "Only the host needs the UDP port reachable.");
+}
+
+// [ach] Badges for the achievement list. The PNGs are downloaded by scripts/gen_ach_patch.py into
+// assets/badges/<id>.png -- at build time, because nothing in the runtime is allowed to touch the
+// network -- and decoded here once per id.
+//
+// Keyed by ACHIEVEMENT ID, not by list index. The list is sorted (earned first, then by id) and the
+// id is the only thing that survives a re-sort, a patch reload and a rebuild; an index-keyed cache
+// would show one achievement's badge on another's row the moment the order changed.
+struct AchBadge
+{
+    unsigned long long tex = 0;   // what UiLoadTextureRgba returns; 0 = none
+    bool tried = false;
+};
+
+namespace {
+constexpr float kBadge = 26.0f;   // a badge is 64x64 on RA; this is a row, not a gallery
+std::vector<AchBadge> g_achBadges;
+std::unordered_map<uint32_t, size_t> g_achBadgeIndex;
+}   // namespace
+
+static const AchBadge &achBadgeAt(int index)
+{
+    static const AchBadge kNone;
+    if (index < 0 || index >= static_cast<int>(g_achBadges.size()))
+        return kNone;
+    return g_achBadges[static_cast<size_t>(index)];
+}
+
+// Decodes anything that has not been attempted yet, and re-uses the existing entry otherwise.
+static void ensureAchBadges(int total)
+{
+    if (static_cast<int>(g_achBadges.size()) < total)
+        g_achBadges.resize(static_cast<size_t>(total));
+
+    std::error_code ec;
+    const char *envDir = std::getenv("PS2X_ACH_BADGES");
+    const std::string dir = (envDir && envDir[0]) ? envDir : "assets/badges";
+
+    for (int i = 0; i < total; ++i)
+    {
+        AchBadge &slot = g_achBadges[static_cast<size_t>(i)];
+        if (slot.tried)
+            continue;
+        slot.tried = true;
+
+        const uint32_t id = ps2xAchIdAt(i);
+        if (!id)
+            continue;
+
+        std::vector<uint8_t> rgba;
+        int w = 0, h = 0;
+        const std::string path = dir + "/" + std::to_string(id) + ".png";
+        if (ps2x::gfx::GsDecodeImageRGBA8(path.c_str(), rgba, w, h) && w > 0 && h > 0)
+            slot.tex = ps2x::gfx::UiLoadTextureRgba(rgba.data(), w, h);
+        // A missing badge is not a failure worth a log line every frame: a custom achievement has
+        // none by definition, and the row falls back to its bullet.
+    }
+}
+
+// [ach] The Achievements tab. The switch, the counts, and the list of what is actually being
+// evaluated -- which is deliberately a short list, and the tab says so rather than showing 154
+// rows with 149 of them greyed out. A list of everything the database holds would be a promise the
+// build cannot keep: those conditions point at addresses this recomp does not use, and evaluating
+// them would report unlocks that did not happen.
+void PS2SettingsOverlay::drawAchTab()
+{
+    ImGui::Spacing();
+
+    sectionHeader("ACHIEVEMENTS");
+
+    if (toggleSwitch("Achievements", &m_settings.achievements))
+    {
+        ps2xSetAchEnabled(m_settings.achievements);
+        m_dirty = true;
+    }
+    ImGui::TextDisabled("Tracked locally: the definitions are a file in assets/, your progress is "
+                        "a file in savedata/achievements.progress. No account, no network. "
+                        "Default: ACHIEVEMENTS.");
+
+    // [ach] Attribution, and it is not decoration. The 154 achievements and their names, points and
+    // conditions are RetroAchievements' work, not ours; the badges are their images too. This build
+    // reads their public definitions and evaluates them locally, which is a thing they support --
+    // rcheevos is their own library, vendored under its MIT licence. Saying so here, where the
+    // list is, is the right place for it: the player is looking at their content and should know
+    // where it came from.
+    ImGui::Spacing();
+    {
+        ScopedStyleColor c(ImGuiCol_Text, dbz(0.50f, 0.55f, 0.62f));
+        ImGui::TextWrapped("Achievements and badges are the work of RetroAchievements.org, "
+                           "used here under their public definitions. The rcheevos library that "
+                           "evaluates them is theirs too, MIT licensed. Thank you.");
+    }
+
+    ImGui::Spacing();
+
+    const int total = ps2xAchTotal();
+    if (total <= 0)
+    {
+        ImGui::TextWrapped("%s",
+                           m_settings.achievements
+                               ? "Nothing loaded yet. The counts appear once the game has run a "
+                                 "frame -- the patch is read at that point, not before."
+                               : "Turn the switch on to start tracking. It costs one condition "
+                                 "evaluation per presented frame.");
+        return;
+    }
+
+    char head[220];
+    int verified = 0;
+    for (int i = 0; i < total; ++i)
+        verified += ps2xAchAddrVerified(i) ? 1 : 0;
+    std::snprintf(head, sizeof head, "%d of %d earned  --  %d of %d points  --  %d with a mapped address",
+                  ps2xAchUnlocked(), total, ps2xAchPointsEarned(), ps2xAchPointsTotal(), verified);
+    ImGui::TextUnformatted(head);
+    if (verified < total)
+    {
+        ImGui::TextColored(dbz(0.78f, 0.62f, 0.28f, 1.0f),
+                           "%d of them still read the address RetroAchievements wrote, which points "
+                           "at unrelated memory here, so they cannot be earned by playing yet. An "
+                           "unlock on one of those rows is not something you did.",
+                           total - verified);
+    }
+    ImGui::Spacing();
+
+    if (ImGui::BeginChild("##achlist", ImVec2(-1, 0), ImGuiChildFlags_Borders))
+    {
+        ImGui::Spacing();
+        // [ach] Badges, decoded once, lazily, the first frame this tab is drawn. Doing it per frame
+        // would decode four PNGs to redraw them unchanged; doing it at patch load would decode images
+        // for a list nobody opened.
+        ensureAchBadges(total);
+        // Earned first, and within each group the patch's own order (by id, which is the order the
+        // authors numbered them). Two passes over the list rather than a sort, because the order
+        // belongs to the module -- the overlay draws it, it does not decide it -- and because
+        // sorting a five-entry list on every frame to put a bool first is not a thing to do for a
+        // cosmetic preference.
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            const bool wantUnlocked = (pass == 0);
+            for (int i = 0; i < total; ++i)
+            {
+                char title[160] = {};
+                char desc[320] = {};
+                int points = 0;
+                bool unlocked = false;
+                if (!ps2xAchListGet(i, title, sizeof title, desc, sizeof desc, &points, &unlocked))
+                    continue;
+                if (unlocked != wantUnlocked)
+                    continue;
+
+                ImGui::PushID(i);
+                {
+                    // The badge, or a text bullet when there is none -- a custom achievement has no
+                    // badge by definition. Both occupy the same 26 px column so the titles line up
+                    // either way: a column that shifts when an image is missing is worse than no
+                    // image, and the bullet is what carries the state when there is no art to.
+                    const AchBadge &b = achBadgeAt(i);
+                    if (b.tex)
+                    {
+                        ImGui::Image((ImTextureID)b.tex, ImVec2(kBadge, kBadge));
+                    }
+                    else
+                    {
+                        ImGui::Dummy(ImVec2(kBadge, kBadge));
+                        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x,
+                                                        ImGui::GetCursorScreenPos().y +
+                                                            (kBadge - ImGui::GetTextLineHeight()) * 0.5f));
+                        // Green for earned, dim for not.
+                        ScopedStyleColor c(ImGuiCol_Text, unlocked ? dbz(0.45f, 0.85f, 0.50f)
+                                                                    : dbz(0.62f, 0.62f, 0.66f));
+                        ImGui::TextUnformatted(unlocked ? "*" : "-");
+                    }
+                }
+                ImGui::SameLine();
+                {
+                    ScopedStyleColor c(ImGuiCol_Text, unlocked ? dbz(0.93f, 0.96f, 0.94f)
+                                                                : dbz(0.62f, 0.62f, 0.66f));
+                    ImGui::TextUnformatted(title);
+                }
+                // [ach] The honesty marker. 149 of these still read RetroAchievements' own
+                // addresses, which in this build point at unrelated memory -- so an unlock on one of
+                // them is not evidence the player did the thing. Marked in the row, because the
+                // alternative is a list where an accidental unlock is indistinguishable from a real
+                // one, and the whole point of loading them was to find out which is which.
+                if (!ps2xAchAddrVerified(i))
+                {
+                    ScopedStyleColor c(ImGuiCol_Text, dbz(0.78f, 0.62f, 0.28f));
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted("  (addr not mapped)");
+                }
+                {
+                    ScopedStyleColor c(ImGuiCol_Text, gold());
+                    const std::string pts = std::to_string(points) + " pts";
+                    const float w = ImGui::CalcTextSize(pts.c_str()).x;
+                    ImGui::SameLine(ImGui::GetContentRegionMax().x - w - 12.0f);
+                    ImGui::TextUnformatted(pts.c_str());
+                }
+                if (desc[0])
+                {
+                    ImGui::Indent(24.0f);
+                    {
+                        ScopedStyleColor c(ImGuiCol_Text, dbz(0.45f, 0.45f, 0.50f));
+                        ImGui::TextUnformatted(desc);
+                    }
+                    ImGui::Unindent(24.0f);
+                }
+                ImGui::Spacing();
+                ImGui::PopID();
+            }
+        }
+        ImGui::Spacing();
+    }
+    ImGui::EndChild();
+}
+
+// [ach] The unlock notification. Bottom-centre, above everything except the curtain -- the curtain
+// is the netplay transition and is allowed to cover it, because during that transition the player
+// is not meant to be looking at the screen at all.
+//
+// ---------------------------------------------------------------------------------------------
+// [notify] The popup stack. Top-left, newest on top.
+// ---------------------------------------------------------------------------------------------
+//
+// The corner is not arbitrary and not free. The netplay label owns the bottom-right of the main
+// menu, the perf meter owns the top-right during a match, and the settings panel is centred. That
+// leaves the top-left, and it is the right place on its own terms: it is the corner the eye goes to
+// for something that was just added to the page, it is the furthest from the thumbstick's usual
+// resting arc so it does not sit under the player's hand, and it is far enough from the netplay
+// label that a session change and an unlock arriving together are two separate cards rather than
+// one smear.
+//
+// The cards carry their producer's identity -- a coloured edge, a small glyph, and a source label
+// in the accent -- so a netplay card and an achievement card are distinguishable at a glance
+// without reading them. That is the whole reason the two are separate kinds and not one "message"
+// type: the sharing is in the position and the motion, never in the identity.
+//
+// Motion: each card slides in from the left while fading up, holds, then fades out. Cards below
+// ease toward their slot rather than snapping, so a new arrival pushes the stack down smoothly
+// instead of making everything jump. One card animating never disturbs the ImGui layout of another:
+// they are all absolutely positioned from the viewport, and they take no input.
+void PS2SettingsOverlay::drawNotifyStack()
+{
+    constexpr int   kMaxLive = 5;
+    // Sized to the content, not to a panel's worth of content. A card carries a small source label,
+    // a title and at most one line of body, so anything wider than this is a rectangle with a
+    // sentence in it. 292 px fits the longest title in the patch ("Now Where's My Trucker Hat...")
+    // and the longest body ("Coming back to the main menu after all this time. It has been a
+    // while.") at the sizes below, which is what set the number rather than taste.
+    constexpr float kW = 292.0f, kPadX = 11.0f, kPadY = 8.0f;
+    constexpr float kEdge = 2.5f;              // the producer's accent, as a left rule
+    constexpr float kIn = 0.20f, kOut = 0.45f;
+    constexpr float kHoldAch = 3.6f, kHoldNet = 2.8f;
+    constexpr float kGap = 6.0f;
+    constexpr float kMarginL = 20.0f, kMarginT = 18.0f;
+    // Three text rows at their own sizes, plus the padding, rather than a frame-height formula. The
+    // label is small, the title is the body size, and the body is slightly under it; adding those
+    // up is the only way the card is exactly as tall as what is on it.
+    const float rowLabel = ImGui::GetFontSize() * 0.82f;
+    const float rowTitle = ImGui::GetFontSize() * 1.00f;
+    const float rowBody = ImGui::GetFontSize() * 0.88f;
+    const float rowH = kPadY * 2.0f + rowLabel + rowTitle + rowBody + 6.0f;
+
+    // Newest on top, so the thing that just happened is the thing you see. The queue is drained in
+    // order and prepended, which is why the drain is a ring and not an index into a sorted list.
+    NotifyEvent incoming[kMaxLive];
+    const int n = ps2xNotifyDrain(incoming, kMaxLive);
+    for (int i = 0; i < n; ++i)
+    {
+        Card c;
+        c.kind = incoming[i].kind;
+        c.title = incoming[i].title ? incoming[i].title : "";
+        c.body = incoming[i].body ? incoming[i].body : "";
+        c.age = 0.0f;
+        c.hold = (incoming[i].kind == NotifyKind::Achievement) ? kHoldAch : kHoldNet;
+        c.y = 0.0f;   // starts at the target and is pulled out by the slide
+        m_cards.insert(m_cards.begin(), c);
+    }
+    while (static_cast<int>(m_cards.size()) > kMaxLive)
+        m_cards.pop_back();
+
+    for (size_t i = 0; i < m_cards.size(); ++i)
+    {
+        Card &c = m_cards[i];
+        c.age += ImGui::GetIO().DeltaTime;
+        c.y += ((static_cast<float>(i) * (rowH + kGap)) - c.y) *
+               (1.0f - std::exp(-ImGui::GetIO().DeltaTime / 0.09f));
+    }
+    // Retire from the back: the tail is the oldest, and retiring the front would make the cards
+    // below it jump a slot as they take the index of a card that is still on screen.
+    while (!m_cards.empty() &&
+           m_cards.back().age >= kIn + m_cards.back().hold + kOut)
+        m_cards.pop_back();
+    if (m_cards.empty())
+        return;
+
+    // The FOREGROUND draw list, not the window one. This runs outside any ImGui window -- the
+    // retracted branch of draw() opens no window at all -- and GetWindowDrawList() with no current
+    // window hands back the implicit "Debug##Default" one, which ImGui then draws as a large empty
+    // frame. That is not a cosmetic mistake: it means the cards were being positioned in that
+    // window's coordinate space instead of the screen's, so the top-left margin was measured from
+    // wherever that window happened to be. GetForegroundDrawList() has no window of its own and its
+    // coordinates are the viewport's, which is what "the top-left corner" means.
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    const ImVec2 vp = ImGui::GetIO().DisplaySize;
+
+    for (const Card &c : m_cards)
+    {
+        const float t = c.age;
+        const float alpha = t < kIn ? (t / kIn)
+                                    : (t < kIn + c.hold
+                                           ? 1.0f
+                                           : std::max(0.0f, 1.0f - (t - kIn - c.hold) / kOut));
+        if (alpha <= 0.001f)
+            continue;
+        const float slide = t < kIn ? (1.0f - t / kIn) : 0.0f;   // 0 = settled, 1 = still coming
+
+        // The draw list wants packed colours, not ImVec4, and every colour on this card shares the
+        // one alpha -- so the conversion is a local lambda that folds it in. Written out per colour
+        // it would be six places to get the alpha argument wrong, and a card that faded its border
+        // but not its text is worse than one that does not fade at all.
+        const auto col = [alpha](float r, float g, float b, float a) {
+            return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a * alpha));
+        };
+
+        const ImVec4 accent4 = (c.kind == NotifyKind::Achievement) ? gold()
+                                                                  : ImVec4(0.36f, 0.74f, 0.92f, 1.0f);
+
+        const float x = kMarginL - slide * (kW * 0.35f);
+        const float y = kMarginT + c.y;
+        const ImVec2 a(x, y), b(x + kW, y + rowH);
+
+        // The panel colour is the overlay's own background, not a new one: the card has to belong
+        // to this UI, and #001B39 is what the settings panel and the netplay popup already are.
+        dl->AddRectFilled(a, b, col(0.043f, 0.106f, 0.227f, 0.94f));
+        // Border at 1 px and a low-contrast blue. At 2 px and full contrast it reads as a framed
+        // panel, and a 292x60 card with a 2 px frame looks like a window rather than a notification.
+        dl->AddRect(a, b, col(0.14f, 0.19f, 0.28f, 0.70f), 2.0f, 0, 1.0f);
+        // The accent rule, at the very left. This is the producer's colour and the only saturated
+        // thing on the card, which is what makes a netplay card and an achievement card tell
+        // themselves apart at a glance.
+        dl->AddRectFilled(ImVec2(a.x, a.y + 1.5f), ImVec2(a.x + kEdge, b.y - 1.5f),
+                          col(accent4.x, accent4.y, accent4.z, 1.0f));
+
+        const ImVec2 textL(a.x + kEdge + kPadX, a.y + kPadY);
+
+        // Three rows, each positioned from the one above it rather than from a frame height, so the
+        // text lands inside the box the height was computed for. The y offsets are the same numbers
+        // rowH was summed from, which is why the card is exactly as tall as what is on it.
+        const float yLabel = textL.y;
+        const float yTitle = yLabel + rowLabel;
+        const float yBody = yTitle + rowTitle;
+
+        // Source label, in the accent, small. The card's title is the loudest thing on it; this is
+        // the quietest, because it is the part you already know.
+        //
+        // ImGui::GetFont(), and deliberately not m_fontHudLabel: that member is never assigned
+        // anywhere in the tree, so it is a null ImFont*, and AddText dereferences it. Russo One IS
+        // the default font -- initialize() makes it Fonts[0] with io.Fonts->Clear() first -- so
+        // GetFont() is the HUD face and nothing needs pushing.
+        {
+            const char *src = (c.kind == NotifyKind::Achievement) ? "ACHIEVEMENT" : "NETPLAY";
+            dl->AddText(ImGui::GetFont(), rowLabel, ImVec2(textL.x, yLabel),
+                        col(accent4.x, accent4.y, accent4.z, 0.92f), src);
+        }
+        dl->AddText(ImGui::GetFont(), rowTitle, ImVec2(textL.x, yTitle),
+                    col(0.93f, 0.95f, 0.98f, 1.0f), c.title.c_str());
+        // Body, one line. Deliberately not wrapped: a card whose height depends on its text would
+        // make the whole stack reflow as it animates. The strings in the tree fit; a longer one from
+        // the drop box gets clipped at the card's edge, which is the right failure -- the card does
+        // not grow and shove the stack down.
+        if (!c.body.empty())
+            dl->AddText(ImGui::GetFont(), rowBody, ImVec2(textL.x, yBody),
+                        col(0.62f, 0.66f, 0.72f, 1.0f), c.body.c_str());
+
+        // The glyph, right-aligned: a filled diamond for netplay (its own shape language, matching
+        // the planet art), a five-point star for an achievement. Drawn rather than loaded, because
+        // there is no art for either and two lines of geometry beat a new asset.
+        const ImVec2 g(b.x - 26.0f, (a.y + b.y) * 0.5f);
+        if (c.kind == NotifyKind::Achievement)
+        {
+            ImVec2 star[10];
+            for (int k = 0; k < 10; ++k)
+            {
+                const float ang = -3.14159265f * 0.5f + k * 3.14159265f / 5.0f;
+                const float rad = (k & 1) ? 5.0f : 11.5f;
+                star[k] = ImVec2(g.x + std::cos(ang) * rad, g.y + std::sin(ang) * rad);
+            }
+            dl->AddConvexPolyFilled(star, 10, col(accent4.x, accent4.y, accent4.z, 1.0f));
+        }
+        else
+        {
+            // Solid, not outlined: AddConvexPolyFilled() has no thickness parameter, and faking a
+            // ring with a second inner polygon just makes a dot inside a diamond. At 18 px this is
+            // read as a shape, not as an outline.
+            const ImVec2 d[4] = {ImVec2(g.x, g.y - 11.0f), ImVec2(g.x + 9.0f, g.y),
+                                 ImVec2(g.x, g.y + 11.0f), ImVec2(g.x - 9.0f, g.y)};
+            dl->AddConvexPolyFilled(d, 4, col(accent4.x, accent4.y, accent4.z, 0.92f));
+        }
+    }
 }
 
 void PS2SettingsOverlay::drawLoggingTab()

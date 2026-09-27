@@ -33,6 +33,7 @@ BT3-Recomp is **GPL-3.0** (see [`LICENSE`](LICENSE)). Because it is built on
 | Mesa (lavapipe, software Vulkan ICD, Windows) | MIT | https://www.mesa3d.org |
 | paraLLEl-GS (Vulkan GS backend, when built in) | LGPL-3.0-or-later | https://github.com/Arntzen-Software/parallel-gs |
 | raylib (vendored in `ps2xRuntime/third_party/bt3gl`) | zlib | https://www.raylib.com |
+| rcheevos (vendored in `ps2xRuntime/third_party/rcheevos`) | MIT | https://github.com/RetroAchievements/rcheevos |
 
 ## Bundled assets
 

@@ -20,6 +20,9 @@ void     ps2NetInit();
 // running and an env var is fixed at exec.
 bool     ps2xNetOverlayEnabled();
 void     ps2xSetNetOverlayEnabled(bool on);
+// Offers the saved value at boot without giving up NET_OVERLAY. See ps2xAchApplyDefault(), which is
+// the same split for the same reason: the setter is the player's click, this is the file.
+void     ps2xNetOverlayApplyDefault(bool on);
 bool     ps2NetHost(int port, int player);            // start hosting at runtime (overlay)
 bool     ps2NetJoin(const char *hostPort, int player); // "1.2.3.4:7777"
 bool     ps2NetPeerConnected();                        // a peer's packets have arrived

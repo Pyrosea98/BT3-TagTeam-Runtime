@@ -1,0 +1,1888 @@
+{
+ "note": "EVERY achievement is in the runtime patch. 'held' lists the ones whose addresses are not yet translated: those are left at RetroAchievements' raw values, which in this build point at unrelated memory, so they will not unlock on their own. One that DOES unlock without the player doing the thing is a false positive and names itself. 'verified_regions' is what clears an entry out of 'held'.",
+ "verified_regions": [
+  {
+   "ra": "0x6af000-0x6affff",
+   "our_delta": "+0x4000",
+   "why": "stateObj -- +0x4000, confirmed by mode/type landing on stateObj+0x620/+0x624"
+  },
+  {
+   "ra": "0x31e000-0x31efff",
+   "our_delta": "none",
+   "why": "loaded .data, fixed by the ELF (segments end at 0x334bf8)"
+  }
+ ],
+ "included": {
+  "count": 154,
+  "points": 985,
+  "verified": 5,
+  "unverified": 149,
+  "ids": [
+   287135,
+   287993,
+   287994,
+   287995,
+   287996,
+   287997,
+   287998,
+   287999,
+   288000,
+   288001,
+   288002,
+   288003,
+   288004,
+   288005,
+   288006,
+   288007,
+   288008,
+   288009,
+   288010,
+   288011,
+   288012,
+   288013,
+   288014,
+   288015,
+   288016,
+   288017,
+   288018,
+   288019,
+   288020,
+   288021,
+   288022,
+   288023,
+   288024,
+   288025,
+   288026,
+   288027,
+   288028,
+   288029,
+   288030,
+   288031,
+   288032,
+   288033,
+   288034,
+   288035,
+   288036,
+   288037,
+   288038,
+   288039,
+   288040,
+   288041,
+   288042,
+   288043,
+   288165,
+   288639,
+   287139,
+   287140,
+   287141,
+   287142,
+   287143,
+   287144,
+   287145,
+   287146,
+   287147,
+   287148,
+   287149,
+   287150,
+   287151,
+   287152,
+   287153,
+   287154,
+   287155,
+   287156,
+   287157,
+   287158,
+   287159,
+   287160,
+   287161,
+   287162,
+   287163,
+   287164,
+   287165,
+   287166,
+   287167,
+   287168,
+   287169,
+   287170,
+   287171,
+   287172,
+   287173,
+   287174,
+   287175,
+   287176,
+   287177,
+   287178,
+   287179,
+   287180,
+   287181,
+   287182,
+   287183,
+   287184,
+   287185,
+   287186,
+   287187,
+   287188,
+   287189,
+   287190,
+   287191,
+   287192,
+   287193,
+   287194,
+   287195,
+   287196,
+   287197,
+   287198,
+   287199,
+   287200,
+   287201,
+   287202,
+   287203,
+   287204,
+   287205,
+   287974,
+   287978,
+   288073,
+   288410,
+   288411,
+   288412,
+   287206,
+   287207,
+   287208,
+   287209,
+   287210,
+   287211,
+   287212,
+   287213,
+   287216,
+   287217,
+   287218,
+   287219,
+   287220,
+   287221,
+   287222,
+   287223,
+   287224,
+   287225,
+   287226,
+   287227,
+   287228,
+   287136,
+   287137,
+   287138,
+   287214,
+   287215,
+   900001
+  ]
+ },
+ "held": {
+  "count": 149,
+  "points": 967,
+  "by_missing_region": {
+   "0x6baxxxx": 117,
+   "0x6b9xxxx": 254,
+   "0x1872xxxx": 94,
+   "0x1871xxxx": 44,
+   "0x8c0xxxx": 7,
+   "0x6bcxxxx": 131
+  },
+  "achievements": [
+   {
+    "id": 287135,
+    "title": "Gotta Learn the Know-How",
+    "points": 5,
+    "untranslated": [
+     "0x6ba44c",
+     "0x6ba44d",
+     "0x6ba450",
+     "0x6ba451",
+     "0x6ba454",
+     "0x6ba455"
+    ]
+   },
+   {
+    "id": 287993,
+    "title": "We're Like Brothers, Only Enemies",
+    "points": 5,
+    "untranslated": [
+     "0x6b9658"
+    ]
+   },
+   {
+    "id": 287994,
+    "title": "What Does the Scouter Say?",
+    "points": 5,
+    "untranslated": [
+     "0x6b9658"
+    ]
+   },
+   {
+    "id": 287995,
+    "title": "Kaio-What?",
+    "points": 5,
+    "untranslated": [
+     "0x6b9658"
+    ]
+   },
+   {
+    "id": 287996,
+    "title": "Kyoufu no Ginyu Tokusentai!",
+    "points": 5,
+    "untranslated": [
+     "0x6b9668"
+    ]
+   },
+   {
+    "id": 287997,
+    "title": "This Isn't Even My Final Form",
+    "points": 5,
+    "untranslated": [
+     "0x6b9668"
+    ]
+   },
+   {
+    "id": 287998,
+    "title": "He Must Die By A Saiyan's Hands...!",
+    "points": 5,
+    "untranslated": [
+     "0x6b9668"
+    ]
+   },
+   {
+    "id": 287999,
+    "title": "YOU FOOL!",
+    "points": 5,
+    "untranslated": [
+     "0x6b9668"
+    ]
+   },
+   {
+    "id": 288000,
+    "title": "Do Androids Feel Fear?",
+    "points": 5,
+    "untranslated": [
+     "0x6b9678"
+    ]
+   },
+   {
+    "id": 288001,
+    "title": "I've Come To Tell you..Your Time Is Up!",
+    "points": 5,
+    "untranslated": [
+     "0x6b9678"
+    ]
+   },
+   {
+    "id": 288002,
+    "title": "You're Either Perfect, Or You're Not Me",
+    "points": 5,
+    "untranslated": [
+     "0x6b9678"
+    ]
+   },
+   {
+    "id": 288003,
+    "title": "I Can Hardly Wait",
+    "points": 5,
+    "untranslated": [
+     "0x6b9678"
+    ]
+   },
+   {
+    "id": 288004,
+    "title": "Gohan's Anger",
+    "points": 5,
+    "untranslated": [
+     "0x6b9678"
+    ]
+   },
+   {
+    "id": 288005,
+    "title": "I Did It My Way",
+    "points": 5,
+    "untranslated": [
+     "0x6b9678"
+    ]
+   },
+   {
+    "id": 288006,
+    "title": "The Nightmare Is Over!",
+    "points": 5,
+    "untranslated": [
+     "0x6b9678"
+    ]
+   },
+   {
+    "id": 288007,
+    "title": "The Prince is Back",
+    "points": 5,
+    "untranslated": [
+     "0x6b9688"
+    ]
+   },
+   {
+    "id": 288008,
+    "title": "Trunks, Bulma, I Do This for You.",
+    "points": 5,
+    "untranslated": [
+     "0x6b9688"
+    ]
+   },
+   {
+    "id": 288009,
+    "title": "Vegito, the Ultimate Warrior",
+    "points": 5,
+    "untranslated": [
+     "0x6b9688"
+    ]
+   },
+   {
+    "id": 288010,
+    "title": "Kai Planet Showdown",
+    "points": 5,
+    "untranslated": [
+     "0x6b9688"
+    ]
+   },
+   {
+    "id": 288011,
+    "title": "I Wish to Fight You Again Someday",
+    "points": 5,
+    "untranslated": [
+     "0x6b9688"
+    ]
+   },
+   {
+    "id": 288012,
+    "title": "So Long, Planet Vegeta",
+    "points": 5,
+    "untranslated": [
+     "0x6b9698"
+    ]
+   },
+   {
+    "id": 288013,
+    "title": "Body Swapping",
+    "points": 5,
+    "untranslated": [
+     "0x6b9698"
+    ]
+   },
+   {
+    "id": 288014,
+    "title": "Spoilers! Goku Goes Super Saiyan",
+    "points": 5,
+    "untranslated": [
+     "0x6b9698"
+    ]
+   },
+   {
+    "id": 288015,
+    "title": "Seal the Spice",
+    "points": 5,
+    "untranslated": [
+     "0x6b9698"
+    ]
+   },
+   {
+    "id": 288016,
+    "title": "He Really Is Cooler",
+    "points": 5,
+    "untranslated": [
+     "0x6b9698"
+    ]
+   },
+   {
+    "id": 288017,
+    "title": "Now Where's My Trucker Hat...",
+    "points": 5,
+    "untranslated": [
+     "0x6b9698"
+    ]
+   },
+   {
+    "id": 288018,
+    "title": "My Power...Is Maximum!",
+    "points": 5,
+    "untranslated": [
+     "0x6b9699"
+    ]
+   },
+   {
+    "id": 288019,
+    "title": "MAXIMUMER",
+    "points": 5,
+    "untranslated": [
+     "0x6b9699"
+    ]
+   },
+   {
+    "id": 288020,
+    "title": "More Monsters From Space",
+    "points": 5,
+    "untranslated": [
+     "0x6b9699"
+    ]
+   },
+   {
+    "id": 288021,
+    "title": "Space Pirates",
+    "points": 5,
+    "untranslated": [
+     "0x6b9699"
+    ]
+   },
+   {
+    "id": 288022,
+    "title": "A Little Too Maximum",
+    "points": 5,
+    "untranslated": [
+     "0x6b9699"
+    ]
+   },
+   {
+    "id": 288023,
+    "title": "Not So Evil",
+    "points": 5,
+    "untranslated": [
+     "0x6b9699"
+    ]
+   },
+   {
+    "id": 288024,
+    "title": "Coolest Fight Ever",
+    "points": 5,
+    "untranslated": [
+     "0x6b9699"
+    ]
+   },
+   {
+    "id": 288025,
+    "title": "Dragon Dragon, Wrath of the Dragon",
+    "points": 5,
+    "untranslated": [
+     "0x6b9699"
+    ]
+   },
+   {
+    "id": 288026,
+    "title": "Babymode",
+    "points": 5,
+    "untranslated": [
+     "0x6b96a8"
+    ]
+   },
+   {
+    "id": 288027,
+    "title": "Super 17 Super Sucks",
+    "points": 5,
+    "untranslated": [
+     "0x6b96a8"
+    ]
+   },
+   {
+    "id": 288028,
+    "title": "Burning Red Hot",
+    "points": 5,
+    "untranslated": [
+     "0x6b96a8"
+    ]
+   },
+   {
+    "id": 288029,
+    "title": "Ultimate Combination",
+    "points": 5,
+    "untranslated": [
+     "0x6b96a8"
+    ]
+   },
+   {
+    "id": 288030,
+    "title": "McGuffin",
+    "points": 5,
+    "untranslated": [
+     "0x6b96a8"
+    ]
+   },
+   {
+    "id": 288031,
+    "title": "The Tournament Begins",
+    "points": 5,
+    "untranslated": [
+     "0x6b96b8"
+    ]
+   },
+   {
+    "id": 288032,
+    "title": "Log This One Down",
+    "points": 5,
+    "untranslated": [
+     "0x6b96b8"
+    ]
+   },
+   {
+    "id": 288033,
+    "title": "That Was for Krillin!",
+    "points": 5,
+    "untranslated": [
+     "0x6b96b8"
+    ]
+   },
+   {
+    "id": 288034,
+    "title": "Hoyo~?",
+    "points": 5,
+    "untranslated": [
+     "0x6b96b8"
+    ]
+   },
+   {
+    "id": 288035,
+    "title": "N'cha!",
+    "points": 5,
+    "untranslated": [
+     "0x6b96c8"
+    ]
+   },
+   {
+    "id": 288036,
+    "title": "16 Times 8",
+    "points": 5,
+    "untranslated": [
+     "0x6b96c8"
+    ]
+   },
+   {
+    "id": 288037,
+    "title": "Vegeta's Dreams",
+    "points": 5,
+    "untranslated": [
+     "0x6b96c8"
+    ]
+   },
+   {
+    "id": 288038,
+    "title": "MAN HUMAN",
+    "points": 5,
+    "untranslated": [
+     "0x6b96c8"
+    ]
+   },
+   {
+    "id": 288039,
+    "title": "World Tournament Champ",
+    "points": 10,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 288040,
+    "title": "Big Fighter",
+    "points": 10,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 288041,
+    "title": "Perfect Finish",
+    "points": 10,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 288042,
+    "title": "Out of this World",
+    "points": 10,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 288043,
+    "title": "Finally, Now You Can Talk to Women!",
+    "points": 10,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 288165,
+    "title": "Tree of Fright",
+    "points": 5,
+    "untranslated": [
+     "0x6b9698"
+    ]
+   },
+   {
+    "id": 288639,
+    "title": "Super Ultra Mecha Cooler",
+    "points": 5,
+    "untranslated": [
+     "0x6b9698"
+    ]
+   },
+   {
+    "id": 287139,
+    "title": "Missions 1-5",
+    "points": 5,
+    "untranslated": [
+     "0x6b98cc",
+     "0x6b98d8",
+     "0x6b98e4",
+     "0x6b98f0",
+     "0x6b98fc"
+    ]
+   },
+   {
+    "id": 287140,
+    "title": "Missions 6-10",
+    "points": 5,
+    "untranslated": [
+     "0x6b9908",
+     "0x6b9914",
+     "0x6b9920",
+     "0x6b992c",
+     "0x6b9938"
+    ]
+   },
+   {
+    "id": 287141,
+    "title": "Missions 11-15",
+    "points": 5,
+    "untranslated": [
+     "0x6b9944",
+     "0x6b9950",
+     "0x6b995c",
+     "0x6b9968",
+     "0x6b9974"
+    ]
+   },
+   {
+    "id": 287142,
+    "title": "Missions 16-20",
+    "points": 5,
+    "untranslated": [
+     "0x6b9980",
+     "0x6b998c",
+     "0x6b9998",
+     "0x6b99a4",
+     "0x6b99b0"
+    ]
+   },
+   {
+    "id": 287143,
+    "title": "Missions 21-25",
+    "points": 5,
+    "untranslated": [
+     "0x6b99bc",
+     "0x6b99c8",
+     "0x6b99d4",
+     "0x6b99e0",
+     "0x6b99ec"
+    ]
+   },
+   {
+    "id": 287144,
+    "title": "Missions 26-30",
+    "points": 5,
+    "untranslated": [
+     "0x6b99f8",
+     "0x6b9a04",
+     "0x6b9a10",
+     "0x6b9a1c",
+     "0x6b9a28"
+    ]
+   },
+   {
+    "id": 287145,
+    "title": "Missions 31-35",
+    "points": 5,
+    "untranslated": [
+     "0x6b9a34",
+     "0x6b9a40",
+     "0x6b9a4c",
+     "0x6b9a58",
+     "0x6b9a64"
+    ]
+   },
+   {
+    "id": 287146,
+    "title": "Missions 36-40",
+    "points": 5,
+    "untranslated": [
+     "0x6b9a70",
+     "0x6b9a7c",
+     "0x6b9a88",
+     "0x6b9a94",
+     "0x6b9aa0"
+    ]
+   },
+   {
+    "id": 287147,
+    "title": "Missions 41-45",
+    "points": 5,
+    "untranslated": [
+     "0x6b9aac",
+     "0x6b9ab8",
+     "0x6b9ac4",
+     "0x6b9ad0",
+     "0x6b9adc"
+    ]
+   },
+   {
+    "id": 287148,
+    "title": "Missions 46-50",
+    "points": 5,
+    "untranslated": [
+     "0x6b9ae8",
+     "0x6b9af4",
+     "0x6b9b00",
+     "0x6b9b0c",
+     "0x6b9b18"
+    ]
+   },
+   {
+    "id": 287149,
+    "title": "Missions 51-55",
+    "points": 5,
+    "untranslated": [
+     "0x6b9b24",
+     "0x6b9b30",
+     "0x6b9b3c",
+     "0x6b9b48",
+     "0x6b9b54"
+    ]
+   },
+   {
+    "id": 287150,
+    "title": "Missions 56-60",
+    "points": 5,
+    "untranslated": [
+     "0x6b9b60",
+     "0x6b9b6c",
+     "0x6b9b78",
+     "0x6b9b84",
+     "0x6b9b90"
+    ]
+   },
+   {
+    "id": 287151,
+    "title": "Missions 61-65",
+    "points": 5,
+    "untranslated": [
+     "0x6b9b9c",
+     "0x6b9ba8",
+     "0x6b9bb4",
+     "0x6b9bc0",
+     "0x6b9bcc"
+    ]
+   },
+   {
+    "id": 287152,
+    "title": "Missions 66-70",
+    "points": 5,
+    "untranslated": [
+     "0x6b9bd8",
+     "0x6b9be4",
+     "0x6b9bf0",
+     "0x6b9bfc",
+     "0x6b9c08"
+    ]
+   },
+   {
+    "id": 287153,
+    "title": "Missions 71-75",
+    "points": 5,
+    "untranslated": [
+     "0x6b9c14",
+     "0x6b9c20",
+     "0x6b9c2c",
+     "0x6b9c38",
+     "0x6b9c44"
+    ]
+   },
+   {
+    "id": 287154,
+    "title": "Missions 76-80",
+    "points": 5,
+    "untranslated": [
+     "0x6b9c50",
+     "0x6b9c5c",
+     "0x6b9c68",
+     "0x6b9c74",
+     "0x6b9c80"
+    ]
+   },
+   {
+    "id": 287155,
+    "title": "Missions 81-85",
+    "points": 5,
+    "untranslated": [
+     "0x6b9c8c",
+     "0x6b9c98",
+     "0x6b9ca4",
+     "0x6b9cb0",
+     "0x6b9cbc"
+    ]
+   },
+   {
+    "id": 287156,
+    "title": "Missions 86-90",
+    "points": 5,
+    "untranslated": [
+     "0x6b9cc8",
+     "0x6b9cd4",
+     "0x6b9ce0",
+     "0x6b9cec",
+     "0x6b9cf8"
+    ]
+   },
+   {
+    "id": 287157,
+    "title": "Missions 91-95",
+    "points": 5,
+    "untranslated": [
+     "0x6b9d04",
+     "0x6b9d10",
+     "0x6b9d1c",
+     "0x6b9d28",
+     "0x6b9d34"
+    ]
+   },
+   {
+    "id": 287158,
+    "title": "Missions 96-100",
+    "points": 5,
+    "untranslated": [
+     "0x6b9d40",
+     "0x6b9d4c",
+     "0x6b9d58",
+     "0x6b9d64",
+     "0x6b9d70"
+    ]
+   },
+   {
+    "id": 287159,
+    "title": "Missions 1-5 [S-Rank]",
+    "points": 5,
+    "untranslated": [
+     "0x6b98cd",
+     "0x6b98d9",
+     "0x6b98e5",
+     "0x6b98f1",
+     "0x6b98fd"
+    ]
+   },
+   {
+    "id": 287160,
+    "title": "Missions 6-10 [S Rank]",
+    "points": 5,
+    "untranslated": [
+     "0x6b9909",
+     "0x6b9915",
+     "0x6b9921",
+     "0x6b992d",
+     "0x6b9939"
+    ]
+   },
+   {
+    "id": 287161,
+    "title": "Missions 11-15 [S Rank]",
+    "points": 5,
+    "untranslated": [
+     "0x6b9945",
+     "0x6b9951",
+     "0x6b995d",
+     "0x6b9969",
+     "0x6b9975"
+    ]
+   },
+   {
+    "id": 287162,
+    "title": "Missions 16-20 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9981",
+     "0x6b998d",
+     "0x6b9999",
+     "0x6b99a5",
+     "0x6b99b1"
+    ]
+   },
+   {
+    "id": 287163,
+    "title": "Missions 21-25 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b99bd",
+     "0x6b99c9",
+     "0x6b99d5",
+     "0x6b99e1",
+     "0x6b99ed"
+    ]
+   },
+   {
+    "id": 287164,
+    "title": "Missions 26-30 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b99f9",
+     "0x6b9a05",
+     "0x6b9a11",
+     "0x6b9a1d",
+     "0x6b9a29"
+    ]
+   },
+   {
+    "id": 287165,
+    "title": "Missions 31-35 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9a35",
+     "0x6b9a41",
+     "0x6b9a4d",
+     "0x6b9a59",
+     "0x6b9a65"
+    ]
+   },
+   {
+    "id": 287166,
+    "title": "Missions 36-40 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9a71",
+     "0x6b9a7d",
+     "0x6b9a89",
+     "0x6b9a95",
+     "0x6b9aa1"
+    ]
+   },
+   {
+    "id": 287167,
+    "title": "Missions 41-45 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9aad",
+     "0x6b9ab9",
+     "0x6b9ac5",
+     "0x6b9ad1",
+     "0x6b9add"
+    ]
+   },
+   {
+    "id": 287168,
+    "title": "Missions 46-50 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9ae9",
+     "0x6b9af5",
+     "0x6b9b01",
+     "0x6b9b0d",
+     "0x6b9b19"
+    ]
+   },
+   {
+    "id": 287169,
+    "title": "Missions 51-55 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9b25",
+     "0x6b9b31",
+     "0x6b9b3d",
+     "0x6b9b49",
+     "0x6b9b55"
+    ]
+   },
+   {
+    "id": 287170,
+    "title": "Missions 56-60 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9b61",
+     "0x6b9b6d",
+     "0x6b9b79",
+     "0x6b9b85",
+     "0x6b9b91"
+    ]
+   },
+   {
+    "id": 287171,
+    "title": "Missions 61-65 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9b9d",
+     "0x6b9ba9",
+     "0x6b9bb5",
+     "0x6b9bc1",
+     "0x6b9bcd"
+    ]
+   },
+   {
+    "id": 287172,
+    "title": "Missions 66-70 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9bd9",
+     "0x6b9be5",
+     "0x6b9bf1",
+     "0x6b9bfd",
+     "0x6b9c09"
+    ]
+   },
+   {
+    "id": 287173,
+    "title": "Missions 71-75 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9c15",
+     "0x6b9c21",
+     "0x6b9c2d",
+     "0x6b9c39",
+     "0x6b9c45"
+    ]
+   },
+   {
+    "id": 287174,
+    "title": "Missions 76-80 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9c51",
+     "0x6b9c5d",
+     "0x6b9c69",
+     "0x6b9c75",
+     "0x6b9c81"
+    ]
+   },
+   {
+    "id": 287175,
+    "title": "Missions 81-85 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9c8d",
+     "0x6b9c99",
+     "0x6b9ca5",
+     "0x6b9cb1",
+     "0x6b9cbd"
+    ]
+   },
+   {
+    "id": 287176,
+    "title": "Missions 86-90 [S Rank]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9cc9",
+     "0x6b9cd5",
+     "0x6b9ce1",
+     "0x6b9ced",
+     "0x6b9cf9"
+    ]
+   },
+   {
+    "id": 287177,
+    "title": "Missions 91-95 [S Rank]",
+    "points": 25,
+    "untranslated": [
+     "0x6b9d05",
+     "0x6b9d11",
+     "0x6b9d1d",
+     "0x6b9d29",
+     "0x6b9d35"
+    ]
+   },
+   {
+    "id": 287178,
+    "title": "Missions 96-100 [S Rank]",
+    "points": 25,
+    "untranslated": [
+     "0x6b9d41",
+     "0x6b9d4d",
+     "0x6b9d59",
+     "0x6b9d65",
+     "0x6b9d71"
+    ]
+   },
+   {
+    "id": 287182,
+    "title": "This Isn't Fair ...",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287183,
+    "title": "The Little Kiddie Fight",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287184,
+    "title": "A Small Sacrifice",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287185,
+    "title": "Bye Bye Mr. Tien",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287186,
+    "title": "More Useful Than You Think",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287187,
+    "title": "Battle For the Ages",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287188,
+    "title": "Useless Hunk of Metal",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287189,
+    "title": "Future Fighter",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287190,
+    "title": "Battle of the Old Men",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287191,
+    "title": "Futuristic Fun",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287192,
+    "title": "The Tournament Rematch",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287193,
+    "title": "Friendly Game of Tag",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287194,
+    "title": "Leave My Dad Alone!",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287195,
+    "title": "May the Best Brother Win",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287196,
+    "title": "Frieza's Henchman",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287197,
+    "title": "He Doesn't Stand a Chance",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287198,
+    "title": "He REALLY Doesn't Stand a Chance",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287199,
+    "title": "The Test of the True Fusions",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287200,
+    "title": "Who's The Better General?",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287201,
+    "title": "Super Robot Wars",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287202,
+    "title": "Frieza's Left and Right Hand Men",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1871108",
+     "0x18711ac",
+     "0x1871250",
+     "0x18712f4",
+     "0x1872664",
+     "0x18726a4",
+     "0x1872708",
+     "0x1872748",
+     "0x18727ac",
+     "0x1872850",
+     "0x18728f4"
+    ]
+   },
+   {
+    "id": 287203,
+    "title": "Just a Kid and His Dragons",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1871108",
+     "0x18711ac",
+     "0x1871250",
+     "0x18712f4",
+     "0x1872664",
+     "0x18726a4",
+     "0x1872708",
+     "0x1872748",
+     "0x18727ac",
+     "0x1872850",
+     "0x18728f4"
+    ]
+   },
+   {
+    "id": 287204,
+    "title": "Father and Son Playtime",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1871108",
+     "0x18711ac",
+     "0x1871250",
+     "0x18712f4",
+     "0x1872664",
+     "0x18726a4",
+     "0x1872708",
+     "0x1872748",
+     "0x18727ac",
+     "0x1872850",
+     "0x18728f4"
+    ]
+   },
+   {
+    "id": 287205,
+    "title": "The AI is Finally Learning",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287974,
+    "title": "The Pride of a Prince",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287978,
+    "title": "Super Sentai Showdown",
+    "points": 10,
+    "untranslated": [
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1871108",
+     "0x18711ac",
+     "0x1871250",
+     "0x18712f4",
+     "0x1872664",
+     "0x18726a4",
+     "0x1872708",
+     "0x1872748",
+     "0x18727ac",
+     "0x18727ec",
+     "0x1872850",
+     "0x1872890",
+     "0x18728f4",
+     "0x1872934"
+    ]
+   },
+   {
+    "id": 288073,
+    "title": "Gonna Slap a Bitch",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x6ba280",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 288410,
+    "title": "Krillin's Revenge",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 288411,
+    "title": "DON'T YOU LECTURE ME WITH YOUR 30 DOLLAR HAIRCUT",
+    "points": 5,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x1871064",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 288412,
+    "title": "Krillin Owned Count: +1",
+    "points": 3,
+    "untranslated": [
+     "0x6ba274",
+     "0x6ba278",
+     "0x1872664",
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287207,
+    "title": "First Opponent",
+    "points": 2,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287208,
+    "title": "Second Might Be Best",
+    "points": 2,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287209,
+    "title": "Third Times the Charm",
+    "points": 3,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287210,
+    "title": "Fourth in Line",
+    "points": 2,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287211,
+    "title": "Fifth for Luck",
+    "points": 4,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287212,
+    "title": "Sixth Sense",
+    "points": 4,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287213,
+    "title": "Seventh Heaven",
+    "points": 5,
+    "untranslated": [
+     "0x18726a4"
+    ]
+   },
+   {
+    "id": 287216,
+    "title": "I'm At My Limit Here ...",
+    "points": 1,
+    "untranslated": [
+     "0x8c0880"
+    ]
+   },
+   {
+    "id": 287217,
+    "title": "Follow Mr. Popo",
+    "points": 2,
+    "untranslated": [
+     "0x8c0880"
+    ]
+   },
+   {
+    "id": 287218,
+    "title": "Not Your Normal Water",
+    "points": 2,
+    "untranslated": [
+     "0x8c0880"
+    ]
+   },
+   {
+    "id": 287219,
+    "title": "The Time That Never Flows",
+    "points": 1,
+    "untranslated": [
+     "0x8c0880"
+    ]
+   },
+   {
+    "id": 287220,
+    "title": "The Eldest Kai",
+    "points": 1,
+    "untranslated": [
+     "0x8c0880"
+    ]
+   },
+   {
+    "id": 287221,
+    "title": "Rock Breaker",
+    "points": 3,
+    "untranslated": [
+     "0x8c0880"
+    ]
+   },
+   {
+    "id": 287222,
+    "title": "Memory Game",
+    "points": 2,
+    "untranslated": [
+     "0x8c0880"
+    ]
+   },
+   {
+    "id": 287223,
+    "title": "Bardock War [Survival]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9d7c"
+    ]
+   },
+   {
+    "id": 287224,
+    "title": "Bardock War Z-Rank [Survival]",
+    "points": 25,
+    "untranslated": [
+     "0x6b9d84"
+    ]
+   },
+   {
+    "id": 287225,
+    "title": "Dragon Classic [Survival]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9d88"
+    ]
+   },
+   {
+    "id": 287226,
+    "title": "Dragon Classic Z-Rank [Survival]",
+    "points": 25,
+    "untranslated": [
+     "0x6b9d90"
+    ]
+   },
+   {
+    "id": 287227,
+    "title": "All-Star [Survival]",
+    "points": 10,
+    "untranslated": [
+     "0x6b9d94"
+    ]
+   },
+   {
+    "id": 287228,
+    "title": "All-Star Z-Rank [Survival]",
+    "points": 25,
+    "untranslated": [
+     "0x6b9d9c"
+    ]
+   },
+   {
+    "id": 287136,
+    "title": "Innate Abilities",
+    "points": 10,
+    "untranslated": [
+     "0x6bc508",
+     "0x6bc509",
+     "0x6bc50a",
+     "0x6bc50b",
+     "0x6bc50c",
+     "0x6bc50d",
+     "0x6bc50e",
+     "0x6bc50f",
+     "0x6bc510",
+     "0x6bc511",
+     "0x6bc512",
+     "0x6bc513",
+     "0x6bc514",
+     "0x6bc515",
+     "0x6bc516",
+     "0x6bc517",
+     "0x6bc518",
+     "0x6bc519",
+     "0x6bc51a",
+     "0x6bc51b",
+     "0x6bc51c",
+     "0x6bc51d",
+     "0x6bc51e",
+     "0x6bc51f"
+    ]
+   },
+   {
+    "id": 287137,
+    "title": "All Skill, No Issue",
+    "points": 10,
+    "untranslated": [
+     "0x6bc52a",
+     "0x6bc52b",
+     "0x6bc52c",
+     "0x6bc52d",
+     "0x6bc52e",
+     "0x6bc52f",
+     "0x6bc530",
+     "0x6bc531",
+     "0x6bc532",
+     "0x6bc533",
+     "0x6bc534",
+     "0x6bc535",
+     "0x6bc536",
+     "0x6bc537",
+     "0x6bc538",
+     "0x6bc539",
+     "0x6bc53a",
+     "0x6bc53b",
+     "0x6bc53c",
+     "0x6bc53d",
+     "0x6bc53e",
+     "0x6bc53f",
+     "0x6bc540",
+     "0x6bc541",
+     "0x6bc542",
+     "0x6bc543",
+     "0x6bc544",
+     "0x6bc545",
+     "0x6bc546",
+     "0x6bc547",
+     "0x6bc548",
+     "0x6bc549",
+     "0x6bc54a",
+     "0x6bc54b",
+     "0x6bc54c",
+     "0x6bc54d",
+     "0x6bc54e",
+     "0x6bc550",
+     "0x6bc551",
+     "0x6bc552",
+     "0x6bc553",
+     "0x6bc554",
+     "0x6bc555",
+     "0x6bc556",
+     "0x6bc557",
+     "0x6bc558",
+     "0x6bc559",
+     "0x6bc55a",
+     "0x6bc55b",
+     "0x6bc55c",
+     "0x6bc55d",
+     "0x6bc55e",
+     "0x6bc55f",
+     "0x6bc560",
+     "0x6bc561",
+     "0x6bc562",
+     "0x6bc563",
+     "0x6bc564",
+     "0x6bc565",
+     "0x6bc566",
+     "0x6bc567",
+     "0x6bc568",
+     "0x6bc569",
+     "0x6bc56a",
+     "0x6bc56b",
+     "0x6bc56c",
+     "0x6bc56d",
+     "0x6bc56e",
+     "0x6bc56f",
+     "0x6bc570",
+     "0x6bc571",
+     "0x6bc572",
+     "0x6bc573",
+     "0x6bc574",
+     "0x6bc575",
+     "0x6bc576",
+     "0x6bc577",
+     "0x6bc578",
+     "0x6bc579",
+     "0x6bc57a",
+     "0x6bc57b",
+     "0x6bc57c",
+     "0x6bc57d",
+     "0x6bc57e",
+     "0x6bc57f",
+     "0x6bc580",
+     "0x6bc581",
+     "0x6bc582",
+     "0x6bc583",
+     "0x6bc584",
+     "0x6bc585",
+     "0x6bc586"
+    ]
+   },
+   {
+    "id": 287138,
+    "title": "Mimicral Items",
+    "points": 10,
+    "untranslated": [
+     "0x6bc591",
+     "0x6bc592",
+     "0x6bc593",
+     "0x6bc594",
+     "0x6bc595",
+     "0x6bc596",
+     "0x6bc597",
+     "0x6bc598",
+     "0x6bc599",
+     "0x6bc59a",
+     "0x6bc59b",
+     "0x6bc59c",
+     "0x6bc59d",
+     "0x6bc59e",
+     "0x6bc59f"
+    ]
+   },
+   {
+    "id": 287214,
+    "title": "That's ... A Lot of Fighters",
+    "points": 25,
+    "untranslated": [
+     "0x6ba250",
+     "0x6ba251",
+     "0x6ba252",
+     "0x6ba253",
+     "0x6ba254",
+     "0x6ba255",
+     "0x6ba256",
+     "0x6ba257",
+     "0x6ba258",
+     "0x6ba259",
+     "0x6ba25a",
+     "0x6ba25b",
+     "0x6ba25c",
+     "0x6ba25d",
+     "0x6ba25e",
+     "0x6ba25f",
+     "0x6ba260",
+     "0x6ba261",
+     "0x6ba262",
+     "0x6ba263",
+     "0x6ba264"
+    ]
+   },
+   {
+    "id": 287215,
+    "title": "Sightseeing",
+    "points": 10,
+    "untranslated": [
+     "0x6ba268",
+     "0x6ba269",
+     "0x6ba26a",
+     "0x6ba26b",
+     "0x6ba26c"
+    ]
+   }
+  ]
+ },
+ "skipped": [
+  {
+   "id": 101000001,
+   "title": "Warning: Unknown Emulator",
+   "why": "server-side advisory with no meaning offline"
+  }
+ ]
+}
