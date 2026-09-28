@@ -1345,11 +1345,15 @@ namespace seamgs
             if (y1 < y0) std::swap(y0, y1);
             const int cx0 = std::max(x0, (int)s.scax0), cx1 = std::min(x1, (int)s.scax1 + 1), cy0 = std::max(y0, (int)s.scay0), cy1 = std::min(y1, (int)s.scay1 + 1);
             if (cx1 <= cx0 || cy1 <= cy0 || (cx1 - cx0) * (cy1 - cy0) > 256 * 256) return false;
-            // [scratchmax] PS2X_SEAMGS_SCRATCHMAX=<px> (default 1024): only sprites up to this many pixels are rasterised on the CPU --
-            // the rendered palettes (16x16, read back as CLUTs from the mirror); bigger scratch draws (the 64x64 blur ping-pong
-            // buffers, 12 a frame, 1.1 ms) go through the GPU like every other target and decode as targets (bit-identical, fight frame 798)
+            // [scratchmax] PS2X_SEAMGS_SCRATCHMAX=<px> (default 1024): TEXTURED sprites above this many pixels are not rasterised on
+            // the CPU -- the 64x64 blur ping-pong buffers (12 a frame, 1.1 ms) go through the GPU like every other target and
+            // decode as targets (bit-identical, fight frame 798). Untextured fills stay: the Kaioken tint palette is a 64x64 fill
+            // into 0x3c00 read back as a CLUT from the mirror (the tint vanished with it on the GPU), and a fill costs nothing.
             static const int s_max = [](){ const char *v = std::getenv("PS2X_SEAMGS_SCRATCHMAX"); return v && v[0] ? std::atoi(v) : 1024; }();
-            if ((cx1 - cx0) * (cy1 - cy0) > s_max) return false;
+            if (s.tme && (cx1 - cx0) * (cy1 - cy0) > s_max) return false;
+            // [scratchpal] only the palette area needs the mirror at all (CLUTs are read from it: HUD palettes, the Kaioken tint
+            // palette, all at 0x3c00..0x3e00); the mask fills into 0x2a00 and the 0x2e00 downscale are targets nothing reads back
+            if (s.fbp < 0x3c00u || s.fbp >= 0x3ec0u) return false;
             // [scratchrepeat] the HUD rasterises the same palettes every frame: while this frame's sequence of scratch sprites
             // (state, vertices, texture decode) matches last frame's from the first one on, and every target page's last writer
             // was a scratch raster, the mirror already holds the result
