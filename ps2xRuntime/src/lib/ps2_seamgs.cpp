@@ -11,6 +11,11 @@
 #include "runtime/ps2_gs_psmct16.h"
 #include "runtime/ps2_gs_psmt8.h"
 #include "runtime/ps2_gs_psmt4.h"
+#include "runtime/ps2_gs_gpu.h"          // [seampack] GSTex0Reg / GSTexaReg / GSTexClutReg
+#include "runtime/ps2_gs_rasterizer.h"   // [seampack] GSRasterizer::fillClutForBackend (the pack hashes the CLUT in this layout)
+#include "runtime/ps2_texreplace.h"      // [seampack] ps2tex::identify / loadReplacement
+#include "runtime/ps2_gs_pgs.h"          // [seampack] ps2xBcDecode
+#include <unordered_set>
 
 #include <algorithm>
 #include <chrono>
@@ -493,6 +498,7 @@ namespace seamgs
         int32_t resolveTextureImpl(const Ctx &c);
         struct ResolveMemo { uint64_t tex0 = 0, texa = 0, frame = ~0ull; uint32_t stamp = 0; int32_t slot = -1; };
         ResolveMemo g_resolveMemo[256];   // [resolvememo] direct-mapped by TEX0: a repeat lookup with no VRAM write since (same stamp, same frame) is O(1)
+        bool seamPackReplace(int32_t slot, TexEntry &e, uint64_t tex0, uint64_t texa);   // [seampack] below
         int32_t resolveTexture(const Ctx &c)
         {
             ++g_texLookups;
@@ -585,7 +591,10 @@ namespace seamgs
                     if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P5\n%u %u\n255\n", e.w, e.h); for (size_t i = 0; i < size_t(e.w) * e.h; ++i) std::fputc(rgba[i * 4u + 3u], fp); std::fclose(fp); }
                 }
             }
-            if (e.drawnPages && rtDecodeFor(slot, e, tex0))
+            if (seamPackReplace(slot, e, tex0, g_r.texa))
+            {   // [seampack] the pack's image is on its way to the slot
+            }
+            else if (e.drawnPages && rtDecodeFor(slot, e, tex0))
             {   // decoded from the target on the GPU, in stream order: no mirror upload
                 e.drawnPages = false;
             }
@@ -593,6 +602,67 @@ namespace seamgs
             else if (!rgba.empty()) g_list.texUploads.push_back(TexUpload{ slot, e.w, e.h, std::move(rgba) });
             g_curTexW = e.w; g_curTexH = e.h;
             return slot;
+        }
+
+        // [seampack] PCSX2-format texture packs on the native renderer: at a texture's first resolve, hash it exactly as the
+        // paraLLEl-GS / OpenGL paths do (TEX0Hash over the swizzled VRAM blocks, CLUTHash over the CLUT in the backend layout)
+        // and, when the pack has it, upload the replacement image to the slot instead of decoding the game's texels. The
+        // slot image is then a multiple of the GS texture size and the draw shader samples it through [rtnative]'s factor.
+        // Paletted formats only (what identify() hashes); textures on drawn pages / rendered palettes are never replaced.
+        // PS2X_SEAMVK_PACK=0 disables. Same [gatealpha] rule as the other paths: a binary-alpha palette is a destination-
+        // alpha gate asset -- an uncompressed replacement gets its alpha snapped, a compressed one keeps the game's texels.
+        bool seamPackOn() { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_PACK"); return !(v && v[0] == '0'); }(); return s; }
+        std::unordered_set<std::string> g_packMiss; uint64_t g_packHits = 0, g_packMisses = 0, g_packSkipped = 0, g_packLoads = 0;
+        struct PackLoaded { uint32_t w, h; uint64_t share; }; std::unordered_map<std::string, PackLoaded> g_packLoaded;   // decoded once per session: later slots share the renderer's image
+        bool seamPackReplace(int32_t slot, TexEntry &e, uint64_t tex0, uint64_t texa)
+        {
+            if (!seamPackOn() || !ps2tex::replacementsEnabled()) return false;
+            const uint32_t psm = (uint32_t)((tex0 >> 20) & 0x3Fu);
+            if (psm != PSMT8 && psm != PSMT4) return false;
+            if (e.drawnPages || e.clutDrawn || !e.indexed) { ++g_packSkipped; return false; }
+            GSTex0Reg t{}; t.tbp0 = (uint32_t)(tex0 & 0x3FFFu); t.tbw = (uint8_t)((tex0 >> 14) & 0x3Fu); t.psm = (uint8_t)psm;
+            t.tw = (uint8_t)((tex0 >> 26) & 0xFu); t.th = (uint8_t)((tex0 >> 30) & 0xFu); t.tcc = (uint8_t)((tex0 >> 34) & 1u); t.tfx = (uint8_t)((tex0 >> 35) & 3u);
+            t.cbp = (uint32_t)((tex0 >> 37) & 0x3FFFu); t.cpsm = (uint8_t)((tex0 >> 51) & 0xFu); t.csm = (uint8_t)((tex0 >> 55) & 1u); t.csa = (uint8_t)((tex0 >> 56) & 0x1Fu); t.cld = (uint8_t)((tex0 >> 61) & 7u);
+            GSTexaReg ta{ (uint8_t)(texa & 0xFFu), ((texa >> 15) & 1u) != 0u, (uint8_t)((texa >> 32) & 0xFFu) };
+            GSTexClutReg tc{ (uint8_t)(g_r.texclut & 0x3Fu), (uint8_t)((g_r.texclut >> 6) & 0x3Fu), (uint16_t)((g_r.texclut >> 12) & 0x3FFu) };
+            uint32_t clut[256] = {};
+            const int n = GSRasterizer::fillClutForBackend(clut, g_vram, ta, tc, t);
+            ps2tex::TexIdent id;
+            if (n <= 0 || !ps2tex::identify(g_vram, t.tbp0, t.tbw, t.psm, t.tw, t.th, clut, ta.ta0, ta.aem, ta.ta1, id)) { ++g_packSkipped; return false; }
+            const std::string name = id.name();
+            if (g_packMiss.count(name)) { ++g_packMisses; return false; }
+            if (auto li = g_packLoaded.find(name); li != g_packLoaded.end())
+            {   // already on the GPU: point the slot at the shared image (no pixels travel)
+                g_list.texUploads.push_back(TexUpload{ slot, li->second.w, li->second.h, {}, li->second.share });
+                e.gpuDecode = false; ++g_packHits; return true;
+            }
+            std::vector<uint8_t> px; int w = 0, h = 0, fmt = 0;
+            ++g_packLoads;
+            if (!ps2tex::loadReplacement(id, px, w, h, fmt) || w <= 0 || h <= 0 || px.empty()) { g_packMiss.insert(name); ++g_packMisses; return false; }
+            bool gateAlpha = false; uint32_t aSolid = 0, aClear = 255;
+            {
+                bool clear = false, solid = false, mid = false; uint32_t amax = 0;
+                for (int i = 0; i < n; i++) amax = std::max(amax, clut[i] >> 24);
+                const uint32_t loT = amax > 0x80u ? 4u : 2u, hiT = amax > 0x80u ? 251u : 0x7eu;
+                for (int i = 0; i < n && !mid; i++) { const uint32_t a = clut[i] >> 24; if (a <= loT) { clear = true; aClear = std::min<uint32_t>(aClear, a); } else if (a >= hiT) { solid = true; aSolid = std::max<uint32_t>(aSolid, a); } else mid = true; }
+                gateAlpha = !mid && clear && solid;
+                if (amax > 0x80u) { aSolid = aSolid * 128u / 255u; aClear = aClear * 128u / 255u; }
+            }
+            if (fmt != 7)
+            {   // BC-compressed DDS: the native renderer samples RGBA8 slots; a gate asset keeps the game's own texels (as in OpenGL)
+                if (gateAlpha) { g_packMiss.insert(name); ++g_packMisses; return false; }
+                std::vector<uint8_t> dec; if (!ps2xBcDecode(fmt, px, w, h, dec)) { g_packMiss.insert(name); ++g_packMisses; return false; }
+                px.swap(dec);
+            }
+            else if (gateAlpha)
+                for (size_t i = 3; i < px.size(); i += 4) px[i] = (uint8_t)(px[i] >= 64u ? aSolid : aClear);
+            if ((uint32_t)w % e.w != 0u || (uint32_t)h % e.h != 0u || (uint32_t)w / e.w != (uint32_t)h / e.h) { g_packMiss.insert(name); ++g_packMisses; return false; }   // the draw needs one integer factor
+            const uint64_t share = fnv(name.data(), name.size()) | 1ull;
+            g_packLoaded[name] = PackLoaded{ (uint32_t)w, (uint32_t)h, share };
+            g_list.texUploads.push_back(TexUpload{ slot, (uint32_t)w, (uint32_t)h, std::move(px), share });
+            e.gpuDecode = false;
+            ++g_packHits;
+            return true;
         }
 
         void evictTextures()
@@ -1319,6 +1389,8 @@ namespace seamgs
             if (g_frame - s_last < 300u) return;
             s_last = g_frame;
             std::fprintf(stderr, "[seamgs] per frame: parse %.2f ms (decode %.2f, scratch raster %.2f, host draws %.2f | state %.2f, triangles %.2f, image data %.2f, vram decode lists %.2f, reg writes %.2f)\n", g_msParse / 300.0, g_msDecode / 300.0, g_msRaster / 300.0, g_msHost / 300.0, g_msState / 300.0, g_msTri / 300.0, g_msImage / 300.0, g_msVramDec / 300.0, g_msReg / 300.0);
+            extern uint64_t g_packHits, g_packMisses, g_packSkipped, g_packLoads; extern std::unordered_map<std::string, PackLoaded> g_packLoaded;
+            if (ps2tex::replacementsEnabled()) std::fprintf(stderr, "[seampack] frame %llu: pack hits %llu (file loads %llu, %zu images) misses %llu skipped %llu\n", (unsigned long long)g_frame, (unsigned long long)g_packHits, (unsigned long long)g_packLoads, g_packLoaded.size(), (unsigned long long)g_packMisses, (unsigned long long)g_packSkipped);
             g_msParse = g_msDecode = g_msRaster = g_msHost = 0; g_msState = g_msTri = g_msImage = g_msVramDec = g_msReg = 0;
             std::fprintf(stderr, "[seamgs] frame %llu: tex lookups %llu (memo hits %llu, state builds %llu, upload KB %llu, repeat KB %llu, ct32 %llu t8 %llu t4 %llu c16 %llu other %llu) decodes %llu (from drawn pages %llu), cache %zu slots, cpu scratch sprites %llu (skipped %llu) tris %llu, rt decodes %llu, gpu decodes %llu (pages unchanged %llu); identical swaps %llu/%llu\n",
                          (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_memoHits, (unsigned long long)g_stateBuilds, (unsigned long long)(g_imgBytes >> 10), (unsigned long long)(g_imgRepeat >> 10), (unsigned long long)(g_imgByPsm[0] >> 10), (unsigned long long)(g_imgByPsm[19] >> 10), (unsigned long long)(g_imgByPsm[20] >> 10), (unsigned long long)((g_imgByPsm[2] + g_imgByPsm[10]) >> 10), (unsigned long long)((g_imgBytes - g_imgByPsm[0] - g_imgByPsm[19] - g_imgByPsm[20] - g_imgByPsm[2] - g_imgByPsm[10]) >> 10), (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_scratchSkips, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);

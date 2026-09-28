@@ -118,6 +118,7 @@ namespace seamvk
             Vulkan::BufferHandle readback;
             struct TsMark { uint8_t cat; Vulkan::QueryPoolHandle q; };   // [gputime] GPU timestamps: cat = the category that STARTS at this mark
             struct Pending { Vulkan::BufferHandle buf; Vulkan::Fence fence; uint32_t w = 0, h = 0; bool live = false; std::vector<TsMark> ts; uint64_t gframe = 0; };   // [presentlat] gframe: the game frame this output belongs to
+            std::unordered_map<uint64_t, Vulkan::ImageHandle> shared;   // [seampack] texture-pack replacement images by name key, for the session
             std::vector<Vulkan::ImageHandle> hoistFree;   // [hoist] images no draw in flight references any more, by size
             std::deque<std::vector<Vulkan::ImageHandle>> hoistRetire;   // [hoist] images replaced in a slot, per frame; free after 3 frames
             std::vector<TsMark> tsCur; double gpuMs[8] = {}; uint32_t gpuFrames = 0; std::deque<std::vector<TsMark>> tsPending;   // [gputime] frames whose queries are not signalled yet   // [gputime] per category, ms; 0 main draws, 1 rt decodes, 2 alias16, 3 native steps, 4 compose, 5 uploads
@@ -787,8 +788,15 @@ namespace seamvk
             {
                 if (u.slot < 0 || u.w == 0 || u.h == 0) continue;
                 if ((size_t)u.slot >= g_gpu.tex.size()) g_gpu.tex.resize(size_t(u.slot) + 1u);
+                if (u.share)
+                {   // [seampack] a session-wide shared image (texture-pack replacement): upload once, later slots point at it
+                    auto si = g_gpu.shared.find(u.share);
+                    if (si != g_gpu.shared.end()) { g_gpu.tex[u.slot] = si->second; continue; }
+                    if (u.rgba.empty()) continue;   // (should not happen: the front end sends pixels the first time)
+                }
                 Vulkan::ImageInitialData init = { u.rgba.data(), 0, 0 };
                 g_gpu.tex[u.slot] = dev.create_image(Vulkan::ImageCreateInfo::immutable_2d_image(u.w, u.h, VK_FORMAT_R8G8B8A8_UNORM, mipsOn()), &init);   // [mips] full chain, generated at upload
+                if (u.share) g_gpu.shared[u.share] = g_gpu.tex[u.slot];   // [seampack]
                 ++g_gpu.texUploads;
             }
         }

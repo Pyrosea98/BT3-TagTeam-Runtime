@@ -2175,3 +2175,6 @@ void shutdown()
     if (s.inited) s.device.wait_idle();
 }
 }
+
+// [seampack] the BC decoder for the native renderer's texture-pack uploads (global scope: seamgs links to this name)
+bool ps2xBcDecode(int fmt, const std::vector<uint8_t> &src, int w, int h, std::vector<uint8_t> &rgba) { return ps2x_pgs::bcDecode(fmt, src, w, h, rgba); }

@@ -73,7 +73,7 @@ namespace seamgs
     };
 
     // A texture decoded this frame for a slot. Slots are stable until freed.
-    struct TexUpload { int32_t slot; uint32_t w, h; std::vector<uint8_t> rgba; };
+    struct TexUpload { int32_t slot; uint32_t w, h; std::vector<uint8_t> rgba; uint64_t share = 0; };   // [seampack] share: key of a session-wide shared image (pack replacements): rgba may be empty when the renderer already holds it
 
     struct FrameList
     {
