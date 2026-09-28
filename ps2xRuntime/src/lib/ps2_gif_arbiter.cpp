@@ -237,11 +237,7 @@ namespace
     {   // several brackets of the same range (e.g. the outline's two runs per frame: nth and nth+1) get distinct files
         static const char *s_dir = [](){ const char *v = std::getenv("PS2X_STEPORACLE_DIR"); return v && v[0] ? v : "/tmp"; }();
         char b[512], t[512]; std::snprintf(b, sizeof(b), "%s/oracle_%x_%u_%s.bin", s_dir, lo, nth, what); std::snprintf(t, sizeof(t), "%s/oracle_%x_%u_%s.txt", s_dir, lo, nth, what);
-#ifdef PS2X_HAVE_PGS
-        const bool ok = ps2x_pgs::dumpVramRaw(b, t);
-#else
-        const bool ok = false;
-#endif
+        const bool ok = ps2x_pgs::dumpVramRaw(b, t);   // (a stub without the backend)
         std::fprintf(stderr, "[pktoracle] %x %s dump %s (%s) game frame %llu\n", lo, what, ok ? "ok" : "FAILED", b, (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed));
     }
 }
@@ -351,7 +347,7 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
     const uint8_t *data = pkt.data; uint32_t size = pkt.size;
     if (pkt.pathId == GifPathId::HostDraw)
     {   // [seamvk] the seam's packets, consumed here in stream order
-#ifdef PS2X_HAVE_PGS
+#ifdef PS2X_HAVE_SEAMVK
         uint32_t magic = 0; if (size >= 4u) std::memcpy(&magic, data, 4);
         if (magic == seamvk::kHostGifMagic && size >= sizeof(seamvk::HostGifHeader))
         {   // 'SVKG': the host-transformed GIF packet -> the native front-end (registers only) and the GS backend as PATH1
@@ -364,7 +360,7 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
         return;
 #endif
     }
-#ifdef PS2X_HAVE_PGS
+#ifdef PS2X_HAVE_SEAMVK
     else if (seamvk::on())
     {   // [seamwshud] the widescreen HUD squeeze (edge / centered layouts) is a packet rewrite on paraLLEl-GS's path; the
         // native front end parses the rewritten packet

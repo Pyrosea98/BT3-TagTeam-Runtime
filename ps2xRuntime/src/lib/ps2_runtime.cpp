@@ -32,9 +32,7 @@ extern "C" int ps2xSchedTraceOn();               // PS2X_SCHEDTRACE window (defi
 #include <filesystem>
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_gs_pgs.h"   // [pgs]
-#if defined(PS2X_HAVE_PGS)
-#include "runtime/ps2_seamvk.h"   // [dumpkey] seamvk::requestDump
-#endif
+#include "runtime/ps2_seamvk.h"   // [dumpkey] seamvk::requestDump ([standalone]: inline stubs without Granite)
 #include <iomanip>
 #include <cstdlib>
 #include <array>
@@ -328,7 +326,7 @@ namespace
     // PS2X_SEAMVK_TEXDUMP). For bugs reproduced by hand where the frame number is unknowable.
     void seamvkDumpHotkey()
     {
-#if defined(PS2X_HAVE_PGS)
+#if defined(PS2X_HAVE_SEAMVK)
         if (seamvk::on() && bt3IsKeyPressed(BT3_KEY_F10)) { seamvk::requestDump(); std::fprintf(stderr, "[seamvk] F10: frame dump requested\n"); }
 #endif
     }

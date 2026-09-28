@@ -15,6 +15,7 @@
 
 namespace seamvk
 {
+#if defined(PS2X_HAVE_SEAMVK)
     bool on();
     void configure(bool enable);   // [nativeopt] settings: renderer = "native" (ignored once PS2X_SEAMVK is set in the environment)
     void requestDump();   // [dumpkey] dump the next rendered frame (draw list, targets, textures under PS2X_SEAMVK_TEXDUMP)
@@ -64,20 +65,42 @@ namespace seamvk
     bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h);
     uint64_t lastFrameGframe();   // [presentlat] the game frame the last taken frame was rendered from
     void shutdown();              // [earlyframe] join the readback consumer (before the device is destroyed)
+#else
+    // [standalone] built without Granite (no Vulkan renderer at all): the runtime's hooks fall through
+    inline bool on() { return false; }
+    inline void configure(bool) {}
+    inline void requestDump() {}
+    inline void onGifPacket(uint8_t, const uint8_t *, uint32_t, bool) {}
+    inline void onHostDraw(const uint8_t *, uint32_t) {}
+    inline void onNativeStep(int) {}
+    inline void nativeParse(int) {}
+    inline bool nativeHudOn() { return false; }
+    inline bool nativeStepGeneric(int) { return false; }
+    inline bool takeFrame(std::vector<uint8_t> &, uint32_t &, uint32_t &) { return false; }
+    inline uint64_t lastFrameGframe() { return 0; }
+    inline void shutdown() {}
+#endif
 
     struct PrivRegs { uint64_t pmode = 0, dispfb1 = 0, display1 = 0, dispfb2 = 0, display2 = 0, bgcolor = 0; };
 }
 namespace seamgs
 {
+#if defined(PS2X_HAVE_SEAMVK)
     // Diagnostics: the CSM1 palette at cbp as the VRAM mirror holds it (256 RGBA entries). False when the front-end is off.
     bool peekClut(uint32_t cbp, uint32_t cpsm, uint32_t *out256);
     bool dumpMirror(const char *path);   // diagnostics: the 4 MB VRAM mirror
     bool peekTexel(int32_t slot, uint32_t x, uint32_t y, uint32_t &rgba);   // diagnostics: a decoded texel of a cached slot (textures up to 256x256)
+#else
+    inline bool peekClut(uint32_t, uint32_t, uint32_t *) { return false; }
+    inline bool dumpMirror(const char *) { return false; }
+    inline bool peekTexel(int32_t, uint32_t, uint32_t, uint32_t &) { return false; }
+#endif
 }
 
 struct GSRegisters;
 namespace seamvk
 {
+#if defined(PS2X_HAVE_SEAMVK)
     // [standalone] The native renderer on its own Vulkan device, no paraLLEl-GS backend instantiated:
     //  - the display block arrives in stream order (the same [s1fence] GsApply jobs and [displatch] flip the backend got),
     //    with the live register block as the fallback for registers never written on the stream;
@@ -87,8 +110,15 @@ namespace seamvk
     void streamFlip(uint64_t dispfb1);                 // [displatch] the game's DISPFB1 flip, stream-ordered
     void setPresentSize(uint32_t w, uint32_t h);       // the window's present size (HUD squeeze factor)
     void onSwap();                                     // GS thread: render the frame on the seam's own device
+#else
+    inline void setLiveRegs(const GSRegisters *) {}
+    inline void streamPriv(uint32_t, uint64_t) {}
+    inline void streamFlip(uint64_t) {}
+    inline void setPresentSize(uint32_t, uint32_t) {}
+    inline void onSwap() {}
+#endif
 }
-#ifdef PS2X_HAVE_PGS
+#ifdef PS2X_HAVE_SEAMVK
 namespace Vulkan { class Device; }
 namespace seamvk
 {

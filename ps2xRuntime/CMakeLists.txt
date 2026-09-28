@@ -858,7 +858,7 @@ if (EXISTS "${PS2X_PGS_DIR}/CMakeLists.txt" AND NOT PS2X_DISABLE_PGS)
 
     set(PARALLEL_GS_STANDALONE ON CACHE BOOL "" FORCE)
     add_subdirectory("${PS2X_PGS_DIR}" "${CMAKE_BINARY_DIR}/parallel-gs" EXCLUDE_FROM_ALL)
-    target_sources(ps2_runtime PRIVATE src/lib/ps2_gs_pgs.cpp src/lib/ps2_seamvk.cpp src/lib/ps2_seamgs.cpp src/lib/ps2_wshud.cpp)   # [seamvk] native Vulkan renderer for the seam
+    target_sources(ps2_runtime PRIVATE src/lib/ps2_gs_pgs.cpp)
     target_link_libraries(ps2_runtime PUBLIC parallel-gs)
     target_compile_definitions(ps2_runtime PUBLIC PS2X_HAVE_PGS=1)
     message(STATUS "[pgs] paraLLEl-GS backend enabled from ${PS2X_PGS_DIR}")
@@ -883,6 +883,47 @@ else()
                         "or configure with -DPS2X_DISABLE_PGS=ON to build without it deliberately.")
     endif()
 endif()
+
+# [standalone] The native Vulkan renderer (the engine seam) needs only Granite's Vulkan layer. With the paraLLEl-GS backend
+# built, Granite comes in as its submodule; without it, Granite is added on its own from PS2X_GRANITE_DIR (default: the
+# paraLLEl-GS checkout's Granite when present, else third_party/Granite) with the same configuration paraLLEl-GS standalone
+# uses. PS2X_DISABLE_SEAMVK=ON leaves the runtime without any Vulkan renderer.
+set(PS2X_GRANITE_DIR "" CACHE PATH "Granite checkout for the native Vulkan renderer (default: the paraLLEl-GS checkout's Granite, else third_party/Granite)")
+option(PS2X_DISABLE_SEAMVK "Do not build the native Vulkan renderer (the engine seam)" OFF)
+if (NOT PS2X_GRANITE_DIR)
+    if (EXISTS "${PS2X_PGS_DIR}/Granite/CMakeLists.txt")
+        set(PS2X_GRANITE_DIR "${PS2X_PGS_DIR}/Granite")
+    else()
+        set(PS2X_GRANITE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Granite")
+    endif()
+endif()
+set(_seamvk OFF)
+if (NOT PS2X_DISABLE_SEAMVK AND EXISTS "${PS2X_GRANITE_DIR}/CMakeLists.txt" AND EXISTS "${PS2X_GRANITE_DIR}/third_party/volk/volk.c" AND NOT (APPLE AND NOT PS2X_FORCE_PGS))
+    set(_seamvk ON)
+endif()
+if (_seamvk)
+    if (NOT TARGET granite-vulkan)
+        set(GRANITE_FAST_MATH OFF CACHE BOOL "Fast math" FORCE)
+        set(GRANITE_VULKAN_FOSSILIZE OFF CACHE BOOL "" FORCE)
+        set(GRANITE_RENDERER OFF CACHE BOOL "" FORCE)
+        set(GRANITE_VULKAN_SPIRV_CROSS OFF CACHE BOOL "" FORCE)
+        set(GRANITE_VULKAN_SHADER_MANAGER_RUNTIME_COMPILER OFF CACHE BOOL "" FORCE)
+        set(GRANITE_VULKAN_SYSTEM_HANDLES OFF CACHE BOOL "" FORCE)
+        set(GRANITE_SHADER_COMPILER_OPTIMIZE OFF CACHE BOOL "" FORCE)
+        set(GRANITE_SHIPPING ON CACHE BOOL "" FORCE)
+        set(GRANITE_PLATFORM "null" CACHE STRING "" FORCE)
+        set(GRANITE_TOOLS OFF CACHE BOOL "" FORCE)
+        add_subdirectory("${PS2X_GRANITE_DIR}" "${CMAKE_BINARY_DIR}/Granite" EXCLUDE_FROM_ALL)
+        message(STATUS "[seamvk] Granite from ${PS2X_GRANITE_DIR} (no paraLLEl-GS backend)")
+    endif()
+    target_sources(ps2_runtime PRIVATE src/lib/ps2_seamvk.cpp src/lib/ps2_seamgs.cpp src/lib/ps2_wshud.cpp src/lib/ps2_bcdecode.cpp)   # [seamvk] native Vulkan renderer at the engine seam
+    target_link_libraries(ps2_runtime PUBLIC granite-vulkan granite-math)
+    target_compile_definitions(ps2_runtime PUBLIC PS2X_HAVE_SEAMVK=1)
+    message(STATUS "[seamvk] native Vulkan renderer enabled")
+else()
+    message(STATUS "[seamvk] native Vulkan renderer not built (no Granite at ${PS2X_GRANITE_DIR}, or PS2X_DISABLE_SEAMVK)")
+endif()
+
 target_link_libraries(ps2EntryRunner
     PRIVATE
     ps2_runtime

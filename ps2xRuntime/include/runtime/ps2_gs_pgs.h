@@ -14,6 +14,7 @@ namespace ps2x_pgs
     // [seamvk] diagnostics: when set, the next transfer writes the backend's VRAM view of a target as PPM (rgb) + PGM (alpha)
     // into the directory, then clears the request. fbp = block address, fbw = width/64, CT32.
     struct TargetDumpReq { uint32_t fbp = 0, fbw = 0, w = 0, h = 0; const char *dir = nullptr; };
+#if defined(PS2X_HAVE_PGS)
     void requestTargetDump(const TargetDumpReq &r);
     // [steporacle] the whole 4 MB VRAM as the backend holds it now (flushes first), plus its register state as text.
     // Caller must have the GS stream drained to this point (PS2Memory::drainKickQueue). Game thread.
@@ -24,6 +25,12 @@ namespace ps2x_pgs
     // the pass, writes the result back as ordinary image uploads. Step ids: 0 depth mask (sub_00109848), 1 alpha clear
     // (FUN_00106ba8), 2 Z top byte (sub_0024B118), 3 blur weight (FUN_00245a50), 4 glow downscale + composite (FUN_00103070).
     bool nativePostStep(int step);
+#else
+    inline void requestTargetDump(const TargetDumpReq &) {}
+    inline bool dumpVramRaw(const char *, const char *) { return false; }
+    inline bool dumpVramRawUnderLock(const char *, const char *) { return false; }
+    inline bool nativePostStep(int) { return false; }
+#endif
 
 #if defined(PS2X_HAVE_PGS)
 bool enabled();
@@ -38,11 +45,6 @@ void setPackEnabled(bool on);     // [pgslive] the overlay's Texture Replacement
 void setRenderScale(int scale);   // [pgslive] the overlay's Internal Resolution 1..4 (live: the backend is re-created at the matching SSAA)
 // A GIF packet as the arbiter delivers it (path 1..3, qword multiple). Any thread; serialised inside.
 bool gifTransfer(uint8_t pathId, const uint8_t *data, size_t size);   // true = consumed by the backend
-}
-// [seampack] BC1/BC2/BC3 (raylib PIXELFORMAT_COMPRESSED_DXT*) -> RGBA8, for the native renderer's texture-pack uploads
-bool ps2xBcDecode(int fmt, const std::vector<uint8_t> &src, int w, int h, std::vector<uint8_t> &rgba);
-namespace ps2x_pgs
-{
 // PS2X_PGS_COALESCE=1: stage 2 hands runs of same-path packets to the backend as ONE gif_transfer (6000 calls per
 // frame otherwise); while a coalesced run is being processed the per-packet hook must stay quiet.
 bool coalesce();
@@ -87,7 +89,10 @@ inline void streamPriv(uint32_t, uint64_t) {}
 inline void onSwap() {}
 inline void setPresentSize(uint32_t, uint32_t) {}
 inline bool takeFrame(std::vector<uint8_t> &, uint32_t &, uint32_t &) { return false; }
+inline bool takeRefFrame(std::vector<uint8_t> &, uint32_t &, uint32_t &) { return false; }
 inline uint64_t lastFrameGframe() { return 0; }
 inline void shutdown() {}
 #endif
 }
+// [seampack] BC1/BC2/BC3 (raylib PIXELFORMAT_COMPRESSED_DXT*) -> RGBA8, for the native renderer's texture-pack uploads
+bool ps2xBcDecode(int fmt, const std::vector<uint8_t> &src, int w, int h, std::vector<uint8_t> &rgba);

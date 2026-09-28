@@ -6,6 +6,7 @@
 #include <cstdint>
 namespace ps2x_wshud
 {
+#if defined(PS2X_HAVE_SEAMVK)
     bool preprocess(uint8_t pathId, const uint8_t *&data, size_t &size, bool hostGif = false);   // the arbiter, before the native front end (data/size may move to a rebuilt packet); true = edited
     bool apply(const uint8_t *&data, size_t &size, bool hostGif = false);                         // the paraLLEl-GS path, per gif_transfer
     float rawInv(uint32_t fbw);      // [nativehud] the frame's raw HUD squeeze factor (1.0 = none), from the present size
@@ -19,4 +20,19 @@ namespace ps2x_wshud
     float lastInv();                 // stats: the squeeze last applied
     void printStats(double dt);      // stats: the walker's counters (reset per window)
     void noteSwap(uint32_t baseH);   // once per frame swap, with the scanout height in the 1x domain (0 = keep)
+#else
+    inline bool preprocess(uint8_t, const uint8_t *&, size_t &, bool = false) { return false; }
+    inline bool apply(const uint8_t *&, size_t &, bool = false) { return false; }
+    inline float rawInv(uint32_t) { return 1.0f; }
+    inline bool vpKeepOn() { return false; }
+    inline uint32_t inkColor() { return 0u; }
+    inline int inkWidthPct() { return 100; }
+    inline void setInkColor(uint32_t) {}
+    inline void setInkWidthPct(int) {}
+    inline void setPresentSize(uint32_t, uint32_t) {}
+    inline void presentSize(uint32_t &w, uint32_t &h) { w = h = 0; }
+    inline float lastInv() { return 1.0f; }
+    inline void printStats(double) {}
+    inline void noteSwap(uint32_t) {}
+#endif
 }

@@ -1,6 +1,7 @@
 #include "ps2_runtime.h"   // [fps60] ps2Set60Fps
 #include "runtime/ps2_texreplace.h"
 #include "runtime/ps2_seamvk.h"   // [nativeopt] seamvk::configure
+#include "runtime/ps2_wshud.h"   // [pgsink] ink colour / width live in the walker module
 #include "ps2_settings_overlay.h"
 #include "runtime/ps2_netplay.h"   // [netplay]
 #include "runtime/ps2_gs_pgs.h"   // [pgsink] backend ink width
@@ -550,7 +551,10 @@ void PS2SettingsOverlay::loadSettings()
     {
             int r = nameToRenderer(doc.getS("video.renderer", rendererName(m_settings.renderer)), m_settings.renderer);
 #if !defined(PS2X_HAVE_PGS)
-            if (r == Settings::kRendererParallelGS || r == Settings::kRendererNative) r = Settings::kRendererOpenGL;
+            if (r == Settings::kRendererParallelGS) r = Settings::kRendererOpenGL;
+#endif
+#if !defined(PS2X_HAVE_SEAMVK)
+            if (r == Settings::kRendererNative) r = Settings::kRendererOpenGL;
 #endif
             // [d3d11] Direct3D 11 is retired for now: an old settings file that picks it falls back to
             // the new OpenGL present. paraLLEl-GS is a normal option on every platform again.
@@ -644,7 +648,7 @@ static void exportRendererEnv(int renderer, bool texPack, bool forceBilinear)
         setEnvDefault("PS2X_PGS", "0");
         return;
     }
-#if defined(PS2X_HAVE_PGS)
+#if defined(PS2X_HAVE_SEAMVK)
     if (renderer == 4)
     {   // [nativeopt][standalone] the native Vulkan renderer on its own device: no paraLLEl-GS backend. The environment
         // still wins (PS2X_SEAMVK=1 on a "parallel-gs" settings file is how the dev scripts run it, PS2X_SEAMVK_REF=1 the
@@ -656,6 +660,8 @@ static void exportRendererEnv(int renderer, bool texPack, bool forceBilinear)
         { const char *sv = std::getenv("PS2X_SEAMVK"); std::fprintf(stderr, "[nativeopt] renderer %d -> PS2X_SEAMVK=%s, native %s, PS2X_PGS=%s\n", renderer, sv ? sv : "(unset)", seamvk::on() ? "ON" : "off", std::getenv("PS2X_PGS")); }
         return;
     }
+#endif
+#if defined(PS2X_HAVE_PGS)
     if (renderer == 2)
     {
         setEnvDefault("PS2X_PGS", "1");
@@ -878,8 +884,8 @@ void PS2SettingsOverlay::applySettings()
     // state -- and a partial glow fix is a REGRESSION (it washes the frame out).
     GsGpuRenderer::setGlowFix(m_settings.glowFix);
     GsGpuRenderer::setInkStrengthPct(m_settings.inkStrength);   // [inkstrength] live: it is one shader uniform
-    ps2x_pgs::setInkWidthPct(m_settings.inkWidth);   // [pgsink] backend stroke width
-    ps2x_pgs::setInkColor(m_settings.inkColor);       // [pgsink] backend stroke colour
+    ps2x_wshud::setInkWidthPct(m_settings.inkWidth);   // [pgsink] stroke width (the walker module: paraLLEl-GS and the native renderer)
+    ps2x_wshud::setInkColor(m_settings.inkColor);       // [pgsink] stroke colour
     GsGpuRenderer::setBilinear(m_settings.bilinear);
     GsGpuRenderer::setHalfTexel(m_settings.halfTexel);
     GsGpuRenderer::setSkipPost(m_settings.skipPost);
@@ -1486,7 +1492,7 @@ void PS2SettingsOverlay::drawVideoTab()
                 ImGui::SetNextItemWidth(220);
                 if (ImGui::SliderInt("##inkwidth", &m_settings.inkWidth, 25, 100, "%d %%", ImGuiSliderFlags_AlwaysClamp))
                 {
-                    ps2x_pgs::setInkWidthPct(m_settings.inkWidth);   // live
+                    ps2x_wshud::setInkWidthPct(m_settings.inkWidth);   // live
                     m_dirty = true;
                 }
                 ImGui::TextDisabled("100%% = the console's one-pixel stroke; lower = thinner (paraLLEl-GS only).");
@@ -1499,11 +1505,11 @@ void PS2SettingsOverlay::drawVideoTab()
                     {
                         auto b = [](float f) { return static_cast<unsigned>(std::clamp(f, 0.0f, 1.0f) * 255.0f + 0.5f); };
                         m_settings.inkColor = (b(rgb[0]) << 16) | (b(rgb[1]) << 8) | b(rgb[2]);
-                        ps2x_pgs::setInkColor(m_settings.inkColor);   // live
+                        ps2x_wshud::setInkColor(m_settings.inkColor);   // live
                         m_dirty = true;
                     }
                     ImGui::SameLine();
-                    if (ImGui::SmallButton("Black")) { m_settings.inkColor = 0; ps2x_pgs::setInkColor(0); m_dirty = true; }
+                    if (ImGui::SmallButton("Black")) { m_settings.inkColor = 0; ps2x_wshud::setInkColor(0); m_dirty = true; }
                     ImGui::TextDisabled("Exact on light backgrounds; darker scenes tint toward it (paraLLEl-GS only).");
                 }
             }
@@ -1708,12 +1714,17 @@ void PS2SettingsOverlay::drawVideoTab()
         static const char *const kLabels[] = { "OpenGL (New)", "Software rasterizer",
 #if defined(PS2X_HAVE_PGS)
             "paraLLEl-GS (Vulkan compute)",
+#endif
+#if defined(PS2X_HAVE_SEAMVK)
             "Native Vulkan (engine seam)",   // [nativeopt]
 #endif
         };
         static const int kValues[] = { 0, 1,
 #if defined(PS2X_HAVE_PGS)
-            2, 4,
+            2,
+#endif
+#if defined(PS2X_HAVE_SEAMVK)
+            4,
 #endif
         };
         const int nRenderers = (int)(sizeof(kValues) / sizeof(kValues[0]));
