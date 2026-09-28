@@ -2,12 +2,25 @@
 #include <cctype>   // [movprobe] std::tolower
 #include "ps2_compat.h"
 #include <atomic>
+#include <mutex>
 #include <cstdio>
 #include "Common.h"
 #include "CD.h"
 #include "MPEG.h"
 
-std::atomic<uint64_t> g_cdLoadReads{0}, g_cdLoadBytes{0};   // [cdload] sceCdRead requests + bytes since the last report (game_overrides.cpp prints)
+std::atomic<uint64_t> g_cdLoadReads{0}, g_cdLoadBytes{0};
+std::atomic<uint64_t> g_cdReadSerial{0};   // [cdedge3] every sceCdRead ever issued (never reset): "a read happened after X" for the CD state guard
+namespace
+{   // [cdedge3] the last 32 reads (destination, serial): "was THIS buffer read after serial S?" for the CD state guard
+    struct CdReadRec { uint32_t dst = 0; uint64_t serial = 0; };
+    CdReadRec g_cdRecent[32]; uint32_t g_cdRecentIdx = 0; std::mutex g_cdRecentMtx;
+}
+bool ps2xCdReadSince(uint32_t dst, uint64_t serialAfter)
+{
+    std::lock_guard<std::mutex> lk(g_cdRecentMtx);
+    for (const CdReadRec &r : g_cdRecent) if (r.dst == dst && r.serial > serialAfter) return true;
+    return false;
+}   // [cdload] sceCdRead requests + bytes since the last report (game_overrides.cpp prints)
 
 namespace ps2_stubs
 {
@@ -97,6 +110,10 @@ namespace ps2_stubs
         const uint32_t a1 = getRegU32(ctx, 5); // usually sector count
         const uint32_t a2 = getRegU32(ctx, 6); // usually destination buffer
         g_cdLoadReads.fetch_add(1u, std::memory_order_relaxed); g_cdLoadBytes.fetch_add((uint64_t)a1 * kCdSectorSize, std::memory_order_relaxed);   // [cdload]
+        {   // [cdedge3]
+            const uint64_t ser = g_cdReadSerial.fetch_add(1u, std::memory_order_relaxed) + 1u;
+            std::lock_guard<std::mutex> lk(g_cdRecentMtx); g_cdRecent[g_cdRecentIdx++ % 32u] = CdReadRec{ a2 & PS2_RAM_MASK, ser };
+        }
         {
             static std::atomic<uint32_t> s_cdrd{0};
             if (s_cdrd.fetch_add(1) < 40u)

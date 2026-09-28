@@ -23,7 +23,9 @@ void ps2HalfStepNoteLogic(uint64_t frame);
 void ps2AddrWatchEnable(const char *hex);
 void ps2StoreTraceEnable(const char *spec);
 extern std::atomic<uint64_t> g_workerFrameNs;   // [framegate] kick worker busy ns, last frame
-extern std::atomic<uint64_t> g_cdLoadReads, g_cdLoadBytes;   // [cdload] CD.cpp (file scope: a block-scope extern inside the namespace mangles into it)
+extern std::atomic<uint64_t> g_cdLoadReads, g_cdLoadBytes;
+extern std::atomic<uint64_t> g_cdReadSerial;   // [cdedge3] CD.cpp
+bool ps2xCdReadSince(uint32_t dst, uint64_t serialAfter);   // [cdedge3] CD.cpp   // [cdload] CD.cpp (file scope: a block-scope extern inside the namespace mangles into it)
 extern std::atomic<uint32_t> g_bt3StateLive;    // [fightgate] BT3's top-level state, as seen by the status probe (ps2_runtime.cpp)
 extern std::atomic<uint64_t> g_vu1PairCount;    // [fightgate] VU1 instruction pairs run by the fight's programs (ps2_vu1.cpp)
 extern std::atomic<uint64_t> g_seamHostChunks;  // [fightgate] the seam's host mesh chunks (ps2_seammesh.cpp): the fight's render work when its VU1 programs are skipped
@@ -3064,7 +3066,8 @@ namespace
     // polled value cannot see it.
     struct Bt3DevDone { std::atomic<uint32_t> dev{0u}; std::atomic<uint32_t> reported{1u};
                         std::atomic<uint32_t> stream{0u}; std::atomic<uint32_t> idleWait{0u};
-                        std::atomic<uint32_t> activeReq{0u}; };   // [cdedge2] pending request ([stream+8]) the device was seen busy/done for
+                        std::atomic<uint32_t> activeReq{0u};   // [cdedge2] pending request ([stream+8]) the device was seen busy/done for
+                        std::atomic<uint32_t> pendSeen{0u}; std::atomic<uint64_t> pendSerial{0u}; std::atomic<uint32_t> busyPolls{0u}; };   // [cdedge3] the pending request last registered, the read serial when it appeared, polls answered BUSY for it
     static Bt3DevDone s_bt3DevSlots[8];
     Bt3DevDone *bt3DevSlotAt(int i) { return &s_bt3DevSlots[(i < 0 || i >= 8) ? 0 : i]; }   // [statesync]
     inline Bt3DevDone *bt3DevSlot(uint32_t dev)
@@ -3144,7 +3147,40 @@ namespace
                 static const bool s_edge2 = [](){ const char *v = std::getenv("PS2X_CDEDGE2"); return v && v[0] && v[0] != '0'; }();   // opt-in (see the pump)
                 uint32_t pendNow = 0u;
                 if (stream) { if (const uint8_t *pp = getConstMemPtr(rdram, stream + 8u)) std::memcpy(&pendNow, pp, sizeof(pendNow)); }
-                if (waiting && s_edgeFix && s_edge2 && ds->activeReq.load(std::memory_order_relaxed) != pendNow)
+                // [cdedge3] Reporting 3 on the FIRST idle poll is a false completion when the request has only been
+                // posted, not read yet: the opening movie's PSS ring hit exactly that (the guard fired once, the game
+                // skipped the read of ring slot 0 and demuxed the stale chunk -> the first two seconds played twice).
+                // A request counts as started once a sceCdRead was issued AFTER it appeared (g_cdReadSerial moved);
+                // until then answer BUSY (2 keeps the guest's poll gate open, the tick issues the read, the next poll
+                // sees it). Bounded (240 polls) so a request whose read predates its registration cannot wedge.
+                static const bool s_edge3 = [](){ const char *v = std::getenv("PS2X_CDEDGE3"); return !(v && v[0] == '0'); }();
+                const uint64_t serialNow = g_cdReadSerial.load(std::memory_order_relaxed);
+                // The request node is REUSED (one pointer for every request): a request is "new" when [stream+8] comes back from 0.
+                if (pendNow == 0u) ds->pendSeen.store(0u);
+                else if (pendNow != ds->pendSeen.load(std::memory_order_relaxed)) { ds->pendSeen.store(pendNow); ds->pendSerial.store(serialNow); ds->busyPolls.store(0u); }
+                uint32_t reqDst = 0u; if (pendNow) if (const uint8_t *q = getConstMemPtr(rdram, pendNow + 0x1cu)) std::memcpy(&reqDst, q, 4);   // node +0x1c = destination buffer (dump 2026-09-28)
+                const bool started = pendNow == 0u || (reqDst ? ps2xCdReadSince(reqDst & PS2_RAM_MASK, ds->pendSerial.load(std::memory_order_relaxed)) : serialNow > ds->pendSerial.load(std::memory_order_relaxed));
+                {   // PS2X_CDEDGE_DUMP=1 (dev): the pending request node and the stream object, to find the request's buffer/LBN fields
+                    static const bool s_dump = [](){ const char *v = std::getenv("PS2X_CDEDGE_DUMP"); return v && v[0] && v[0] != '0'; }();
+                    static std::atomic<uint32_t> s_dn{0};
+                    if (s_dump && waiting && s_dn.fetch_add(1u) < 6u)
+                    {
+                        char line[600]; int n = std::snprintf(line, sizeof line, "[cdedge-dump] pend 0x%x serial %llu/%llu started %d req:", pendNow, (unsigned long long)serialNow, (unsigned long long)ds->pendSerial.load(), (int)started);
+                        for (uint32_t i = 0; i < 24u && n < 560; ++i) { uint32_t w = 0; if (const uint8_t *q = getConstMemPtr(rdram, pendNow + i * 4u)) std::memcpy(&w, q, 4); n += std::snprintf(line + n, sizeof line - n, " %x", w); }
+                        n += std::snprintf(line + n, sizeof line - n, " | stream:");
+                        for (uint32_t i = 0; i < 12u && n < 590; ++i) { uint32_t w = 0; if (const uint8_t *q = getConstMemPtr(rdram, stream + i * 4u)) std::memcpy(&w, q, 4); n += std::snprintf(line + n, sizeof line - n, " %x", w); }
+                        std::fprintf(stderr, "%s\n", line);
+                    }
+                }
+                if (waiting && s_edgeFix && s_edge3 && !started && ds->busyPolls.fetch_add(1u) < 240u)
+                {
+                    state = 2u;
+                    static std::atomic<uint32_t> s_b3{0};
+                    const uint32_t k = s_b3.fetch_add(1u);
+                    if (k < 8u || (k % 200u) == 0u)
+                        std::fprintf(stderr, "[cdstate] #%u dev=0x%x idle before any read was issued for request 0x%x (stream 0x%x); reporting BUSY\n", k, handle, pendNow, stream);
+                }
+                else if (waiting && s_edgeFix && s_edge2 && ds->activeReq.load(std::memory_order_relaxed) != pendNow)
                 {   // [cdedge2] the device has not been seen working on THIS request: it is queued, not done.
                     // Hardware never shows idle here (the IOP starts the read at submission) -> report busy.
                     state = 2u;
@@ -3296,9 +3332,14 @@ namespace
         // two device-state calls (a full R5900Context copy each) run on every poll: OFF by default now.
         static const bool s_edge2Pump = [](){ const char *v = std::getenv("PS2X_CDEDGE2"); return v && v[0] && v[0] != '0'; }();
         uint32_t cdDev = 0u, pendBefore = 0u, stBefore = 1u;
-        if (s_edge2Pump)
         { if (const uint8_t *pdev = getConstMemPtr(rdram, handle + 4u)) std::memcpy(&cdDev, pdev, sizeof(cdDev));
           if (const uint8_t *pp = getConstMemPtr(rdram, handle + 8u)) std::memcpy(&pendBefore, pp, sizeof(pendBefore)); }
+        if (cdDev && pendBefore)
+        {   // [cdedge3] register the pending request BEFORE the tick that may start its read, with the read serial of that moment
+            if (Bt3DevDone *slot = bt3DevSlot(cdDev))
+                if (pendBefore != slot->pendSeen.load(std::memory_order_relaxed)) { slot->pendSeen.store(pendBefore); slot->pendSerial.store(g_cdReadSerial.load(std::memory_order_relaxed)); slot->busyPolls.store(0u); }
+        }
+        else if (cdDev) { if (Bt3DevDone *slot = bt3DevSlot(cdDev)) slot->pendSeen.store(0u); }   // [cdedge3] no request pending: the next one is new
         auto devState = [&](uint32_t dev) -> uint32_t {
             if (!g_orig270dd0 || dev == 0u) return 1u;
             R5900Context t = *ctx; t.r[4] = _mm_set_epi64x(0, (int64_t)(int32_t)dev); t.r[31] = _mm_setzero_si128(); t.pc = 0x00270dd0u;
