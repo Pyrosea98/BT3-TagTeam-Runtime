@@ -1851,6 +1851,35 @@ static bool dumpVramRawLocked(State &s, const char *binPath, const char *regsPat
 }
 static std::mutex g_tdMtx; static std::vector<TargetDumpReq> g_tdReqs;
 void requestTargetDump(const TargetDumpReq &r) { std::lock_guard<std::mutex> lk(g_tdMtx); g_tdReqs.push_back(r); }
+// [pgswshud] the HUD squeeze + [pgsink]/[pgsfx] packet edits (PS2X_PGS_WSHUD=0 disables): rewrite HUD vertex X before the
+// backend (or the native front end) parses the packet. data/size move to the rebuilt packet when quads were split.
+static bool wsHudApplyLocked(State &s, const uint8_t *&data, size_t &size)
+{
+    static const bool s_wshud = [](){ const char *v = std::getenv("PS2X_PGS_WSHUD"); return !(v && v[0] == '0'); }();
+    static const bool s_inkShiftEnvOn = [](){ const char *v = std::getenv("PS2X_PGS_INKSHIFT"); return v && v[0] && std::atof(v) > 0.0; }();
+    const bool inkWork = !GsGpuRenderer::outlineEnabled() || GsGpuRenderer::inkStrengthPct() != 199 || s_inkShiftEnvOn || g_inkWidthPct.load(std::memory_order_relaxed) < 100 || g_inkColor.load(std::memory_order_relaxed) != 0u
+                      || !GsGpuRenderer::shadowsEnabled() || !GsGpuRenderer::dofBlurEnabled();   // [pgsink] [pgsfx]
+    // [vpdrop] force the pass on for PS2X_VPKEEP: with inv==1.0 and stock ink/fx this gate is
+    // otherwise CLOSED (and self-latching -- wshud.active is only set from inside the pass).
+    if (!((s_wshud && (g_ps2xWsHudInv < 0.999f || s.wshud.active || inkWork)) || ps2xVpKeep())) return false;
+    const uint8_t *xdata = data; size_t xsize = size;
+    if (wsHudSubdivideLocked(s, data, size, s.wshud.lastInv)) { xdata = s.wsBuf.data(); xsize = s.wsBuf.size(); }
+    wsHudRewriteLocked(s, const_cast<uint8_t *>(xdata), xsize);   // the packet buffer is the arbiter's copy (or our rebuilt one)
+    data = xdata; size = xsize;
+    return true;
+}
+
+bool wsHudPreprocess(uint8_t pathId, const uint8_t *&data, size_t &size)
+{   // [seamwshud] for the native renderer: the reference backend gets no packets in seam mode, so gifTransfer never runs the
+    // rewrite; the arbiter calls this on every packet (host draws included: the walker tracks the register state) before
+    // the native front end parses it. The same rewrite as the backend path -- edge/centered HUD layouts included.
+    if (!data || size < 16 || pathId < 1 || pathId > 3) return false;
+    State &s = st();
+    std::lock_guard<std::mutex> lk(s.mtx);
+    if (!initLocked(s)) return false;
+    return wsHudApplyLocked(s, data, size);
+}
+
 bool gifTransfer(uint8_t pathId, const uint8_t *data, size_t size)
 {
     if (!data || size < 16 || pathId < 1 || pathId > 3 || t_suppressed) return false;
@@ -1860,21 +1889,7 @@ bool gifTransfer(uint8_t pathId, const uint8_t *data, size_t size)
     const auto t0 = std::chrono::steady_clock::now();
     if (g_packFlushReq.exchange(0)) { s.iface.invalidate_all_cached_textures(); std::fprintf(stderr, "[pgs] texture replacement %s: cached textures dropped\n", g_packOn.load() ? "ON" : "OFF"); }   // [pgslive]
     if (exclusive()) applyPseudoRegsLocked(s, data, size);
-    {   // [pgswshud] widescreen HUD squeeze (PS2X_PGS_WSHUD=0 disables): rewrite HUD vertex X before the backend parses
-        static const bool s_wshud = [](){ const char *v = std::getenv("PS2X_PGS_WSHUD"); return !(v && v[0] == '0'); }();
-        static const bool s_inkShiftEnvOn = [](){ const char *v = std::getenv("PS2X_PGS_INKSHIFT"); return v && v[0] && std::atof(v) > 0.0; }();
-        const bool inkWork = !GsGpuRenderer::outlineEnabled() || GsGpuRenderer::inkStrengthPct() != 199 || s_inkShiftEnvOn || g_inkWidthPct.load(std::memory_order_relaxed) < 100 || g_inkColor.load(std::memory_order_relaxed) != 0u
-                          || !GsGpuRenderer::shadowsEnabled() || !GsGpuRenderer::dofBlurEnabled();   // [pgsink] [pgsfx]
-        // [vpdrop] force the pass on for PS2X_VPKEEP: with inv==1.0 and stock ink/fx this gate is
-        // otherwise CLOSED (and self-latching -- wshud.active is only set from inside the pass).
-        if ((s_wshud && (g_ps2xWsHudInv < 0.999f || s.wshud.active || inkWork)) || ps2xVpKeep())
-        {
-            const uint8_t *xdata = data; size_t xsize = size;
-            if (wsHudSubdivideLocked(s, data, size, s.wshud.lastInv)) { xdata = s.wsBuf.data(); xsize = s.wsBuf.size(); }
-            wsHudRewriteLocked(s, const_cast<uint8_t *>(xdata), xsize);   // the packet buffer is the arbiter's copy (or our rebuilt one)
-            data = xdata; size = xsize;
-        }
-    }
+    if (!seamvk::on()) wsHudApplyLocked(s, data, size);   // [pgswshud] (in seam mode the arbiter already ran it: wsHudPreprocess)
     s.iface.gif_transfer(pathId - 1u, data, size);
     {   // [targetdump] the oracle image of a target as the backend holds it now
         std::vector<TargetDumpReq> reqs; { std::lock_guard<std::mutex> lk(g_tdMtx); reqs.swap(g_tdReqs); }

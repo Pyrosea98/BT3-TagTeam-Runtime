@@ -337,6 +337,7 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
         if (magic == seamvk::kHostGifMagic && size >= sizeof(seamvk::HostGifHeader))
         {   // 'SVKG': the host-transformed GIF packet -> the native front-end (registers only) and the GS backend as PATH1
             data += sizeof(seamvk::HostGifHeader); size -= sizeof(seamvk::HostGifHeader); pathId = 1u;
+            { size_t sz = size; ps2x_pgs::wsHudPreprocess(pathId, data, sz); size = (uint32_t)sz; }   // [seamwshud] the walker tracks registers across every packet
             seamvk::onGifPacket(pathId, data, size, true);
         }
         else { seamvk::onHostDraw(data, size); return; }
@@ -345,7 +346,12 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
 #endif
     }
 #ifdef PS2X_HAVE_PGS
-    else if (seamvk::on()) seamvk::onGifPacket(pathId, data, size, false);
+    else if (seamvk::on())
+    {   // [seamwshud] the widescreen HUD squeeze (edge / centered layouts) is a packet rewrite on paraLLEl-GS's path; the
+        // native front end parses the rewritten packet
+        size_t sz = size; ps2x_pgs::wsHudPreprocess(pathId, data, sz); size = (uint32_t)sz;
+        seamvk::onGifPacket(pathId, data, size, false);
+    }
 #endif
     if (ps2x_pgs::enabled() && ps2x_pgs::exclusive())
     {   // [recpgs] PS2X_GS_RECORD: our parser will not see this packet, so record it here

@@ -38,6 +38,10 @@ void setPackEnabled(bool on);     // [pgslive] the overlay's Texture Replacement
 void setRenderScale(int scale);   // [pgslive] the overlay's Internal Resolution 1..4 (live: the backend is re-created at the matching SSAA)
 // A GIF packet as the arbiter delivers it (path 1..3, qword multiple). Any thread; serialised inside.
 bool gifTransfer(uint8_t pathId, const uint8_t *data, size_t size);   // true = consumed by the backend
+// [seamwshud] The widescreen HUD squeeze (and the other packet edits paraLLEl-GS's path applies before its backend) for
+// the native renderer: run on the arbiter's copy BEFORE the native front end parses it; data/size may move to the
+// rebuilt packet. True when the packet was edited.
+bool wsHudPreprocess(uint8_t pathId, const uint8_t *&data, size_t &size);
 // PS2X_PGS_COALESCE=1: stage 2 hands runs of same-path packets to the backend as ONE gif_transfer (6000 calls per
 // frame otherwise); while a coalesced run is being processed the per-packet hook must stay quiet.
 bool coalesce();
@@ -82,6 +86,7 @@ inline void streamPriv(uint32_t, uint64_t) {}
 inline void onSwap() {}
 inline void setPresentSize(uint32_t, uint32_t) {}
 inline bool takeFrame(std::vector<uint8_t> &, uint32_t &, uint32_t &) { return false; }
+inline bool wsHudPreprocess(uint8_t, const uint8_t *&, size_t &) { return false; }
 inline uint64_t lastFrameGframe() { return 0; }
 inline void shutdown() {}
 #endif
