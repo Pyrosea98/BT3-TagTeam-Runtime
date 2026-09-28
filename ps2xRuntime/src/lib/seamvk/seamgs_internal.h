@@ -85,9 +85,11 @@ namespace seamgs
         std::vector<uint16_t> vramPages; std::vector<uint8_t> vramBytes;   // page snapshots (8 KB each, in vramPages order) for the GPU VRAM copy
         std::vector<std::array<uint32_t, 256>> stepCluts;   // kind 3 draws: the palette a native step needs, captured at the marker (the mirror moves on)
         std::vector<int32_t> texFrees;
+        std::vector<uint64_t> sharedDrops;   // [texcontent] shared images the front end evicted (the renderer forgets them; live slots keep their handles)
         struct RegEvent { uint32_t drawIndex; uint8_t path, hostGif, addr; uint64_t value; };   // FRAME/SCISSOR writes in stream order (diagnostics)
         std::vector<RegEvent> regEvents;
         uint64_t frame = 0;
+        uint32_t busy = 0;    // fight frames so far (frames with > 1500 draws): PS2X_SEAMVK_DUMPBUSYFRAME=<n> dumps the n-th, which aligns across runs where the game frame does not (the fight load is free-running)
         int32_t dispSlot[2] = { -1, -1 }; uint32_t dispFbp[2] = { ~0u, ~0u };   // [dispvram] per circuit: the slot holding a VRAM decode of the display buffer (movies: uploaded, never drawn)
     };
 

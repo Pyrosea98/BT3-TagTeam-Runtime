@@ -931,6 +931,7 @@ namespace seamvk
 
         void uploadTextures(Vulkan::Device &dev, seamgs::FrameList &f)
         {
+            for (uint64_t k : f.sharedDrops) g_gpu.shared.erase(k);   // [texcontent]
             for (seamgs::TexUpload &u : f.texUploads)
             {
                 if (u.slot < 0 || u.w == 0 || u.h == 0) continue;
@@ -1169,7 +1170,9 @@ namespace seamvk
         static bool s_dumped = false;
         auto busyFight = [&]() { size_t host = 0; for (const seamgs::Draw &d : f.draws) if (d.kind == 1) ++host; return host > 200u; };
         static const uint64_t s_dumpGame = [](){ const char *v = std::getenv("PS2X_SEAMVK_DUMPGAMEFRAME"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();   // by the game's frame counter (aligns with PS2X_KICKPROBE_DUMPFRAME)
-        const bool gameHit = s_dumpGame && g_bt3FrameCount.load(std::memory_order_relaxed) >= s_dumpGame;
+        static const uint32_t s_dumpBusy = [](){ const char *v = std::getenv("PS2X_SEAMVK_DUMPBUSYFRAME"); return v && v[0] ? (uint32_t)std::atoi(v) : 0u; }();   // the n-th fight frame (run-to-run aligned)
+        const bool gameHit = (s_dumpGame && g_bt3FrameCount.load(std::memory_order_relaxed) >= s_dumpGame) || (s_dumpBusy && f.busy >= s_dumpBusy);
+        { static uint32_t s_lastBusy = ~0u; if (s_dumpBusy && (f.busy / 250u) != s_lastBusy) { s_lastBusy = f.busy / 250u; std::fprintf(stderr, "[seamvk] fight frame %u at game frame %llu (%zu draws)\n", f.busy, (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed), f.draws.size()); } }
         // [dumpkey] requestDump() (F10 in the runtime's main loop): dump THIS frame, any number of times per run
         // (later dumps overwrite the files). For a bug the user reproduces by hand (charge an aura, transform)
         // where the game frame number is unknowable in advance.
@@ -1182,7 +1185,7 @@ namespace seamvk
         const bool reqHit = g_dumpReq.exchange(false, std::memory_order_acq_rel);
         char reqSuf[32] = ""; if (reqHit) std::snprintf(reqSuf, sizeof(reqSuf), "_g%llu", (unsigned long long)gnow);
         bool dumpNow = false;
-        if (reqHit || ((s_dumpFrame || s_dumpGame) && !s_dumped && (gameHit || (s_dumpFrame > 1u && g_gpu.frames == s_dumpFrame) || (s_dumpFrame == 1u && busyFight()))))
+        if (reqHit || ((s_dumpFrame || s_dumpGame || s_dumpBusy) && !s_dumped && (gameHit || (s_dumpFrame > 1u && g_gpu.frames == s_dumpFrame) || (s_dumpFrame == 1u && busyFight()))))
         {
             dumpNow = true;
             if (reqHit) std::fprintf(stderr, "[seamvk] DUMP requested (F10): game frame %llu, seamvk frame %llu\n",
@@ -1195,7 +1198,8 @@ namespace seamvk
             if (!reqHit) s_dumped = true;
             if (const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP"))
                 for (const seamgs::TexUpload &u : f.texUploads)
-                {   // what the GPU gets for each slot uploaded this frame
+                {   // what the GPU gets for each slot uploaded this frame (a shared image binds without pixels: nothing to write)
+                    if (u.rgba.size() < size_t(u.w) * u.h * 4u) continue;
                     char path[512]; std::snprintf(path, sizeof(path), "%s/gpu_slot%03d_%ux%u.ppm", dir, u.slot, u.w, u.h);
                     if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P6\n%u %u\n255\n", u.w, u.h); for (size_t i = 0; i < size_t(u.w) * u.h; ++i) std::fwrite(u.rgba.data() + i * 4u, 1, 3, fp); std::fclose(fp); }
                     std::snprintf(path, sizeof(path), "%s/gpu_slot%03d_%ux%u_a.pgm", dir, u.slot, u.w, u.h);

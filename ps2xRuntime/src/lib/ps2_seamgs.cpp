@@ -28,6 +28,23 @@
 #include <unordered_map>
 #include <vector>
 
+#include <atomic>
+extern std::atomic<uint64_t> g_bt3FrameCount;   // [xferlog] the game frame
+#include <csignal>
+#include <execinfo.h>
+#include <unistd.h>
+namespace
+{   // [crashbt] PS2X_CRASHBT=1: a glibc backtrace on SIGSEGV / SIGABRT / SIGBUS to stderr before the default action (addr2line -e ps2EntryRunner +off)
+    void crashBt(int sig)
+    {
+        void *bt[64]; const int n = backtrace(bt, 64);
+        const char *m = sig == SIGSEGV ? "[crashbt] SIGSEGV\n" : sig == SIGABRT ? "[crashbt] SIGABRT\n" : "[crashbt] signal\n";
+        (void)!write(2, m, std::strlen(m));
+        backtrace_symbols_fd(bt, n, 2);
+        signal(sig, SIG_DFL); raise(sig);
+    }
+    const bool g_crashBtInstalled = [](){ const char *v = std::getenv("PS2X_CRASHBT"); if (!(v && v[0] && v[0] != '0')) return false; signal(SIGSEGV, crashBt); signal(SIGABRT, crashBt); signal(SIGBUS, crashBt); return true; }();
+}
 namespace seamgs
 {
     namespace
@@ -106,11 +123,105 @@ namespace seamgs
         inline uint32_t addr8(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) { return g_swz.ok ? g_swz.a8(block, bw, x, y) : (GSPSMT8::addrPSMT8(block, bw, x, y) & kVramMask); }
         inline uint32_t addr4(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) { return g_swz.ok ? g_swz.a4(block, bw, x, y) : (GSPSMT4::addrPSMT4(block, bw, x, y) & (kVramMask * 2u + 1u)); }   // nibble address
 
-        inline uint32_t rd32(uint32_t a) { uint32_t v; std::memcpy(&v, g_vram + a, 4); return v; }
-        inline void wr32(uint32_t a, uint32_t v) { std::memcpy(g_vram + a, &v, 4); g_pageWrite[a >> 13] = g_stamp; }
-        inline uint16_t rd16(uint32_t a) { uint16_t v; std::memcpy(&v, g_vram + a, 2); return v; }
-        inline void wr16(uint32_t a, uint16_t v) { std::memcpy(g_vram + a, &v, 2); g_pageWrite[a >> 13] = g_stamp; }
-        inline void wr8(uint32_t a, uint8_t v) { g_vram[a] = v; g_pageWrite[a >> 13] = g_stamp; }
+        inline uint32_t pageOf(uint32_t psm, uint32_t block, uint32_t bw, uint32_t x, uint32_t y);
+        // ---- [lazyvram] Host->local transfers above a few KB are kept as their linear bytes (one memcpy) and swizzled into the
+        // mirror only when a page of theirs is READ (a CPU decode, a palette, the scratch raster, the GPU page snapshot, a
+        // dump, or a later write to the page). Textures identified by their upload content ([texcontent]) never need the
+        // mirror at all, so the streamed HUD / glyph textures (2 MB a frame) cost a copy and a hash instead of a per-pixel
+        // swizzle plus a page hash plus a GPU page upload plus a decode. PS2X_SEAMGS_LAZYVRAM=0 restores the eager write.
+        struct XferRec { uint32_t dbp = 0, dbw = 0, dpsm = 0, dsax = 0, dsay = 0, rrw = 0, rrh = 0, stamp = 0, refs = 0; uint64_t hash = 1469598103934665603ull; std::vector<uint8_t> data; };
+        std::unordered_map<uint64_t, XferRec> g_xlog; uint64_t g_xlogNext = 1;
+        std::vector<uint32_t> g_pend[kPages];   // transfers pending on the page (log ids, stream order)
+        int64_t g_pageCover[kPages] = {};       // [texcontent] the transfer whose bytes ARE the page (covered it fully, nothing touched it since), 0 = none
+        uint64_t g_lazyApplied = 0, g_lazyCaptured = 0, g_lazyBytes = 0;
+        const bool g_lazyVram = [](){ const char *v = std::getenv("PS2X_SEAMGS_LAZYVRAM"); return !(v && v[0] == '0'); }();
+        inline XferRec *xrec(uint64_t idx) { auto it = g_xlog.find(idx); return it == g_xlog.end() ? nullptr : &it->second; }
+        inline void xrecRelease(uint64_t idx) { auto it = g_xlog.find(idx); if (it == g_xlog.end()) return; if (it->second.refs) --it->second.refs; if (it->second.refs == 0u) g_xlog.erase(it); }
+        inline void coverClear(uint32_t p) { if (g_pageCover[p]) { xrecRelease((uint64_t)g_pageCover[p]); g_pageCover[p] = 0; } }
+        inline void pageDims(uint32_t psm, uint32_t &pw, uint32_t &ph)
+        {
+            switch (psm) { case PSMT8: pw = 128; ph = 64; break; case PSMT4: pw = 128; ph = 128; break; case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: pw = 64; ph = 64; break; default: pw = 64; ph = 32; break; }
+        }
+        // the page's origin in the buffer's pixel space (standard layout: pages left to right in rows of bw*64 pixels)
+        inline bool pageOrigin(uint32_t psm, uint32_t bp, uint32_t bw, uint32_t p, uint32_t &ox, uint32_t &oy)
+        {
+            uint32_t pw, ph; pageDims(psm, pw, ph);
+            const uint32_t ppr = std::max(1u, bw * 64u / pw);
+            if (p < (bp >> 5)) return false;
+            const uint32_t rel = p - (bp >> 5); ox = (rel % ppr) * pw; oy = (rel / ppr) * ph; return true;
+        }
+        template <class F> void forRectPages(uint32_t psm, uint32_t bp, uint32_t bw, uint32_t x0, uint32_t y0, uint32_t w, uint32_t h, F &&f)
+        {   // every page a rect spans (page corners + the rect's last row/column), each once
+            if (w == 0u || h == 0u) return;
+            uint32_t pw, ph; pageDims(psm, pw, ph);
+            uint32_t seen[64]; uint32_t ns = 0;
+            for (uint32_t y = y0;; y += ph)
+            {
+                const uint32_t yy = std::min(y, y0 + h - 1u);
+                for (uint32_t x = x0;; x += pw)
+                {
+                    const uint32_t xx = std::min(x, x0 + w - 1u);
+                    const uint32_t pg = pageOf(psm, bp, bw, xx & 0x7FFu, yy & 0x7FFu);
+                    bool dup = false; for (uint32_t i = 0; i < ns; ++i) if (seen[i] == pg) { dup = true; break; }
+                    if (!dup && pg < kPages) { if (ns < 64u) seen[ns++] = pg; f(pg); }
+                    if (xx == x0 + w - 1u) break;
+                }
+                if (yy == y0 + h - 1u) break;
+            }
+        }
+        inline void wr32raw(uint32_t a, uint32_t v) { std::memcpy(g_vram + a, &v, 4); }
+        inline void wr16raw(uint32_t a, uint16_t v) { std::memcpy(g_vram + a, &v, 2); }
+        inline void writePixelRaw(uint32_t psm, uint32_t block, uint32_t bw, uint32_t x, uint32_t y, uint32_t v)
+        {   // the mirror write of a transfer being applied late: no stamp (stamped when captured), no pending check
+            switch (psm)
+            {
+            case PSMCT32: case PSMZ32: wr32raw(addr32(block, bw, x, y), v); break;
+            case PSMCT24: case PSMZ24: { const uint32_t a = addr32(block, bw, x, y); uint32_t o; std::memcpy(&o, g_vram + a, 4); wr32raw(a, (o & 0xFF000000u) | (v & 0xFFFFFFu)); break; }
+            case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: wr16raw(addr16(psm, block, bw, x, y), (uint16_t)v); break;
+            case PSMT8: g_vram[addr8(block, bw, x, y)] = (uint8_t)v; break;
+            case PSMT4: { const uint32_t a = addr4(block, bw, x, y); const uint32_t sh = (a & 1u) * 4u; g_vram[a >> 1] = (uint8_t)((g_vram[a >> 1] & ~(0xFu << sh)) | ((v & 0xFu) << sh)); break; }
+            case PSMT8H: { const uint32_t a = addr32(block, bw, x, y); uint32_t o; std::memcpy(&o, g_vram + a, 4); wr32raw(a, (o & 0x00FFFFFFu) | (v << 24)); break; }
+            case PSMT4HL: { const uint32_t a = addr32(block, bw, x, y); uint32_t o; std::memcpy(&o, g_vram + a, 4); wr32raw(a, (o & 0xF0FFFFFFu) | ((v & 0xFu) << 24)); break; }
+            case PSMT4HH: { const uint32_t a = addr32(block, bw, x, y); uint32_t o; std::memcpy(&o, g_vram + a, 4); wr32raw(a, (o & 0x0FFFFFFFu) | ((v & 0xFu) << 28)); break; }
+            default: wr32raw(addr32(block, bw, x, y), v); break;
+            }
+        }
+        void applyPage(const XferRec &r, uint32_t p)
+        {   // the part of the transfer that lands in page p, from its linear bytes
+            uint32_t ox, oy, pw, ph; if (!pageOrigin(r.dpsm, r.dbp, r.dbw, p, ox, oy)) return; pageDims(r.dpsm, pw, ph);
+            const uint32_t x0 = std::max(ox, r.dsax), x1 = std::min(ox + pw, r.dsax + r.rrw), y0 = std::max(oy, r.dsay), y1 = std::min(oy + ph, r.dsay + r.rrh);
+            if (x1 <= x0 || y1 <= y0) return;
+            const uint8_t *d = r.data.data(); const size_t n = r.data.size();
+            for (uint32_t y = y0; y < y1; ++y)
+                for (uint32_t x = x0; x < x1; ++x)
+                {
+                    const size_t i = size_t(y - r.dsay) * r.rrw + (x - r.dsax); uint32_t v;
+                    switch (r.dpsm)
+                    {
+                    case PSMCT24: case PSMZ24: if (i * 3u + 3u > n) continue; v = (uint32_t)d[i * 3u] | ((uint32_t)d[i * 3u + 1u] << 8) | ((uint32_t)d[i * 3u + 2u] << 16); break;
+                    case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: { if (i * 2u + 2u > n) continue; uint16_t t; std::memcpy(&t, d + i * 2u, 2); v = t; break; }
+                    case PSMT8: case PSMT8H: if (i >= n) continue; v = d[i]; break;
+                    case PSMT4: case PSMT4HL: case PSMT4HH: if ((i >> 1) >= n) continue; v = (d[i >> 1] >> ((i & 1u) * 4u)) & 0xFu; break;
+                    default: if (i * 4u + 4u > n) continue; std::memcpy(&v, d + i * 4u, 4); break;
+                    }
+                    writePixelRaw(r.dpsm, r.dbp, r.dbw, x & 0x7FFu, y & 0x7FFu, v);
+                }
+        }
+        void materialise(uint32_t p)
+        {
+            std::vector<uint32_t> lst; lst.swap(g_pend[p]);
+            for (uint32_t idx : lst) { if (const XferRec *r = xrec(idx)) applyPage(*r, p); xrecRelease(idx); ++g_lazyApplied; }
+        }
+        inline void touch(uint32_t a) { const uint32_t p = a >> 13; if (p < kPages && !g_pend[p].empty()) materialise(p); }
+        inline void touchPage(uint32_t p) { if (p < kPages && !g_pend[p].empty()) materialise(p); }
+        inline void touchWrite(uint32_t a) { const uint32_t p = a >> 13; if (p < kPages) { if (!g_pend[p].empty()) materialise(p); coverClear(p); } }
+
+        inline uint32_t rd32(uint32_t a) { touch(a); uint32_t v; std::memcpy(&v, g_vram + a, 4); return v; }
+        inline void wr32(uint32_t a, uint32_t v) { touchWrite(a); std::memcpy(g_vram + a, &v, 4); g_pageWrite[a >> 13] = g_stamp; }
+        inline uint16_t rd16(uint32_t a) { touch(a); uint16_t v; std::memcpy(&v, g_vram + a, 2); return v; }
+        inline void wr16(uint32_t a, uint16_t v) { touchWrite(a); std::memcpy(g_vram + a, &v, 2); g_pageWrite[a >> 13] = g_stamp; }
+        inline void wr8(uint32_t a, uint8_t v) { touchWrite(a); g_vram[a] = v; g_pageWrite[a >> 13] = g_stamp; }
+        inline uint8_t rd8(uint32_t a) { touch(a); return g_vram[a]; }
 
         // Read one texel/pixel as a raw 32-bit value in the format's natural width.
         inline uint32_t readPixel(uint32_t psm, uint32_t block, uint32_t bw, uint32_t x, uint32_t y)
@@ -120,8 +231,8 @@ namespace seamgs
             case PSMCT32: case PSMZ32: return rd32(addr32(block, bw, x, y));
             case PSMCT24: case PSMZ24: return rd32(addr32(block, bw, x, y)) & 0xFFFFFFu;
             case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: return rd16(addr16(psm, block, bw, x, y));
-            case PSMT8: return g_vram[addr8(block, bw, x, y)];
-            case PSMT4: { const uint32_t a = addr4(block, bw, x, y); return (g_vram[a >> 1] >> ((a & 1u) * 4u)) & 0xFu; }
+            case PSMT8: return rd8(addr8(block, bw, x, y));
+            case PSMT4: { const uint32_t a = addr4(block, bw, x, y); return (rd8(a >> 1) >> ((a & 1u) * 4u)) & 0xFu; }
             case PSMT8H: return rd32(addr32(block, bw, x, y)) >> 24;
             case PSMT4HL: return (rd32(addr32(block, bw, x, y)) >> 24) & 0xFu;
             case PSMT4HH: return rd32(addr32(block, bw, x, y)) >> 28;
@@ -137,7 +248,7 @@ namespace seamgs
             case PSMCT16: case PSMCT16S: case PSMZ16: case PSMZ16S: wr16(addr16(psm, block, bw, x, y), (uint16_t)v); break;
             case PSMT8: wr8(addr8(block, bw, x, y), (uint8_t)v); break;
             case PSMT4: { const uint32_t a = addr4(block, bw, x, y); const uint32_t sh = (a & 1u) * 4u;
-                          wr8(a >> 1, (uint8_t)((g_vram[a >> 1] & ~(0xFu << sh)) | ((v & 0xFu) << sh))); break; }
+                          wr8(a >> 1, (uint8_t)((rd8(a >> 1) & ~(0xFu << sh)) | ((v & 0xFu) << sh))); break; }
             case PSMT8H: { const uint32_t a = addr32(block, bw, x, y); wr32(a, (rd32(a) & 0x00FFFFFFu) | (v << 24)); break; }
             case PSMT4HL: { const uint32_t a = addr32(block, bw, x, y); wr32(a, (rd32(a) & 0xF0FFFFFFu) | ((v & 0xFu) << 24)); break; }
             case PSMT4HH: { const uint32_t a = addr32(block, bw, x, y); wr32(a, (rd32(a) & 0x0FFFFFFFu) | ((v & 0xFu) << 28)); break; }
@@ -180,6 +291,8 @@ namespace seamgs
             bool active = false;
             uint32_t dbp = 0, dbw = 0, dpsm = 0, dsax = 0, dsay = 0, rrw = 0, rrh = 0, x = 0, y = 0;
             uint8_t carry[4]; uint32_t carryN = 0;   // CT24: pixels straddle packet boundaries
+                    uint32_t bytes = 0, repeatBytes = 0;   // [xferlog]
+            bool lazy = false; uint64_t rec = 0;   // [lazyvram] captured, not written
         };
         Xfer g_xfer;
 
@@ -353,9 +466,9 @@ namespace seamgs
                     uint32_t v;
                     switch (psm)
                     {
-                    case PSMT8: { const uint32_t a = addr8(tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u); v = clut[g_vram[a]]; break; }
+                    case PSMT8: { const uint32_t a = addr8(tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u); v = clut[rd8(a)]; break; }
                     case PSMT4: { const uint32_t a = addr4(tbp, tbw, x, y); const uint32_t pg = a >> 14; pagesBits[pg >> 5] |= 1u << (pg & 31u);
-                                  v = clut[(csaOff + ((g_vram[a >> 1] >> ((a & 1u) * 4u)) & 0xFu)) & 255u]; break; }
+                                  v = clut[(csaOff + ((rd8(a >> 1) >> ((a & 1u) * 4u)) & 0xFu)) & 255u]; break; }
                     case PSMT8H: { const uint32_t a = addr32(tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u); v = clut[rd32(a) >> 24]; break; }
                     case PSMT4HL: { const uint32_t a = addr32(tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u); v = clut[(csaOff + ((rd32(a) >> 24) & 0xFu)) & 255u]; break; }
                     case PSMT4HH: { const uint32_t a = addr32(tbp, tbw, x, y); pagesBits[(a >> 13) >> 5] |= 1u << ((a >> 13) & 31u); v = clut[(csaOff + (rd32(a) >> 28)) & 255u]; break; }
@@ -436,6 +549,7 @@ namespace seamgs
                 const uint32_t p = pg.first;
                 if (g_pageUploaded[p] == g_pageWrite[p] && g_pageWrite[p] != 0u) continue;
                 g_pageUploaded[p] = g_pageWrite[p] ? g_pageWrite[p] : 1u;
+                touchPage(p);   // [lazyvram]
                 static const bool s_hash = [](){ const char *v = std::getenv("PS2X_SEAMGS_PAGEHASH"); return !(v && v[0] == '0'); }();   // =0: upload every changed page without hashing it first
                 if (s_hash)
                 {   // same bytes as the GPU copy already holds (restreamed texture): nothing to upload
@@ -504,6 +618,45 @@ namespace seamgs
         uint32_t g_pageScratch[kPages] = {};   // [scratchrepeat] write stamp of the last scratch raster into each page
         uint64_t g_memoHits = 0, g_stateBuilds = 0, g_imgBytes = 0, g_imgRepeat = 0, g_imgByPsm[64] = {}; std::unordered_map<uint64_t, uint64_t> g_imgHash;
         int32_t resolveTextureImpl(const Ctx &c);
+        // [texcontent] textures identified by the bytes the game uploaded: a texture whose pages are each exactly one pending
+        // transfer's bytes (page fully covered, untouched since) gets a content key from those transfers' hashes, its palette
+        // and its TEX0 format; the second time a key is seen the texture is decoded once on the CPU and its image shared for
+        // the session, so every later re-stream of the same glyph / HUD piece binds the image and touches neither the mirror
+        // nor the GPU VRAM copy. PS2X_SEAMGS_TEXCONTENT=0 disables.
+        const bool g_texContent = [](){ const char *v = std::getenv("PS2X_SEAMGS_TEXCONTENT"); return !(v && v[0] == '0'); }();
+        struct ContentImg { uint32_t w, h; uint64_t share; uint64_t lastUse; };
+        std::unordered_map<uint64_t, ContentImg> g_contentImgs; std::unordered_set<uint64_t> g_contentSeen;
+        uint64_t g_contentHits = 0, g_contentRegs = 0, g_contentMiss = 0, g_contentNoKey = 0;
+        bool contentKeyFor(uint64_t tex0, uint64_t texa, bool needTexa, uint64_t &key, std::vector<std::pair<uint16_t, uint32_t>> &pages, uint32_t *clut, bool &indexed)
+        {
+            const uint32_t tbp = (uint32_t)(tex0 & 0x3FFFu), tbw = (uint32_t)((tex0 >> 14) & 0x3Fu), psm = (uint32_t)((tex0 >> 20) & 0x3Fu);
+            const uint32_t tw = (uint32_t)((tex0 >> 26) & 0xFu), th = (uint32_t)((tex0 >> 30) & 0xFu);
+            const uint32_t w = 1u << std::min(tw, 10u), h = 1u << std::min(th, 10u);
+            uint64_t k = fnv(&tex0, 8);
+            if (needTexa) k = fnv(&texa, 8, k);
+            bool ok = true; pages.clear();
+            forRectPages(psm, tbp, tbw, 0u, 0u, w, h, [&](uint32_t p) {
+                if (!ok) return;
+                if (g_pageDrawn[p] != 0u && g_pageDrawn[p] >= g_pageWrite[p]) { ok = false; return; }
+                pages.emplace_back((uint16_t)p, g_pageWrite[p]);
+                const int64_t cv = g_pageCover[p]; const XferRec *r = cv ? xrec((uint64_t)cv) : nullptr;
+                if (!r) { ok = false; return; }
+                uint32_t ox, oy; if (!pageOrigin(r->dpsm, r->dbp, r->dbw, p, ox, oy)) { ok = false; return; }
+                const uint32_t mix[4] = { ox - r->dsax, oy - r->dsay, r->rrw, r->dpsm };
+                k = fnv(&r->hash, 8, k); k = fnv(mix, sizeof(mix), k);
+            });
+            if (!ok || pages.empty()) return false;
+            indexed = psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH;
+            if (indexed)
+            {
+                uint32_t bits[16] = {};
+                readClut((uint32_t)((tex0 >> 37) & 0x3FFFu), (uint32_t)((tex0 >> 51) & 0xFu), (uint32_t)((tex0 >> 56) & 0x1Fu), texa, clut, bits);
+                for (uint32_t i = 0; i < 16; ++i) if (bits[i]) for (uint32_t b = 0; b < 32; ++b) if (bits[i] & (1u << b)) { const uint32_t p = i * 32u + b; if (p < kPages && g_pageDrawn[p] != 0u && g_pageDrawn[p] >= g_pageWrite[p]) return false; }   // a rendered palette is not upload content
+                k = fnv(clut, 1024, k);
+            }
+            key = k | 1ull;
+            return true;
+        }
         struct ResolveMemo { uint64_t tex0 = 0, texa = 0, frame = ~0ull; uint32_t stamp = 0; int32_t slot = -1; };
         ResolveMemo g_resolveMemo[256];   // [resolvememo] direct-mapped by TEX0: a repeat lookup with no VRAM write since (same stamp, same frame) is O(1)
         bool seamPackReplace(int32_t slot, TexEntry &e, uint64_t tex0, uint64_t texa);   // [seampack] below
@@ -557,7 +710,34 @@ namespace seamgs
             TexEntry &e = g_tex[slot];
             e = TexEntry(); e.key = key; e.used = true; e.lastUse = g_frame;
             std::vector<uint8_t> rgba;
+            uint64_t ckey = 0; bool haveKey = false, contentSeen = false;
+            if (g_texContent && g_lazyVram)
+            {   // [texcontent]
+                std::vector<std::pair<uint16_t, uint32_t>> ckPages; uint32_t ckClut[256]; bool ckIndexed = false;
+                haveKey = contentKeyFor(tex0, g_r.texa, needTexa, ckey, ckPages, ckClut, ckIndexed);
+                if (!haveKey) ++g_contentNoKey;
+                else
+                {
+                    auto ci = g_contentImgs.find(ckey);
+                    if (ci != g_contentImgs.end())
+                    {   // the image is on the GPU already: bind it, nothing decoded, no mirror, no page upload
+                        ci->second.lastUse = g_frame;
+                        e.w = ci->second.w; e.h = ci->second.h; e.pages = std::move(ckPages); e.indexed = ckIndexed; if (ckIndexed) std::memcpy(e.clut, ckClut, sizeof(e.clut));
+                        e.gpuDecode = false; e.rgbaCopy.clear();
+                        ++g_texDecodes; e.decodeId = (uint32_t)g_texDecodes + (uint32_t)(g_frame << 12);
+                        g_list.texUploads.push_back(TexUpload{ slot, e.w, e.h, {}, ci->second.share });
+                        g_texByKey[key] = slot;
+                        ++g_contentHits;
+                        g_curTexW = e.w; g_curTexH = e.h;
+                        return slot;
+                    }
+                    contentSeen = g_contentSeen.count(ckey) != 0u;
+                    if (contentSeen) g_forceCpuDecode = true;   // recurring content: decode once on the CPU, share for the session
+                    else { g_contentSeen.insert(ckey); ++g_contentMiss; }
+                }
+            }
             decodeTexture(tex0, g_r.texa, e, rgba);
+            g_forceCpuDecode = false;
             ++g_texDecodes; e.decodeId = (uint32_t)g_texDecodes + (uint32_t)(g_frame << 12);
             if (e.drawnPages) ++g_texStale;
             if (e.w * e.h <= 256u * 256u && !rgba.empty()) e.rgbaCopy = rgba; else e.rgbaCopy.clear();
@@ -607,6 +787,20 @@ namespace seamgs
                 e.drawnPages = false;
             }
             else if (e.gpuDecode) vramDecodeFor(slot, e, tex0);   // [gpudecode] decoded on the GPU from the VRAM copy, in stream order
+            else if (!rgba.empty() && haveKey && contentSeen && !e.drawnPages && !e.clutDrawn)
+            {   // [texcontent] second sighting of this content: the image is shared for the session under its content key
+                const uint64_t share = ckey;
+                g_contentImgs[ckey] = ContentImg{ e.w, e.h, share, g_frame };
+                ++g_contentRegs;
+                if (g_contentImgs.size() > 3000u)
+                {   // evict the least recently bound quarter (the renderer drops its images next frame)
+                    std::vector<std::pair<uint64_t, uint64_t>> byUse; byUse.reserve(g_contentImgs.size());
+                    for (const auto &kv : g_contentImgs) byUse.emplace_back(kv.second.lastUse, kv.first);
+                    std::sort(byUse.begin(), byUse.end());
+                    for (size_t i = 0; i < byUse.size() / 4u; ++i) { g_list.sharedDrops.push_back(g_contentImgs[byUse[i].second].share); g_contentImgs.erase(byUse[i].second); }
+                }
+                g_list.texUploads.push_back(TexUpload{ slot, e.w, e.h, std::move(rgba), share });
+            }
             else if (!rgba.empty()) g_list.texUploads.push_back(TexUpload{ slot, e.w, e.h, std::move(rgba) });
             g_curTexW = e.w; g_curTexH = e.h;
             return slot;
@@ -634,6 +828,8 @@ namespace seamgs
             GSTexaReg ta{ (uint8_t)(texa & 0xFFu), ((texa >> 15) & 1u) != 0u, (uint8_t)((texa >> 32) & 0xFFu) };
             GSTexClutReg tc{ (uint8_t)(g_r.texclut & 0x3Fu), (uint8_t)((g_r.texclut >> 6) & 0x3Fu), (uint16_t)((g_r.texclut >> 12) & 0x3FFu) };
             uint32_t clut[256] = {};
+            for (const auto &pg : e.pages) touchPage(pg.first);   // [lazyvram] identify() reads the mirror directly
+            { const uint32_t ca = addr32((uint32_t)((tex0 >> 37) & 0x3FFFu), 1u, 0u, 0u); touch(ca); touch(ca + 1023u); }
             const int n = GSRasterizer::fillClutForBackend(clut, g_vram, ta, tc, t);
             ps2tex::TexIdent id;
             if (n <= 0 || !ps2tex::identify(g_vram, t.tbp0, t.tbw, t.psm, t.tw, t.th, clut, ta.ta0, ta.aem, ta.ta1, id)) { ++g_packSkipped; return false; }
@@ -1229,11 +1425,47 @@ namespace seamgs
             {
                 Xfer &x = g_xfer;
                 x.active = true;
+                {   // PS2X_SEAMGS_XFERLOG=<game frame>: every host->local transfer of that frame (destination, format, rect)
+                    static const uint64_t s_at = [](){ const char *v = std::getenv("PS2X_SEAMGS_XFERLOG"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
+                    const uint64_t gf = g_bt3FrameCount.load(std::memory_order_relaxed);
+                    if (s_at && gf >= s_at && gf < s_at + 4u)
+                        std::fprintf(stderr, "[xferlog] frame %llu dbp 0x%x dbw %u dpsm 0x%x at %u,%u size %ux%u\n", (unsigned long long)gf, (unsigned)((bb >> 32) & 0x3FFFu), (unsigned)((bb >> 48) & 0x3Fu), (unsigned)((bb >> 56) & 0x3Fu), (unsigned)((tp >> 32) & 0x7FFu), (unsigned)((tp >> 48) & 0x7FFu), (unsigned)(tr & 0xFFFu), (unsigned)((tr >> 32) & 0xFFFu));
+                }
                 x.dbp = (uint32_t)((bb >> 32) & 0x3FFFu); x.dbw = (uint32_t)((bb >> 48) & 0x3Fu); x.dpsm = (uint32_t)((bb >> 56) & 0x3Fu);
                 x.dsax = (uint32_t)((tp >> 32) & 0x7FFu); x.dsay = (uint32_t)((tp >> 48) & 0x7FFu);
                 x.rrw = (uint32_t)(tr & 0xFFFu); x.rrh = (uint32_t)((tr >> 32) & 0xFFFu);
-                x.x = 0; x.y = 0; x.carryN = 0;
+                x.x = 0; x.y = 0; x.carryN = 0; x.bytes = 0; x.repeatBytes = 0;
                 ++g_stamp;
+                x.lazy = false; x.rec = 0;
+                {   // [lazyvram] keep the bytes, stamp the pages now, write later (small transfers -- palettes, border pieces -- stay eager)
+                    const uint32_t bpp8 = (x.dpsm == PSMT8 || x.dpsm == PSMT8H) ? 8u : (x.dpsm == PSMT4 || x.dpsm == PSMT4HL || x.dpsm == PSMT4HH) ? 4u : (x.dpsm == PSMCT16 || x.dpsm == PSMCT16S || x.dpsm == PSMZ16 || x.dpsm == PSMZ16S) ? 16u : (x.dpsm == PSMCT24 || x.dpsm == PSMZ24) ? 24u : 32u;
+                    const uint64_t total = (uint64_t)x.rrw * x.rrh * bpp8 / 8u;
+                    if (g_lazyVram && total > 4096u && x.dbw != 0u && x.rrw <= 2048u && x.rrh <= 2048u)
+                    {
+                        x.lazy = true; x.rec = g_xlogNext++;
+                        XferRec &r = g_xlog[x.rec];
+                        r.dbp = x.dbp; r.dbw = x.dbw; r.dpsm = x.dpsm; r.dsax = x.dsax; r.dsay = x.dsay; r.rrw = x.rrw; r.rrh = x.rrh; r.stamp = g_stamp; r.data.reserve((size_t)total);
+                        uint32_t pw, ph; pageDims(x.dpsm, pw, ph);
+                        forRectPages(x.dpsm, x.dbp, x.dbw, x.dsax, x.dsay, x.rrw, x.rrh, [&](uint32_t p) {
+                            g_pageWrite[p] = g_stamp;
+                            uint32_t ox, oy; const bool covered = pageOrigin(x.dpsm, x.dbp, x.dbw, p, ox, oy) && ox >= x.dsax && oy >= x.dsay && ox + pw <= x.dsax + x.rrw && oy + ph <= x.dsay + x.rrh;
+                            if (covered)
+                            {   // earlier pending transfers on this page are overwritten entirely: drop them; this transfer's bytes ARE the page
+                                for (uint32_t idx : g_pend[p]) xrecRelease(idx);
+                                g_pend[p].clear();
+                                coverClear(p); g_pageCover[p] = (int64_t)x.rec; ++r.refs;
+                            }
+                            else coverClear(p);
+                            g_pend[p].push_back((uint32_t)x.rec); ++r.refs;
+                        });
+                        ++g_lazyCaptured; g_lazyBytes += total;
+                        g_texDirty = true;
+                    }
+                    else if (g_lazyVram && x.rrw != 0u && x.rrh != 0u)
+                    {   // eager: pending transfers on its pages land first (stream order), and the pages are no longer one upload's bytes
+                        forRectPages(x.dpsm, x.dbp, x.dbw, x.dsax, x.dsay, x.rrw, x.rrh, [&](uint32_t p) { touchPage(p); coverClear(p); });
+                    }
+                }
             }
             else if (dir == 2)
             {   // local -> local
@@ -1262,7 +1494,25 @@ namespace seamgs
                 uint64_t h = 1469598103934665603ull; for (uint32_t i = 0; i + 8 <= n; i += 8) { uint64_t w; std::memcpy(&w, d + i, 8); h ^= w; h *= 1099511628211ull; }
                 const uint64_t key = ((uint64_t)x.dbp << 40) | ((uint64_t)(x.dsay + x.y) << 24) | ((uint64_t)(x.dsax + x.x) << 8) | (n & 0xFFu);
                 uint64_t &slot = g_imgHash[key];
-                if (slot == h) g_imgRepeat += n; slot = h;
+                if (slot == h) { g_imgRepeat += n; x.repeatBytes += n; } slot = h;
+                x.bytes += n;
+                if (x.lazy)
+                {   // [lazyvram]
+                    if (XferRec *r = xrec(x.rec)) { r->data.insert(r->data.end(), d, d + n); r->hash = (r->hash ^ h) * 1099511628211ull ^ (uint64_t)n; }
+                    const uint32_t bpp8 = (x.dpsm == PSMT8 || x.dpsm == PSMT8H) ? 8u : (x.dpsm == PSMT4 || x.dpsm == PSMT4HL || x.dpsm == PSMT4HH) ? 4u : (x.dpsm == PSMCT16 || x.dpsm == PSMCT16S || x.dpsm == PSMZ16 || x.dpsm == PSMZ16S) ? 16u : (x.dpsm == PSMCT24 || x.dpsm == PSMZ24) ? 24u : 32u;
+                    const uint64_t px = (uint64_t)x.bytes * 8u / bpp8;
+                    x.y = (uint32_t)(px / x.rrw); x.x = (uint32_t)(px % x.rrw);
+                    g_texDirty = true;
+                    if (x.y >= x.rrh)
+                    {
+                        x.active = false;
+                        static const uint64_t s_at = [](){ const char *v = std::getenv("PS2X_SEAMGS_XFERLOG"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
+                        const uint64_t gf = g_bt3FrameCount.load(std::memory_order_relaxed);
+                        if (s_at && gf >= s_at && gf < s_at + 4u)
+                            std::fprintf(stderr, "[xferend] frame %llu dbp 0x%x dbw %u dpsm 0x%x size %ux%u bytes %u repeat %u lazy\n", (unsigned long long)gf, x.dbp, x.dbw, x.dpsm, x.rrw, x.rrh, x.bytes, x.repeatBytes == x.bytes ? 1u : 0u);
+                    }
+                    return;
+                }
             }
             if (g_watch.hi && x.x == 0u && x.y == 0u && x.dbp >= g_watch.lo && x.dbp < g_watch.hi && g_watch.logged < 400u)
             { ++g_watch.logged; std::fprintf(stderr, "[seamgs-watch] frame %llu draw %zu path %u xfer -> dbp 0x%x dbw %u dpsm %u %ux%u at (%u,%u), %u bytes in this packet\n", (unsigned long long)g_frame, g_list.draws.size(), g_curPath, x.dbp, x.dbw, x.dpsm, x.rrw, x.rrh, x.dsax, x.dsay, n); }
@@ -1307,7 +1557,16 @@ namespace seamgs
             case PSMT4: case PSMT4HL: case PSMT4HH: for (; i < n; ++i) { put(d[i] & 0xFu); put(d[i] >> 4); } break;
             default: for (; i + 4 <= n; i += 4) { uint32_t v; std::memcpy(&v, d + i, 4); put(v); } break;
             }
-            if (x.y >= x.rrh) x.active = false;
+            if (x.y >= x.rrh)
+            {
+                x.active = false;
+                {   // [xferlog] end of the transfer: bytes and whether every chunk repeated the previous upload of that destination
+                    static const uint64_t s_at = [](){ const char *v = std::getenv("PS2X_SEAMGS_XFERLOG"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
+                    const uint64_t gf = g_bt3FrameCount.load(std::memory_order_relaxed);
+                    if (s_at && gf >= s_at && gf < s_at + 4u)
+                        std::fprintf(stderr, "[xferend] frame %llu dbp 0x%x dbw %u dpsm 0x%x size %ux%u bytes %u repeat %u\n", (unsigned long long)gf, x.dbp, x.dbw, x.dpsm, x.rrw, x.rrh, x.bytes, x.repeatBytes == x.bytes ? 1u : 0u);
+                }
+            }
         }
 
         // ---- registers ---------------------------------------------------------------------
@@ -1533,6 +1792,9 @@ namespace seamgs
             std::memset(g_imgByPsm, 0, sizeof(g_imgByPsm)); g_texLookups = g_memoHits = g_stateBuilds = g_imgBytes = g_imgRepeat = g_texDecodes = g_texStale = g_cpuSprites = g_scratchSkips = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
             printTargetHist();
             if (g_hostSkipChecks) std::fprintf(stderr, "[hostskip] verify: %llu tags checked, %llu mismatches\n", (unsigned long long)g_hostSkipChecks, (unsigned long long)g_hostSkipMismatch);
+            std::fprintf(stderr, "[lazyvram] per frame: %.1f transfers captured (%.0f KB), %.1f pages applied late, %zu pending records | [texcontent] hits %.2f regs %.2f first-sightings %.2f no-key %.2f per frame, %zu images shared\n",
+                         g_lazyCaptured / 300.0, g_lazyBytes / 300.0 / 1024.0, g_lazyApplied / 300.0, g_xlog.size(), g_contentHits / 300.0, g_contentRegs / 300.0, g_contentMiss / 300.0, g_contentNoKey / 300.0, g_contentImgs.size());
+            g_lazyCaptured = g_lazyBytes = g_lazyApplied = 0; g_contentHits = g_contentRegs = g_contentMiss = g_contentNoKey = 0;
             std::fprintf(stderr, "[seamgs] host draws in/out/dropped per prog:");
             for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %d:%llu/%llu/%llu", i, (unsigned long long)g_hostIn[i], (unsigned long long)g_hostOut[i], (unsigned long long)g_hostDropped[i]);
             std::fprintf(stderr, "\n");
@@ -1578,13 +1840,17 @@ namespace seamgs
         for (int i = 0; i < 2; ++i) if (enMask & (1u << i)) displayDecodeLocked(i, dispfb[i]);
         ++g_frame;
         ++g_swapsSeen; if (g_swapHash == g_lastSwapHash) ++g_sameSwaps; g_lastSwapHash = g_swapHash; g_swapHash = 1469598103934665603ull; g_swapBytes = 0;
-        if (g_list.draws.size() > 1500u) ++g_busyFrames;
+        {   // a fight frame: > 1500 GS draws (the kernel + packet path) or > 200 host meshes (skip mode)
+            size_t host = 0; for (const Draw &d : g_list.draws) if (d.kind == 1) ++host;
+            if (g_list.draws.size() > 1500u || host > 200u) ++g_busyFrames;
+        }
+        out.busy = g_busyFrames;
         evictTextures();
         g_list.frame = g_frame;
-        out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees); out.rtDecodes.swap(g_list.rtDecodes); out.vramPages.swap(g_list.vramPages); out.vramBytes.swap(g_list.vramBytes); out.stepCluts.swap(g_list.stepCluts); out.regEvents.swap(g_list.regEvents);
+        out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees); out.rtDecodes.swap(g_list.rtDecodes); out.sharedDrops.swap(g_list.sharedDrops); out.vramPages.swap(g_list.vramPages); out.vramBytes.swap(g_list.vramBytes); out.stepCluts.swap(g_list.stepCluts); out.regEvents.swap(g_list.regEvents);
         out.frame = g_frame;
         for (int i = 0; i < 2; ++i) { out.dispSlot[i] = g_list.dispSlot[i]; out.dispFbp[i] = g_list.dispFbp[i]; g_list.dispSlot[i] = -1; g_list.dispFbp[i] = ~0u; }   // [dispvram]
-        g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear(); g_list.rtDecodes.clear(); g_list.vramPages.clear(); g_list.vramBytes.clear(); g_list.stepCluts.clear(); g_list.regEvents.clear();
+        g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear(); g_list.rtDecodes.clear(); g_list.sharedDrops.clear(); g_list.vramPages.clear(); g_list.vramBytes.clear(); g_list.stepCluts.clear(); g_list.regEvents.clear();
         g_texFree.insert(g_texFree.end(), g_retired.begin(), g_retired.end()); g_retired.clear();
         g_texDirty = true;   // a new frame: re-resolve (the renderer may have dropped slots)
         seamgs::g_scratchSeqIdx = 0; seamgs::g_scratchSeqOk = true;   // [scratchrepeat] a new sequence
@@ -1685,6 +1951,7 @@ namespace seamgs
         if (!seamvk::on()) return false;
         std::lock_guard<std::mutex> lk(g_mtx);
         FILE *f = std::fopen(path, "wb"); if (!f) return false;
+        for (uint32_t p = 0; p < kPages; ++p) touchPage(p);   // [lazyvram]
         std::fwrite(g_vram, 1, kVramBytes, f); std::fclose(f); return true;
     }
     bool peekClut(uint32_t cbp, uint32_t cpsm, uint32_t *out256)
