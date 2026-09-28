@@ -100,6 +100,7 @@ namespace seamvk
         std::vector<uint8_t> g_frame;    // newest readback, RGBA8
         uint32_t g_frameW = 0, g_frameH = 0;
         bool g_frameFresh = false;
+        uint64_t g_frameGframe = 0;   // [presentlat]
 
         struct Target { Vulkan::ImageHandle img; VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; bool cleared = false; bool aliasedDirty = false; };   // aliasedDirty: a draw through the other pixel format was skipped since the last draw of its own
         struct Gpu
@@ -113,7 +114,7 @@ namespace seamvk
             Vulkan::ImageHandle snap;           // destination snapshot for DATE draws
             Vulkan::BufferHandle readback;
             struct TsMark { uint8_t cat; Vulkan::QueryPoolHandle q; };   // [gputime] GPU timestamps: cat = the category that STARTS at this mark
-            struct Pending { Vulkan::BufferHandle buf; Vulkan::Fence fence; uint32_t w = 0, h = 0; bool live = false; std::vector<TsMark> ts; };
+            struct Pending { Vulkan::BufferHandle buf; Vulkan::Fence fence; uint32_t w = 0, h = 0; bool live = false; std::vector<TsMark> ts; uint64_t gframe = 0; };   // [presentlat] gframe: the game frame this output belongs to
             std::vector<Vulkan::ImageHandle> hoistFree;   // [hoist] images no draw in flight references any more, by size
             std::deque<std::vector<Vulkan::ImageHandle>> hoistRetire;   // [hoist] images replaced in a slot, per frame; free after 3 frames
             std::vector<TsMark> tsCur; double gpuMs[8] = {}; uint32_t gpuFrames = 0; std::deque<std::vector<TsMark>> tsPending;   // [gputime] frames whose queries are not signalled yet   // [gputime] per category, ms; 0 main draws, 1 rt decodes, 2 alias16, 3 native steps, 4 compose, 5 uploads
@@ -888,6 +889,8 @@ namespace seamvk
     static std::atomic<bool> g_dumpReq{false};   // [dumpkey] set from the main loop (F10), consumed by renderFrame
     void requestDump() { g_dumpReq.store(true, std::memory_order_release); }
 
+    uint64_t lastFrameGframe() { std::lock_guard<std::mutex> lk(g_mtx); return g_frameGframe; }   // [presentlat]
+
     bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h)
     {
         std::lock_guard<std::mutex> lk(g_mtx);
@@ -1424,6 +1427,7 @@ namespace seamvk
             Vulkan::BufferCreateInfo bi = {}; bi.size = VkDeviceSize(w) * h * 4u; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.domain = Vulkan::BufferDomain::CachedHost;
             slot.buf = dev.create_buffer(bi); slot.w = w; slot.h = h;
         }
+        slot.gframe = g_bt3FrameCount.load(std::memory_order_relaxed);   // [presentlat]
         cmd->copy_image_to_buffer(*slot.buf, *g_gpu.out, 0, {}, { w, h, 1 }, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
         cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
         const auto tC = std::chrono::steady_clock::now();
@@ -1461,7 +1465,7 @@ namespace seamvk
             {
                 std::lock_guard<std::mutex> lk(g_mtx);
                 g_frame.assign(src, src + size_t(prev.w) * prev.h * 4u);
-                g_frameW = prev.w; g_frameH = prev.h; g_frameFresh = true;
+                g_frameW = prev.w; g_frameH = prev.h; g_frameFresh = true; g_frameGframe = prev.gframe;
             }
             dev.unmap_host_buffer(*prev.buf, Vulkan::MEMORY_ACCESS_READ_BIT);
             prev.live = false;

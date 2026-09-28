@@ -7986,6 +7986,17 @@ void PS2Runtime::run()
             uint32_t pw = 0, ph = 0;
             if (ps2x_pgs::takeFrame(s_pgsBuf, pw, ph) && pw && ph && s_pgsBuf.size() >= size_t(pw) * ph * 4u)
             {
+                {   // [presentlat] PS2X_PRESENTLAT=1: how many game frames old the image handed to the window is (renderer + hand-off pipeline latency)
+                    static const bool s_lat = [](){ const char *v = std::getenv("PS2X_PRESENTLAT"); return v && v[0] && v[0] != '0'; }();
+                    if (s_lat)
+                    {
+                        static uint64_t s_sum = 0, s_min = ~0ull, s_max = 0; static unsigned s_n = 0;
+                        const uint64_t now = g_bt3FrameCount.load(std::memory_order_relaxed), shown = ps2x_pgs::lastFrameGframe();
+                        const uint64_t d = now >= shown ? now - shown : 0ull;
+                        s_sum += d; s_min = std::min(s_min, d); s_max = std::max(s_max, d);
+                        if (++s_n == 120u) { std::fprintf(stderr, "[presentlat] shown frame is %.2f game frames old (min %llu max %llu, %u presents, gframe %llu)\n", double(s_sum) / s_n, (unsigned long long)s_min, (unsigned long long)s_max, s_n, (unsigned long long)now); s_sum = 0; s_min = ~0ull; s_max = 0; s_n = 0; }
+                    }
+                }
                 {   // PS2X_PGS_DUMP=<dir>: write every PS2X_PGS_DUMPEVERY-th (default 60) presented scanout as PNG (Wayland has no X screenshots)
                     static const char *s_dumpDir = std::getenv("PS2X_PGS_DUMP");
                     static const int s_dumpEvery = [](){ const char *v = std::getenv("PS2X_PGS_DUMPEVERY"); return v && v[0] ? std::max(1, std::atoi(v)) : 60; }();

@@ -37,6 +37,7 @@ extern std::atomic<int> g_wsHudLayout;   // overlay: 0 centered, 1 edge-pinned, 
 extern std::atomic<int> g_wsHudOffLQ, g_wsHudOffCQ, g_wsHudOffRQ;   // custom offsets x16
 bool ps2FightUpdateRecent();   // ps2_stepcensus.cpp [wshudmenu]: the fight update ran within the last 2 render frames (menus: never)
 
+extern std::atomic<uint64_t> g_bt3FrameCount;   // [presentlat] game_overrides.cpp: the game's frame counter (file scope, outside every namespace)
 namespace ps2x_pgs
 {
 static std::atomic<int> g_enabled{-1};
@@ -289,7 +290,7 @@ struct State
     uint64_t privHi[0x100] = {};
     // newest scanout
     std::vector<uint8_t> frame;
-    uint32_t frameW = 0, frameH = 0;
+    uint32_t frameW = 0, frameH = 0; uint64_t frameGframe = 0;   // [presentlat]
     // [pgswshud] widescreen HUD squeeze on the backend path: the OpenGL renderer squeezes HUD draws per primitive
     // (ps2_gs_gpu_renderer.cpp [wshud]); paraLLEl-GS draws what it is given, so the same rule is applied by
     // rewriting the X of HUD vertices inside the GIF packets before they reach the backend.
@@ -447,7 +448,7 @@ void copyPrivLocked(State &s)
 // this frame's scanout and consumes the copy submitted two swaps ago IF its fence is already signalled (never waits).
 // The first version waited for the GPU every frame (wait_idle); with the GPU idle at every frame start paraLLEl-GS
 // took its CPU upload path for the frame's IMAGE transfers, a flat ~6 ms per frame ([pgs-slow] 2026-09-10).
-struct RbSlot { BufferHandle buf; Fence fence; ImageHandle image; uint32_t w = 0, h = 0; bool pending = false; VkFormat fmt = VK_FORMAT_UNDEFINED; };
+struct RbSlot { BufferHandle buf; Fence fence; ImageHandle image; uint32_t w = 0, h = 0; bool pending = false; VkFormat fmt = VK_FORMAT_UNDEFINED; uint64_t gframe = 0; };   // [presentlat] gframe: the game frame this scanout belongs to
 static RbSlot g_rb[3];
 static uint32_t g_rbIdx = 0;
 static void consumeSlotLocked(State &s, RbSlot &slot)
@@ -469,7 +470,7 @@ static void consumeSlotLocked(State &s, RbSlot &slot)
             s.frame[i * 4 + 0] = (p >> 16) & 0xff; s.frame[i * 4 + 1] = (p >> 8) & 0xff; s.frame[i * 4 + 2] = p & 0xff; s.frame[i * 4 + 3] = 0xff;
         }
     s.device.unmap_host_buffer(*slot.buf, MEMORY_ACCESS_READ_BIT);
-    s.frameW = slot.w; s.frameH = slot.h; s.frameFresh = true;
+    s.frameW = slot.w; s.frameH = slot.h; s.frameFresh = true; s.frameGframe = slot.gframe;
     slot.pending = false; slot.image.reset(); slot.fence.reset();
 }
 void readbackLocked(State &s, const ScanoutResult &res)
@@ -495,6 +496,7 @@ void readbackLocked(State &s, const ScanoutResult &res)
         slot.w = w; slot.h = h;
     }
     slot.fmt = res.image->get_format();
+    slot.gframe = g_bt3FrameCount.load(std::memory_order_relaxed);   // [presentlat]
     auto cmd = s.device.request_command_buffer();
     cmd->image_barrier(*res.image, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
@@ -2133,6 +2135,12 @@ bool takeRefFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h)
     rgba = s.frame; w = s.frameW; h = s.frameH; s.frameFresh = false;
     return true;
 }
+uint64_t lastFrameGframe()
+{   // [presentlat]
+    if (seamvk::on()) return seamvk::lastFrameGframe();
+    return st().frameGframe;
+}
+
 bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h)
 {
     if (seamvk::on()) return seamvk::takeFrame(rgba, w, h);   // [seamvk] the native view replaces the scanout

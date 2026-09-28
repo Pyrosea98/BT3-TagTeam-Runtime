@@ -60,6 +60,7 @@ void setPresentSize(uint32_t w, uint32_t h);
 // Present thread: moves the newest scanout into `rgba` (w x h, RGBA8). False when nothing new arrived.
 bool takeRefFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h);   // [seamvk] the backend's own frame while the native view is presented (same swap)
 bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h);
+uint64_t lastFrameGframe();   // [presentlat] the game frame the last taken frame was rendered from
 void shutdown();
 #else
 inline bool enabled() { return false; }
@@ -81,6 +82,7 @@ inline void streamPriv(uint32_t, uint64_t) {}
 inline void onSwap() {}
 inline void setPresentSize(uint32_t, uint32_t) {}
 inline bool takeFrame(std::vector<uint8_t> &, uint32_t &, uint32_t &) { return false; }
+inline uint64_t lastFrameGframe() { return 0; }
 inline void shutdown() {}
 #endif
 }
