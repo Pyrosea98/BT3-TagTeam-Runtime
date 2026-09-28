@@ -68,7 +68,8 @@ namespace seamgs
         uint8_t hostPass = 0; // kind 1: which of the packet's passes this draw is (the two-pass character program: 0 = textured, 1 = toon ramp)
         State st;
         uint32_t vertOff = 0, count = 0, stride = sizeof(Vtx);
-        int32_t rt = -1;      // kind 2: index into FrameList::rtDecodes
+        int32_t rt = -1;      // kind 2: index into FrameList::rtDecodes; kind 3: index into FrameList::stepCluts
+        uint32_t vcol = 0;    // kind 3 generic pass ([clutpass], hostPass 1): the vertex RGBA; st.sca* = the sprites' union rect
         seamvk::Consts c;     // kind 1 only
     };
 

@@ -79,8 +79,8 @@ namespace seamvk
         const uint32_t kDepthMaskFrag[] = {
 #include "seamvk/depthmask.frag.inc"
         };
-        const uint32_t kPostAlphaFrag[] = {   // [postnative] steps 1 and 3: alpha-only passes into the scene
-#include "seamvk/postalpha.frag.inc"
+        const uint32_t kClutPassFrag[] = {   // [clutpass] the generic post-chain pass: captured register state + palette, GS blend per pixel
+#include "seamvk/clutpass.frag.inc"
         };
         const uint32_t kGlowDownFrag[] = {   // [postnative] step 4a: 0x2a00 := 2:1 box of the scene
 #include "seamvk/glowdown.frag.inc"
@@ -117,7 +117,7 @@ namespace seamvk
         struct Gpu
         {
             Vulkan::Device *dev = nullptr;   // [earlyframe] for the readback consumer thread
-            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progSeamSt = nullptr, *progGsSt = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutlineH = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progZtop = nullptr, *progVram = nullptr, *progPostAlpha = nullptr, *progGlowDown = nullptr, *progGlowComp = nullptr;
+            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progSeamSt = nullptr, *progGsSt = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutlineH = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progZtop = nullptr, *progVram = nullptr, *progClutPass = nullptr, *progGlowDown = nullptr, *progGlowComp = nullptr;
             Vulkan::BufferHandle vram;          // [gpudecode] the GPU copy of GS VRAM (4 MB), pages uploaded in stream order
             Vulkan::BufferHandle cring[3]; uint8_t *cmap[3] = {}; VkDeviceSize coff = 0; uint32_t cslot = 0;   // [batch] host-visible constants ring (one per frame in flight)
             Vulkan::ImageHandle out;            // the composed frame
@@ -305,13 +305,13 @@ namespace seamvk
                 g_gpu.progDepthMask = dev.request_program(kRtVert, sizeof(kRtVert), kDepthMaskFrag, sizeof(kDepthMaskFrag), &dv, &df);
                 g_gpu.progZtop = dev.request_program(kRtVert, sizeof(kRtVert), kZtopFrag, sizeof(kZtopFrag), &dv, &df);   // [ztopnative] same layout: one sampled image
                 g_gpu.progGlowDown = dev.request_program(kRtVert, sizeof(kRtVert), kGlowDownFrag, sizeof(kGlowDownFrag), &dv, &df);   // [postnative] step 4a: one sampled image (the scene)
-                {   // [postnative] steps 1/3: CLUT (0) + Ztop (1) + a mode push constant
+                {   // [clutpass] CLUT (0) + a source target (1) + the destination as input attachment (2) + 16 B of state
                     Vulkan::ResourceLayout av = {}, af = {};
                     av.output_mask = 0x0u; av.push_constant_size = 16;
                     af.sets[0].uniform_buffer_mask = 1u << 0; af.sets[0].meta[0].array_size = 1;
-                    af.sets[0].sampled_image_mask = (1u << 1) | (1u << 2); af.sets[0].meta[1].array_size = 1; af.sets[0].meta[2].array_size = 1;   // Ztop (1) + the scene as input attachment (2)
+                    af.sets[0].sampled_image_mask = (1u << 1) | (1u << 2); af.sets[0].meta[1].array_size = 1; af.sets[0].meta[2].array_size = 1;
                     af.output_mask = 0x1u; af.push_constant_size = 16;
-                    g_gpu.progPostAlpha = dev.request_program(kRtVert, sizeof(kRtVert), kPostAlphaFrag, sizeof(kPostAlphaFrag), &av, &af);
+                    g_gpu.progClutPass = dev.request_program(kRtVert, sizeof(kRtVert), kClutPassFrag, sizeof(kClutPassFrag), &av, &af);
                 }
                 {   // [postnative] step 4b: the 0x2a00 texture (1) + the destination as input attachment (2), as gs.frag's DATE read
                     Vulkan::ResourceLayout cv = {}, cf = {};
@@ -674,44 +674,69 @@ namespace seamvk
         }
 
         // [postnative] step 5: the outline mask, written straight into the frame's alpha from the Z top-byte plane
-        constexpr uint32_t kInkRgb = 0x646464u;   // the outline ink draw's RGBAQ (FUN_00106ba8, kick transcript: 3f80000080646464; its packet is parsed after the marker)
         void runNativeStep(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::FrameList &f, const seamgs::Draw &d)
         {
-            if (d.prog == 1 || d.prog == 3)
-            {   // [postnative] passes into the scene keyed by the Z top byte: step 1 = the outline ink (rgb -= ink * A >> 7, reading
-                // the scene in-pass) + frame.A := CLUT_0x3e90[Ztop].A (the Kaioken body mask; zero palette otherwise), step 3 =
-                // frame.A := CLUT_0x3e84[Ztop].A (the blur weight). Palettes captured by the front end at the step's marker.
-                if (!g_gpu.progPostAlpha) return;
-                auto fi = g_gpu.targets.find(d.st.tex0lo); auto zi = g_gpu.targets.find(0x1c00u);
-                if (fi == g_gpu.targets.end() || !fi->second.img) return;
-                Target &ft = fi->second;
-                Target *zt = (zi != g_gpu.targets.end() && zi->second.img) ? &zi->second : nullptr;
-                if (!zt) return;
-                toSampled(cmd, *zt);
+            if (d.hostPass == 1)
+            {   // [clutpass] the game's own pass, from its captured state: destination = its FRAME target, read in-pass; the
+                // texture (when any) = the target its TEX0 names, index = that target's alpha byte (PSMT8H); GS blend per pixel.
+                if (!g_gpu.progClutPass) return;
+                static const bool s_log = [](){ const char *v = std::getenv("PS2X_CLUTPASS_LOG"); return v && v[0] && v[0] != '0'; }();
+                if (s_log) std::fprintf(stderr, "[clutpass] frame %llu step %u fbp 0x%x tme %u tex0 %08x%08x msk %08x vcol %08x targets:%zu\n", (unsigned long long)f.frame, d.prog, d.st.fbp, d.st.tme, d.st.tex0hi, d.st.tex0lo, d.st.fbmsk, d.vcol, g_gpu.targets.size());
+                Target &ft = target(dev, d.st.fbp, d.st.fbw);   // created on demand: step 6 is the first writer of the Z buffer's colour view (0x1c00) in a frame
+                if (!ft.img) { static int s_n = 0; if (s_n++ < 3) std::fprintf(stderr, "[clutpass] step %u: no target for fbp 0x%x\n", d.prog, d.st.fbp); return; }
+                uint32_t srcSel = 0; Target *src = nullptr;
+                if (d.st.tme)
+                {
+                    const uint32_t tbp = d.st.tex0lo & 0x3FFFu, psm = (d.st.tex0lo >> 20) & 0x3Fu;
+                    if (psm != 0x1Bu) { static int s_n = 0; if (s_n++ < 3) std::fprintf(stderr, "[clutpass] step %u: texture psm 0x%x at 0x%x not PSMT8H -- pass dropped\n", d.prog, psm, tbp); return; }
+                    if (tbp == d.st.fbp) srcSel = 1u;
+                    else
+                    {
+                        auto si = g_gpu.targets.find(tbp);
+                        if (si == g_gpu.targets.end() || !si->second.img) { static int s_n = 0; if (s_n++ < 3) std::fprintf(stderr, "[clutpass] step %u: no target for the texture at 0x%x\n", d.prog, tbp); return; }
+                        src = &si->second; srcSel = 2u;
+                    }
+                }
+                if (src) toSampled(cmd, *src);
                 toAttachment(cmd, ft, false);
                 Vulkan::RenderPassInfo rp = {};
                 rp.num_color_attachments = 1; rp.color_attachments[0] = &ft.img->get_view(); rp.load_attachments = 1u << 0; rp.store_attachments = 1u << 0;
-                Target &dsA = depth(dev, d.st.zbp, d.st.fbw, d.st.tex0lo); toAttachment(cmd, dsA, true);   // [stencildate] alpha writes: the stencil follows
+                Target &dsA = depth(dev, d.st.zbp, d.st.fbw, d.st.fbp); toAttachment(cmd, dsA, true);   // [stencildate] alpha writes: the stencil follows
                 rp.depth_stencil = &dsA.img->get_view(); rp.op_flags = Vulkan::RENDER_PASS_OP_LOAD_DEPTH_STENCIL_BIT | Vulkan::RENDER_PASS_OP_STORE_DEPTH_STENCIL_BIT;
                 static Vulkan::RenderPassInfo::Subpass s_sub = [](){ Vulkan::RenderPassInfo::Subpass sp; sp.num_color_attachments = 1; sp.color_attachments[0] = 0; sp.num_input_attachments = 1; sp.input_attachments[0] = 0; sp.depth_stencil_mode = Vulkan::RenderPassInfo::DepthStencil::ReadWrite; return sp; }();
-                rp.subpasses = &s_sub; rp.num_subpasses = 1;   // the ink reads the destination in-pass
+                rp.subpasses = &s_sub; rp.num_subpasses = 1;
                 cmd.begin_render_pass(rp);
                 cmd.set_opaque_state();
-                if (stencilDate()) { cmd.set_stencil_test(true); cmd.set_stencil_ops(VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP); cmd.set_stencil_reference(0xFFu, 0xFFu, 0u); }
-                cmd.set_program(g_gpu.progPostAlpha);
+                const bool writeA = ((d.st.fbmsk >> 24) & 0xFFu) != 0xFFu;
+                if (stencilDate() && writeA) { cmd.set_stencil_test(true); cmd.set_stencil_ops(VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP); cmd.set_stencil_reference(0xFFu, 0xFFu, 0u); }
+                cmd.set_program(g_gpu.progClutPass);
                 cmd.set_cull_mode(VK_CULL_MODE_NONE);
                 cmd.set_depth_test(false, false);
                 cmd.set_blend_enable(false);
-                cmd.set_color_write_mask(d.prog == 1 ? (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT) : VK_COLOR_COMPONENT_A_BIT);
+                {
+                    uint32_t wm = 0;
+                    if ((d.st.fbmsk & 0xFFu) != 0xFFu) wm |= VK_COLOR_COMPONENT_R_BIT;
+                    if (((d.st.fbmsk >> 8) & 0xFFu) != 0xFFu) wm |= VK_COLOR_COMPONENT_G_BIT;
+                    if (((d.st.fbmsk >> 16) & 0xFFu) != 0xFFu) wm |= VK_COLOR_COMPONENT_B_BIT;
+                    if (writeA) wm |= VK_COLOR_COMPONENT_A_BIT;
+                    static int s_partial = 0;
+                    if (((d.st.fbmsk & 0xFFu) != 0u && (d.st.fbmsk & 0xFFu) != 0xFFu) && s_partial++ < 3) std::fprintf(stderr, "[clutpass] step %u: partial channel mask %08x treated as whole channels\n", d.prog, d.st.fbmsk);
+                    cmd.set_color_write_mask(wm);
+                }
                 cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-                const uint32_t w = ft.img->get_width(), h = ft.img->get_height();
+                const uint32_t w = ft.img->get_width(), h = ft.img->get_height(), sc = g_gpu.scale;
                 VkViewport vp = {}; vp.width = float(w); vp.height = float(h); vp.maxDepth = 1.0f; cmd.set_viewport(vp);
-                VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = h; cmd.set_scissor(sr);
-                cmd.set_texture(0, 1, zt->img->get_view(), Vulkan::StockSampler::NearestClamp);
+                VkRect2D sr = {}; sr.offset.x = (int32_t)std::min(w, d.st.scax0 * sc); sr.offset.y = (int32_t)std::min(h, d.st.scay0 * sc);
+                sr.extent.width = std::min(w, (d.st.scax1 + 1u) * sc) - (uint32_t)sr.offset.x; sr.extent.height = std::min(h, (d.st.scay1 + 1u) * sc) - (uint32_t)sr.offset.y;
+                cmd.set_scissor(sr);
+                cmd.set_texture(0, 1, src ? src->img->get_view() : g_gpu.white->get_view(), Vulkan::StockSampler::NearestClamp);
                 cmd.set_input_attachments(0, 2);
                 uint32_t *cl = static_cast<uint32_t *>(cmd.allocate_constant_data(0, 0, 256u * 4u));
                 if (d.rt >= 0 && (size_t)d.rt < f.stepCluts.size()) std::memcpy(cl, f.stepCluts[d.rt].data(), 1024); else std::memset(cl, 0, 1024);
-                const uint32_t pcv[4] = { d.prog == 3 ? 1u : 0u, kInkRgb, 0u, 0u };
+                const uint32_t pcv[4] = {
+                    srcSel | ((uint32_t)d.st.tfx << 4) | ((uint32_t)d.st.tcc << 8) | ((uint32_t)d.st.abe << 12) | ((uint32_t)d.st.ate << 13) | ((uint32_t)d.st.atst << 16) | ((uint32_t)d.st.colclamp << 20),
+                    (uint32_t)d.st.aA | ((uint32_t)d.st.aB << 2) | ((uint32_t)d.st.aC << 4) | ((uint32_t)d.st.aD << 6) | ((uint32_t)d.st.fix << 8) | ((uint32_t)d.st.aref << 16),
+                    d.vcol, 0u };
                 cmd.push_constants(pcv, 0, sizeof(pcv));
                 cmd.draw(3);
                 cmd.end_render_pass();
@@ -1301,7 +1326,7 @@ namespace seamvk
                                  i, d.prog, n, wmin, wmax, neg, pos, zqmin, zqmax, t.fbp, t.fbw, t.fpsm, t.fbmsk, t.zbp, t.zte, t.ztst, t.zmsk, t.tme, t.tex, t.texFromDrawn ? "(DRAWN)" : "", t.abe, t.aA, t.aB, t.aC, t.aD, t.ate, t.atst, t.aref, t.afail, t.date, t.ctxt, t.scax0, t.scax1, t.scay0, t.scay1, t.tex0hi, t.tex0lo, t.fst, t.tfx, t.tcc, t.wms, t.wmt, t.texW, t.texH, (unsigned long long)t.dbgPrim, (unsigned long long)t.dbgPrmode, t.dbgPrmodecont, (unsigned long long)t.dbgSc[0], (unsigned long long)t.dbgSc[1]);
                     continue;
                 }
-                if (d.kind == 3) { std::fprintf(stderr, "[seamvk]  draw %zu NATIVESTEP %u fbp 0x%x zbp 0x%x\n", i, d.prog, t.fbp, t.zbp); continue; }
+                if (d.kind == 3) { std::fprintf(stderr, "[seamvk]  draw %zu NATIVESTEP %u%s fbp 0x%x zbp 0x%x msk %08x tme %u tex0 %08x%08x tfx %u tcc %u abe %u (%u,%u,%u,%u) fix %u vcol %08x rect %u..%u %u..%u\n", i, d.prog, d.hostPass ? " [clutpass]" : "", t.fbp, t.zbp, t.fbmsk, t.tme, t.tex0hi, t.tex0lo, t.tfx, t.tcc, t.abe, t.aA, t.aB, t.aC, t.aD, t.fix, d.vcol, t.scax0, t.scax1, t.scay0, t.scay1); continue; }
                 if (d.kind == 2 && d.rt >= 0 && (size_t)d.rt < f.rtDecodes.size())
                 {
                     const seamgs::RtDecode &r = f.rtDecodes[d.rt];

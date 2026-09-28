@@ -249,8 +249,10 @@ namespace
 namespace
 {
     struct NativeStep { uint32_t lo, hi; int id; bool inRun; bool marked = false; };
-    NativeStep g_nativeSteps[] = { {0x109848u, 0x109938u, 0, false}, {0x106ba8u, 0x106c5cu, 1, false}, {0x24b118u, 0x24b1dcu, 2, false}, {0x245a50u, 0x245de4u, 3, false}, {0x103070u, 0x103254u, 4, false}, {0x105cd8u, 0x105f28u, 5, false} };   // 5: outline mask, native renderer only
-    const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : (seamvk::on() ? 0x3Fu : 0u); }();   // [postnative] every pinned step native under the seam   // native renderer: depth mask + outline by default
+    NativeStep g_nativeSteps[] = { {0x109848u, 0x109938u, 0, false}, {0x106ba8u, 0x106c5cu, 1, false}, {0x24b118u, 0x24b1dcu, 2, false}, {0x245a50u, 0x245de4u, 3, false}, {0x103070u, 0x103254u, 4, false}, {0x105cd8u, 0x105f28u, 5, false},
+                                   {0x101298u, 0x10133cu, 6, false}, {0x101548u, 0x1015ccu, 7, false} };   // 5+: native renderer only; 6/7 [clutpass]: the frame through CLUT 0x3e80 keyed by its own alpha, the far-depth tint through 0x3e94
+    const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : (seamvk::on() ? 0xFFu : 0u); }();   // [postnative] every pinned step native under the seam   // native renderer: depth mask + outline by default
+    int g_parseStep = -1;   // [clutpass] the generic step this packet belongs to (its kicks are recorded by the front end)
     // The step's packets are not dropped: their register writes (FRAME/ZBUF/SCISSOR/TEST... which the game's later draws
     // inherit) still reach the backend; only their DRAW kicks are neutralised, XYZ2/XYZF2 -> XYZ3/XYZF3 (no kick), by
     // rewriting the GIF tags' register descriptors and A+D addresses in place. Tag state persists across PATH2 payloads.
@@ -291,6 +293,7 @@ namespace
     }
     bool nativeIntercept(const GifArbiterPacket &pkt)
     {
+        g_parseStep = -1;
         for (NativeStep &st : g_nativeSteps)
         {
             if (!((g_nativeMask >> st.id) & 1u)) continue;
@@ -316,6 +319,7 @@ namespace
                 // and palette writes the step does earlier (between other owners' draws) would place it too early, and
                 // draws in between (the characters) would overwrite what it wrote (the outline vanished that way).
                 if (kick && !st.marked && seamvk::on()) { st.marked = true; seamvk::onNativeStep(st.id); }   // every step has a native pass under the seam
+                if (seamvk::on() && seamvk::nativeStepGeneric(st.id)) g_parseStep = st.id;
                 return true;
             }
         }
@@ -361,7 +365,9 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
     {   // [seamwshud] the widescreen HUD squeeze (edge / centered layouts) is a packet rewrite on paraLLEl-GS's path; the
         // native front end parses the rewritten packet
         size_t sz = size; ps2x_pgs::wsHudPreprocess(pathId, data, sz); size = (uint32_t)sz;
+        seamvk::nativeParse(g_parseStep);   // [clutpass]
         seamvk::onGifPacket(pathId, data, size, false);
+        seamvk::nativeParse(-1);
     }
 #endif
     if (ps2x_pgs::enabled() && ps2x_pgs::exclusive())

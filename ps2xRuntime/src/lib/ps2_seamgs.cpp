@@ -232,6 +232,7 @@ namespace seamgs
         std::unordered_map<uint64_t, int32_t> g_texByKey;
         bool g_forceCpuDecode = false;   // [gpudecode] cpuTargetOk: decode this one on the CPU regardless of the threshold
         bool g_texDirty = true; int32_t g_curTex = -1; uint32_t g_curTexW = 0, g_curTexH = 0;
+        int g_nativeParse = -1;   // [clutpass] the generic native step whose packet is being parsed (its kicks are neutralised: recorded, not drawn)
         uint32_t g_lastSceneFbp = 0;   // [ztopnative] the scene buffer (0x0 / 0xe00) the game last set as FRAME: the native step 2's source
         uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0, g_cpuSprites = 0, g_cpuTris = 0, g_rtDecodes = 0, g_gpuDecodes = 0;
         uint64_t g_pagesSame = 0;
@@ -1069,12 +1070,61 @@ namespace seamgs
             return true;
         }
 
+        // [clutpass] A neutralised kick of a generic native step: the exact register state (+ the palette, as the mirror holds it
+        // NOW) becomes a kind-3 pass at this stream position; consecutive kicks with the same state (the 16 strips of one
+        // full-screen sprite pass) fold into one pass whose rect is their union.
+        void captureNativeKick(uint32_t prim)
+        {
+            State s = currentState(false);
+            const Ctx &c = g_r.ctx[s.ctxt];
+            if (s.tme) { s.tfx = (uint8_t)((c.tex0 >> 35) & 3u); s.tcc = (uint8_t)((c.tex0 >> 34) & 1u); s.tex0lo = (uint32_t)c.tex0; s.tex0hi = (uint32_t)(c.tex0 >> 32); s.mmag = (uint8_t)((c.tex1 >> 5) & 1u); }
+            const uint32_t nv = prim == 6u ? 2u : (prim == 0u ? 1u : (prim <= 2u ? 2u : 3u));
+            float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+            for (uint32_t i = 0; i < nv; ++i) { const float x = (float(int32_t(g_vq[i].x)) - float(s.ofx)) / 16.0f, y = (float(int32_t(g_vq[i].y)) - float(s.ofy)) / 16.0f; x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y); }
+            const GsVert &cv = g_vq[nv - 1u];   // flat colour: the last vertex's
+            const uint32_t vcol = (uint32_t)cv.r | ((uint32_t)cv.g << 8) | ((uint32_t)cv.b << 16) | ((uint32_t)cv.a << 24);
+            if (s.tme && s.fst)
+            {   // the passes map texels 1:1 onto pixels (u = x + 0.5): anything else is not this pass family
+                static int s_warn = 0;
+                const float du = float(g_vq[0].u) / 16.0f - x0, dv = float(g_vq[0].v) / 16.0f - y0;
+                if ((du < 0.0f || du > 1.0f || dv < 0.0f || dv > 1.0f) && s_warn++ < 4) std::fprintf(stderr, "[clutpass] step %d: sprite uv not 1:1 (du %.2f dv %.2f) fbp 0x%x tex0 %08x%08x\n", g_nativeParse, du, dv, s.fbp, s.tex0hi, s.tex0lo);
+            }
+            const uint16_t rx0 = (uint16_t)std::max(0.0f, x0), ry0 = (uint16_t)std::max(0.0f, y0), rx1 = (uint16_t)std::max(0.0f, std::ceil(x1) - 1.0f), ry1 = (uint16_t)std::max(0.0f, std::ceil(y1) - 1.0f);
+            Draw *last = g_list.draws.empty() ? nullptr : &g_list.draws.back();
+            auto samePass = [](const State &a, const State &b) {
+                return a.fbp == b.fbp && a.fbw == b.fbw && a.fpsm == b.fpsm && a.fbmsk == b.fbmsk && a.zbp == b.zbp && a.tme == b.tme && a.tex0lo == b.tex0lo && a.tex0hi == b.tex0hi
+                    && a.tfx == b.tfx && a.tcc == b.tcc && a.abe == b.abe && a.aA == b.aA && a.aB == b.aB && a.aC == b.aC && a.aD == b.aD && a.fix == b.fix
+                    && a.ate == b.ate && a.atst == b.atst && a.aref == b.aref && a.afail == b.afail && a.colclamp == b.colclamp && a.ctxt == b.ctxt; };
+            if (last && last->kind == 3 && last->hostPass == 1 && last->prog == (uint8_t)g_nativeParse && last->vcol == vcol && samePass(last->st, s))
+            {
+                last->st.scax0 = std::min(last->st.scax0, rx0); last->st.scay0 = std::min(last->st.scay0, ry0);
+                last->st.scax1 = std::max(last->st.scax1, rx1); last->st.scay1 = std::max(last->st.scay1, ry1);
+                return;
+            }
+            Draw d; d.kind = 3; d.prog = (uint8_t)g_nativeParse; d.hostPass = 1; d.vcol = vcol;
+            // the pass rect: the sprites' union clipped by the scissor
+            s.scax0 = std::max<uint16_t>(s.scax0, rx0); s.scay0 = std::max<uint16_t>(s.scay0, ry0); s.scax1 = std::min<uint16_t>(s.scax1, rx1); s.scay1 = std::min<uint16_t>(s.scay1, ry1);
+            d.st = s;
+            if (s.tme)
+            {
+                const uint32_t psm = (uint32_t)((c.tex0 >> 20) & 0x3Fu);
+                if (psm == 0x13u || psm == 0x14u || psm == 0x1Bu || psm == 0x24u || psm == 0x2Cu)
+                {
+                    std::array<uint32_t, 256> cl{}; uint32_t bits[16] = {};
+                    readClut((uint32_t)((c.tex0 >> 37) & 0x3FFFu), (uint32_t)((c.tex0 >> 51) & 0xFu), (uint32_t)((c.tex0 >> 56) & 0x1Fu), g_r.texa, cl.data(), bits);
+                    d.rt = (int32_t)g_list.stepCluts.size(); g_list.stepCluts.push_back(cl);
+                }
+            }
+            noteDrawPages(d.st);
+            g_list.draws.push_back(d);
+        }
         void kick(bool draw)
         {
             const uint64_t pr = g_r.prmodecont ? g_r.prim : ((g_r.prim & 7u) | (g_r.prmode & ~7ull));
             const uint32_t prim = (uint32_t)(pr & 7u);
             const uint32_t need = prim == 0 ? 1u : (prim == 1 || prim == 2 || prim == 6) ? 2u : 3u;
             if (g_vn < need) return;
+            if (!draw && g_nativeParse >= 0 && !g_inHostGif) captureNativeKick(prim);   // [clutpass]
             if (draw)
             {
                 if (g_inHostGif)
@@ -1488,9 +1538,11 @@ namespace seamvk
         // uploads can land between them in the arbiter queue: they do not end the pairing. Only a new 'SVKD' does.
     }
 
+    bool nativeStepGeneric(int step) { return step == 1 || step == 3 || step == 6 || step == 7; }   // [clutpass] ink + Kaioken mask, haze + blur weight, alpha-keyed 0x3e80, far tint 0x3e94
+    void nativeParse(int step) { seamgs::g_nativeParse = step; }
     void onNativeStep(int step)
     {
-        if (!on()) return;
+        if (!on() || nativeStepGeneric(step)) return;
         std::lock_guard<std::mutex> lk(seamgs::g_mtx);
         static uint64_t s_lastFrame[8] = {};   // once per frame: the step's packets interleave with other owners' (uploads, decodes), so the arbiter sees several runs
         // Step 5 (outline) runs at EVERY run of its packets: the game's alpha clear (FUN_00106ba8) sits between the mask
@@ -1501,11 +1553,11 @@ namespace seamvk
         d.st.fbp = (uint32_t)(seamgs::g_r.ctx[0].frame & 0x1FFu) << 5; d.st.fbw = (uint32_t)((seamgs::g_r.ctx[0].frame >> 16) & 0x3Fu);
         d.st.tex0lo = seamgs::g_lastSceneFbp;   // [ztopnative] step 2 reads the scene buffer's alpha (its TEX0 may be in the not-yet-parsed packet)
         d.st.zbp = (uint32_t)(seamgs::g_r.ctx[0].zbuf & 0x1FFu) << 5;
-        if (step == 5 || step == 3 || step == 1)
-        {   // the palette the step reads (0x3e8c depth ramp for the outline, 0x3e84 blur weight for step 3, 0x3e90 Kaioken body
-            // mask for step 1) as it is NOW: the GPU thread runs the pass later, when the mirror may hold another frame's palette
+        if (step == 5)
+        {   // the palette the step reads (0x3e8c depth ramp for the outline) as it is NOW: the GPU thread runs the pass later,
+            // when the mirror may hold another frame's palette
             std::array<uint32_t, 256> cl{}; uint32_t bits[16] = {};
-            seamgs::readClut(step == 5 ? 0x3e8cu : step == 3 ? 0x3e84u : 0x3e90u, 0u, 0u, seamgs::g_r.texa, cl.data(), bits);
+            seamgs::readClut(0x3e8cu, 0u, 0u, seamgs::g_r.texa, cl.data(), bits);
             d.rt = (int32_t)seamgs::g_list.stepCluts.size(); seamgs::g_list.stepCluts.push_back(cl);
             {   // PS2X_SEAMGS_STEPCLUTLOG=1: what the step's palette holds at the marker (stale if the packet itself uploads it)
                 static const bool s_log = [](){ const char *v = std::getenv("PS2X_SEAMGS_STEPCLUTLOG"); return v && v[0] && v[0] != '0'; }(); static uint64_t s_lastF = ~0ull;

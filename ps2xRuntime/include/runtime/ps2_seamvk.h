@@ -53,6 +53,10 @@ namespace seamvk
     // [postnative] a post-chain step replaced at the engine seam: its packets' kicks are neutralised by the arbiter and the
     // native front end records the step at that stream position (kind 3 draw) for the GPU pass.
     void onNativeStep(int step);
+    // [clutpass] generic steps (their packets' kicks are neutralised too): while a packet of the step is parsed, every kick
+    // is recorded with its exact register state, vertex colour and palette as a native pass at that stream position.
+    void nativeParse(int step);   // -1: none
+    bool nativeStepGeneric(int step);
 
     // Present thread: the newest native frame (RGBA8), when one is ready.
     bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h);
