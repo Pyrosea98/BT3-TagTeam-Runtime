@@ -41,7 +41,7 @@ bool gifTransfer(uint8_t pathId, const uint8_t *data, size_t size);   // true = 
 // [seamwshud] The widescreen HUD squeeze (and the other packet edits paraLLEl-GS's path applies before its backend) for
 // the native renderer: run on the arbiter's copy BEFORE the native front end parses it; data/size may move to the
 // rebuilt packet. True when the packet was edited.
-bool wsHudPreprocess(uint8_t pathId, const uint8_t *&data, size_t &size);
+bool wsHudPreprocess(uint8_t pathId, const uint8_t *&data, size_t &size, bool hostGif = false);   // [wshudhost] hostGif: the seam's mesh packet, registers only
 }
 // [seampack] BC1/BC2/BC3 (raylib PIXELFORMAT_COMPRESSED_DXT*) -> RGBA8, for the native renderer's texture-pack uploads
 bool ps2xBcDecode(int fmt, const std::vector<uint8_t> &src, int w, int h, std::vector<uint8_t> &rgba);

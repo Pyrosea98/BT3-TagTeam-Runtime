@@ -1011,7 +1011,7 @@ static int wsBloomTargetState(const State::WsHud &h, uint64_t primRaw)
     if (sprite && tme && (c.fpsm == 2u || c.fpsm == 10u) && (c.fbp == 0u || c.fbp == 112u) && uint32_t(c.frame >> 32) == 0x3fffu && (tpsm == 50u || tpsm == 58u)) return 4;   // depth mask
     return 0;
 }
-static bool wsHudSubdivideLocked(State &s, const uint8_t *data, size_t size, float inv)
+static bool wsHudSubdivideLocked(State &s, const uint8_t *data, size_t size, float inv, bool hostGif = false)
 {
     State::WsHud &h = s.wshud;
     const int layout = g_wsHudLayout.load(std::memory_order_relaxed);
@@ -1156,7 +1156,13 @@ static bool wsHudSubdivideLocked(State &s, const uint8_t *data, size_t size, flo
                 }
             }
             // state tracking for the classification (registers inside this tag), no scissor rewrite
-            for (uint32_t l = 0; l < nloop; l++)
+            bool skipTag = false;
+            if (hostGif)
+            {   // [wshudhost] a vertex-only tag of the seam's mesh packet carries no state the walker needs
+                skipTag = true;
+                for (uint32_t i = 0; i < nreg && skipTag; i++) { const uint32_t r = uint32_t((hi >> (4 * i)) & 0xFu); if (!(r == 0x1 || r == 0x2 || r == 0x3 || r == 0x4 || r == 0x5 || r == 0xA)) skipTag = false; }
+            }
+            for (uint32_t l = 0; l < (skipTag ? 0u : nloop); l++)
                 for (uint32_t i = 0; i < nreg; i++)
                 {
                     const uint32_t r = uint32_t((hi >> (4 * i)) & 0xFu);
@@ -1458,7 +1464,7 @@ static bool wsHudSubdivideLocked(State &s, const uint8_t *data, size_t size, flo
     return changed;
 }
 // Walk one GIF packet (PACKED / REGLIST) and rewrite HUD vertex X in place. Cheap: a few branches per qword.
-void wsHudRewriteLocked(State &s, uint8_t *data, size_t size)
+void wsHudRewriteLocked(State &s, uint8_t *data, size_t size, bool hostGif = false)
 {
     State::WsHud &h = s.wshud;
     if (h.lastSwap != s.swaps)
@@ -1512,6 +1518,13 @@ void wsHudRewriteLocked(State &s, uint8_t *data, size_t size)
         {   // PACKED
             const size_t bytes = size_t(nloop) * nreg * 16u;
             if (off + bytes > size) break;
+            if (hostGif)
+            {   // [wshudhost] the seam's own mesh packet: its vertices are 3D and never squeezed, only its register writes matter
+                // to the walker's state -- a vertex-only tag (RGBAQ/ST/UV/XYZ/FOG) is skipped whole (100k vertices a frame otherwise)
+                bool vtxOnly = true;
+                for (uint32_t i = 0; i < nreg && vtxOnly; i++) { const uint32_t r = uint32_t((hi >> (4 * i)) & 0xFu); if (!(r == 0x1 || r == 0x2 || r == 0x3 || r == 0x4 || r == 0x5 || r == 0xA)) vtxOnly = false; }
+                if (vtxOnly) { off += bytes; h.qn = 0; h.rgbaN = 0; h.uvN = 0; continue; }
+            }
             for (uint32_t l = 0; l < nloop; l++)
                 for (uint32_t i = 0; i < nreg; i++)
                 {
@@ -1853,7 +1866,7 @@ static std::mutex g_tdMtx; static std::vector<TargetDumpReq> g_tdReqs;
 void requestTargetDump(const TargetDumpReq &r) { std::lock_guard<std::mutex> lk(g_tdMtx); g_tdReqs.push_back(r); }
 // [pgswshud] the HUD squeeze + [pgsink]/[pgsfx] packet edits (PS2X_PGS_WSHUD=0 disables): rewrite HUD vertex X before the
 // backend (or the native front end) parses the packet. data/size move to the rebuilt packet when quads were split.
-static bool wsHudApplyLocked(State &s, const uint8_t *&data, size_t &size)
+static bool wsHudApplyLocked(State &s, const uint8_t *&data, size_t &size, bool hostGif = false)
 {
     static const bool s_wshud = [](){ const char *v = std::getenv("PS2X_PGS_WSHUD"); return !(v && v[0] == '0'); }();
     static const bool s_inkShiftEnvOn = [](){ const char *v = std::getenv("PS2X_PGS_INKSHIFT"); return v && v[0] && std::atof(v) > 0.0; }();
@@ -1863,13 +1876,13 @@ static bool wsHudApplyLocked(State &s, const uint8_t *&data, size_t &size)
     // otherwise CLOSED (and self-latching -- wshud.active is only set from inside the pass).
     if (!((s_wshud && (g_ps2xWsHudInv < 0.999f || s.wshud.active || inkWork)) || ps2xVpKeep())) return false;
     const uint8_t *xdata = data; size_t xsize = size;
-    if (wsHudSubdivideLocked(s, data, size, s.wshud.lastInv)) { xdata = s.wsBuf.data(); xsize = s.wsBuf.size(); }
-    wsHudRewriteLocked(s, const_cast<uint8_t *>(xdata), xsize);   // the packet buffer is the arbiter's copy (or our rebuilt one)
+    if (wsHudSubdivideLocked(s, data, size, s.wshud.lastInv, hostGif)) { xdata = s.wsBuf.data(); xsize = s.wsBuf.size(); }
+    wsHudRewriteLocked(s, const_cast<uint8_t *>(xdata), xsize, hostGif);   // the packet buffer is the arbiter's copy (or our rebuilt one)
     data = xdata; size = xsize;
     return true;
 }
 
-bool wsHudPreprocess(uint8_t pathId, const uint8_t *&data, size_t &size)
+bool wsHudPreprocess(uint8_t pathId, const uint8_t *&data, size_t &size, bool hostGif)
 {   // [seamwshud] for the native renderer: the reference backend gets no packets in seam mode, so gifTransfer never runs the
     // rewrite; the arbiter calls this on every packet (host draws included: the walker tracks the register state) before
     // the native front end parses it. The same rewrite as the backend path -- edge/centered HUD layouts included.
@@ -1877,7 +1890,7 @@ bool wsHudPreprocess(uint8_t pathId, const uint8_t *&data, size_t &size)
     State &s = st();
     std::lock_guard<std::mutex> lk(s.mtx);
     if (!initLocked(s)) return false;
-    return wsHudApplyLocked(s, data, size);
+    return wsHudApplyLocked(s, data, size, hostGif);
 }
 
 bool gifTransfer(uint8_t pathId, const uint8_t *data, size_t size)

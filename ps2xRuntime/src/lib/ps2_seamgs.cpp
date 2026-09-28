@@ -1887,11 +1887,12 @@ namespace seamvk
         }
         if (!on() || !data || size == 0u) return;
         std::lock_guard<std::mutex> lk(seamgs::g_mtx);
-        const auto t0 = std::chrono::steady_clock::now();
+        const bool prof = seamgs::profOn();   // [timers] a clock read per packet costs 2 % of the process: only when profiling
+        const auto t0 = prof ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         seamgs::g_inHostGif = hostGif;
         seamgs::parse(path, data, size);
         seamgs::g_inHostGif = false;
-        seamgs::g_msParse += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (prof) seamgs::g_msParse += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         // The seam submits 'SVKD' and its 'SVKG' packets back to back from the kick thread, but the game thread's PATH3
         // uploads can land between them in the arbiter queue: they do not end the pairing. Only a new 'SVKD' does.
     }
@@ -1940,8 +1941,9 @@ namespace seamvk
         DrawPacket k; std::memcpy(&k, data, sizeof(k));
         if (k.magic != kDrawMagic || k.count < 3u || size < sizeof(DrawPacket) + size_t(k.count) * k.stride) return;
         std::lock_guard<std::mutex> lk(seamgs::g_mtx);
-        const auto t0 = std::chrono::steady_clock::now();
-        struct T { std::chrono::steady_clock::time_point t; ~T() { seamgs::g_msHost += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); } } tt{t0};
+        const bool prof = seamgs::profOn();
+        const auto t0 = prof ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        struct T { std::chrono::steady_clock::time_point t; bool on; ~T() { if (on) seamgs::g_msHost += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count(); } } tt{t0, prof};
         if (seamgs::g_haveHost && !seamgs::g_hostDrawn) ++seamgs::g_hostDropped[seamgs::g_host.prog & 7u];
         ++seamgs::g_hostIn[k.prog & 7u];
         seamgs::g_host = k; seamgs::g_haveHost = true; seamgs::g_hostDrawn = false; seamgs::g_hostPassN = 0;
