@@ -22,7 +22,7 @@ public:
         // (Vulkan compute; only when the backend is built in), 3 = Direct3D 11 (native Windows present;
         // RETIRED for now -- kept only so old settings can be migrated). gpuRenderer stays in sync
         // (renderer != 1) for the code that still reads it.
-        static constexpr int kRendererOpenGL = 0, kRendererSoftware = 1, kRendererParallelGS = 2, kRendererD3D11 = 3;
+        static constexpr int kRendererOpenGL = 0, kRendererSoftware = 1, kRendererParallelGS = 2, kRendererD3D11 = 3, kRendererNative = 4;   // [nativeopt] 4 = the native Vulkan renderer at the engine seam (paraLLEl-GS device + PS2X_SEAMVK)
 #if defined(PS2X_HAVE_PGS) && !defined(_WIN32)
         static constexpr int kRendererDefault = 2;   // [pgs] Vulkan compute backend
 #else

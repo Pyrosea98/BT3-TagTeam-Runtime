@@ -251,7 +251,10 @@ namespace
     struct NativeStep { uint32_t lo, hi; int id; bool inRun; bool marked = false; };
     NativeStep g_nativeSteps[] = { {0x109848u, 0x109938u, 0, false}, {0x106ba8u, 0x106c5cu, 1, false}, {0x24b118u, 0x24b1dcu, 2, false}, {0x245a50u, 0x245de4u, 3, false}, {0x103070u, 0x103254u, 4, false}, {0x105cd8u, 0x105f28u, 5, false},
                                    {0x101298u, 0x10133cu, 6, false}, {0x101548u, 0x1015ccu, 7, false} };   // 5+: native renderer only; 6/7 [clutpass]: the frame through CLUT 0x3e80 keyed by its own alpha, the far-depth tint through 0x3e94
-    const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : (seamvk::on() ? 0xFFu : 0u); }();   // [postnative] every pinned step native under the seam   // native renderer: depth mask + outline by default
+    // [nativeopt] evaluated on first use, not at program start: seamvk::on() is decided by the settings file (renderer =
+    // "native"), which loads after the static initializers ran -- a file-scope constant here read it as off and silently
+    // disabled every native post step under the settings-selected renderer.
+    uint32_t nativeMask() { static const uint32_t m = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : (seamvk::on() ? 0xFFu : 0u); }(); return m; }   // [postnative] every pinned step native under the seam   // native renderer: depth mask + outline by default
     int g_parseStep = -1;   // [clutpass] the generic step this packet belongs to (its kicks are recorded by the front end)
     // The step's packets are not dropped: their register writes (FRAME/ZBUF/SCISSOR/TEST... which the game's later draws
     // inherit) still reach the backend; only their DRAW kicks are neutralised, XYZ2/XYZF2 -> XYZ3/XYZF3 (no kick), by
@@ -296,7 +299,7 @@ namespace
         g_parseStep = -1;
         for (NativeStep &st : g_nativeSteps)
         {
-            if (!((g_nativeMask >> st.id) & 1u)) continue;
+            if (!((nativeMask() >> st.id) & 1u)) continue;
             const bool in = pkt.owner >= st.lo && pkt.owner < st.hi;
             if (in && !st.inRun)
             {
@@ -342,7 +345,7 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
             }
             else if (!in && o.inRun) { o.inRun = false; if (o.entries == o.nth) { pktOracleDump(o.lo, o.nth, "after"); o.done = true; } }
         }
-    if (g_nativeMask && pkt.pathId == GifPathId::Path2) nativeIntercept(pkt);   // [postnative] the host pass ran; the packet goes on with its kicks neutralised
+    if (nativeMask() && pkt.pathId == GifPathId::Path2) nativeIntercept(pkt);   // [postnative] the host pass ran; the packet goes on with its kicks neutralised
     uint8_t pathId = static_cast<uint8_t>(pkt.pathId);
     const uint8_t *data = pkt.data; uint32_t size = pkt.size;
     if (pkt.pathId == GifPathId::HostDraw)

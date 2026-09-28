@@ -16,6 +16,7 @@
 namespace seamvk
 {
     bool on();
+    void configure(bool enable);   // [nativeopt] settings: renderer = "native" (ignored once PS2X_SEAMVK is set in the environment)
     void requestDump();   // [dumpkey] dump the next rendered frame (draw list, targets, textures under PS2X_SEAMVK_TEXDUMP)
 
     // std140 mirror of the seam vertex shader's Consts block: 30 vec4.

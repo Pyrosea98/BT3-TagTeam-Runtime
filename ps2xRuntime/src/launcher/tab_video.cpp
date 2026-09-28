@@ -649,10 +649,11 @@ VideoTab::VideoTab(QWidget *parent)
     // RENDERER (stays on the tab: it is the one switch that changes everything else)
     root->addWidget(sectionLabel(QStringLiteral("RENDERER")));
     QStringList renderers = {QStringLiteral("OpenGL (New)"), QStringLiteral("Software (CPU)"),
-                             QStringLiteral("paraLLEl-GS (Vulkan)")};
+                             QStringLiteral("paraLLEl-GS (Vulkan)"), QStringLiteral("Native Vulkan (engine seam)")};
     const QList<int> rendererValues = {SettingsManager::kRendererOpenGL,
                                        SettingsManager::kRendererSoftware,
-                                       SettingsManager::kRendererParallelGS};
+                                       SettingsManager::kRendererParallelGS,
+                                       SettingsManager::kRendererNative};   // [nativeopt]
     int curRenderer = 0;
     for (int i = 0; i < rendererValues.size(); ++i)
         if (rendererValues[i] == s.renderer()) { curRenderer = i; break; }

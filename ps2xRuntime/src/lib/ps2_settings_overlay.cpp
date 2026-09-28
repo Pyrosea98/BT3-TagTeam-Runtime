@@ -1,5 +1,6 @@
 #include "ps2_runtime.h"   // [fps60] ps2Set60Fps
 #include "runtime/ps2_texreplace.h"
+#include "runtime/ps2_seamvk.h"   // [nativeopt] seamvk::configure
 #include "ps2_settings_overlay.h"
 #include "runtime/ps2_netplay.h"   // [netplay]
 #include "runtime/ps2_gs_pgs.h"   // [pgsink] backend ink width
@@ -43,7 +44,7 @@ namespace
     // --- settings.toml helpers -----------------------------------------------
     const char *rendererName(int r)
     {
-        switch (r) { case 0: return "opengl"; case 1: return "software"; case 2: return "parallel-gs"; case 3: return "d3d11"; default: return "opengl"; }
+        switch (r) { case 0: return "opengl"; case 1: return "software"; case 2: return "parallel-gs"; case 3: return "d3d11"; case 4: return "native"; default: return "opengl"; }
     }
     int nameToRenderer(const std::string &s, int def)
     {
@@ -51,6 +52,7 @@ namespace
         if (s == "software" || s == "sw") return 1;
         if (s == "parallel-gs" || s == "parallel_gs" || s == "pgs") return 2;
         if (s == "d3d11" || s == "dx11" || s == "d3d") return 3;
+        if (s == "native" || s == "native-vulkan" || s == "seam") return 4;   // [nativeopt]
         return def;
     }
     std::string colorToHex(unsigned c)
@@ -548,12 +550,12 @@ void PS2SettingsOverlay::loadSettings()
     {
             int r = nameToRenderer(doc.getS("video.renderer", rendererName(m_settings.renderer)), m_settings.renderer);
 #if !defined(PS2X_HAVE_PGS)
-            if (r == Settings::kRendererParallelGS) r = Settings::kRendererOpenGL;
+            if (r == Settings::kRendererParallelGS || r == Settings::kRendererNative) r = Settings::kRendererOpenGL;
 #endif
             // [d3d11] Direct3D 11 is retired for now: an old settings file that picks it falls back to
             // the new OpenGL present. paraLLEl-GS is a normal option on every platform again.
             if (r == Settings::kRendererD3D11) r = Settings::kRendererOpenGL;
-            if (r >= 0 && r <= 3) { m_settings.renderer = r; m_sawRendererKey = true; }
+            if (r >= 0 && r <= 4) { m_settings.renderer = r; m_sawRendererKey = true; }
             // [display] window mode / monitor: the popup owns them, defaulted from the legacy fullscreen flag
             m_settings.windowMode = doc.getI("video.window_mode", m_settings.fullscreen ? 2 : 0);
             m_settings.monitor = doc.getI("video.monitor", 0);
@@ -643,9 +645,14 @@ static void exportRendererEnv(int renderer, bool texPack, bool forceBilinear)
         return;
     }
 #if defined(PS2X_HAVE_PGS)
-    if (renderer == 2)
+    if (renderer == 2 || renderer == 4)
     {
         setEnvDefault("PS2X_PGS", "1");
+        // [nativeopt] renderer 4 = the native Vulkan renderer: paraLLEl-GS's device with the seam in front of it. The
+        // environment still wins (PS2X_SEAMVK=1 on a "parallel-gs" settings file is how the dev scripts run it).
+        setEnvDefault("PS2X_SEAMVK", renderer == 4 ? "1" : "0");
+        seamvk::configure(renderer == 4);   // the flag may already have been read (a static initializer): decide it here too
+        { const char *sv = std::getenv("PS2X_SEAMVK"); std::fprintf(stderr, "[nativeopt] renderer %d -> PS2X_SEAMVK=%s, native %s\n", renderer, sv ? sv : "(unset)", seamvk::on() ? "ON" : "off"); }
         // [pgslive] pack mode only when a pack is actually INDEXED (PS2X_TEXREPLACE or data/Textures): the Texture
         // Replacement switch is greyed out without one, and pack mode costs a second packet walk per frame (a laptop
         // 4060 log showed 17-26 ms/swap of backend CPU at 4x with the switch on and NO pack). With a pack the switch
@@ -1464,7 +1471,7 @@ void PS2SettingsOverlay::drawVideoTab()
                 m_dirty = true;
             }
             ImGui::TextDisabled("199%% matches the console line. Higher = darker ink.");
-            if (m_settings.renderer == 2)
+            if (m_settings.renderer == 2 || m_settings.renderer == 4)
             {   // [pgsink] paraLLEl-GS: the stroke width is the outline chain's edge-detect shift, rewritten in the stream
                 ImGui::Text("Ink Width");
                 ImGui::SameLine(120);
@@ -1515,7 +1522,7 @@ void PS2SettingsOverlay::drawVideoTab()
                 m_settings.dofZFar = reach * 1000;
                 m_dirty = true;
             }
-            if (m_settings.renderer == 2) ImGui::TextDisabled("paraLLEl-GS: off keeps the aura glow (the game blurs through the same pass,\nso a soft halo stays around a charging aura); reach is OpenGL-only.");
+            if (m_settings.renderer == 2 || m_settings.renderer == 4) ImGui::TextDisabled("paraLLEl-GS: off keeps the aura glow (the game blurs through the same pass,\nso a soft halo stays around a charging aura); reach is OpenGL-only.");
             ImGui::TextDisabled("Lower = blur reaches nearer to the camera. 200k matches the console look.");
         }
         // (Glow / Skip Post / Half-Texel / Skip Stale VRAM toggles removed: replay A/B
@@ -1693,11 +1700,12 @@ void PS2SettingsOverlay::drawVideoTab()
         static const char *const kLabels[] = { "OpenGL (New)", "Software rasterizer",
 #if defined(PS2X_HAVE_PGS)
             "paraLLEl-GS (Vulkan compute)",
+            "Native Vulkan (engine seam)",   // [nativeopt]
 #endif
         };
         static const int kValues[] = { 0, 1,
 #if defined(PS2X_HAVE_PGS)
-            2,
+            2, 4,
 #endif
         };
         const int nRenderers = (int)(sizeof(kValues) / sizeof(kValues[0]));

@@ -9090,16 +9090,19 @@ namespace ps2x   // [video] at global scope: the overlay calls ps2x::GetVideoSta
     {
         VideoStatus s;
         const bool wantPgs = envOn("PS2X_PGS"), wantGl = envOn("PS2X_ALTGL"), wantD3D = envOn("PS2X_D3D11");
+        const bool wantNative = wantPgs && seamvk::on();   // [nativeopt] the native Vulkan renderer rides on the paraLLEl-GS device
 #if defined(_WIN32)
-        s.rendererConfigured = wantD3D ? "Direct3D 11" : wantPgs ? "paraLLEl-GS" : wantGl ? "OpenGL (New)" : "Software";
+        s.rendererConfigured = wantD3D ? "Direct3D 11" : wantNative ? "Native Vulkan" : wantPgs ? "paraLLEl-GS" : wantGl ? "OpenGL (New)" : "Software";
         if (g_ps2xD3D11Mode)                                      s.rendererName = "Direct3D 11";
+        else if (ps2x_pgs::enabled() && seamvk::on())             s.rendererName = "Native Vulkan";
         else if (ps2x_pgs::enabled())                             s.rendererName = "paraLLEl-GS";
         else if (AltGlEnabled() && ps2x::gfx::gl::ContextReady()) s.rendererName = "OpenGL (New)";
         else                                                      s.rendererName = "Software";
 #else
         // Linux/macOS: the present is raylib's own GL swap chain (altGL/D3D11 are the Windows paths).
-        s.rendererConfigured = wantPgs ? "paraLLEl-GS" : "OpenGL";
-        if (ps2x_pgs::enabled())                                  s.rendererName = "paraLLEl-GS";
+        s.rendererConfigured = wantNative ? "Native Vulkan" : wantPgs ? "paraLLEl-GS" : "OpenGL";
+        if (ps2x_pgs::enabled() && seamvk::on())                  s.rendererName = "Native Vulkan";
+        else if (ps2x_pgs::enabled())                             s.rendererName = "paraLLEl-GS";
         else                                                      s.rendererName = "OpenGL";
 #endif
         s.renderer = (bt3GetScreenWidth() <= 0) ? VideoState::Fail

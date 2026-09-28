@@ -338,7 +338,8 @@ void LauncherWindow::onPlayClicked()
         // default. The vendor Vulkan driver (AMD amdvlk64.dll) access-violates
         // inside its shader compiler on Polaris/GCN parts and kills the runner.
         // Set PS2X_VK_NATIVE=1 to opt out and use the system Vulkan driver.
-        if (SettingsManager::instance().renderer() == SettingsManager::kRendererParallelGS &&
+        if ((SettingsManager::instance().renderer() == SettingsManager::kRendererParallelGS ||
+             SettingsManager::instance().renderer() == SettingsManager::kRendererNative) &&
             qEnvironmentVariable("PS2X_VK_NATIVE") != QLatin1String("1"))
         {
             const QString lvp = QDir(apppaths::assets()).filePath(QStringLiteral("lavapipe/lvp_icd.x86_64.json"));
@@ -379,7 +380,8 @@ void LauncherWindow::onPlayClicked()
                                          (code != 0 && (static_cast<quint32>(code) & 0xC0000000u) != 0u);
                     const bool retryable =
                         crashed && elapsedMs < 60000 && !m_fallbackRetried &&
-                        SettingsManager::instance().renderer() == SettingsManager::kRendererParallelGS;
+                        (SettingsManager::instance().renderer() == SettingsManager::kRendererParallelGS ||
+                         SettingsManager::instance().renderer() == SettingsManager::kRendererNative);
                     if (retryable)
                     {
                         m_fallbackRetried = true;

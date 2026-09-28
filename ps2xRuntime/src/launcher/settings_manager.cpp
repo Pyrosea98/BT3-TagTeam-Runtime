@@ -27,6 +27,7 @@ namespace
             case 1: return "software";
             case 2: return "parallel-gs";
             case 3: return "d3d11";
+            case 4: return "native";   // [nativeopt]
             default: return "opengl";
         }
     }
@@ -37,6 +38,7 @@ namespace
         if (s == "software" || s == "sw") return 1;
         if (s == "parallel-gs" || s == "parallel_gs" || s == "pgs") return 2;
         if (s == "d3d11" || s == "dx11" || s == "d3d") return 3;
+        if (s == "native" || s == "native-vulkan" || s == "seam") return 4;   // [nativeopt]
         return def;
     }
 
@@ -176,7 +178,7 @@ bool SettingsManager::loadToml(const QString &path)
         // matching the runtime. paraLLEl-GS is kept as-is -- the Windows "PGS -> d3d11" remap
         // turned a saved paraLLEl-GS into OpenGL and wrote that back on every Play.
         if (r == kRendererD3D11) r = kRendererOpenGL;
-        if (r >= 0 && r <= 2) { m_renderer = r; m_sawRenderer = true; }
+        if ((r >= 0 && r <= 2) || r == 4) { m_renderer = r; m_sawRenderer = true; }
     }
     m_glow = doc.getB("video.glow", m_glow);
     m_glowFix = doc.getB("video.glowfix", m_glowFix);

@@ -1173,9 +1173,22 @@ namespace seamvk
         }
     }
 
+    std::atomic<int> g_seamCfg{-1};   // [nativeopt] -1 = undecided, 0/1 = decided (settings or environment)
+    void configure(bool enable)
+    {   // [nativeopt] from the settings loader; the environment, once read, keeps precedence
+        int expected = -1;
+        g_seamCfg.compare_exchange_strong(expected, enable ? 1 : 0);
+    }
     bool on()
     {
-        static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK"); return v && v[0] && v[0] != '0'; }();
+        // [nativeopt] The settings file decides through configure() (renderer = "native"); the environment wins when set
+        // (PS2X_SEAMVK=1 on a "parallel-gs" settings file is how the dev scripts run it). Before either has spoken, off.
+        const int cfg = g_seamCfg.load(std::memory_order_relaxed);
+        if (cfg >= 0) return cfg != 0;
+        static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK"); const bool on = v && v[0] && v[0] != '0';
+            if (v) g_seamCfg.store(on ? 1 : 0, std::memory_order_relaxed);
+            std::fprintf(stderr, "[seamvk] PS2X_SEAMVK=%s -> %s\n", v ? v : "(unset: the settings file decides)", on ? "native renderer" : "off");
+            return on; }();
         return s;
     }
     static std::atomic<bool> g_dumpReq{false};   // [dumpkey] set from the main loop (F10), consumed by renderFrame

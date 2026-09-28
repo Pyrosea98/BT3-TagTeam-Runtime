@@ -34,7 +34,7 @@ public:
     // [renderer] 0 = OpenGL, 1 = software rasterizer, 2 = paraLLEl-GS (Vulkan), 3 = Direct3D 11 native.
     // Mirrors PS2SettingsOverlay::Settings; the legacy bool gpuRenderer stays in
     // sync (true when renderer != 1) for the old readers.
-    static constexpr int kRendererOpenGL = 0, kRendererSoftware = 1, kRendererParallelGS = 2, kRendererD3D11 = 3;
+    static constexpr int kRendererOpenGL = 0, kRendererSoftware = 1, kRendererParallelGS = 2, kRendererD3D11 = 3, kRendererNative = 4;   // [nativeopt]
     int renderer() const { return m_renderer; }
     bool gpuRenderer() const { return m_renderer != kRendererSoftware; }
     bool glow() const { return m_glow; }
