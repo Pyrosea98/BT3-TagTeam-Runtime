@@ -99,6 +99,8 @@ namespace ps2_stubs
 
 // External-linkage game-frame counter (read by the [fps] line in ps2_runtime.cpp).
 std::atomic<uint64_t> g_bt3FrameCount{0};
+uint64_t ps2FightTicks();                                       // [fighttick] ps2_stepcensus.cpp
+extern "C" void ps2xSeamTickMark(unsigned long long tick);      // [fighttick] ps2_seamgs.cpp
 
 namespace
 {
@@ -4081,6 +4083,13 @@ namespace
         const double dt = std::chrono::duration<double>(now - s_t0).count();
         if (dt >= 5.0) { std::fprintf(stderr, "[logicrate] %.1f fight updates/s (%u in %.1f s)\n", (double)n / dt, n, dt); s_n.store(0u); s_t0 = now; }
         ps2HalfStepNoteLogic(g_bt3FrameCount.load(std::memory_order_relaxed));   // [fightgate]
+        {   // [fighttick] a stream marker for this fight update: the native renderer stamps the frame lists with it, in
+            // stream order, so "fight tick N" names the same list in every run of a replay (the vblank flip's own stamp
+            // jitters by a frame: the handler preempts the game thread wherever it happens to be)
+            const unsigned long long tick = ps2FightTicks();
+            if (PS2Memory::asyncKickEnabled()) { PS2Memory::KickJob j; j.kind = PS2Memory::KickJob::GsApply; j.fn = [tick]() { ps2xSeamTickMark(tick); }; runtime->memory().enqueueKickJob(std::move(j)); }
+            else ps2xSeamTickMark(tick);
+        }
         if (g_orig115950) g_orig115950(rdram, ctx, runtime);
     }
     // [vf3probe] PS2X_VF3PROBE=1: print the persistent VU0 basis rows (vf1-vf3) as seen by

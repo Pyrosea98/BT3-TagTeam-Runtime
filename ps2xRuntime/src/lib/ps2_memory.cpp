@@ -1051,15 +1051,21 @@ void PS2Memory::write16(uint32_t address, uint16_t value)
 // last writer of the display register each frame and the one the present shows. It happens on the game thread outside
 // the kick stream, so a game thread running ahead flips the display before the worker has even published the frame.
 // Carry it through the kick queue: the worker applies the flip latch in stream order.
+extern "C" void ps2xSeamFlipStamp(unsigned long long gameFrame, unsigned long long fightTick);   // [fighttick] ps2_seamgs.cpp
+extern std::atomic<uint64_t> g_bt3FrameCount;   // game_overrides.cpp
+uint64_t ps2FightTicks();   // ps2_stepcensus.cpp
 static void ps2xDispFlipInStream(PS2Memory *mem, uint64_t dispfb)
 {
+    // [fighttick] the game frame and fight tick at the flip, read HERE on the game thread and carried in stream order: a
+    // deterministic identity for the frame list the flip completes (the render thread's own view of the counters lags)
+    const unsigned long long gf = g_bt3FrameCount.load(std::memory_order_relaxed), ft = ps2FightTicks();
     if (PS2Memory::asyncKickEnabled())
     {
         PS2Memory::KickJob j; j.kind = PS2Memory::KickJob::GsApply;
-        j.fn = [dispfb]() { ps2xGsDisplayFlipHook((unsigned long long)dispfb); };
+        j.fn = [dispfb, gf, ft]() { ps2xGsDisplayFlipHook((unsigned long long)dispfb); ps2xSeamFlipStamp(gf, ft); };
         mem->enqueueKickJob(std::move(j));
     }
-    else ps2xGsDisplayFlipHook((unsigned long long)dispfb);
+    else { ps2xGsDisplayFlipHook((unsigned long long)dispfb); ps2xSeamFlipStamp(gf, ft); }
 }
 // [s1fence] Every privileged DISPLAY register the game stores from the bus (PMODE, SMODE2, DISPFB1/2, DISPLAY1/2,
 // BGCOLOR) also travels the kick queue: stage 2 stamps it into the presenter's stream-ordered block, so the

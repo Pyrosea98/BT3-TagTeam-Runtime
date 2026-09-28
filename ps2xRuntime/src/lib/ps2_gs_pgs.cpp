@@ -1882,6 +1882,21 @@ static bool wsHudApplyLocked(State &s, const uint8_t *&data, size_t &size, bool 
     return true;
 }
 
+// [nativehud] what the native front end needs from this side to do the widescreen HUD layout itself
+float wsHudRawInv(uint32_t fbw)
+{
+    static const float s_pixk = [](){ const char *v = std::getenv("PS2X_PIXK"); const float f = v ? float(std::atof(v)) : 1.08f; return (f > 0.5f && f < 2.0f) ? f : 1.08f; }();
+    State &s = st();
+    const uint32_t dw = g_presentW.load(std::memory_order_relaxed), dh = g_presentH.load(std::memory_order_relaxed);
+    const float fw = (fbw * 64u >= 320u && fbw * 64u <= 1024u) ? float(fbw * 64u) : 512.0f;
+    const float fh = s.baseH ? float(s.baseH) : 448.0f;
+    if (!(g_ps2xWsHudInv < 0.999f && dw && dh)) return 1.0f;
+    float raw = (float(dh) / fh * s_pixk) / (float(dw) / fw);
+    if (raw < 0.4f) raw = 0.4f; if (raw > 1.0f) raw = 1.0f;
+    return raw;
+}
+bool vpKeepOn() { return ps2xVpKeep() != 0; }
+uint32_t inkColor() { return g_inkColor.load(std::memory_order_relaxed); }
 bool wsHudPreprocess(uint8_t pathId, const uint8_t *&data, size_t &size, bool hostGif)
 {   // [seamwshud] for the native renderer: the reference backend gets no packets in seam mode, so gifTransfer never runs the
     // rewrite; the arbiter calls this on every packet (host draws included: the walker tracks the register state) before

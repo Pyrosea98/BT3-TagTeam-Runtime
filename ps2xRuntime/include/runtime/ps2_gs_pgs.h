@@ -42,6 +42,9 @@ bool gifTransfer(uint8_t pathId, const uint8_t *data, size_t size);   // true = 
 // the native renderer: run on the arbiter's copy BEFORE the native front end parses it; data/size may move to the
 // rebuilt packet. True when the packet was edited.
 bool wsHudPreprocess(uint8_t pathId, const uint8_t *&data, size_t &size, bool hostGif = false);   // [wshudhost] hostGif: the seam's mesh packet, registers only
+float wsHudRawInv(uint32_t fbw);   // [nativehud] the frame's raw HUD squeeze factor (1.0 = none), from the present size
+bool vpKeepOn();                   // [nativehud] PS2X_VPKEEP: the packet walker still blanks the other viewport
+uint32_t inkColor();               // [nativehud] the overlay's outline colour (0 = the game's)
 }
 // [seampack] BC1/BC2/BC3 (raylib PIXELFORMAT_COMPRESSED_DXT*) -> RGBA8, for the native renderer's texture-pack uploads
 bool ps2xBcDecode(int fmt, const std::vector<uint8_t> &src, int w, int h, std::vector<uint8_t> &rgba);
@@ -91,7 +94,10 @@ inline void streamPriv(uint32_t, uint64_t) {}
 inline void onSwap() {}
 inline void setPresentSize(uint32_t, uint32_t) {}
 inline bool takeFrame(std::vector<uint8_t> &, uint32_t &, uint32_t &) { return false; }
-inline bool wsHudPreprocess(uint8_t, const uint8_t *&, size_t &) { return false; }
+inline bool wsHudPreprocess(uint8_t, const uint8_t *&, size_t &, bool = false) { return false; }
+inline float wsHudRawInv(uint32_t) { return 1.0f; }
+inline bool vpKeepOn() { return false; }
+inline uint32_t inkColor() { return 0u; }
 inline uint64_t lastFrameGframe() { return 0; }
 inline void shutdown() {}
 #endif

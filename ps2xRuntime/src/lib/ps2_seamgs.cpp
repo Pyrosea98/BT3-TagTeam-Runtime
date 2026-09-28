@@ -30,6 +30,10 @@
 
 #include <atomic>
 extern std::atomic<uint64_t> g_bt3FrameCount;   // [xferlog] the game frame
+#include "runtime/ps2_gs_gpu_renderer.h"   // [nativehud] GsGpuRenderer::outlineEnabled / inkStrengthPct / shadowsEnabled (the overlay's toggles)
+extern std::atomic<int> g_wsHudLayout;                          // [nativehud] overlay: 0 centered, 1 edge-pinned, 2 custom (-1 = unset)
+extern std::atomic<int> g_wsHudOffLQ, g_wsHudOffCQ, g_wsHudOffRQ;   // custom offsets x16
+bool ps2FightUpdateRecent();                                    // ps2_stepcensus.cpp: the fight update ran within the last 2 render frames (menus: never)
 #include <csignal>
 #include <execinfo.h>
 #include <unistd.h>
@@ -123,6 +127,52 @@ namespace seamgs
         inline uint32_t addr8(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) { return g_swz.ok ? g_swz.a8(block, bw, x, y) : (GSPSMT8::addrPSMT8(block, bw, x, y) & kVramMask); }
         inline uint32_t addr4(uint32_t block, uint32_t bw, uint32_t x, uint32_t y) { return g_swz.ok ? g_swz.a4(block, bw, x, y) : (GSPSMT4::addrPSMT4(block, bw, x, y) & (kVramMask * 2u + 1u)); }   // nibble address
 
+        // ---- [nativehud] The widescreen HUD layout (edge-pinned / centered / custom) and the overlay's outline, ink and shadow
+        // toggles, applied to the front end's own 2D draws instead of paraLLEl-GS's packet rewrite (ps2_gs_pgs.cpp [pgswshud],
+        // whose classification, cut points, scissor rule, scene gate and squeeze debounce are reproduced here). Sprites and
+        // flat UV triangles in the top band of a scene buffer get their X mapped piecewise; a primitive crossing a cut point is
+        // split there so its texture stays straight (the packet path subdivided the game's quads the same way).
+        // PS2X_SEAMGS_NATIVEHUD=0 restores the packet walker.
+        const bool g_nativeHud = [](){ const char *v = std::getenv("PS2X_SEAMGS_NATIVEHUD"); return !(v && v[0] == '0'); }();
+        struct WsNative { bool active = false, frameHad3d = false, on = false; int no3dRun = 0; float inv = 1.0f, lastRawInv = 0.0f; int invRun = 0; bool invInit = false; uint32_t sceneFbw = 8; uint64_t mapped = 0, split = 0, scissors = 0, inkDropped = 0, inkScaled = 0, shadowDropped = 0; } g_ws;
+        bool g_emitSprite = false;   // the triangle being emitted is half of a sprite
+        float wsMapX(float x, float W, float inv)
+        {
+            const float half = 0.5f * W, k = W / 512.0f;
+            auto cen = [&](float v) { return half + (v - half) * inv; };
+            int layout = g_wsHudLayout.load(std::memory_order_relaxed); if (layout < 0) layout = 0;
+            if (layout <= 0) return cen(x);
+            const float offL = g_wsHudOffLQ.load(std::memory_order_relaxed) / 16.0f, offC = g_wsHudOffCQ.load(std::memory_order_relaxed) / 16.0f, offR = g_wsHudOffRQ.load(std::memory_order_relaxed) / 16.0f;
+            const float s1 = 124.f * k, s2 = 216.f * k, s3 = 296.f * k, s4 = 388.f * k;
+            float t0 = 0.f, t1 = s1 * inv, t2 = cen(s2), t3 = cen(s3), t4 = W - (W - s4) * inv, t5 = W;
+            if (layout >= 2)
+            {
+                t0 += offL * k; t1 += offL * k; t2 += offC * k; t3 += offC * k; t4 += offR * k; t5 += offR * k;
+                if (t1 > t2 - 2.f) t1 = t2 - 2.f;
+                if (t3 > t4 - 2.f) t4 = t3 + 2.f;
+            }
+            if (x <= s1) return t0 + (x - 0.f) * (t1 - t0) / s1;
+            if (x <= s2) return t1 + (x - s1) * (t2 - t1) / (s2 - s1);
+            if (x <= s3) return t2 + (x - s2) * inv;
+            if (x <= s4) return t3 + (x - s3) * (t4 - t3) / (s4 - s3);
+            return t4 + (x - s4) * inv;
+        }
+        inline float wsW(uint32_t fbw) { return (fbw * 64u >= 320u && fbw * 64u <= 1024u) ? float(fbw * 64u) : 512.0f; }
+        inline bool wsScene(uint32_t fbp, uint32_t fpsm) { return (fbp == 0u || fbp == 0xe00u) && (fpsm == 0u || fpsm == 1u); }
+        void wsFrameEnd()
+        {   // at the swap: the scene gate (5-frame hysteresis), the debounced squeeze, the fight gate
+            if (g_ws.frameHad3d) { g_ws.active = true; g_ws.no3dRun = 0; } else if (++g_ws.no3dRun >= 5) g_ws.active = false;
+            g_ws.frameHad3d = false;
+            const float raw = ps2x_pgs::wsHudRawInv(g_ws.sceneFbw);
+            if (raw < 0.999f)
+            {   // [wsjit] commit a raw value only once it repeats (menus alternate 512/640-wide frames)
+                if (!g_ws.invInit) { g_ws.inv = raw; g_ws.lastRawInv = raw; g_ws.invRun = 1; g_ws.invInit = true; }
+                else if (raw == g_ws.lastRawInv) { if (++g_ws.invRun >= 2) g_ws.inv = raw; }
+                else { g_ws.lastRawInv = raw; g_ws.invRun = 1; }
+            }
+            else g_ws.inv = 1.0f;
+            g_ws.on = g_nativeHud && g_ws.active && g_ws.inv < 0.999f && ::ps2FightUpdateRecent();
+        }
         inline uint32_t pageOf(uint32_t psm, uint32_t block, uint32_t bw, uint32_t x, uint32_t y);
         // ---- [lazyvram] Host->local transfers above a few KB are kept as their linear bytes (one memcpy) and swizzled into the
         // mirror only when a page of theirs is READ (a CPU decode, a palette, the scratch raster, the GPU page snapshot, a
@@ -352,6 +402,7 @@ namespace seamgs
         // patch (a 12-vertex ground quad crossing the near plane, DATE + generated texcoords) renders blocky through the vertex
         // program while the packet path is pixel-exact; effects are ~2 batches per frame, so nothing is lost.
         const uint32_t g_pktProgs = [](){ const char *v = std::getenv("PS2X_SEAMVK_PKTPROGS"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : 0x2u; }();
+        uint64_t g_streamGameFrame = 0, g_streamFightTick = 0;   // [fighttick] the last flip stamp seen in stream order
         int g_nativeParse = -1;   // [clutpass] the generic native step whose packet is being parsed (its kicks are neutralised: recorded, not drawn)
         uint32_t g_lastSceneFbp = 0;   // [ztopnative] the scene buffer (0x0 / 0xe00) the game last set as FRAME: the native step 2's source
         uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0, g_cpuSprites = 0, g_cpuTris = 0, g_rtDecodes = 0, g_gpuDecodes = 0;
@@ -1057,16 +1108,106 @@ namespace seamgs
                 o.fog = float(g.fog) / 255.0f; o.pad[0] = rectPad[0]; o.pad[1] = rectPad[1];   // [spriterect]
             }
             noteTargetHist(0, 0, s);
-            if (!g_list.draws.empty() && g_list.draws.back().kind == 0 && sameState(g_list.draws.back().st, s) && !s.date)   // [datesplit] a DATE triangle reads the destination in-pass: overlapping triangles of one draw would not see each other's writes (the shadow patch's clipped fan darkened twice along the shared edge)
-                g_list.draws.back().count += 3;
-            else
-            {
-                Draw d; d.kind = 0; d.st = s; d.vertOff = (uint32_t)g_list.verts.size(); d.count = 3; d.stride = sizeof(Vtx);
-                g_list.draws.push_back(d);
-                if (!s.cpuRastered) noteDrawPages(s);
+            auto pushTri = [&](const Vtx tri[3], const State &st) {
+                if (!g_list.draws.empty() && g_list.draws.back().kind == 0 && sameState(g_list.draws.back().st, st) && !st.date)   // [datesplit] a DATE triangle reads the destination in-pass: overlapping triangles of one draw would not see each other's writes (the shadow patch's clipped fan darkened twice along the shared edge)
+                    g_list.draws.back().count += 3;
+                else
+                {
+                    Draw d; d.kind = 0; d.st = st; d.vertOff = (uint32_t)g_list.verts.size(); d.count = 3; d.stride = sizeof(Vtx);
+                    g_list.draws.push_back(d);
+                    if (!st.cpuRastered) noteDrawPages(st);
+                }
+                const uint8_t *b = reinterpret_cast<const uint8_t *>(tri);
+                g_list.verts.insert(g_list.verts.end(), b, b + 3u * sizeof(Vtx));
+            };
+            if (g_nativeHud)
+            {   // [nativehud] the overlay's toggles and the widescreen HUD layout, on this triangle
+                const bool isTri = !g_emitSprite;
+                const bool scene = wsScene(s.fbp, s.fpsm);
+                if (!g_emitSprite && s.zte && s.ztst >= 2u) g_ws.frameHad3d = true;
+                if (!s.tme && s.abe && s.aA == 2u && s.aB == 0u && s.aC == 1u && s.aD == 1u && scene)
+                {   // the cel-outline darkener (Cd - Cs * Ad): Cel Outline OFF drops it; ink strength / colour scale its colour
+                    if (!GsGpuRenderer::outlineEnabled()) { ++g_ws.inkDropped; return; }
+                    const int pct = GsGpuRenderer::inkStrengthPct(); const uint32_t col = ps2x_pgs::inkColor();
+                    if (pct != 199 || col != 0u)
+                    {
+                        const float k = float(pct) / 199.0f;
+                        const float kc[3] = { k * float(255u - ((col >> 16) & 0xFFu)) / 255.0f, k * float(255u - ((col >> 8) & 0xFFu)) / 255.0f, k * float(255u - (col & 0xFFu)) / 255.0f };
+                        for (int i = 0; i < 3; ++i) { uint32_t c = out[i].rgba, o = c & 0xFF000000u; for (int ch = 0; ch < 3; ++ch) { const float v = float((c >> (8 * ch)) & 0xFFu) * kc[ch]; o |= (uint32_t)(v > 255.f ? 255u : (uint32_t)(v + 0.5f)) << (8 * ch); } out[i].rgba = o; }
+                        ++g_ws.inkScaled;
+                    }
+                }
+                if (isTri && s.tme && scene && (s.tex0lo & 0x3FFFu) == 0x2a00u && ((s.tex0lo >> 20) & 0x3Fu) == 1u && ((s.tex0lo >> 26) & 0xFu) == 8u && (((s.tex0lo >> 30) | (s.tex0hi << 2)) & 0xFu) == 8u && !s.date)
+                {   // the shadow decal tiles (CT24 256x256 read of the silhouette buffer, no DATE): Character Shadows OFF drops them
+                    if (!GsGpuRenderer::shadowsEnabled()) { ++g_ws.shadowDropped; return; }
+                }
+                if (g_ws.on && scene)
+                {
+                    const float W = wsW(s.fbw), inv = g_ws.inv;
+                    State ts = s;
+                    {   // scissor: bar scissors in the top band map with the layout (origin-anchored / tiny rects are render-to-texture)
+                        const uint32_t x0 = s.scax0, x1 = s.scax1, y1 = s.scay1;
+                        if (!(x0 < 8u || x1 < x0 + 16u) && !(x1 < x0 || y1 >= 96u || float(x1 - x0 + 1u) >= 0.8f * W))
+                        {
+                            float mx0 = std::floor(wsMapX(float(x0), W, inv)), mx1 = std::ceil(wsMapX(float(x1 + 1u), W, inv)) - 1.0f;
+                            if (mx0 < 0.f) mx0 = 0.f; if (mx1 > 2047.f) mx1 = 2047.f; if (mx1 < mx0) mx1 = mx0;
+                            ts.scax0 = (uint16_t)mx0; ts.scax1 = (uint16_t)mx1; ++g_ws.scissors;
+                        }
+                    }
+                    float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f; bool zAllZero = true;
+                    for (int i = 0; i < 3; ++i) { x0 = std::min(x0, out[i].x); x1 = std::max(x1, out[i].x); y0 = std::min(y0, out[i].y); y1 = std::max(y1, out[i].y); if (vs[i]->z != 0u) zAllZero = false; }
+                    const float w = x1 - x0, hh = y1 - y0;
+                    bool hud;
+                    if (g_emitSprite) hud = (w > 0.f && w < 0.8f * W && hh > 0.f && hh < 300.f && y1 < 96.f && (!s.zte || s.ztst == 1u));
+                    else hud = (s.fst && zAllZero && hh < 300.f && y1 < 96.f && (w < 0.8f * W || x0 > 8.f));
+                    if (hud)
+                    {
+                        // split at the layout's cut points (the map is piecewise linear between them), then map every vertex
+                        std::vector<Vtx> poly(out, out + 3), tmp;
+                        int layout = g_wsHudLayout.load(std::memory_order_relaxed);
+                        if (layout > 0)
+                        {
+                            const float k = W / 512.0f; const float cuts[4] = { 124.f * k, 216.f * k, 296.f * k, 388.f * k };
+                            auto lerpV = [](const Vtx &a, const Vtx &b, float t) { Vtx r = a; r.x = a.x + (b.x - a.x) * t; r.y = a.y + (b.y - a.y) * t; r.z = a.z + (b.z - a.z) * t; r.q = a.q + (b.q - a.q) * t; r.s = a.s + (b.s - a.s) * t; r.t = a.t + (b.t - a.t) * t; r.u = a.u + (b.u - a.u) * t; r.v = a.v + (b.v - a.v) * t; r.fog = a.fog + (b.fog - a.fog) * t;
+                                uint32_t c = 0; for (int ch = 0; ch < 4; ++ch) { const float va = float((a.rgba >> (8 * ch)) & 0xFFu), vb = float((b.rgba >> (8 * ch)) & 0xFFu); c |= (uint32_t)(va + (vb - va) * t + 0.5f) << (8 * ch); } r.rgba = c; return r; };
+                            std::vector<std::vector<Vtx>> pieces; pieces.push_back(poly);
+                            for (float cx : cuts)
+                            {
+                                if (!(cx > x0 + 1.f && cx < x1 - 1.f)) continue;
+                                std::vector<std::vector<Vtx>> next;
+                                for (const auto &pg : pieces)
+                                {   // Sutherland-Hodgman against x <= cx and x >= cx
+                                    for (int side = 0; side < 2; ++side)
+                                    {
+                                        std::vector<Vtx> o;
+                                        for (size_t i = 0; i < pg.size(); ++i)
+                                        {
+                                            const Vtx &a = pg[i], &b = pg[(i + 1) % pg.size()];
+                                            const bool ina = side == 0 ? a.x <= cx : a.x >= cx, inb = side == 0 ? b.x <= cx : b.x >= cx;
+                                            if (ina) o.push_back(a);
+                                            if (ina != inb) o.push_back(lerpV(a, b, (cx - a.x) / (b.x - a.x)));
+                                        }
+                                        if (o.size() >= 3) next.push_back(std::move(o));
+                                    }
+                                }
+                                pieces.swap(next);
+                            }
+                            if (pieces.size() > 1u) ++g_ws.split;
+                            for (auto &pg : pieces)
+                            {
+                                for (Vtx &v : pg) v.x = wsMapX(v.x, W, inv);
+                                for (size_t i = 1; i + 1 < pg.size(); ++i) { Vtx tri[3] = { pg[0], pg[i], pg[i + 1] }; pushTri(tri, ts); }
+                            }
+                            g_ws.mapped += 3; return;
+                        }
+                        for (int i = 0; i < 3; ++i) out[i].x = wsMapX(out[i].x, W, inv);
+                        ++g_ws.mapped;
+                    }
+                    pushTri(out, ts);
+                    return;
+                }
             }
-            const uint8_t *b = reinterpret_cast<const uint8_t *>(out);
-            g_list.verts.insert(g_list.verts.end(), b, b + sizeof(out));
+            pushTri(out, s);
         }
 
         uint64_t g_hostIn[8] = {}, g_hostOut[8] = {}, g_hostDropped[8] = {};
@@ -1075,6 +1216,7 @@ namespace seamgs
         {
             ++g_hostOut[g_host.prog & 7u];
             noteTargetHist(1, g_host.prog, s);
+            g_ws.frameHad3d = true;   // [nativehud]
             Draw d; d.kind = 1; d.prog = g_host.prog; d.hostPass = g_hostPassN++; d.st = s; d.c = g_host.c;
             d.vertOff = (uint32_t)g_list.verts.size(); d.count = g_host.count; d.stride = g_host.stride;
             g_list.verts.insert(g_list.verts.end(), g_hostVerts.begin(), g_hostVerts.end());
@@ -1311,7 +1453,19 @@ namespace seamgs
             float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
             for (uint32_t i = 0; i < nv; ++i) { const float x = (float(int32_t(g_vq[i].x)) - float(s.ofx)) / 16.0f, y = (float(int32_t(g_vq[i].y)) - float(s.ofy)) / 16.0f; x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y); }
             const GsVert &cv = g_vq[nv - 1u];   // flat colour: the last vertex's
-            const uint32_t vcol = (uint32_t)cv.r | ((uint32_t)cv.g << 8) | ((uint32_t)cv.b << 16) | ((uint32_t)cv.a << 24);
+            uint32_t vcol = (uint32_t)cv.r | ((uint32_t)cv.g << 8) | ((uint32_t)cv.b << 16) | ((uint32_t)cv.a << 24);
+            if (g_nativeHud && !s.tme && s.abe && s.aA == 2u && s.aB == 0u && s.aC == 1u && s.aD == 1u && wsScene(s.fbp, s.fpsm))
+            {   // [nativehud] the outline ink draw as a native pass: Cel Outline OFF drops it, ink strength / colour scale it
+                if (!GsGpuRenderer::outlineEnabled()) { ++g_ws.inkDropped; return; }
+                const int pct = GsGpuRenderer::inkStrengthPct(); const uint32_t col = ps2x_pgs::inkColor();
+                if (pct != 199 || col != 0u)
+                {
+                    const float k = float(pct) / 199.0f;
+                    const float kc[3] = { k * float(255u - ((col >> 16) & 0xFFu)) / 255.0f, k * float(255u - ((col >> 8) & 0xFFu)) / 255.0f, k * float(255u - (col & 0xFFu)) / 255.0f };
+                    uint32_t o = vcol & 0xFF000000u; for (int ch = 0; ch < 3; ++ch) { const float v = float((vcol >> (8 * ch)) & 0xFFu) * kc[ch]; o |= (uint32_t)(v > 255.f ? 255u : (uint32_t)(v + 0.5f)) << (8 * ch); } vcol = o;
+                    ++g_ws.inkScaled;
+                }
+            }
             if (s.tme && s.fst)
             {   // the passes map texels 1:1 onto pixels (u = x + 0.5): anything else is not this pass family
                 static int s_warn = 0;
@@ -1401,8 +1555,10 @@ namespace seamgs
                             }
                             if (g_rectPad[0] == 0u && g_rectPad[1] == 0u) g_rectPad[1] = 1u;   // a rect at the origin is still a rect
                         }
+                        g_emitSprite = true;
                         emitTriangle(&tl, &tr, &bl, fs);
                         emitTriangle(&tr, &b, &bl, fs);
+                        g_emitSprite = false;
                         g_rectPad[0] = g_rectPad[1] = 0u;
                         break;
                     }
@@ -1660,7 +1816,7 @@ namespace seamgs
             case 0x49: g_r.pabe = v; break;
             case 0x4A: g_r.ctx[0].fba = v; break;
             case 0x4B: g_r.ctx[1].fba = v; break;
-            case 0x4C: g_r.ctx[0].frame = v; { const uint32_t fb = (uint32_t)(v & 0x1FFu) << 5; if (fb == 0u || fb == 0xe00u) g_lastSceneFbp = fb; } break;
+            case 0x4C: g_r.ctx[0].frame = v; { const uint32_t fb = (uint32_t)(v & 0x1FFu) << 5; if (fb == 0u || fb == 0xe00u) { g_lastSceneFbp = fb; g_ws.sceneFbw = (uint32_t)((v >> 16) & 0x3Fu); } } break;
             case 0x4D: g_r.ctx[1].frame = v; break;
             case 0x4E: g_r.ctx[0].zbuf = v; break;
             case 0x4F: g_r.ctx[1].zbuf = v; break;
@@ -1804,6 +1960,8 @@ namespace seamgs
             std::memset(g_imgByPsm, 0, sizeof(g_imgByPsm)); g_texLookups = g_memoHits = g_stateBuilds = g_imgBytes = g_imgRepeat = g_texDecodes = g_texStale = g_cpuSprites = g_scratchSkips = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
             printTargetHist();
             if (g_hostSkipChecks) std::fprintf(stderr, "[hostskip] verify: %llu tags checked, %llu mismatches\n", (unsigned long long)g_hostSkipChecks, (unsigned long long)g_hostSkipMismatch);
+            std::fprintf(stderr, "[nativehud] per frame: on %d inv %.3f active %d | mapped %.1f split %.1f scissors %.1f ink dropped %.1f scaled %.1f shadows dropped %.1f\n", g_ws.on ? 1 : 0, g_ws.inv, g_ws.active ? 1 : 0, g_ws.mapped / 300.0, g_ws.split / 300.0, g_ws.scissors / 300.0, g_ws.inkDropped / 300.0, g_ws.inkScaled / 300.0, g_ws.shadowDropped / 300.0);
+            g_ws.mapped = g_ws.split = g_ws.scissors = g_ws.inkDropped = g_ws.inkScaled = g_ws.shadowDropped = 0;
             std::fprintf(stderr, "[lazyvram] per frame: %.1f transfers captured (%.0f KB), %.1f pages applied late, %zu pending records | [texcontent] hits %.2f regs %.2f first-sightings %.2f no-key %.2f per frame, %zu images shared\n",
                          g_lazyCaptured / 300.0, g_lazyBytes / 300.0 / 1024.0, g_lazyApplied / 300.0, g_xlog.size(), g_contentHits / 300.0, g_contentRegs / 300.0, g_contentMiss / 300.0, g_contentNoKey / 300.0, g_contentImgs.size());
             g_lazyCaptured = g_lazyBytes = g_lazyApplied = 0; g_contentHits = g_contentRegs = g_contentMiss = g_contentNoKey = 0;
@@ -1851,12 +2009,14 @@ namespace seamgs
         std::lock_guard<std::mutex> lk(g_mtx);
         for (int i = 0; i < 2; ++i) if (enMask & (1u << i)) displayDecodeLocked(i, dispfb[i]);
         ++g_frame;
+        wsFrameEnd();   // [nativehud]
         ++g_swapsSeen; if (g_swapHash == g_lastSwapHash) ++g_sameSwaps; g_lastSwapHash = g_swapHash; g_swapHash = 1469598103934665603ull; g_swapBytes = 0;
         {   // a fight frame: > 1500 GS draws (the kernel + packet path) or > 200 host meshes (skip mode)
             size_t host = 0; for (const Draw &d : g_list.draws) if (d.kind == 1) ++host;
             if (g_list.draws.size() > 1500u || host > 200u) ++g_busyFrames;
         }
         out.busy = g_busyFrames;
+        out.gameFrame = g_streamGameFrame; out.fightTick = g_streamFightTick;   // [fighttick]
         evictTextures();
         g_list.frame = g_frame;
         out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees); out.rtDecodes.swap(g_list.rtDecodes); out.sharedDrops.swap(g_list.sharedDrops); out.vramPages.swap(g_list.vramPages); out.vramBytes.swap(g_list.vramBytes); out.stepCluts.swap(g_list.stepCluts); out.regEvents.swap(g_list.regEvents);
@@ -1899,6 +2059,7 @@ namespace seamvk
 
     bool nativeStepGeneric(int step) { return step == 1 || step == 3 || step == 6 || step == 7; }   // [clutpass] ink + Kaioken mask, haze + blur weight, alpha-keyed 0x3e80, far tint 0x3e94
     void nativeParse(int step) { seamgs::g_nativeParse = step; }
+    bool nativeHudOn() { return seamgs::g_nativeHud; }
     void onNativeStep(int step)
     {
         if (!on() || nativeStepGeneric(step)) return;
@@ -1976,4 +2137,12 @@ namespace seamgs
         readClut(cbp, cpsm, 0, g_r.texa, out256, bits);
         return true;
     }
+}
+extern "C" void ps2xSeamFlipStamp(unsigned long long gameFrame, unsigned long long)
+{   // [fighttick] from the stream-ordered flip job (GS thread): the game frame (jitters by one: the flip is a vblank handler)
+    seamgs::g_streamGameFrame = gameFrame;
+}
+extern "C" void ps2xSeamTickMark(unsigned long long tick)
+{   // [fighttick] the fight update's own stream marker: deterministic
+    seamgs::g_streamFightTick = tick;
 }

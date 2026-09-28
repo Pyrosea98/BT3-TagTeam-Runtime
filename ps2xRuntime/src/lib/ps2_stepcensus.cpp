@@ -359,8 +359,11 @@ std::atomic<uint64_t> g_ps2HalfStepLogicFrame{0};
 // sound stream block) -- the loader/sound-stream race the loading-stall notes describe.
 static std::atomic<uint32_t> g_hsStreak{0};
 static std::atomic<uint64_t> g_hsPrevLogic{0};
+static std::atomic<uint64_t> g_fightTicks{0};   // [fighttick] fight updates so far: deterministic per replay (the load screens are not)
+uint64_t ps2FightTicks() { return g_fightTicks.load(std::memory_order_relaxed); }
 void ps2HalfStepNoteLogic(uint64_t frame)
 {
+    g_fightTicks.fetch_add(1u, std::memory_order_relaxed);
     const uint64_t prev = g_hsPrevLogic.exchange(frame, std::memory_order_relaxed);
     if (frame - prev <= 2u) g_hsStreak.fetch_add(1, std::memory_order_relaxed); else g_hsStreak.store(0, std::memory_order_relaxed);
     g_ps2HalfStepLogicFrame.store(frame, std::memory_order_relaxed);

@@ -351,11 +351,11 @@ extern std::atomic<int> g_wsHudLayout;
 extern std::atomic<int> g_wsHudOffLQ, g_wsHudOffCQ, g_wsHudOffRQ;
 static void pushHudLayout(const PS2SettingsOverlay::Settings &st)
 {
-    // an explicit PS2X_WSHUDLAYOUT env (rig lever) outranks the INI/UI
-    if (std::getenv("PS2X_WSHUDLAYOUT")) return;
+    // an explicit PS2X_WSHUDLAYOUT env (rig lever) outranks the INI/UI for the layout; the offsets still come from the settings
     g_wsHudOffLQ.store(st.hudOffL * 16, std::memory_order_relaxed);
     g_wsHudOffCQ.store(st.hudOffC * 16, std::memory_order_relaxed);
     g_wsHudOffRQ.store(st.hudOffR * 16, std::memory_order_relaxed);
+    if (const char *e = std::getenv("PS2X_WSHUDLAYOUT")) { g_wsHudLayout.store(std::atoi(e), std::memory_order_relaxed); return; }
     g_wsHudLayout.store(st.hudLayout, std::memory_order_relaxed);
 }
 std::string PS2SettingsOverlay::s_configDir;

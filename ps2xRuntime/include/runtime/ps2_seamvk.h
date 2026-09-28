@@ -56,6 +56,7 @@ namespace seamvk
     // [clutpass] generic steps (their packets' kicks are neutralised too): while a packet of the step is parsed, every kick
     // is recorded with its exact register state, vertex colour and palette as a native pass at that stream position.
     void nativeParse(int step);   // -1: none
+    bool nativeHudOn();           // [nativehud] the front end does the widescreen HUD layout and the ink/shadow toggles itself (the packet walker is skipped)
     bool nativeStepGeneric(int step);
 
     // Present thread: the newest native frame (RGBA8), when one is ready.
