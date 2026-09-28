@@ -1685,12 +1685,18 @@ namespace
     // Sony 4-bit ADPCM, 16-byte blocks: [shift|filter][flags][14 data bytes].
     // Headerless -- the bank stores raw blocks, unlike a .VAG file which our ps2_vag::decode
     // expects to start with a 'VAGp' magic.
-    void seDecodeAdpcm(uint32_t blob, uint32_t addr, std::vector<int16_t> &out, uint32_t maxBlocks)
+    // [seloop] Sony ADPCM block flags: bit 0 = last block, bit 1 = loop region (an end block with it set jumps back to
+    // the loop start instead of stopping), bit 2 = loop start. loopStartOut = the sample index the voice returns to,
+    // loopsOut = whether it returns at all. The ki-charge hum is such a sample: without the loop it played once, so
+    // only the charge's initial burst was heard (user, 2026-09-29).
+    void seDecodeAdpcm(uint32_t blob, uint32_t addr, std::vector<int16_t> &out, uint32_t maxBlocks, size_t *loopStartOut = nullptr, bool *loopsOut = nullptr)
     {
         static const int kF0[5] = {0, 60, 115, 98, 122};
         static const int kF1[5] = {0, 0, -52, -55, -60};
         int32_t s1 = 0, s2 = 0;
         uint8_t blk[16];
+        if (loopStartOut) *loopStartOut = 0u;
+        if (loopsOut) *loopsOut = false;
         for (uint32_t b = 0; b < maxBlocks; ++b)
         {
             bool ok = true;
@@ -1705,6 +1711,7 @@ namespace
             const uint8_t flags = blk[1];
             if (flags == 7u) // end marker
                 return;
+            if ((flags & 4u) && loopStartOut) *loopStartOut = out.size();   // [seloop] loop start = this block's first sample
             for (int i = 0; i < 28; ++i)
             {
                 const uint8_t byte = blk[2 + (i >> 1)];
@@ -1718,8 +1725,11 @@ namespace
                 s2 = s1;
                 s1 = s;
             }
-            if (flags & 1u) // loop/end of this sample
+            if (flags & 1u) // end of this sample; with bit 1 the voice loops back to the loop start
+            {
+                if (loopsOut) *loopsOut = (flags & 2u) != 0u;
                 return;
+            }
         }
     }
 
@@ -1816,7 +1826,11 @@ namespace
         uint32_t serial = 0xFFFFFFFFu; // 0xFFFFFFFF = untracked (cannot be stopped)
         std::vector<int16_t> pcm;
         size_t pos = 0;
+        size_t loopStart = 0;          // [seloop] where the voice returns to when it loops
+        bool loops = false;            // [seloop] sustained until the game's stop-by-handle (or the safety cap)
+        size_t looped = 0;             // samples produced past the first pass (for the cap)
     };
+    constexpr size_t kSeLoopCap = 30u * kSeMixRate;   // [seloop] a looped voice the game never stops dies after 30 s
     std::mutex g_seVoiceM;
     std::vector<SeVoice> g_seVoices;
     // [rollback] Stepped-mode SE pacing: samples are generated per vsync tick (22050/60 each) instead
@@ -1824,7 +1838,7 @@ namespace
     // Both are part of the snapshot.
     uint64_t g_seTickBase = 0, g_seTickCarry = 0;
 
-    void seAddVoice(uint32_t serial, std::vector<int16_t> &&pcm)
+    void seAddVoice(uint32_t serial, std::vector<int16_t> &&pcm, size_t loopStart = 0, bool loops = false)
     {
         if (pcm.empty())
             return;
@@ -1834,6 +1848,8 @@ namespace
         SeVoice v;
         v.serial = serial;
         v.pcm = std::move(pcm);
+        v.loops = loops && loopStart < v.pcm.size();
+        v.loopStart = v.loops ? loopStart : 0u;
         g_seVoices.push_back(std::move(v));
     }
 
@@ -1914,13 +1930,30 @@ namespace
                 std::lock_guard<std::mutex> lk(g_seVoiceM);
                 for (auto it = g_seVoices.begin(); it != g_seVoices.end();)
                 {
-                    const size_t avail = it->pcm.size() - it->pos;
-                    const size_t n = avail < kSeChunk ? avail : kSeChunk;
-                    for (size_t i = 0; i < n; ++i)
-                        acc[i] += it->pcm[it->pos + i];
-                    it->pos += n;
+                    size_t n = 0;
+                    if (it->loops)
+                    {   // [seloop] wrap inside the chunk; the voice ends only by stop-by-handle or the cap
+                        for (; n < kSeChunk; ++n)
+                        {
+                            if (it->pos >= it->pcm.size())
+                            {
+                                if (it->looped >= kSeLoopCap) break;
+                                it->pos = it->loopStart;
+                            }
+                            acc[n] += it->pcm[it->pos++];
+                            if (it->pos > it->loopStart || it->looped) ++it->looped;
+                        }
+                    }
+                    else
+                    {
+                        const size_t avail = it->pcm.size() - it->pos;
+                        n = avail < kSeChunk ? avail : kSeChunk;
+                        for (size_t i = 0; i < n; ++i)
+                            acc[i] += it->pcm[it->pos + i];
+                        it->pos += n;
+                    }
                     if (n > used) used = n;
-                    if (it->pos >= it->pcm.size())
+                    if (it->pos >= it->pcm.size() && (!it->loops || it->looped >= kSeLoopCap))
                         it = g_seVoices.erase(it);
                     else
                         ++it;
@@ -2070,7 +2103,8 @@ namespace
             }
             std::vector<int16_t> pcm;
             pcm.reserve(4096);
-            seDecodeAdpcm(bk.blob, dataOff, pcm, 1024u);
+            size_t loopStart = 0; bool loops = false;
+            seDecodeAdpcm(bk.blob, dataOff, pcm, 8192u, &loopStart, &loops);   // [seloop] 8192 blocks: a looped hum must be whole (1024 cut samples past 1.3 s)
             if (pcm.empty())
             {
                 seDrop(bank, idx, "decoded to zero samples (empty slot?)");
@@ -2133,10 +2167,12 @@ namespace
                     rs.push_back(static_cast<int16_t>(pcm[i0] + (pcm[i1] - pcm[i0]) * frac));
                 }
                 pcm.swap(rs);
+                loopStart = static_cast<size_t>((static_cast<uint64_t>(loopStart) * kSeMixRate) / srcRate);   // [seloop]
             }
             // Hand it to a voice; seServiceVoices() mixes the active voices incrementally so
             // a later stop-by-serial can cut the tail. Overlap still works -- voices sum.
-            seAddVoice(serial, std::move(pcm));
+            const size_t pcmN = pcm.size();
+            seAddVoice(serial, std::move(pcm), loopStart, loops);
             seServiceVoices(runtime);
             static std::atomic<uint32_t> n{0};
             const uint32_t k = n.fetch_add(1);
@@ -2144,10 +2180,10 @@ namespace
             {
                 const uint32_t r = kSeMixRate; // post-resample: pcm.size() is in THIS rate
                 std::fprintf(stderr, "[se] #%-4u ser=%-5u slot%u(bank%-2u) id%-3u%-12s %-4s %5zu smp "
-                                     "%4ums @%5uHz vol=%-3u pan=%-3u dataOff=0x%x\n",
+                                     "%4ums @%5uHz vol=%-3u pan=%-3u dataOff=0x%x%s%zu\n",
                              k, serial, slot, bank, idx, seName(bank, idx), head ? "head" : "vagi",
-                             pcm.size(), static_cast<uint32_t>(pcm.size() * 1000u / r), r,
-                             vol, pan, dataOff);
+                             pcmN, static_cast<uint32_t>(pcmN * 1000u / r), r,
+                             vol, pan, dataOff, loops ? " LOOP@" : " oneshot ", loops ? loopStart : (size_t)0);
             }
             return;
         }
