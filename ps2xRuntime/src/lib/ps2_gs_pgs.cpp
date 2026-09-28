@@ -725,7 +725,9 @@ static void wsHudKickLocked(State &s, uint8_t *data, float inv)
         {
             float bx0 = 1e9f, bx1 = -1e9f, by0 = 1e9f, by1 = -1e9f;
             for (int i = 0; i < np; i++) { const float x = h.q[i].x / 16.0f - c.ofx, y = h.q[i].y / 16.0f - c.ofy; bx0 = std::min(bx0, x); bx1 = std::max(bx1, x); by0 = std::min(by0, y); by1 = std::max(by1, y); }
-            if (by1 < 110.f && by0 > -10.f && bx1 - bx0 > 4.f)
+            static const uint32_t s_tbp = [](){ const char *v = std::getenv("PS2X_PGS_PRIMLOG_TBP"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 16) : 0xFFFFFFFFu; }();   // PS2X_PGS_PRIMLOG_TBP=<hex>: any band, prims texturing from that base
+            const bool tbpHit = (uint32_t)(c.tex0 & 0x3FFFu) == s_tbp;
+            if (tbpHit || (by1 < 110.f && by0 > -10.f && bx1 - bx0 > 4.f))
             {
                 s_n++;
                 std::fprintf(stderr, "[primlog] swap=%llu prim=%u fst=%d ctx=%u fbp=%u fbw=%u zte=%u ztst=%u z=%u/%u/%u active=%d inv=%.3f box=(%.1f,%.1f)-(%.1f,%.1f) w=%.1f h=%.1f tex0=%llx\n",

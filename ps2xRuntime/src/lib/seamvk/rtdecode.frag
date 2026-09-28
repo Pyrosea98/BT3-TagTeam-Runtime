@@ -82,6 +82,10 @@ uint rtDword(uint a)
         ivec2 zp = rtPixelL(a & ~3u, true) * int(pc.src.w) + gSub;
         float z = texelFetch(uDepth, zp, 0).r;
         uint zi = uint(clamp(z, 0.0, 1.0) * 16777216.0 + 0.5) & 0xFFFFFFu;
+        // [zascolour] A colour-format read (PSMCT32/24/16) of pages last written as a Z buffer: paraLLEl-GS returns black
+        // for the Z bits (the intro cinematic's 32-px strips blend the Z buffer read as PSMCT24 at 60 % over the scene:
+        // the intended dark look; the real Z bits would be red/green contour noise). Only PSMZ* reads get the Z value.
+        if (pc.tex.z < 48u) zi = 0u;
         d = (d & 0xFF000000u) | zi;
     }
     return d;

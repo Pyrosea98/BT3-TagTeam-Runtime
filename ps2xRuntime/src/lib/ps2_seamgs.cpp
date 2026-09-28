@@ -735,7 +735,8 @@ namespace seamgs
             auto it = g_texByKey.find(key);
             // PS2X_SEAMGS_TEXTRACE=<cbp hex>: every lookup of a texture with that palette base, with the cache decision
             static const uint32_t s_traceCbp = [](){ const char *v = std::getenv("PS2X_SEAMGS_TEXTRACE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 16) : 0xFFFFFFFFu; }();
-            const bool trace = ((uint32_t)((tex0 >> 37) & 0x3FFFu) == s_traceCbp) && g_watch.logged < 400u;
+            static const uint64_t s_traceFrom = [](){ const char *v = std::getenv("PS2X_SEAMGS_TEXTRACE_FROM"); return v && v[0] ? (uint64_t)std::strtoull(v, nullptr, 10) : 0ull; }();   // seam frame the trace starts at
+            const bool trace = ((uint32_t)((tex0 >> 37) & 0x3FFFu) == s_traceCbp) && g_frame >= s_traceFrom && g_watch.logged < 400u;
             if (it != g_texByKey.end())
             {
                 TexEntry &e = g_tex[it->second];
@@ -789,6 +790,13 @@ namespace seamgs
             }
             decodeTexture(tex0, g_r.texa, e, rgba);
             g_forceCpuDecode = false;
+            if (trace)
+            {
+                ++g_watch.logged;
+                std::fprintf(stderr, "[textrace] frame %llu draw %zu tex0 %016llx: decode drawn %u clutDrawn %u gpu %u pages(drawn/write):", (unsigned long long)g_frame, g_list.draws.size(), (unsigned long long)tex0, e.drawnPages ? 1u : 0u, e.clutDrawn ? 1u : 0u, e.gpuDecode ? 1u : 0u);
+                for (const auto &pg : e.pages) std::fprintf(stderr, " p%x(%u/%u)", pg.first, g_pageDrawn[pg.first], g_pageWrite[pg.first]);
+                std::fprintf(stderr, "\n");
+            }
             ++g_texDecodes; e.decodeId = (uint32_t)g_texDecodes + (uint32_t)(g_frame << 12);
             if (e.drawnPages) ++g_texStale;
             if (e.w * e.h <= 256u * 256u && !rgba.empty()) e.rgbaCopy = rgba; else e.rgbaCopy.clear();
@@ -1019,6 +1027,8 @@ namespace seamgs
             for (uint32_t r = row0; r <= row1; ++r) for (uint32_t c = col0; c <= col1; ++c)
             {
                 const uint32_t p = p0 + r * pagesPerRow + c;
+                static const uint32_t s_stampPage = [](){ const char *v = std::getenv("PS2X_SEAMGS_STAMPPAGE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 16) : 0xFFFFFFFFu; }();
+                if (p == s_stampPage && g_watch.logged < 400u) { ++g_watch.logged; std::fprintf(stderr, "[stamp] frame %llu draw %zu page 0x%x by fbp 0x%x fbw %u psm %u sc %u..%u %u..%u prim %u tme %u stamp %u (write %u)\n", (unsigned long long)g_frame, g_list.draws.size(), p, s.fbp, s.fbw, s.fpsm, s.scax0, s.scax1, s.scay0, s.scay1, (unsigned)s.prim, s.tme ? 1u : 0u, g_stamp, g_pageWrite[p]); }
                 if (p >= 0x1a0u && p < 0x1c0u) { static int s_dbg = 0; if (s_dbg < 6) { ++s_dbg; std::fprintf(stderr, "[stamp] frame %llu page 0x%x by fbp 0x%x fbw %u psm %u sc %u..%u %u..%u prim %u tme %u\n", (unsigned long long)g_frame, p, s.fbp, s.fbw, s.fpsm, s.scax0, s.scax1, s.scay0, s.scay1, s.prim, s.tme); } }
                 if (p < kPages) g_pageDrawn[p] = g_stamp;
             }
@@ -1668,6 +1678,11 @@ namespace seamgs
                 const uint32_t dsax = (uint32_t)((tp >> 32) & 0x7FFu), dsay = (uint32_t)((tp >> 48) & 0x7FFu);
                 const uint32_t w = (uint32_t)(tr & 0xFFFu), h = (uint32_t)((tr >> 32) & 0xFFFu);
                 ++g_stamp;
+                {   // PS2X_SEAMGS_XFERLOG=<game frame>: local->local copies of that frame too
+                    static const uint64_t s_at = [](){ const char *v = std::getenv("PS2X_SEAMGS_XFERLOG"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
+                    const uint64_t gf = g_bt3FrameCount.load(std::memory_order_relaxed);
+                    if (s_at && gf == s_at) std::fprintf(stderr, "[xferlog] frame %llu LOCAL sbp 0x%x sbw %u spsm 0x%x at %u,%u -> dbp 0x%x dbw %u dpsm 0x%x at %u,%u size %ux%u\n", (unsigned long long)gf, sbp, sbw, spsm, ssax, ssay, dbp, dbw, dpsm, dsax, dsay, w, h);
+                }
                 std::vector<uint32_t> tmp(size_t(w) * h);
                 for (uint32_t y = 0; y < h; ++y) for (uint32_t x = 0; x < w; ++x) tmp[size_t(y) * w + x] = readPixel(spsm, sbp, sbw, (ssax + x) & 0x7FFu, (ssay + y) & 0x7FFu);
                 for (uint32_t y = 0; y < h; ++y) for (uint32_t x = 0; x < w; ++x) writePixel(dpsm, dbp, dbw, (dsax + x) & 0x7FFu, (dsay + y) & 0x7FFu, tmp[size_t(y) * w + x]);

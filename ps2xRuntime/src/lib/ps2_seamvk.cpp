@@ -124,6 +124,7 @@ namespace seamvk
             Vulkan::ImageHandle white;          // 1x1 for untextured draws
             Vulkan::ImageHandle outlineH;       // [outline] pass A output (minC, maxC, minF, maxF), target-sized
             Vulkan::ImageHandle snap;           // destination snapshot for DATE draws
+            std::vector<std::pair<Vulkan::ImageHandle, int32_t>> zKeep;   // [zdecdump] depth copies taken at Z read-backs while dumping
             Vulkan::BufferHandle readback;
             struct TsMark { uint8_t cat; Vulkan::QueryPoolHandle q; };   // [gputime] GPU timestamps: cat = the category that STARTS at this mark
             struct Pending { Vulkan::BufferHandle buf; Vulkan::Fence fence; uint32_t w = 0, h = 0; bool live = false; std::vector<TsMark> ts; uint64_t gframe = 0; };   // [presentlat] gframe: the game frame this output belongs to
@@ -418,6 +419,8 @@ namespace seamvk
 
         void freeTextures(const seamgs::FrameList &f)
         {   // after the frame's draws: retired slots may still be referenced by them
+            static const bool s_noFree = [](){ const char *v = std::getenv("PS2X_SEAMVK_NOFREE"); return v && v[0] == '1'; }();   // diagnostic: leak slot images (lifetime bisect)
+            if (s_noFree) return;
             for (int32_t s : f.texFrees)
                 if (s >= 0 && (size_t)s < g_gpu.tex.size() && g_gpu.tex[s])
                 {   // [hoist] a decode image (render target usage) goes back through the retire ring; an uploaded texture is dropped
@@ -456,6 +459,10 @@ namespace seamvk
         void runRtDecode(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::FrameList &f, const seamgs::RtDecode &r, Vulkan::ImageHandle *into = nullptr)
         {   // into: [hoist] decode into this image instead of the slot's (the slot is pointed at it when the stream reaches the decode)
             if (r.slot < 0 || r.w == 0 || r.h == 0) return;
+            {   // PS2X_SEAMVK_SKIPRTTBP=<hex tbp>: skip target decodes of that texture base (diagnostic bisect)
+                static const uint32_t s_skipTbp = [](){ const char *v = std::getenv("PS2X_SEAMVK_SKIPRTTBP"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 16) : 0xFFFFFFFFu; }();
+                if (!r.fromVram && r.tbp == s_skipTbp) return;
+            }
             Target *srcp = nullptr; Target *dz = nullptr;
             if (r.fromVram)
             {   // [gpudecode] bring the pages this decode needs up to date, then read them in the shader
@@ -485,6 +492,10 @@ namespace seamvk
                     if (s_skipDec & 512) { srcp = nullptr; dz = nullptr; }   // 512 = transitions done, but sample the dummy: isolates the transition cost
                 }
                 if (g_gpu.dumpRt) std::fprintf(stderr, "[seamvk] decode slot %d %ux%u psm %u from target %x (%ux%u) depth %u clutFromTarget %u\n", r.slot, r.w, r.h, r.psm, r.srcFbp, srcp ? srcp->img->get_width() : 0u, srcp ? srcp->img->get_height() : 0u, r.depthSrc, r.clutFromTarget);
+                {   // PS2X_SEAMVK_ZDECLOG=1: every Z-buffer read-back decode with the depth image it resolved to
+                    static const bool s_zlog = [](){ const char *v = std::getenv("PS2X_SEAMVK_ZDECLOG"); return v && v[0] == '1'; }();
+                    if (s_zlog && r.depthSrc) std::fprintf(stderr, "[zdec] frame %llu slot %d psm %u tbp 0x%x src 0x%x (%ux%u) dz %s %ux%u depthOfZbp[%x]=%llx\n", (unsigned long long)f.frame, r.slot, r.psm, r.tbp, r.srcFbp, srcp ? srcp->img->get_width() : 0u, srcp ? srcp->img->get_height() : 0u, dz ? "ok" : "NULL", dz ? dz->img->get_width() : 0u, dz ? dz->img->get_height() : 0u, r.srcFbp | ((srcp ? srcp->img->get_width() / g_gpu.scale : 0u) << 16), (unsigned long long)(g_gpu.depthOfZbp.count(r.srcFbp | ((srcp ? srcp->img->get_width() / g_gpu.scale : 0u) << 16)) ? g_gpu.depthOfZbp[r.srcFbp | ((srcp ? srcp->img->get_width() / g_gpu.scale : 0u) << 16)] : 0ull));
+                }
             }
             const uint32_t nat = srcp ? rtNativeFactor(r) : 1u;   // [rtnative]
             const uint32_t iw = r.w * nat, ih = r.h * nat;
@@ -552,6 +563,19 @@ namespace seamvk
             cmd.end_render_pass();
             finishDecode();
             ++g_gpu.rtDecodes;
+            if (g_gpu.dumpRt && r.depthSrc && dz && r.psm == 1u)
+            {   // [zdecdump] a Z buffer read back as CT24 while dumping: copy the sampled depth image NOW into a keepsake image
+                // (the frame's later Z clears would empty it before the end-of-frame dump), read back with the rt dumps
+                auto ci = Vulkan::ImageCreateInfo::render_target(dz->img->get_width(), dz->img->get_height(), VK_FORMAT_R32_SFLOAT);
+                ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; ci.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+                auto keep = dev.create_image(ci);
+                cmd.image_barrier(*keep, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                cmd.image_barrier(*dz->img, gl(*dz, dz->layout), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                cmd.copy_image(*keep, *dz->img, {}, {}, { dz->img->get_width(), dz->img->get_height(), 1 }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 });
+                cmd.image_barrier(*dz->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, gl(*dz, dz->layout), VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+                cmd.image_barrier(*keep, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                g_gpu.zKeep.push_back({ keep, r.slot });
+            }
             if (g_gpu.dumpRt) g_gpu.rtDumps.push_back({ img, r });
         }
 
@@ -1428,6 +1452,10 @@ namespace seamvk
             static const int s_skip = [](){ const char *v = std::getenv("PS2X_SEAMVK_SKIP"); return v && v[0] ? std::atoi(v) : 0; }();   // [perf attribution] 1 = no rt decodes, 2 = no main draws, 4 = no native steps (the picture breaks; only the GPU time matters)
             if (s_skip && ((d.kind == 2 && (s_skip & 1)) || (d.kind <= 1 && (s_skip & 2)) || (d.kind == 3 && (s_skip & 4))
                 || (d.kind <= 1 && (s_skip & 8) && d.st.texFromDrawn) || (d.kind <= 1 && (s_skip & 16) && d.st.date != 0u) || (d.kind == 0 && (s_skip & 32)) || (d.kind == 1 && (s_skip & 64)))) { ++drawIdx; continue; }   // 32 = no GS packet draws, 64 = no seam meshes   // 8 = no draws sampling a decoded target, 16 = no DATE draws
+            {   // PS2X_SEAMVK_SKIPTAIL=<n>: skip the last n draws of every frame (diagnostic bisect of post passes)
+                static const size_t s_skipTail = [](){ const char *v = std::getenv("PS2X_SEAMVK_SKIPTAIL"); return v && v[0] ? (size_t)std::atoll(v) : 0u; }();
+                if (s_skipTail && di + s_skipTail >= f.draws.size()) { ++drawIdx; continue; }
+            }
             if (d.kind == 3)
             {   // [postnative] an engine-seam step at its stream position
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
@@ -1761,7 +1789,8 @@ namespace seamvk
             int n = 0;
             for (auto &rd : g_gpu.rtDumps)
             {
-                const seamgs::RtDecode &r = rd.second;
+                seamgs::RtDecode r = rd.second;
+                r.w = rd.first->get_width(); r.h = rd.first->get_height();   // the image's own size ([rtnative] decodes are larger than the GS texture)
                 Vulkan::BufferCreateInfo bi = {}; bi.size = VkDeviceSize(r.w) * r.h * 4u; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.domain = Vulkan::BufferDomain::CachedHost;
                 auto buf = dev.create_buffer(bi);
                 auto c2 = dev.request_command_buffer();
@@ -1780,6 +1809,22 @@ namespace seamvk
                 ++n;
             }
             g_gpu.rtDumps.clear();
+            for (auto &zk : g_gpu.zKeep)
+            {   // [zdecdump] the depth image as sampled by a Z read-back decode, as z24 integers (D32 -> * 2^24)
+                const uint32_t w = zk.first->get_width(), h = zk.first->get_height();
+                Vulkan::BufferCreateInfo bi = {}; bi.size = VkDeviceSize(w) * h * 4u; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.domain = Vulkan::BufferDomain::CachedHost;
+                auto buf = dev.create_buffer(bi);
+                auto c2 = dev.request_command_buffer();
+                c2->copy_image_to_buffer(*buf, *zk.first, 0, {}, { w, h, 1 }, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
+                c2->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+                Vulkan::Fence fe; dev.submit(c2, &fe); fe->wait();
+                const float *dz = static_cast<const float *>(dev.map_host_buffer(*buf, Vulkan::MEMORY_ACCESS_READ_BIT));
+                char path[512]; std::snprintf(path, sizeof(path), "%s/zkeep_slot%d_%ux%u_z24.bin", dir, zk.second, w, h);
+                if (FILE *fp = std::fopen(path, "wb")) { for (size_t i = 0; i < size_t(w) * h; ++i) { const uint32_t zi = (uint32_t)(std::min(std::max(dz[i], 0.0f), 1.0f) * 16777216.0f + 0.5f) & 0xFFFFFFu; std::fwrite(&zi, 4, 1, fp); } std::fclose(fp); }
+                dev.unmap_host_buffer(*buf, Vulkan::MEMORY_ACCESS_READ_BIT);
+                std::fprintf(stderr, "[seamvk]  zkeep dump slot %d %ux%u -> %s\n", zk.second, w, h, path);
+            }
+            g_gpu.zKeep.clear();
         }
         freeTextures(f);
 
