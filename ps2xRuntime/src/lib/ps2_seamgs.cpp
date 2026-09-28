@@ -1160,11 +1160,32 @@ namespace seamgs
                     bool hud;
                     if (g_emitSprite) hud = (w > 0.f && w < 0.8f * W && hh > 0.f && hh < 300.f && y1 < 96.f && (!s.zte || s.ztst == 1u));
                     else hud = (s.fst && zAllZero && hh < 300.f && y1 < 96.f && (w < 0.8f * W || x0 > 8.f));
+                    {   // PS2X_SEAMGS_HUDLOG=<game frame>: every top-band primitive on a scene buffer of 2 frames, with the decision
+                        static const uint64_t s_at = [](){ const char *v = std::getenv("PS2X_SEAMGS_HUDLOG"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
+                        const uint64_t gf = g_bt3FrameCount.load(std::memory_order_relaxed);
+                        if (s_at && gf >= s_at && gf < s_at + 2u && y0 < 110.f)
+                            std::fprintf(stderr, "[hudlog] frame %llu %s tme %u fst %u zte %u ztst %u z %u/%u/%u abe %u (%u,%u,%u,%u) fix %u tex0 %08x%08x tex %dx%d box (%.1f,%.1f)-(%.1f,%.1f) uv (%.1f,%.1f) (%.1f,%.1f) (%.1f,%.1f) -> %s\n",
+                                         (unsigned long long)gf, g_emitSprite ? "SPRITE" : "TRI", s.tme, s.fst, s.zte, s.ztst, vs[0]->z, vs[1]->z, vs[2]->z, s.abe, s.aA, s.aB, s.aC, s.aD, s.fix, s.tex0hi, s.tex0lo, (int)s.texW, (int)s.texH, x0, y0, x1, y1,
+                                         out[0].u, out[0].v, out[1].u, out[1].v, out[2].u, out[2].v, hud ? "MAP" : "keep");
+                    }
                     if (hud)
                     {
                         // split at the layout's cut points (the map is piecewise linear between them), then map every vertex
                         std::vector<Vtx> poly(out, out + 3), tmp;
                         int layout = g_wsHudLayout.load(std::memory_order_relaxed);
+                        if (layout > 0 && w <= 64.f)
+                        {   // [hudchips] a SMALL element inside a bridge zone (between a pinned group and the centre piece) moves with its
+                            // group at the group's scale instead of being stretched with the zone: the buff chips next to the ki gauge
+                            // (42x22 quads at x 100..214) came out 1.5x wide under the edge layout, the walker's rule and this one alike.
+                            // The wide bar / gate quads that span the zone keep the stretch, which is what keeps the bars continuous.
+                            const float k = W / 512.0f, s1 = 124.f * k, s2 = 216.f * k, s3 = 296.f * k, s4 = 388.f * k;
+                            const float offL = layout >= 2 ? g_wsHudOffLQ.load(std::memory_order_relaxed) / 16.0f * k : 0.f, offR = layout >= 2 ? g_wsHudOffRQ.load(std::memory_order_relaxed) / 16.0f * k : 0.f;
+                            const float t4 = W - (W - s4) * inv + offR;
+                            // the group map is affine over the whole side (group + bridge), so the test is "ends before the centre zone" /
+                            // "starts after it": the first chip begins at x 100, left of the bridge, and must not be split at s1
+                            if (x1 <= s2) { for (int i = 0; i < 3; ++i) out[i].x = offL + out[i].x * inv; ++g_ws.mapped; pushTri(out, ts); return; }
+                            if (x0 >= s3) { for (int i = 0; i < 3; ++i) out[i].x = t4 + (out[i].x - s4) * inv; ++g_ws.mapped; pushTri(out, ts); return; }
+                        }
                         if (layout > 0)
                         {
                             const float k = W / 512.0f; const float cuts[4] = { 124.f * k, 216.f * k, 296.f * k, 388.f * k };
