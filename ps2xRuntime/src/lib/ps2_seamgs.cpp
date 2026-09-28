@@ -1501,11 +1501,26 @@ namespace seamvk
         d.st.fbp = (uint32_t)(seamgs::g_r.ctx[0].frame & 0x1FFu) << 5; d.st.fbw = (uint32_t)((seamgs::g_r.ctx[0].frame >> 16) & 0x3Fu);
         d.st.tex0lo = seamgs::g_lastSceneFbp;   // [ztopnative] step 2 reads the scene buffer's alpha (its TEX0 may be in the not-yet-parsed packet)
         d.st.zbp = (uint32_t)(seamgs::g_r.ctx[0].zbuf & 0x1FFu) << 5;
-        if (step == 5)
-        {   // the depth ramp palette (CLUT 0x3e8c) as it is NOW: the GPU thread runs the pass later, when the mirror may hold another frame's palette
+        if (step == 5 || step == 3 || step == 1)
+        {   // the palette the step reads (0x3e8c depth ramp for the outline, 0x3e84 blur weight for step 3, 0x3e90 Kaioken body
+            // mask for step 1) as it is NOW: the GPU thread runs the pass later, when the mirror may hold another frame's palette
             std::array<uint32_t, 256> cl{}; uint32_t bits[16] = {};
-            seamgs::readClut(0x3e8cu, 0u, 0u, seamgs::g_r.texa, cl.data(), bits);
+            seamgs::readClut(step == 5 ? 0x3e8cu : step == 3 ? 0x3e84u : 0x3e90u, 0u, 0u, seamgs::g_r.texa, cl.data(), bits);
             d.rt = (int32_t)seamgs::g_list.stepCluts.size(); seamgs::g_list.stepCluts.push_back(cl);
+            {   // PS2X_SEAMGS_STEPCLUTLOG=1: what the step's palette holds at the marker (stale if the packet itself uploads it)
+                static const bool s_log = [](){ const char *v = std::getenv("PS2X_SEAMGS_STEPCLUTLOG"); return v && v[0] && v[0] != '0'; }(); static uint64_t s_lastF = ~0ull;
+                if (s_log && step == 3 && (seamgs::g_frame % 300u) == 0u && s_lastF != seamgs::g_frame)
+                {
+                    s_lastF = seamgs::g_frame; unsigned nz = 0; for (uint32_t i = 0; i < 256; ++i) if (cl[i] >> 24) ++nz;
+                    std::fprintf(stderr, "[stepclut] frame %llu step 3 CLUT 0x3e84: %u entries with alpha; a[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x a[15..25]=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x stamp %u\n",
+                                 (unsigned long long)seamgs::g_frame, nz, cl[0]>>24, cl[1]>>24, cl[2]>>24, cl[3]>>24, cl[4]>>24, cl[5]>>24, cl[6]>>24, cl[7]>>24, cl[15]>>24, cl[16]>>24, cl[17]>>24, cl[18]>>24, cl[19]>>24, cl[20]>>24, cl[21]>>24, cl[22]>>24, cl[23]>>24, cl[24]>>24, cl[25]>>24, seamgs::g_pageWrite[seamgs::addr32(0x3e84u, 1, 0, 0) >> 13]);
+                }
+            }
+        }
+        if (step == 4)
+        {   // [postnative] the native pass draws the 2:1 buffer at 0x2a00 (fbw 4, 256x224): mark it drawn so the blur chain's reads decode from the target
+            seamgs::State gs; gs.fbp = 0x2a00u; gs.fbw = 4u; gs.scax0 = 0; gs.scax1 = 255; gs.scay0 = 0; gs.scay1 = 223;
+            seamgs::noteDrawPages(gs);
         }
         seamgs::g_list.draws.push_back(d);
     }

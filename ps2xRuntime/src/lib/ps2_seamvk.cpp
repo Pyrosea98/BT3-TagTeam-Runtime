@@ -79,6 +79,15 @@ namespace seamvk
         const uint32_t kDepthMaskFrag[] = {
 #include "seamvk/depthmask.frag.inc"
         };
+        const uint32_t kPostAlphaFrag[] = {   // [postnative] steps 1 and 3: alpha-only passes into the scene
+#include "seamvk/postalpha.frag.inc"
+        };
+        const uint32_t kGlowDownFrag[] = {   // [postnative] step 4a: 0x2a00 := 2:1 box of the scene
+#include "seamvk/glowdown.frag.inc"
+        };
+        const uint32_t kGlowCompFrag[] = {   // [postnative] step 4b: the glow / DoF composite
+#include "seamvk/glowcomp.frag.inc"
+        };
         const uint32_t kZtopFrag[] = {   // [ztopnative] step 2: Ztop := frame.A at native resolution
 #include "seamvk/ztop.frag.inc"
         };
@@ -108,7 +117,7 @@ namespace seamvk
         struct Gpu
         {
             Vulkan::Device *dev = nullptr;   // [earlyframe] for the readback consumer thread
-            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progSeamSt = nullptr, *progGsSt = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutlineH = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progZtop = nullptr, *progVram = nullptr;
+            Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progSeamSt = nullptr, *progGsSt = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutlineH = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progZtop = nullptr, *progVram = nullptr, *progPostAlpha = nullptr, *progGlowDown = nullptr, *progGlowComp = nullptr;
             Vulkan::BufferHandle vram;          // [gpudecode] the GPU copy of GS VRAM (4 MB), pages uploaded in stream order
             Vulkan::BufferHandle cring[3]; uint8_t *cmap[3] = {}; VkDeviceSize coff = 0; uint32_t cslot = 0;   // [batch] host-visible constants ring (one per frame in flight)
             Vulkan::ImageHandle out;            // the composed frame
@@ -295,6 +304,22 @@ namespace seamvk
                 dv.output_mask = 0x0u; df.sets[0].sampled_image_mask = 1u << 1; df.sets[0].meta[1].array_size = 1; df.output_mask = 0x1u;
                 g_gpu.progDepthMask = dev.request_program(kRtVert, sizeof(kRtVert), kDepthMaskFrag, sizeof(kDepthMaskFrag), &dv, &df);
                 g_gpu.progZtop = dev.request_program(kRtVert, sizeof(kRtVert), kZtopFrag, sizeof(kZtopFrag), &dv, &df);   // [ztopnative] same layout: one sampled image
+                g_gpu.progGlowDown = dev.request_program(kRtVert, sizeof(kRtVert), kGlowDownFrag, sizeof(kGlowDownFrag), &dv, &df);   // [postnative] step 4a: one sampled image (the scene)
+                {   // [postnative] steps 1/3: CLUT (0) + Ztop (1) + a mode push constant
+                    Vulkan::ResourceLayout av = {}, af = {};
+                    av.output_mask = 0x0u; av.push_constant_size = 16;
+                    af.sets[0].uniform_buffer_mask = 1u << 0; af.sets[0].meta[0].array_size = 1;
+                    af.sets[0].sampled_image_mask = (1u << 1) | (1u << 2); af.sets[0].meta[1].array_size = 1; af.sets[0].meta[2].array_size = 1;   // Ztop (1) + the scene as input attachment (2)
+                    af.output_mask = 0x1u; af.push_constant_size = 16;
+                    g_gpu.progPostAlpha = dev.request_program(kRtVert, sizeof(kRtVert), kPostAlphaFrag, sizeof(kPostAlphaFrag), &av, &af);
+                }
+                {   // [postnative] step 4b: the 0x2a00 texture (1) + the destination as input attachment (2), as gs.frag's DATE read
+                    Vulkan::ResourceLayout cv = {}, cf = {};
+                    cv.output_mask = 0x0u;
+                    cf.sets[0].sampled_image_mask = (1u << 1) | (1u << 2); cf.sets[0].meta[1].array_size = 1; cf.sets[0].meta[2].array_size = 1;
+                    cf.output_mask = 0x1u;
+                    g_gpu.progGlowComp = dev.request_program(kRtVert, sizeof(kRtVert), kGlowCompFrag, sizeof(kGlowCompFrag), &cv, &cf);
+                }
                 if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progSeamSt || !g_gpu.progGsSt || !g_gpu.progPresent || !g_gpu.progRt || !g_gpu.progAlias || !g_gpu.progOutline || !g_gpu.progOutlineH || !g_gpu.progDepthMask || !g_gpu.progVram || !g_gpu.vram) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
                 const uint32_t whitePx = 0xFFFFFFFFu;
                 Vulkan::ImageInitialData init = { &whitePx, 0, 0 };
@@ -649,8 +674,105 @@ namespace seamvk
         }
 
         // [postnative] step 5: the outline mask, written straight into the frame's alpha from the Z top-byte plane
+        constexpr uint32_t kInkRgb = 0x646464u;   // the outline ink draw's RGBAQ (FUN_00106ba8, kick transcript: 3f80000080646464; its packet is parsed after the marker)
         void runNativeStep(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::FrameList &f, const seamgs::Draw &d)
         {
+            if (d.prog == 1 || d.prog == 3)
+            {   // [postnative] passes into the scene keyed by the Z top byte: step 1 = the outline ink (rgb -= ink * A >> 7, reading
+                // the scene in-pass) + frame.A := CLUT_0x3e90[Ztop].A (the Kaioken body mask; zero palette otherwise), step 3 =
+                // frame.A := CLUT_0x3e84[Ztop].A (the blur weight). Palettes captured by the front end at the step's marker.
+                if (!g_gpu.progPostAlpha) return;
+                auto fi = g_gpu.targets.find(d.st.tex0lo); auto zi = g_gpu.targets.find(0x1c00u);
+                if (fi == g_gpu.targets.end() || !fi->second.img) return;
+                Target &ft = fi->second;
+                Target *zt = (zi != g_gpu.targets.end() && zi->second.img) ? &zi->second : nullptr;
+                if (!zt) return;
+                toSampled(cmd, *zt);
+                toAttachment(cmd, ft, false);
+                Vulkan::RenderPassInfo rp = {};
+                rp.num_color_attachments = 1; rp.color_attachments[0] = &ft.img->get_view(); rp.load_attachments = 1u << 0; rp.store_attachments = 1u << 0;
+                Target &dsA = depth(dev, d.st.zbp, d.st.fbw, d.st.tex0lo); toAttachment(cmd, dsA, true);   // [stencildate] alpha writes: the stencil follows
+                rp.depth_stencil = &dsA.img->get_view(); rp.op_flags = Vulkan::RENDER_PASS_OP_LOAD_DEPTH_STENCIL_BIT | Vulkan::RENDER_PASS_OP_STORE_DEPTH_STENCIL_BIT;
+                static Vulkan::RenderPassInfo::Subpass s_sub = [](){ Vulkan::RenderPassInfo::Subpass sp; sp.num_color_attachments = 1; sp.color_attachments[0] = 0; sp.num_input_attachments = 1; sp.input_attachments[0] = 0; sp.depth_stencil_mode = Vulkan::RenderPassInfo::DepthStencil::ReadWrite; return sp; }();
+                rp.subpasses = &s_sub; rp.num_subpasses = 1;   // the ink reads the destination in-pass
+                cmd.begin_render_pass(rp);
+                cmd.set_opaque_state();
+                if (stencilDate()) { cmd.set_stencil_test(true); cmd.set_stencil_ops(VK_COMPARE_OP_ALWAYS, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP); cmd.set_stencil_reference(0xFFu, 0xFFu, 0u); }
+                cmd.set_program(g_gpu.progPostAlpha);
+                cmd.set_cull_mode(VK_CULL_MODE_NONE);
+                cmd.set_depth_test(false, false);
+                cmd.set_blend_enable(false);
+                cmd.set_color_write_mask(d.prog == 1 ? (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT) : VK_COLOR_COMPONENT_A_BIT);
+                cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+                const uint32_t w = ft.img->get_width(), h = ft.img->get_height();
+                VkViewport vp = {}; vp.width = float(w); vp.height = float(h); vp.maxDepth = 1.0f; cmd.set_viewport(vp);
+                VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = h; cmd.set_scissor(sr);
+                cmd.set_texture(0, 1, zt->img->get_view(), Vulkan::StockSampler::NearestClamp);
+                cmd.set_input_attachments(0, 2);
+                uint32_t *cl = static_cast<uint32_t *>(cmd.allocate_constant_data(0, 0, 256u * 4u));
+                if (d.rt >= 0 && (size_t)d.rt < f.stepCluts.size()) std::memcpy(cl, f.stepCluts[d.rt].data(), 1024); else std::memset(cl, 0, 1024);
+                const uint32_t pcv[4] = { d.prog == 3 ? 1u : 0u, kInkRgb, 0u, 0u };
+                cmd.push_constants(pcv, 0, sizeof(pcv));
+                cmd.draw(3);
+                cmd.end_render_pass();
+                ++g_gpu.nativeSteps;
+                return;
+            }
+            if (d.prog == 4)
+            {   // [postnative] step 4: 0x2a00 := 2:1 box of the scene (alpha 0x80), then frame.rgb := f + (round(U) - f) * A / 128
+                if (!g_gpu.progGlowDown || !g_gpu.progGlowComp) return;
+                auto fi = g_gpu.targets.find(d.st.tex0lo);
+                if (fi == g_gpu.targets.end() || !fi->second.img) return;
+                Target &ft = fi->second;
+                Target &gt = target(dev, 0x2a00u, 4u);
+                {   // 4a: the downscale into rows 0..224 of the 0x2a00 target (256 x 224 GS px, native scale)
+                    toSampled(cmd, ft);
+                    toAttachment(cmd, gt, false);
+                    Vulkan::RenderPassInfo rp = {};
+                    rp.num_color_attachments = 1; rp.color_attachments[0] = &gt.img->get_view(); rp.load_attachments = gt.cleared ? (1u << 0) : 0u; rp.store_attachments = 1u << 0;
+                    if (!gt.cleared) rp.clear_attachments = 1u << 0;
+                    gt.cleared = true;
+                    cmd.begin_render_pass(rp);
+                    cmd.set_opaque_state();
+                    cmd.set_program(g_gpu.progGlowDown);
+                    cmd.set_cull_mode(VK_CULL_MODE_NONE);
+                    cmd.set_depth_test(false, false);
+                    cmd.set_blend_enable(false);
+                    cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+                    const uint32_t w = gt.img->get_width(), h = gt.img->get_height();
+                    VkViewport vp = {}; vp.width = float(w); vp.height = float(h); vp.maxDepth = 1.0f; cmd.set_viewport(vp);
+                    VkRect2D sr = {}; sr.extent.width = std::min(w, 256u * g_gpu.scale); sr.extent.height = std::min(h, 224u * g_gpu.scale); cmd.set_scissor(sr);
+                    cmd.set_texture(0, 1, ft.img->get_view(), Vulkan::StockSampler::NearestClamp);
+                    cmd.draw(3);
+                    cmd.end_render_pass();
+                    // (the front end marks 0x2a00 drawn at the marker: the blur chain decodes from this target)
+                }
+                {   // 4b: the composite into the scene, reading the scene in-pass (one subpass, colour = input attachment)
+                    toSampled(cmd, gt);
+                    toAttachment(cmd, ft, false);
+                    Vulkan::RenderPassInfo rp = {};
+                    rp.num_color_attachments = 1; rp.color_attachments[0] = &ft.img->get_view(); rp.load_attachments = 1u << 0; rp.store_attachments = 1u << 0;
+                    static Vulkan::RenderPassInfo::Subpass s_sub = [](){ Vulkan::RenderPassInfo::Subpass sp; sp.num_color_attachments = 1; sp.color_attachments[0] = 0; sp.num_input_attachments = 1; sp.input_attachments[0] = 0; sp.depth_stencil_mode = Vulkan::RenderPassInfo::DepthStencil::None; return sp; }();
+                    rp.subpasses = &s_sub; rp.num_subpasses = 1;
+                    cmd.begin_render_pass(rp);
+                    cmd.set_opaque_state();
+                    cmd.set_program(g_gpu.progGlowComp);
+                    cmd.set_cull_mode(VK_CULL_MODE_NONE);
+                    cmd.set_depth_test(false, false);
+                    cmd.set_blend_enable(false);
+                    cmd.set_color_write_mask(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT);
+                    cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+                    const uint32_t w = ft.img->get_width(), h = ft.img->get_height();
+                    VkViewport vp = {}; vp.width = float(w); vp.height = float(h); vp.maxDepth = 1.0f; cmd.set_viewport(vp);
+                    VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = std::min(h, 448u * g_gpu.scale); cmd.set_scissor(sr);
+                    cmd.set_texture(0, 1, gt.img->get_view(), Vulkan::StockSampler::LinearClamp);
+                    cmd.set_input_attachments(0, 2);
+                    cmd.draw(3);
+                    cmd.end_render_pass();
+                }
+                ++g_gpu.nativeSteps;
+                return;
+            }
             if (d.prog == 2)
             {   // [ztopnative] Ztop := frame.A: the scene target's alpha (d.st.tex0lo = its fbp, recorded by the front end)
                 // into the Z buffer's colour view at 0x1c00 (BT3's Z buffer; the step's own FRAME register may still be

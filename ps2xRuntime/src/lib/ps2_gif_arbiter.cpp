@@ -10,6 +10,8 @@ extern "C" void ps2xGsRecordPacket(uint8_t path, const uint8_t *data, uint32_t s
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+extern std::atomic<uint64_t> g_bt3FrameCount;   // [pktoracle] the game frame
 
 namespace
 {
@@ -214,7 +216,10 @@ void GifArbiter::takeQueue(GifArbiterBatch &out)
 // offline (tools/gsvram.py, tools/oracle_diff.py). The packets themselves are processed unchanged.
 namespace
 {
-    struct PktOracle { uint32_t lo = 0, hi = 0, nth = 200, entries = 0; bool inRun = false, done = false; };
+    struct PktOracle { uint32_t lo = 0, hi = 0, nth = 200, entries = 0, frameIdx = 0; bool inRun = false, done = false; };
+    // PS2X_PKTORACLE_FRAME=<game frame>: an oracle given nth 0 resolves at the first run of its range on or after that
+    // frame (the k-th such oracle in the list takes the k-th run from there: every run of a step within one frame)
+    const uint64_t g_pktOracleFrame = [](){ const char *v = std::getenv("PS2X_PKTORACLE_FRAME"); return v && v[0] ? (uint64_t)std::strtoull(v, nullptr, 10) : 0ull; }();
     std::vector<PktOracle> g_pktOracles = [](){ std::vector<PktOracle> out; const char *v = std::getenv("PS2X_PKTORACLE"); if (!v || !v[0]) return out;
         for (const char *p = v; p && *p; )
         {
@@ -222,6 +227,7 @@ namespace
             if (const char *d = std::strchr(p, '-')) o.hi = (uint32_t)std::strtoul(d + 1, nullptr, 16);
             const char *comma = std::strchr(p, ',');
             if (const char *c = std::strchr(p, ':'); c && (!comma || c < comma)) o.nth = (uint32_t)std::atoi(c + 1);
+            if (o.nth == 0) { uint32_t k = 0; for (const PktOracle &q : out) if (q.nth == 0) ++k; o.frameIdx = k; }
             if (o.hi > o.lo) out.push_back(o);
             p = comma ? comma + 1 : nullptr;
         }
@@ -235,7 +241,7 @@ namespace
 #else
         const bool ok = false;
 #endif
-        std::fprintf(stderr, "[pktoracle] %x %s dump %s (%s)\n", lo, what, ok ? "ok" : "FAILED", b);
+        std::fprintf(stderr, "[pktoracle] %x %s dump %s (%s) game frame %llu\n", lo, what, ok ? "ok" : "FAILED", b, (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed));
     }
 }
 // [postnative] PS2X_POSTNATIVE=<mask> (bit i = step i of ps2x_pgs::nativePostStep; needs PS2X_KICKPROBE=1 for the owners):
@@ -244,7 +250,7 @@ namespace
 {
     struct NativeStep { uint32_t lo, hi; int id; bool inRun; bool marked = false; };
     NativeStep g_nativeSteps[] = { {0x109848u, 0x109938u, 0, false}, {0x106ba8u, 0x106c5cu, 1, false}, {0x24b118u, 0x24b1dcu, 2, false}, {0x245a50u, 0x245de4u, 3, false}, {0x103070u, 0x103254u, 4, false}, {0x105cd8u, 0x105f28u, 5, false} };   // 5: outline mask, native renderer only
-    const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : (seamvk::on() ? 0x25u : 0u); }();   // [ztopnative] + step 2   // native renderer: depth mask + outline by default
+    const uint32_t g_nativeMask = [](){ const char *v = std::getenv("PS2X_POSTNATIVE"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : (seamvk::on() ? 0x3Fu : 0u); }();   // [postnative] every pinned step native under the seam   // native renderer: depth mask + outline by default
     // The step's packets are not dropped: their register writes (FRAME/ZBUF/SCISSOR/TEST... which the game's later draws
     // inherit) still reach the backend; only their DRAW kicks are neutralised, XYZ2/XYZF2 -> XYZ3/XYZF3 (no kick), by
     // rewriting the GIF tags' register descriptors and A+D addresses in place. Tag state persists across PATH2 payloads.
@@ -309,7 +315,7 @@ namespace
                 // The native renderer's pass goes at the step's first DRAW packet, not its first attributed packet: uploads
                 // and palette writes the step does earlier (between other owners' draws) would place it too early, and
                 // draws in between (the characters) would overwrite what it wrote (the outline vanished that way).
-                if (kick && !st.marked && seamvk::on() && (st.id >= 5 || st.id == 0 || st.id == 2)) { st.marked = true; seamvk::onNativeStep(st.id); }   // [ztopnative] step 2 too
+                if (kick && !st.marked && seamvk::on()) { st.marked = true; seamvk::onNativeStep(st.id); }   // every step has a native pass under the seam
                 return true;
             }
         }
@@ -324,7 +330,12 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
         {   // (before the native intercept: a natively replaced step is bracketed the same way, so its output is verified)
             if (o.done) continue;
             const bool in = pkt.owner >= o.lo && pkt.owner < o.hi;
-            if (in && !o.inRun) { o.inRun = true; if (++o.entries == o.nth) pktOracleDump(o.lo, o.nth, "before"); }
+            if (in && !o.inRun)
+            {
+                o.inRun = true; ++o.entries;
+                if (o.nth == 0 && g_pktOracleFrame && g_bt3FrameCount.load(std::memory_order_relaxed) >= g_pktOracleFrame) o.nth = o.entries + o.frameIdx;
+                if (o.entries == o.nth) pktOracleDump(o.lo, o.nth, "before");
+            }
             else if (!in && o.inRun) { o.inRun = false; if (o.entries == o.nth) { pktOracleDump(o.lo, o.nth, "after"); o.done = true; } }
         }
     if (g_nativeMask && pkt.pathId == GifPathId::Path2) nativeIntercept(pkt);   // [postnative] the host pass ran; the packet goes on with its kicks neutralised

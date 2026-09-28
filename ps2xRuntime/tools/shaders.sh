@@ -17,6 +17,9 @@ c -fshader-stage=frag -DFROM_VRAM rtdecode.frag -o rtdecode_vram.frag.inc
 c -fshader-stage=frag alias16.frag -o alias16.frag.inc
 c -fshader-stage=frag depthmask.frag -o depthmask.frag.inc
 c -fshader-stage=frag ztop.frag -o ztop.frag.inc
+c -fshader-stage=frag postalpha.frag -o postalpha.frag.inc
+c -fshader-stage=frag glowdown.frag -o glowdown.frag.inc
+c -fshader-stage=frag glowcomp.frag -o glowcomp.frag.inc
 c -fshader-stage=frag outline.frag -o outline.frag.inc
 c -fshader-stage=frag outline_h.frag -o outline_h.frag.inc
 echo "shaders compiled (-O)"
