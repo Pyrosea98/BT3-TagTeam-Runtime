@@ -2154,6 +2154,7 @@ bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h)
 
 void shutdown()
 {
+    seamvk::shutdown();   // [earlyframe]
     State &s = st();
     std::lock_guard<std::mutex> lk(s.mtx);
     if (s.inited) s.device.wait_idle();

@@ -21,6 +21,8 @@
 
 #include <algorithm>
 #include <deque>
+#include <thread>
+#include <condition_variable>
 #include <unordered_set>
 #include <unordered_map>
 #include <atomic>
@@ -105,6 +107,7 @@ namespace seamvk
         struct Target { Vulkan::ImageHandle img; VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; bool cleared = false; bool aliasedDirty = false; };   // aliasedDirty: a draw through the other pixel format was skipped since the last draw of its own
         struct Gpu
         {
+            Vulkan::Device *dev = nullptr;   // [earlyframe] for the readback consumer thread
             Vulkan::Program *progSeam = nullptr, *progGs = nullptr, *progSeamSt = nullptr, *progGsSt = nullptr, *progPresent = nullptr, *progRt = nullptr, *progAlias = nullptr, *progOutlineH = nullptr, *progOutline = nullptr, *progDepthMask = nullptr, *progZtop = nullptr, *progVram = nullptr;
             Vulkan::BufferHandle vram;          // [gpudecode] the GPU copy of GS VRAM (4 MB), pages uploaded in stream order
             Vulkan::BufferHandle cring[3]; uint8_t *cmap[3] = {}; VkDeviceSize coff = 0; uint32_t cslot = 0;   // [batch] host-visible constants ring (one per frame in flight)
@@ -133,6 +136,42 @@ namespace seamvk
             double msTake = 0, msRecord = 0, msSubmit = 0, msWait = 0;
         };
         Gpu g_gpu;
+
+        // [earlyframe] The readback consumer: the frame used to be handed to the presenter at the NEXT swap (renderFrame
+        // recorded frame N, then waited for frame N-1's readback and published it), so the image on screen was 1.29 game
+        // frames old on average (PS2X_PRESENTLAT, paraLLEl-GS: 1.00). Now a thread waits for each frame's fence and
+        // publishes it the moment the GPU is done, a few ms after its own swap. PS2X_SEAMVK_EARLYFRAME=0 restores the
+        // swap-time hand-off.
+        bool earlyFrame() { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_EARLYFRAME"); return !(v && v[0] == '0'); }(); return s; }
+        std::mutex g_rbMtx; std::condition_variable g_rbCv; std::deque<uint32_t> g_rbQueue; bool g_rbQuit = false;
+        std::thread *g_rbThread = nullptr;   // heap-held: never destroyed while joinable at exit (shutdown() joins it when called)
+        void rbWorker()
+        {
+            for (;;)
+            {
+                uint32_t si;
+                {
+                    std::unique_lock<std::mutex> lk(g_rbMtx);
+                    g_rbCv.wait(lk, []{ return g_rbQuit || !g_rbQueue.empty(); });
+                    if (g_rbQuit) return;
+                    si = g_rbQueue.front(); g_rbQueue.pop_front();
+                }
+                Gpu::Pending &p = g_gpu.ring[si % 3u];
+                p.fence->wait();
+                const uint8_t *src = static_cast<const uint8_t *>(g_gpu.dev->map_host_buffer(*p.buf, Vulkan::MEMORY_ACCESS_READ_BIT));
+                {
+                    std::lock_guard<std::mutex> lk(g_mtx);
+                    g_frame.assign(src, src + size_t(p.w) * p.h * 4u);
+                    g_frameW = p.w; g_frameH = p.h; g_frameFresh = true; g_frameGframe = p.gframe;
+                }
+                g_gpu.dev->unmap_host_buffer(*p.buf, Vulkan::MEMORY_ACCESS_READ_BIT);
+                {
+                    std::lock_guard<std::mutex> lk(g_rbMtx);
+                    p.live = false;
+                }
+                g_rbCv.notify_all();
+            }
+        }
         bool gpuTime()
         {
             static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_GPUTIME"); return v && (v[0] == '1' || v[0] == '2' || v[0] == '3'); }();   // =1: per-category GPU timestamps (costs ~10 ms/frame of recording; off by default)
@@ -891,6 +930,14 @@ namespace seamvk
 
     uint64_t lastFrameGframe() { std::lock_guard<std::mutex> lk(g_mtx); return g_frameGframe; }   // [presentlat]
 
+    void shutdown()
+    {   // [earlyframe] stop the readback consumer before the device goes away
+        if (!g_rbThread) return;
+        { std::lock_guard<std::mutex> lk(g_rbMtx); g_rbQuit = true; }
+        g_rbCv.notify_all();
+        g_rbThread->join(); delete g_rbThread; g_rbThread = nullptr;
+    }
+
     bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h)
     {
         std::lock_guard<std::mutex> lk(g_mtx);
@@ -1422,6 +1469,12 @@ namespace seamvk
         // Asynchronous readback: this frame goes into ring slot N; the frame handed to the presenter is the oldest
         // slot whose fence has already signalled (normally the previous frame), so the swap never waits on the GPU.
         Gpu::Pending &slot = g_gpu.ring[g_gpu.ringNext % 3u];
+        if (earlyFrame())
+        {   // [earlyframe] the slot from three frames ago: the consumer has published it long since (no wait in practice)
+            if (!g_rbThread) { g_gpu.dev = &dev; g_rbThread = new std::thread(rbWorker); }
+            std::unique_lock<std::mutex> lk(g_rbMtx);
+            g_rbCv.wait(lk, [&]{ return !slot.live; });
+        }
         if (!slot.buf || slot.w != w || slot.h != h)
         {
             Vulkan::BufferCreateInfo bi = {}; bi.size = VkDeviceSize(w) * h * 4u; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.domain = Vulkan::BufferDomain::CachedHost;
@@ -1435,12 +1488,17 @@ namespace seamvk
         if (!g_gpu.tsCur.empty()) { g_gpu.tsPending.emplace_back(); g_gpu.tsPending.back().swap(g_gpu.tsCur); }
         g_gpu.tsCur.clear();
         dev.submit(cmd, &slot.fence);
-        slot.live = true;
         const auto tD = std::chrono::steady_clock::now();
+        if (earlyFrame())
+        {   // [earlyframe] hand the slot to the consumer thread; it publishes the frame when the GPU signals
+            { std::lock_guard<std::mutex> lk(g_rbMtx); slot.live = true; g_rbQueue.push_back(g_gpu.ringNext % 3u); }
+            g_rbCv.notify_all();
+        }
+        else slot.live = true;
         ++g_gpu.ringNext;
-        Gpu::Pending &prev = g_gpu.ring[(g_gpu.ringNext + 1u) % 3u];   // two frames back: certainly done, no wait in practice
+        Gpu::Pending &prev = g_gpu.ring[(g_gpu.ringNext + 1u) % 3u];   // the previous frame's slot (swap-time hand-off only)
         Vulkan::Fence fence; bool havePrev = false;
-        if (prev.live) { prev.fence->wait(); havePrev = true; }
+        if (!earlyFrame() && prev.live) { prev.fence->wait(); havePrev = true; }
         while (!g_gpu.tsPending.empty() && g_gpu.tsPending.front().back().q->is_signalled())
         {   // [gputime] a frame whose queries Granite has resolved: attribute its intervals by category
             const std::vector<Gpu::TsMark> &ts = g_gpu.tsPending.front();

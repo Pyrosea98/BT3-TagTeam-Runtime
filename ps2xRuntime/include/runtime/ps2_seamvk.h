@@ -57,6 +57,7 @@ namespace seamvk
     // Present thread: the newest native frame (RGBA8), when one is ready.
     bool takeFrame(std::vector<uint8_t> &rgba, uint32_t &w, uint32_t &h);
     uint64_t lastFrameGframe();   // [presentlat] the game frame the last taken frame was rendered from
+    void shutdown();              // [earlyframe] join the readback consumer (before the device is destroyed)
 
     struct PrivRegs { uint64_t pmode = 0, dispfb1 = 0, display1 = 0, dispfb2 = 0, display2 = 0, bgcolor = 0; };
 }
