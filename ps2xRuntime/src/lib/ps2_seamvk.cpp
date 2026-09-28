@@ -1182,8 +1182,13 @@ namespace seamvk
         static size_t s_dumpNext = 0;
         const uint64_t gnow = g_bt3FrameCount.load(std::memory_order_relaxed);
         if (s_dumpNext < s_dumpList.size() && gnow >= s_dumpList[s_dumpNext]) { ++s_dumpNext; g_dumpReq.store(true, std::memory_order_release); }
+        // PS2X_SEAMVK_DUMPBUSYFRAMES=a,b,c: the same for fight frames (suffix _b<n>): a run-to-run comparison dumps a few
+        // neighbours and matches the pair that is identical (the fight start still slips by a frame between runs)
+        static const std::vector<uint32_t> s_dumpBusyList = [](){ std::vector<uint32_t> v; if (const char *e = std::getenv("PS2X_SEAMVK_DUMPBUSYFRAMES")) for (const char *c = e; *c; ) { v.push_back((uint32_t)std::strtoul(c, (char **)&c, 10)); while (*c == ',' || *c == ' ') ++c; if (c == e) break; } return v; }();
+        static size_t s_dumpBusyNext = 0; bool busyReq = false;
+        if (s_dumpBusyNext < s_dumpBusyList.size() && f.busy >= s_dumpBusyList[s_dumpBusyNext]) { ++s_dumpBusyNext; g_dumpReq.store(true, std::memory_order_release); busyReq = true; }
         const bool reqHit = g_dumpReq.exchange(false, std::memory_order_acq_rel);
-        char reqSuf[32] = ""; if (reqHit) std::snprintf(reqSuf, sizeof(reqSuf), "_g%llu", (unsigned long long)gnow);
+        char reqSuf[32] = ""; if (reqHit) { if (busyReq) std::snprintf(reqSuf, sizeof(reqSuf), "_b%u", f.busy); else std::snprintf(reqSuf, sizeof(reqSuf), "_g%llu", (unsigned long long)gnow); }
         bool dumpNow = false;
         if (reqHit || ((s_dumpFrame || s_dumpGame || s_dumpBusy) && !s_dumped && (gameHit || (s_dumpFrame > 1u && g_gpu.frames == s_dumpFrame) || (s_dumpFrame == 1u && busyFight()))))
         {

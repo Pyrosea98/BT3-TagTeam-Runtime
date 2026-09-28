@@ -1183,6 +1183,13 @@ namespace seamgs
         {
             const TexEntry *te;
             static int s_dbg = 0;
+            {   // PS2X_SEAMGS_SCRATCHLOG=<game frame>: every scratch-raster candidate of 4 frames (what the CPU rasterises and why)
+                static const uint64_t s_at = [](){ const char *v = std::getenv("PS2X_SEAMGS_SCRATCHLOG"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
+                const uint64_t gf = g_bt3FrameCount.load(std::memory_order_relaxed);
+                if (s_at && gf >= s_at && gf < s_at + 4u)
+                    std::fprintf(stderr, "[scratchlog] frame %llu sprite fbp 0x%x fbw %u psm %u tme %u tex %d %ux%u abe %u (%u,%u,%u,%u) sc %u..%u %u..%u xy %d,%d -> %d,%d rgba %02x%02x%02x%02x\n", (unsigned long long)gf, s.fbp, s.fbw, s.fpsm, s.tme, s.tex, s.texW, s.texH, s.abe, s.aA, s.aB, s.aC, s.aD, s.scax0, s.scax1, s.scay0, s.scay1,
+                                 (int32_t(a.x) - s.ofx) / 16, (int32_t(a.y) - s.ofy) / 16, (int32_t(b.x) - s.ofx) / 16, (int32_t(b.y) - s.ofy) / 16, b.r, b.g, b.b, b.a);
+            }
             if (s.fbp >= 0x3c00u && s.fbp < 0x3e00u && s_dbg < 12)
             {
                 ++s_dbg;
@@ -1196,6 +1203,11 @@ namespace seamgs
             if (y1 < y0) std::swap(y0, y1);
             const int cx0 = std::max(x0, (int)s.scax0), cx1 = std::min(x1, (int)s.scax1 + 1), cy0 = std::max(y0, (int)s.scay0), cy1 = std::min(y1, (int)s.scay1 + 1);
             if (cx1 <= cx0 || cy1 <= cy0 || (cx1 - cx0) * (cy1 - cy0) > 256 * 256) return false;
+            // [scratchmax] PS2X_SEAMGS_SCRATCHMAX=<px> (default 1024): only sprites up to this many pixels are rasterised on the CPU --
+            // the rendered palettes (16x16, read back as CLUTs from the mirror); bigger scratch draws (the 64x64 blur ping-pong
+            // buffers, 12 a frame, 1.1 ms) go through the GPU like every other target and decode as targets (bit-identical, fight frame 798)
+            static const int s_max = [](){ const char *v = std::getenv("PS2X_SEAMGS_SCRATCHMAX"); return v && v[0] ? std::atoi(v) : 1024; }();
+            if ((cx1 - cx0) * (cy1 - cy0) > s_max) return false;
             // [scratchrepeat] the HUD rasterises the same palettes every frame: while this frame's sequence of scratch sprites
             // (state, vertices, texture decode) matches last frame's from the first one on, and every target page's last writer
             // was a scratch raster, the mirror already holds the result
