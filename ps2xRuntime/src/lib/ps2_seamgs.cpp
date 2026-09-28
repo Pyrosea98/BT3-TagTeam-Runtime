@@ -630,6 +630,10 @@ namespace seamgs
             ps2tex::TexIdent id;
             if (n <= 0 || !ps2tex::identify(g_vram, t.tbp0, t.tbw, t.psm, t.tw, t.th, clut, ta.ta0, ta.aem, ta.ta1, id)) { ++g_packSkipped; return false; }
             const std::string name = id.name();
+            {   // PS2X_SEAMPACK_LOG=<n>: the first n identifications (compare with PS2X_PGS_PACKLOG on the reference path)
+                static const int s_log = [](){ const char *v = std::getenv("PS2X_SEAMPACK_LOG"); return v && v[0] ? std::atoi(v) : 0; }(); static int s_n = 0;
+                if (s_n < s_log && !g_packLoaded.count(name) && !g_packMiss.count(name)) { ++s_n; std::fprintf(stderr, "[seampack-id] #%d %s psm=%u tbp0=%u tbw=%u tw=%u th=%u cbp=%u csa=%u cpsm=%u n=%d clut0=%08x texa=%llx\n", s_n, name.c_str(), psm, t.tbp0, t.tbw, t.tw, t.th, t.cbp, t.csa, t.cpsm, n, clut[0], (unsigned long long)texa); }
+            }
             if (g_packMiss.count(name)) { ++g_packMisses; return false; }
             if (auto li = g_packLoaded.find(name); li != g_packLoaded.end())
             {   // already on the GPU: point the slot at the shared image (no pixels travel)
@@ -638,7 +642,9 @@ namespace seamgs
             }
             std::vector<uint8_t> px; int w = 0, h = 0, fmt = 0;
             ++g_packLoads;
-            if (!ps2tex::loadReplacement(id, px, w, h, fmt) || w <= 0 || h <= 0 || px.empty()) { g_packMiss.insert(name); ++g_packMisses; return false; }
+            static const int s_logOut = [](){ const char *v = std::getenv("PS2X_SEAMPACK_LOG"); return v && v[0] ? std::atoi(v) : 0; }(); static int s_outN = 0;
+            auto outcome = [&](const char *what) { if (s_outN < s_logOut) { ++s_outN; std::fprintf(stderr, "[seampack-out] %s psm=%u tbp0=%u tw=%u th=%u: %s (%dx%d fmt %d, GS %ux%u)\n", name.c_str(), psm, t.tbp0, t.tw, t.th, what, w, h, fmt, e.w, e.h); } };
+            if (!ps2tex::loadReplacement(id, px, w, h, fmt) || w <= 0 || h <= 0 || px.empty()) { outcome("no file / decode failed"); g_packMiss.insert(name); ++g_packMisses; return false; }
             bool gateAlpha = false; uint32_t aSolid = 0, aClear = 255;
             {
                 bool clear = false, solid = false, mid = false; uint32_t amax = 0;
@@ -650,13 +656,14 @@ namespace seamgs
             }
             if (fmt != 7)
             {   // BC-compressed DDS: the native renderer samples RGBA8 slots; a gate asset keeps the game's own texels (as in OpenGL)
-                if (gateAlpha) { g_packMiss.insert(name); ++g_packMisses; return false; }
-                std::vector<uint8_t> dec; if (!ps2xBcDecode(fmt, px, w, h, dec)) { g_packMiss.insert(name); ++g_packMisses; return false; }
+                if (gateAlpha) { outcome("gate asset, compressed: keep the game's texels"); g_packMiss.insert(name); ++g_packMisses; return false; }
+                std::vector<uint8_t> dec; if (!ps2xBcDecode(fmt, px, w, h, dec)) { outcome("BC decode failed"); g_packMiss.insert(name); ++g_packMisses; return false; }
                 px.swap(dec);
             }
             else if (gateAlpha)
                 for (size_t i = 3; i < px.size(); i += 4) px[i] = (uint8_t)(px[i] >= 64u ? aSolid : aClear);
-            if ((uint32_t)w % e.w != 0u || (uint32_t)h % e.h != 0u || (uint32_t)w / e.w != (uint32_t)h / e.h) { g_packMiss.insert(name); ++g_packMisses; return false; }   // the draw needs one integer factor
+            if ((uint32_t)w % e.w != 0u || (uint32_t)h % e.h != 0u || (uint32_t)w / e.w != (uint32_t)h / e.h) { outcome("not an integer multiple of the GS size"); g_packMiss.insert(name); ++g_packMisses; return false; }   // the draw needs one integer factor
+            outcome("REPLACED");
             const uint64_t share = fnv(name.data(), name.size()) | 1ull;
             g_packLoaded[name] = PackLoaded{ (uint32_t)w, (uint32_t)h, share };
             g_list.texUploads.push_back(TexUpload{ slot, (uint32_t)w, (uint32_t)h, std::move(px), share });
