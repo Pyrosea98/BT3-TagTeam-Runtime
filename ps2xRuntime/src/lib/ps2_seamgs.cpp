@@ -908,7 +908,8 @@ namespace seamgs
             ++g_packLoads;
             static const int s_logOut = [](){ const char *v = std::getenv("PS2X_SEAMPACK_LOG"); return v && v[0] ? std::atoi(v) : 0; }(); static int s_outN = 0;
             auto outcome = [&](const char *what) { if (s_outN < s_logOut) { ++s_outN; std::fprintf(stderr, "[seampack-out] %s psm=%u tbp0=%u tw=%u th=%u: %s (%dx%d fmt %d, GS %ux%u)\n", name.c_str(), psm, t.tbp0, t.tw, t.th, what, w, h, fmt, e.w, e.h); } };
-            if (!ps2tex::loadReplacement(id, px, w, h, fmt) || w <= 0 || h <= 0 || px.empty()) { outcome("no file / decode failed"); g_packMiss.insert(name); ++g_packMisses; return false; }
+            int mips = 1;
+            if (!ps2tex::loadReplacement(id, px, w, h, fmt, &mips) || w <= 0 || h <= 0 || px.empty()) { outcome("no file / decode failed"); g_packMiss.insert(name); ++g_packMisses; return false; }
             bool gateAlpha = false; uint32_t aSolid = 0, aClear = 255;
             {
                 bool clear = false, solid = false, mid = false; uint32_t amax = 0;
@@ -918,11 +919,19 @@ namespace seamgs
                 gateAlpha = !mid && clear && solid;
                 if (amax > 0x80u) { aSolid = aSolid * 128u / 255u; aClear = aClear * 128u / 255u; }
             }
+            // [packbc] A BC-compressed DDS goes to the GPU AS IS, with the mip chain the file carries (PS2X_SEAMVK_PACKBC=0:
+            // decode to RGBA8 and generate mips, the old path -- 4x the VRAM: 3.1 GB against 1.45 GB on paraLLEl-GS at scale 4).
+            static const bool s_bc = [](){ const char *v = std::getenv("PS2X_SEAMVK_PACKBC"); return !(v && v[0] == '0'); }();
+            uint32_t upFmt = 7u, upLevels = 1u;
             if (fmt != 7)
-            {   // BC-compressed DDS: the native renderer samples RGBA8 slots; a gate asset keeps the game's own texels (as in OpenGL)
+            {   // a gate asset keeps the game's own texels (as in OpenGL)
                 if (gateAlpha) { outcome("gate asset, compressed: keep the game's texels"); g_packMiss.insert(name); ++g_packMisses; return false; }
-                std::vector<uint8_t> dec; if (!ps2xBcDecode(fmt, px, w, h, dec)) { outcome("BC decode failed"); g_packMiss.insert(name); ++g_packMisses; return false; }
-                px.swap(dec);
+                if (s_bc && (fmt == 14 || fmt == 15 || fmt == 16 || fmt == 17)) { upFmt = (uint32_t)fmt; upLevels = (uint32_t)std::max(1, mips); }
+                else
+                {
+                    std::vector<uint8_t> dec; if (!ps2xBcDecode(fmt, px, w, h, dec)) { outcome("BC decode failed"); g_packMiss.insert(name); ++g_packMisses; return false; }
+                    px.swap(dec);
+                }
             }
             else if (gateAlpha)
                 for (size_t i = 3; i < px.size(); i += 4) px[i] = (uint8_t)(px[i] >= 64u ? aSolid : aClear);
@@ -930,7 +939,7 @@ namespace seamgs
             outcome("REPLACED");
             const uint64_t share = fnv(name.data(), name.size()) | 1ull;
             g_packLoaded[name] = PackLoaded{ (uint32_t)w, (uint32_t)h, share };
-            g_list.texUploads.push_back(TexUpload{ slot, (uint32_t)w, (uint32_t)h, std::move(px), share });
+            g_list.texUploads.push_back(TexUpload{ slot, (uint32_t)w, (uint32_t)h, std::move(px), share, upFmt, upLevels });
             e.gpuDecode = false;
             ++g_packHits;
             return true;

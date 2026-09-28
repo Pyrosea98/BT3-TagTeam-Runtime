@@ -74,7 +74,7 @@ namespace seamgs
     };
 
     // A texture decoded this frame for a slot. Slots are stable until freed.
-    struct TexUpload { int32_t slot; uint32_t w, h; std::vector<uint8_t> rgba; uint64_t share = 0; };   // [seampack] share: key of a session-wide shared image (pack replacements): rgba may be empty when the renderer already holds it
+    struct TexUpload { int32_t slot; uint32_t w, h; std::vector<uint8_t> rgba; uint64_t share = 0; uint32_t fmt = 7u, levels = 1u; };   // [packbc] fmt: raylib PixelFormat (7 = RGBA8, 14/15 = DXT1, 16 = DXT3, 17 = DXT5); levels: mip chain held in rgba   // [seampack] share: key of a session-wide shared image (pack replacements): rgba may be empty when the renderer already holds it
 
     struct FrameList
     {

@@ -363,8 +363,16 @@ namespace
 {
     // Decode one replacement file to an upload-ready blob. raylib's bt3LoadImage is pure CPU
     // (stb_image) -- safe on any thread, which is what the async worker relies on.
-    bool decodeFile(const std::string &path, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt)
+    // [packbc] Bytes of one BC level (4x4 blocks, 8 bytes for DXT1, 16 otherwise), and the chain total the DDS loader kept.
+    int bcLevelBytes(int w, int h, int fmt)
     {
+        const int bw = (std::max(w, 1) + 3) / 4, bh = (std::max(h, 1) + 3) / 4;
+        const int blk = (fmt == 14 || fmt == 15) ? 8 : 16;
+        return bw * bh * blk;
+    }
+    bool decodeFile(const std::string &path, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt, int *mips = nullptr)
+    {
+        if (mips) *mips = 1;
         // [A4.2] PNG/JPG/BMP/... decode with our own stb loader (thread-safe, no raylib state).
         // DDS stays on raylib on purpose: raylib keeps BC data COMPRESSED (glCompressedTexImage2D),
         // and stb cannot hand us compressed bytes -- decompressing the pack's 18,700 DXT5 files to
@@ -388,8 +396,18 @@ namespace
         const bool isCompressed = (img.format >= BT3_PIXELFORMAT_COMPRESSED_DXT1_RGB);
         if (!isCompressed) bt3ImageFormat(&img, BT3_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
         w = img.width; h = img.height; fmt = img.format;
-        const int bytes = bt3GetPixelDataSize(w, h, img.format);
+        int bytes = bt3GetPixelDataSize(w, h, img.format);
         if (bytes <= 0) { bt3UnloadImage(img); return false; }
+        // [packbc] A compressed DDS with a mip chain: the loader kept every level contiguously after level 0 (DDS order);
+        // hand the whole chain over and say how many levels it holds. Level-0-only consumers still read the front.
+        const bool isBc = img.format >= 14 && img.format <= 17;
+        if (isBc && img.mipmaps > 1)
+        {
+            int total = 0, lw = w, lh = h, n = 0;
+            for (int i = 0; i < img.mipmaps; ++i) { total += bcLevelBytes(lw, lh, img.format); ++n; if (lw == 1 && lh == 1) break; lw = std::max(1, lw / 2); lh = std::max(1, lh / 2); }
+            bytes = total;
+            if (mips) *mips = n;
+        }
         rgba.assign((const uint8_t *)img.data, (const uint8_t *)img.data + (size_t)bytes);
         bt3UnloadImage(img);
         return true;
@@ -400,7 +418,7 @@ namespace
     // thread; with the pack indexed the loads are the whole difference between its good and bad
     // seconds. The record path must never wait on a file: queue it, draw the original, swap the
     // replacement in when the worker is done.
-    struct Blob { std::vector<uint8_t> rgba; int w = 0, h = 0, fmt = 0; };
+    struct Blob { std::vector<uint8_t> rgba; int w = 0, h = 0, fmt = 0, mips = 1; };
     struct Job { uint64_t key; std::string path; uint64_t texKey; };
     struct AsyncState
     {
@@ -439,7 +457,7 @@ namespace
                 job = std::move(st->queue.front()); st->queue.pop_front();
             }
             Blob b;
-            const bool ok = decodeFile(job.path, b.rgba, b.w, b.h, b.fmt);
+            const bool ok = decodeFile(job.path, b.rgba, b.w, b.h, b.fmt, &b.mips);
             std::lock_guard<std::mutex> lk(st->mtx);
             st->pending.erase(job.key);
             if (!ok)
@@ -490,18 +508,19 @@ namespace
     }
 }
 
-bool loadReplacement(const TexIdent &id, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt)
+bool loadReplacement(const TexIdent &id, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt, int *mips)
 {
     if (!replacementsEnabled()) return false;
     auto it = g_index.find(pairKey(id.tex0Hash, id.hasClut ? id.clutHash : 0ull));
     if (it == g_index.end()) return false;
-    return decodeFile(it->second, rgba, w, h, fmt);
+    return decodeFile(it->second, rgba, w, h, fmt, mips);
 }
 
-bool loadReplacement(const TexIdent &id, uint64_t texKey, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt)
+bool loadReplacement(const TexIdent &id, uint64_t texKey, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt, int *mips)
 {
+    if (mips) *mips = 1;
     if (!replacementsEnabled()) return false;
-    if (!asyncEnabled()) return loadReplacement(id, rgba, w, h, fmt);
+    if (!asyncEnabled()) return loadReplacement(id, rgba, w, h, fmt, mips);
     const uint64_t key = pairKey(id.tex0Hash, id.hasClut ? id.clutHash : 0ull);
     auto it = g_index.find(key);
     if (it == g_index.end()) return false;
@@ -518,7 +537,7 @@ bool loadReplacement(const TexIdent &id, uint64_t texKey, std::vector<uint8_t> &
         // restores the old consume-on-use behaviour.
         static const bool s_oneShot = [](){ const char *v = std::getenv("PS2X_TEXPACK_ONESHOT"); return v && v[0] && v[0] != '0'; }();
         Blob &b = rd->second;
-        rgba = b.rgba; w = b.w; h = b.h; fmt = b.fmt;
+        rgba = b.rgba; w = b.w; h = b.h; fmt = b.fmt; if (mips) *mips = b.mips;
         st->swap.erase(texKey);
         ++st->consumed;
         if (s_oneShot) { st->readyBytes -= rgba.size(); st->ready.erase(rd); }

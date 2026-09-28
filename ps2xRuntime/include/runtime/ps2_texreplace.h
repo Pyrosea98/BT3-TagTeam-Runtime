@@ -66,14 +66,16 @@ namespace ps2tex
     // PIXELFORMAT_COMPRESSED_* for a BC-compressed DDS, which the GL upload hands to
     // glCompressedTexImage2D unchanged. Keeping it compressed is the whole point: a 4x PNG
     // replacement costs 16x the original's VRAM, where BC1 is 4:1 on top of that.
-    bool loadReplacement(const TexIdent &id, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt);
+    // [packbc] `mips` (optional): the number of mip levels a compressed DDS carries; the blob then holds the whole chain
+    // (level 0 first), so level-0-only consumers are unaffected.
+    bool loadReplacement(const TexIdent &id, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt, int *mips = nullptr);
 
     // [texpackasync] Non-blocking variant for the record path. A replacement file is decoded on a
     // background worker; until it is ready this returns false (the caller uploads the original
     // texture as usual) and the file is queued once. When the worker finishes, `texKey` is marked
     // so the texture-cache HIT path can force one re-resolve (takeReadySwap), which then gets the
     // decoded blob from here. PS2X_TEXPACK_ASYNC=0 restores the synchronous load.
-    bool loadReplacement(const TexIdent &id, uint64_t texKey, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt);
+    bool loadReplacement(const TexIdent &id, uint64_t texKey, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt, int *mips = nullptr);
     bool takeReadySwap(uint64_t texKey);
 
     // [texcache] True while the async replacement for `id` is queued/decoding (its first decode

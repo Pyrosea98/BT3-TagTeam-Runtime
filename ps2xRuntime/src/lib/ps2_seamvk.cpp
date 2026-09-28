@@ -143,6 +143,7 @@ namespace seamvk
             uint32_t w = 0, h = 0, scale = 1;
             bool failed = false;
             double msUpload = 0, msLoop = 0;
+            uint64_t packBcUploads = 0;   // [packbc]
             uint64_t decTexels = 0, decBracketed = 0, decHoisted = 0, hoistSkippedFrames = 0, frames = 0, draws = 0, verts = 0, passes = 0, texUploads = 0, dateDraws = 0, skippedDrawn = 0, texMissing = 0, texMismatch = 0, rtDecodes = 0, rtDecodesStale = 0, aliasedDraws = 0, aliasDraws = 0, nativeSteps = 0, vramPagesUp = 0, dateHost = 0, batches = 0, chunksBatched = 0;
             double msTake = 0, msRecord = 0, msSubmit = 0, msWait = 0;
         };
@@ -966,8 +967,29 @@ namespace seamvk
                     if (si != g_gpu.shared.end()) { g_gpu.tex[u.slot] = si->second; continue; }
                     if (u.rgba.empty()) continue;   // (should not happen: the front end sends pixels the first time)
                 }
-                Vulkan::ImageInitialData init = { u.rgba.data(), 0, 0 };
-                g_gpu.tex[u.slot] = dev.create_image(Vulkan::ImageCreateInfo::immutable_2d_image(u.w, u.h, VK_FORMAT_R8G8B8A8_UNORM, mipsOn()), &init);   // [mips] full chain, generated at upload
+                if (u.fmt != 7u)
+                {   // [packbc] block-compressed replacement, the file's own mip chain: one initial-data entry per level, contiguous
+                    const VkFormat vkfmt = (u.fmt == 14u || u.fmt == 15u) ? VK_FORMAT_BC1_RGBA_UNORM_BLOCK : u.fmt == 16u ? VK_FORMAT_BC2_UNORM_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+                    const uint32_t blk = (u.fmt == 14u || u.fmt == 15u) ? 8u : 16u;
+                    uint32_t levels = 1u, lw = u.w, lh = u.h; size_t need = 0;
+                    std::vector<Vulkan::ImageInitialData> init;
+                    for (uint32_t i = 0; i < std::max(1u, u.levels); ++i)
+                    {
+                        const size_t bytes = size_t((lw + 3u) / 4u) * size_t((lh + 3u) / 4u) * blk;
+                        if (need + bytes > u.rgba.size()) break;
+                        init.push_back({ u.rgba.data() + need, 0, 0 }); need += bytes; levels = (uint32_t)init.size();
+                        if (lw == 1u && lh == 1u) break; lw = std::max(1u, lw / 2u); lh = std::max(1u, lh / 2u);
+                    }
+                    auto ci = Vulkan::ImageCreateInfo::immutable_2d_image(u.w, u.h, vkfmt, false);
+                    ci.levels = mipsOn() ? levels : 1u;
+                    g_gpu.tex[u.slot] = dev.create_image(ci, init.data());
+                    ++g_gpu.packBcUploads;
+                }
+                else
+                {
+                    Vulkan::ImageInitialData init = { u.rgba.data(), 0, 0 };
+                    g_gpu.tex[u.slot] = dev.create_image(Vulkan::ImageCreateInfo::immutable_2d_image(u.w, u.h, VK_FORMAT_R8G8B8A8_UNORM, mipsOn()), &init);   // [mips] full chain, generated at upload
+                }
                 if (u.share) g_gpu.shared[u.share] = g_gpu.tex[u.slot];   // [seampack]
                 ++g_gpu.texUploads;
             }
