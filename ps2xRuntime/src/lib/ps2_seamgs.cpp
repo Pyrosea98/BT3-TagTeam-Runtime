@@ -716,11 +716,39 @@ namespace seamgs
             g_targetHist.clear();
         }
 
+        // [spriterect] the sprite being expanded, as its texel rect packed for the vertex's spare words (0 = not a sprite):
+        // UV mode: 1/16-texel units; STQ mode: s/q and t/q in 1/4096 (the shader scales by the texture size). Bilinear
+        // sampling is clamped to this rect: at render scale N the sub-pixel samples of a sprite's edge rows reach up to
+        // half a texel OUTSIDE its rect (a 1x GS never does -- its samples sit on texel centres) and pull in the atlas
+        // row/column next to it: a 1-px light line under the ki gauge (user, 2026-09-28).
+        uint32_t g_rectPad[2] = { 0u, 0u };
         void emitTriangle(const GsVert *v0, const GsVert *v1, const GsVert *v2, const State &s)
         {
             ScopeMs _sm{g_msTri};
             const GsVert *vs[3] = { v0, v1, v2 };
             Vtx out[3];
+            {   // PS2X_SEAMGS_PIXLOG=x,y (dev): every triangle (sprites included, expanded) whose bounding box covers that GS pixel
+                static const int s_px = [](){ const char *v = std::getenv("PS2X_SEAMGS_PIXLOG"); return v && v[0] ? std::atoi(v) : -1; }();
+                static const int s_py = [](){ const char *v = std::getenv("PS2X_SEAMGS_PIXLOG"); if (v) if (const char *c = std::strchr(v, ',')) return std::atoi(c + 1); return -1; }();
+                if (s_px >= 0)
+                {
+                    float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+                    for (int i = 0; i < 3; ++i) { const float x = (float(int32_t(vs[i]->x)) - float(s.ofx)) / 16.0f, y = (float(int32_t(vs[i]->y)) - float(s.ofy)) / 16.0f; x0 = std::min(x0, x); x1 = std::max(x1, x); y0 = std::min(y0, y); y1 = std::max(y1, y); }
+                    const float px = s_px + 0.5f, py = s_py + 0.5f;
+                    if (px >= x0 - 1.0f && px < x1 + 1.0f && py >= y0 - 1.0f && py < y1 + 1.0f)
+                        std::fprintf(stderr, "[pixlog] frame %llu draw %zu tri (%.2f,%.2f) (%.2f,%.2f) (%.2f,%.2f) uv (%.2f,%.2f) (%.2f,%.2f) (%.2f,%.2f) fst %u tex0 %08x%08x tme %u abe %u (%u,%u,%u,%u) fix %u ate %u atst %u aref %u fbp %x msk %08x rgba %02x%02x%02x%02x mmag %u prim %u iip %u\n",
+                                     (unsigned long long)g_frame, g_list.draws.size(), (float(int32_t(v0->x)) - s.ofx) / 16.0f, (float(int32_t(v0->y)) - s.ofy) / 16.0f, (float(int32_t(v1->x)) - s.ofx) / 16.0f, (float(int32_t(v1->y)) - s.ofy) / 16.0f, (float(int32_t(v2->x)) - s.ofx) / 16.0f, (float(int32_t(v2->y)) - s.ofy) / 16.0f,
+                                     v0->u / 16.0f, v0->v / 16.0f, v1->u / 16.0f, v1->v / 16.0f, v2->u / 16.0f, v2->v / 16.0f, s.fst, s.tex0hi, s.tex0lo, s.tme, s.abe, s.aA, s.aB, s.aC, s.aD, s.fix, s.ate, s.atst, s.aref, s.fbp, s.fbmsk, v2->r, v2->g, v2->b, v2->a, s.mmag, s.prim, s.iip);
+                }
+            }
+            uint32_t rectPad[2] = { g_rectPad[0], g_rectPad[1] };
+            if (s.tme && s.fst && rectPad[0] == 0u && rectPad[1] == 0u)
+            {   // [spriterect] UV-mode triangles too (the HUD's plates are tri-strip quads): the triangle's own texel rect
+                uint32_t u0 = 0xFFFFu, v0 = 0xFFFFu, u1 = 0u, v1 = 0u;
+                for (int i = 0; i < 3; ++i) { u0 = std::min<uint32_t>(u0, vs[i]->u); v0 = std::min<uint32_t>(v0, vs[i]->v); u1 = std::max<uint32_t>(u1, vs[i]->u); v1 = std::max<uint32_t>(v1, vs[i]->v); }
+                rectPad[0] = u0 | (v0 << 16); rectPad[1] = u1 | (v1 << 16);
+                if (rectPad[0] == 0u && rectPad[1] == 0u) rectPad[1] = 1u;
+            }
             for (int i = 0; i < 3; ++i)
             {
                 const GsVert &g = *vs[i];
@@ -731,7 +759,7 @@ namespace seamgs
                 o.q = g.q; o.s = g.s; o.t = g.t; o.u = float(g.u) / 16.0f; o.v = float(g.v) / 16.0f;
                 const GsVert &cv = s.iip ? g : *v2;   // flat: the last vertex's colour
                 o.rgba = (uint32_t)cv.r | ((uint32_t)cv.g << 8) | ((uint32_t)cv.b << 16) | ((uint32_t)cv.a << 24);
-                o.fog = float(g.fog) / 255.0f; o.pad[0] = o.pad[1] = 0;
+                o.fog = float(g.fog) / 255.0f; o.pad[0] = rectPad[0]; o.pad[1] = rectPad[1];   // [spriterect]
             }
             noteTargetHist(0, 0, s);
             if (!g_list.draws.empty() && g_list.draws.back().kind == 0 && sameState(g_list.draws.back().st, s))
@@ -1002,8 +1030,22 @@ namespace seamgs
                         GsVert tl = b; tl.x = a.x; tl.y = a.y; tl.u = a.u; tl.v = a.v; tl.s = a.s; tl.t = a.t; tl.q = a.q;
                         State fs = s; fs.iip = 1;   // colours already flattened to v1's
                         if (cpu) fs.cpuRastered = 1;
+                        if (s.tme)
+                        {   // [spriterect]
+                            auto pk = [](uint32_t lo, uint32_t hi) { return (std::min(lo, 65535u)) | (std::min(hi, 65535u) << 16); };
+                            if (s.fst)
+                                { g_rectPad[0] = pk(std::min(a.u, b.u), std::min(a.v, b.v)); g_rectPad[1] = pk(std::max(a.u, b.u), std::max(a.v, b.v)); }
+                            else
+                            {
+                                auto fx = [](float v) { const float c = v * 4096.0f; return (uint32_t)std::max(0.0f, std::min(65535.0f, c)); };
+                                const float sa = a.q != 0.0f ? a.s / a.q : 0.0f, ta = a.q != 0.0f ? a.t / a.q : 0.0f, sb = b.q != 0.0f ? b.s / b.q : 0.0f, tb = b.q != 0.0f ? b.t / b.q : 0.0f;
+                                g_rectPad[0] = pk(fx(std::min(sa, sb)), fx(std::min(ta, tb))); g_rectPad[1] = pk(fx(std::max(sa, sb)), fx(std::max(ta, tb)));
+                            }
+                            if (g_rectPad[0] == 0u && g_rectPad[1] == 0u) g_rectPad[1] = 1u;   // a rect at the origin is still a rect
+                        }
                         emitTriangle(&tl, &tr, &bl, fs);
                         emitTriangle(&tr, &b, &bl, fs);
+                        g_rectPad[0] = g_rectPad[1] = 0u;
                         break;
                     }
                     default: break;   // points and lines: not drawn (none in BT3's streams)

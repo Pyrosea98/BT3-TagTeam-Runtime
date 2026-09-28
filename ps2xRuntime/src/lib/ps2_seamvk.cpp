@@ -248,12 +248,12 @@ namespace seamvk
             {
                 Vulkan::ResourceLayout vl = {}, fl = {};
                 vl.sets[0].storage_buffer_mask = 1u << 0; vl.sets[0].meta[0].array_size = 1;   // [batch] per-chunk constants array (SSBO ring)
-                vl.input_mask = 0xFu; vl.output_mask = 0xFu; vl.push_constant_size = sizeof(PC);
+                vl.input_mask = 0xFu; vl.output_mask = 0x1Fu; vl.push_constant_size = sizeof(PC);   // [spriterect] varying 4
                 fl.sets[0].sampled_image_mask = (1u << 1) | (1u << 2); fl.sets[0].meta[1].array_size = 1; fl.sets[0].meta[2].array_size = 1;
-                fl.input_mask = 0xFu; fl.output_mask = 0x1u; fl.push_constant_size = sizeof(PC);
+                fl.input_mask = 0x1Fu; fl.output_mask = 0x1u; fl.push_constant_size = sizeof(PC);
                 g_gpu.progSeam = dev.request_program(kSeamVert, sizeof(kSeamVert), kGsFrag, sizeof(kGsFrag), &vl, &fl);
                 Vulkan::ResourceLayout gl = {};
-                gl.input_mask = 0xFu; gl.output_mask = 0xFu; gl.push_constant_size = sizeof(PC);
+                gl.input_mask = 0x1Fu; gl.output_mask = 0x1Fu; gl.push_constant_size = sizeof(PC);   // [spriterect] attribute 4 (the rect), varying 4
                 g_gpu.progGs = dev.request_program(kGsVert, sizeof(kGsVert), kGsFragNp, sizeof(kGsFragNp), &gl, &fl);
                 g_gpu.progSeamSt = dev.request_program(kSeamVert, sizeof(kSeamVert), kGsFragSt, sizeof(kGsFragSt), &vl, &fl);   // [stencildate] variants exporting the stored alpha bit to stencil
                 g_gpu.progGsSt = dev.request_program(kGsVert, sizeof(kGsVert), kGsFragNpSt, sizeof(kGsFragNpSt), &gl, &fl);
@@ -1349,6 +1349,7 @@ namespace seamvk
                     cmd->set_vertex_attrib(1, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16);
                     cmd->set_vertex_attrib(2, 0, VK_FORMAT_R8G8B8A8_UNORM, 32);
                     cmd->set_vertex_attrib(3, 0, VK_FORMAT_R32_SFLOAT, 36);
+                    cmd->set_vertex_attrib(4, 0, VK_FORMAT_R32G32_UINT, 40);   // [spriterect]
                     const size_t bytes = size_t(d.count) * sizeof(seamgs::Vtx);
                     void *vb = cmd->allocate_vertex_data(0, bytes, sizeof(seamgs::Vtx));
                     std::memcpy(vb, f.verts.data() + d.vertOff, bytes);

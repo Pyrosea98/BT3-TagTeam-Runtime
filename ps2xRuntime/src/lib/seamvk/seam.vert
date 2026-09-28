@@ -29,6 +29,7 @@ layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec3 vTex;   // (s, t, 1): perspective-interpolated by the hardware
 layout(location = 2) out float vLit;
 layout(location = 3) out float vFog;
+layout(location = 4) flat out vec4 vRect;   // [spriterect] none for meshes
 out float gl_ClipDistance[2];
 
 vec4 xf1(vec4 r[4], vec3 v) { return r[0] * v.x + r[1] * v.y + r[2] * v.z + r[3]; }          // MADDw with vf00.w = 1
@@ -139,4 +140,5 @@ void main()
     vTex = vec3(tex.xy, 1.0);
     vLit = lit;
     vFog = 1.0;
+    vRect = vec4(-1.0);
 }

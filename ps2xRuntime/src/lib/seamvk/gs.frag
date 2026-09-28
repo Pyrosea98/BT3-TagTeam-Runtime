@@ -18,6 +18,7 @@ layout(location = 0) INTERP in vec4 vColor;
 layout(location = 1) INTERP in vec3 vTex;
 layout(location = 2) INTERP in float vLit;
 layout(location = 3) INTERP in float vFog;
+layout(location = 4) flat in vec4 vRect;   // [spriterect] the sprite's texel rect, x < 0 = none
 layout(set = 0, binding = 1) uniform sampler2D uTex;   // RGBA8, raw GS alpha bytes / 255
 layout(input_attachment_index = 0, set = 0, binding = 2) uniform subpassInput uDst;   // the destination itself (DATE), alpha stored as A/128
 #include "pc.glsl"
@@ -57,6 +58,10 @@ void main()
     if ((flags & 1) != 0)
     {
         vec2 uv = ((flags & 2) != 0) ? vTex.xy : (vTex.xy / vTex.z) * pc.texInfo.xy;
+        // [spriterect] the whole bilinear footprint (uv - 0.5 .. uv + 0.5) stays inside the primitive's own texels: a quad whose v runs
+        // 0.5..64.5 over 64 rows samples p = v - 0.5 up to 63.75 at render scale 2 -- 75 % of row 64, which REPEAT wraps to row 0
+        // (the HUD plate's light top edge showed as a 1-px line under the ki gauge). Clamp uv to [rmin, rmax - 1].
+        if (vRect.x >= 0.0 && (flags & (32768 | 8)) != 0) uv = min(max(uv, vRect.xy), max(vRect.zw - 1.0, vRect.xy));
         vec4 ct;
         if ((flags & 32768) != 0) ct = texture(uTex, uv / pc.texInfo.xy);   // [hwfilter] plain REPEAT/CLAMP bilinear through the sampler: hardware samples texel index uv - 0.5 at coordinate uv / size, the GS convention
         else if ((flags & 8) != 0)
