@@ -771,6 +771,33 @@ static void wsHudKickLocked(State &s, uint8_t *data, float inv)
     }
     if (!hud) return;
     h.hudPrims++;
+    {   // [hudchips] a small element inside a bridge zone (between a pinned group and the centre piece) moves with its group at
+        // the group's scale instead of being stretched with the zone: the buff chips next to the ki gauge (42x22 quads at
+        // x 100..214) came out 1.5x wide under the edge layout. Same rule as the native front end (ps2_seamgs.cpp [hudchips]).
+        int layout = g_wsHudLayout.load(std::memory_order_relaxed); if (layout < 0) layout = 0;
+        if (layout > 0 && w <= 64.f)
+        {
+            const float k = W / 512.0f, s2 = 216.f * k, s3 = 296.f * k, s4 = 388.f * k;
+            const float offL = layout >= 2 ? g_wsHudOffLQ.load(std::memory_order_relaxed) / 16.0f * k : 0.f, offR = layout >= 2 ? g_wsHudOffRQ.load(std::memory_order_relaxed) / 16.0f * k : 0.f;
+            const float t4 = W - (W - s4) * inv + offR;
+            const bool left = x1 <= s2, right = x0 >= s3;
+            if (left || right)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    State::WsHud::V &v = h.q[i];
+                    if (v.mapped) continue;
+                    const float fx = v.x / 16.0f - c.ofx;
+                    float mx = ((left ? offL + fx * inv : t4 + (fx - s4) * inv) + c.ofx) * 16.0f;
+                    if (mx < 0.f) mx = 0.f; if (mx > 65535.f) mx = 65535.f;
+                    const uint16_t nx = uint16_t(mx + 0.5f);
+                    std::memcpy(data + v.off, &nx, 2);
+                    v.x = nx; v.mapped = true; h.mappedVerts++;
+                }
+                return;
+            }
+        }
+    }
     static const bool s_vlog = [](){ const char *v = std::getenv("PS2X_PGS_WSHUDLOG"); return v && v[0] && v[0] != '0'; }(); static unsigned s_vn = 0;
     const bool vlog = s_vlog && s_vn < 300 && y1 > 15.f && y0 < 60.f && x1 > 270.f && x0 < 330.f;
     if (vlog) { s_vn++; std::fprintf(stderr, "[wshudv] #%u prim %u tme %d abe %d fbp %u fbmsk %08x test %llx tex0 tbp0 %u psm %u %ux%u ofx %.2f verts:", s_vn, primType, int((attr >> 4) & 1u), int((attr >> 6) & 1u), c.fbp, uint32_t(c.frame >> 32), (unsigned long long)c.test, uint32_t(c.tex0 & 0x3FFFu), uint32_t((c.tex0 >> 20) & 0x3Fu), 1u << ((c.tex0 >> 26) & 0xFu), 1u << ((c.tex0 >> 30) & 0xFu), c.ofx); }
