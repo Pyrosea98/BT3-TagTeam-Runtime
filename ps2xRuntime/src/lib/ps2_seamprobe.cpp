@@ -184,6 +184,7 @@ namespace seamprobe
         static const bool s_on = [](){
             for (const char *k : {"PS2X_SEAMPROBE", "PS2X_SEAMVERIFY", "PS2X_SEAMSKIP"})
             { const char *v = std::getenv(k); if (v && v[0] && v[0] != '0') return true; }
+            { const char *sk = std::getenv("PS2X_SEAMSKIP"); if (!(sk && sk[0] == '0') && seamvk::on()) return true; }   // [seamskipdefault] skip mode is the seam's default: the batch/builder probe it needs comes on with it
             return false; }();
         return s_on;
     }

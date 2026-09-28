@@ -889,7 +889,10 @@ namespace seam
     }
 
     bool verifyOn() { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVERIFY"); return v && v[0] && v[0] != '0'; }(); return s; }
-    bool skipOn()   { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMSKIP");   return v && v[0] && v[0] != '0'; }(); return s; }
+    // [seamskipdefault] Under the native renderer the host-mesh path is the default: VU1 runs nothing in a fight, the meshes go
+    // to the GPU vertex programs (effects from their exact packet vertices, [fxpkt]) and the front end skips the packets' vertex
+    // walk ([hostskip]). PS2X_SEAMSKIP=0 restores the kernel + GIF-parse path for A/B; without the native renderer it stays opt-in.
+    bool skipOn()   { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMSKIP");   return v && v[0] ? v[0] != '0' : seamvk::on(); }(); return s; }
     bool on()       { return verifyOn() || skipOn(); }
 
     // Emits one chunk of the current batch: fills t_run, and in skip mode submits it.

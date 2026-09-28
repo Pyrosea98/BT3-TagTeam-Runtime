@@ -172,7 +172,7 @@ namespace seamgs
         };
         Regs g_r;
 
-        struct PathParse { uint32_t nloop = 0, nreg = 1, ri = 0, flg = 0, total = 0; uint64_t regs = 0; bool eop = false; };
+        struct PathParse { uint32_t nloop = 0, nreg = 1, ri = 0, flg = 0, total = 0; uint64_t regs = 0; bool eop = false; bool vtxOnly = false; };   // vtxOnly: [hostskip] a host packet's vertex-only tag, skipped as a whole
         PathParse g_path[4];
 
         struct Xfer
@@ -232,6 +232,13 @@ namespace seamgs
         std::unordered_map<uint64_t, int32_t> g_texByKey;
         bool g_forceCpuDecode = false;   // [gpudecode] cpuTargetOk: decode this one on the CPU regardless of the threshold
         bool g_texDirty = true; int32_t g_curTex = -1; uint32_t g_curTexW = 0, g_curTexH = 0;
+        uint64_t g_kickCount = 0, g_hostSkipChecks = 0, g_hostSkipMismatch = 0;   // [hostskip] verify mode (PS2X_SEAMGS_HOSTSKIP=2)
+        const int g_hostSkipMode = [](){ const char *v = std::getenv("PS2X_SEAMGS_HOSTSKIP"); return v && v[0] ? std::atoi(v) : 1; }();   // 0 off, 1 on, 2 verify (both paths, compare)
+        // [fxpkt] PS2X_SEAMVK_PKTPROGS=<mask>: host programs drawn from their host-transformed packet vertices (the VU1 program's exact
+        // output incl. its clipper's fans) instead of the GPU vertex program. Default: the effects program (bit 1) -- its shadow
+        // patch (a 12-vertex ground quad crossing the near plane, DATE + generated texcoords) renders blocky through the vertex
+        // program while the packet path is pixel-exact; effects are ~2 batches per frame, so nothing is lost.
+        const uint32_t g_pktProgs = [](){ const char *v = std::getenv("PS2X_SEAMVK_PKTPROGS"); return v && v[0] ? (uint32_t)std::strtoul(v, nullptr, 0) : 0x2u; }();
         int g_nativeParse = -1;   // [clutpass] the generic native step whose packet is being parsed (its kicks are neutralised: recorded, not drawn)
         uint32_t g_lastSceneFbp = 0;   // [ztopnative] the scene buffer (0x0 / 0xe00) the game last set as FRAME: the native step 2's source
         uint64_t g_texLookups = 0, g_texDecodes = 0, g_texStale = 0, g_cpuSprites = 0, g_cpuTris = 0, g_rtDecodes = 0, g_gpuDecodes = 0;
@@ -730,6 +737,20 @@ namespace seamgs
 
         void noteDrawPages(const State &s)
         {   // the pages a draw into this target can touch: the scissor's rows of pages (page = 64x32 px at 32 bpp, 64x64 at 16)
+            {   // [stampmemo] a run of draws with the same target/scissor/Z state and no transfer in between stamps the same pages
+                // with the same stamp: only the targets' draw order needs bumping (per triangle otherwise: 4 % of the process)
+                static struct { uint32_t fbp, fbw, fpsm, zbp, zpsm, stamp; uint16_t sx0, sx1, sy0, sy1; uint8_t zw; TargetInfo *t, *z; } m = {};
+                static const bool s_memo = [](){ const char *v = std::getenv("PS2X_SEAMGS_STAMPMEMO"); return !(v && v[0] == '0'); }();
+                const uint8_t zw = (s.zte && !s.zmsk) ? 1u : 0u;
+                if (s_memo && m.t && m.fbp == s.fbp && m.fbw == s.fbw && m.fpsm == s.fpsm && m.stamp == g_stamp && m.sx0 == s.scax0 && m.sx1 == s.scax1 && m.sy0 == s.scay0 && m.sy1 == s.scay1
+                    && m.zw == zw && (!zw || (m.zbp == s.zbp && m.zpsm == s.zpsm)))
+                {
+                    m.t->drawStamp = ++g_drawStamp; if (m.z) m.z->drawStamp = g_drawStamp;
+                    return;
+                }
+                m.fbp = s.fbp; m.fbw = s.fbw; m.fpsm = s.fpsm; m.zbp = s.zbp; m.zpsm = s.zpsm; m.stamp = g_stamp; m.sx0 = s.scax0; m.sx1 = s.scax1; m.sy0 = s.scay0; m.sy1 = s.scay1; m.zw = zw;
+                m.t = &g_targets[s.fbp]; m.z = zw ? &g_zbufs[s.zbp] : nullptr;
+            }
             const uint32_t pagesPerRow = s.fbw ? s.fbw : 1u;
             const uint32_t pageH = (s.fpsm == PSMCT16 || s.fpsm == PSMCT16S) ? 64u : 32u;
             const uint32_t row0 = s.scay0 / pageH, row1 = s.scay1 / pageH;
@@ -840,7 +861,7 @@ namespace seamgs
                 o.fog = float(g.fog) / 255.0f; o.pad[0] = rectPad[0]; o.pad[1] = rectPad[1];   // [spriterect]
             }
             noteTargetHist(0, 0, s);
-            if (!g_list.draws.empty() && g_list.draws.back().kind == 0 && sameState(g_list.draws.back().st, s))
+            if (!g_list.draws.empty() && g_list.draws.back().kind == 0 && sameState(g_list.draws.back().st, s) && !s.date)   // [datesplit] a DATE triangle reads the destination in-pass: overlapping triangles of one draw would not see each other's writes (the shadow patch's clipped fan darkened twice along the shared edge)
                 g_list.draws.back().count += 3;
             else
             {
@@ -1124,11 +1145,13 @@ namespace seamgs
             const uint32_t prim = (uint32_t)(pr & 7u);
             const uint32_t need = prim == 0 ? 1u : (prim == 1 || prim == 2 || prim == 6) ? 2u : 3u;
             if (g_vn < need) return;
+            if (draw) ++g_kickCount;   // [hostskip] verify mode
             if (!draw && g_nativeParse >= 0 && !g_inHostGif) captureNativeKick(prim);   // [clutpass]
             if (draw)
             {
-                if (g_inHostGif)
+                if (g_inHostGif && !(g_haveHost && ((g_pktProgs >> (g_host.prog & 7u)) & 1u)))
                 {   // the seam's packet: its kicks draw the pending host mesh, once per distinct state; its own vertices are not drawn
+                    // (PS2X_SEAMVK_PKTPROGS=<mask>: programs in the mask draw the packet's own host-transformed vertices instead)
                     if (g_haveHost)
                     {
                         const State &s = currentState(true);
@@ -1413,6 +1436,62 @@ namespace seamgs
                     p.nreg = (uint32_t)((lo >> 60) & 0xFu); if (p.nreg == 0u) p.nreg = 16u; p.regs = hi; p.ri = 0; p.total = p.nloop * p.nreg;
                     if (p.flg == 3u) p.flg = 2u;
                     if (((lo >> 46) & 1u) && p.nloop) { g_r.prim = (lo >> 47) & 0x7FFu; g_vn = 0; }
+                    p.vtxOnly = false;
+                    if (g_hostSkipMode && g_inHostGif && p.flg == 0u && p.nloop && !(g_haveHost && ((g_pktProgs >> (g_host.prog & 7u)) & 1u)))
+                    {   // [hostskip] the seam's own packet: its vertices are not drawn (the host mesh is), only its kicks matter, and a
+                        // vertex-only PACKED tag (RGBAQ/ST/UV/XYZ/FOG descriptors) cannot change the draw state between its
+                        // kicks -> skip the payload and kick once at its end (100k vertices/frame otherwise walked one by one)
+                        bool ok = true, kick = false;
+                        for (uint32_t i = 0; i < p.nreg; ++i) { const uint32_t nib = (uint32_t)((hi >> (4u * i)) & 0xFu); if (nib == 4u || nib == 5u) kick = true; else if (!(nib == 1u || nib == 2u || nib == 3u || nib == 0xAu)) ok = false; }
+                        p.vtxOnly = ok && kick;
+                    }
+                    continue;
+                }
+                if (p.flg == 0u && p.vtxOnly)
+                {   // [hostskip] walk the XYZ qwords' ADC bits only, keeping the vertex queue count exactly as pushVertex/kick would
+                    // (strip restarts are ADC vertices that never kick); one real kick per tag that kicked at least once
+                    const uint32_t remain = p.nloop * p.nreg - p.ri, avail = (n - off) / 16u, take = std::min(remain, avail);
+                    const uint64_t pr = g_r.prmodecont ? g_r.prim : ((g_r.prim & 7u) | (g_r.prmode & ~7ull));
+                    const uint32_t prim = (uint32_t)(pr & 7u);
+                    const uint32_t need = prim == 0 ? 1u : (prim == 1 || prim == 2 || prim == 6) ? 2u : 3u;
+                    bool kicked = false; uint32_t ri = p.ri, vn = g_vn;
+                    for (uint32_t j = 0; j < take; ++j)
+                    {
+                        const uint32_t desc = (uint32_t)((p.regs >> (4u * ri)) & 0xFu);
+                        if (desc == 4u || desc == 5u)
+                        {
+                            const bool adc = (d[off + j * 16u + 13u] & 0x80u) != 0u;   // bit 111 of the qword
+                            if (vn < 3u) ++vn;
+                            if (vn >= need)
+                            {
+                                if (!adc) kicked = true;
+                                switch (prim) { case 2: vn = 1; break; case 4: case 5: vn = 2; break; default: vn = 0; break; }
+                            }
+                        }
+                        if (++ri == p.nreg) ri = 0;
+                    }
+                    if (g_hostSkipMode == 2)
+                    {   // verify: the real per-vertex path over the same qwords must kick iff the simulation did, and leave the same queue count
+                        const uint64_t k0 = g_kickCount;
+                        for (uint32_t j = 0; j < take; ++j)
+                        {
+                            uint64_t lo, hi; std::memcpy(&lo, d + off + j * 16u, 8); std::memcpy(&hi, d + off + j * 16u + 8, 8);
+                            packedReg((uint32_t)((p.regs >> (4u * p.ri)) & 0xFu), lo, hi);
+                            if (++p.ri == p.nreg) { p.ri = 0; --p.nloop; }
+                        }
+                        off += take * 16u;
+                        ++g_hostSkipChecks;
+                        if (((g_kickCount != k0) != kicked) || g_vn != vn) { if (g_hostSkipMismatch++ < 8) std::fprintf(stderr, "[hostskip] MISMATCH frame %llu: real kicks %llu sim %d, vn real %u sim %u (prim %u nreg %u take %u)\n", (unsigned long long)g_frame, (unsigned long long)(g_kickCount - k0), (int)kicked, g_vn, vn, prim, p.nreg, take); }
+                        if (p.nloop == 0u) { p.ri = 0; p.vtxOnly = false; }
+                        if (take < remain) break;
+                        continue;
+                    }
+                    off += take * 16u;
+                    const uint32_t idx = p.ri + take; p.nloop -= idx / p.nreg; p.ri = idx % p.nreg;
+                    if (kicked) { g_vn = need; kick(true); }
+                    g_vn = vn;
+                    if (p.nloop == 0u) { p.ri = 0; p.vtxOnly = false; }
+                    if (take < remain) break;   // the rest of the tag is in the next packet
                     continue;
                 }
                 if (p.flg == 2u)
@@ -1453,6 +1532,7 @@ namespace seamgs
                          (unsigned long long)g_frame, (unsigned long long)g_texLookups, (unsigned long long)g_memoHits, (unsigned long long)g_stateBuilds, (unsigned long long)(g_imgBytes >> 10), (unsigned long long)(g_imgRepeat >> 10), (unsigned long long)(g_imgByPsm[0] >> 10), (unsigned long long)(g_imgByPsm[19] >> 10), (unsigned long long)(g_imgByPsm[20] >> 10), (unsigned long long)((g_imgByPsm[2] + g_imgByPsm[10]) >> 10), (unsigned long long)((g_imgBytes - g_imgByPsm[0] - g_imgByPsm[19] - g_imgByPsm[20] - g_imgByPsm[2] - g_imgByPsm[10]) >> 10), (unsigned long long)g_texDecodes, (unsigned long long)g_texStale, g_tex.size(), (unsigned long long)g_cpuSprites, (unsigned long long)g_scratchSkips, (unsigned long long)g_cpuTris, (unsigned long long)g_rtDecodes, (unsigned long long)g_gpuDecodes, (unsigned long long)g_pagesSame, (unsigned long long)g_sameSwaps, (unsigned long long)g_swapsSeen);
             std::memset(g_imgByPsm, 0, sizeof(g_imgByPsm)); g_texLookups = g_memoHits = g_stateBuilds = g_imgBytes = g_imgRepeat = g_texDecodes = g_texStale = g_cpuSprites = g_scratchSkips = g_cpuTris = g_rtDecodes = g_gpuDecodes = g_pagesSame = 0; g_sameSwaps = g_swapsSeen = 0;
             printTargetHist();
+            if (g_hostSkipChecks) std::fprintf(stderr, "[hostskip] verify: %llu tags checked, %llu mismatches\n", (unsigned long long)g_hostSkipChecks, (unsigned long long)g_hostSkipMismatch);
             std::fprintf(stderr, "[seamgs] host draws in/out/dropped per prog:");
             for (int i = 0; i < 5; ++i) std::fprintf(stderr, " %d:%llu/%llu/%llu", i, (unsigned long long)g_hostIn[i], (unsigned long long)g_hostOut[i], (unsigned long long)g_hostDropped[i]);
             std::fprintf(stderr, "\n");

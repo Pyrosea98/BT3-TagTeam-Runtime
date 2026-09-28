@@ -1280,8 +1280,8 @@ namespace seamvk
                     {   // PS2X_SEAMVK_DUMPCONSTS: the constants and per-vertex clip values of the first few effect draws and
                         // off-screen-target character draws (the shadow pass), exactly as the vertex shader evaluates them
                         static int s_cn[5] = {};
-                        static const bool s_dc = [](){ const char *v = std::getenv("PS2X_SEAMVK_DUMPCONSTS"); return v && v[0] && v[0] != '0'; }();
-                        if (s_dc && d.prog < 5 && (d.prog == 1 || d.prog == 2 || (d.prog >= 2 && t.fbp != 0xe00u && t.fbp != 0x0u)) && s_cn[d.prog]++ < 3)
+                        static const int s_dc = [](){ const char *v = std::getenv("PS2X_SEAMVK_DUMPCONSTS"); return v && v[0] ? std::atoi(v) : 0; }();   // =N: the first N draws per program
+                        if (s_dc && d.prog < 5 && (d.prog == 1 || d.prog == 2 || (d.prog >= 2 && t.fbp != 0xe00u && t.fbp != 0x0u)) && s_cn[d.prog]++ < s_dc)
                         {
                             auto pr = [&](const char *nm, const float (*m)[4]) { std::fprintf(stderr, "[seamvk]    %s: [%g %g %g %g] [%g %g %g %g] [%g %g %g %g] [%g %g %g %g]\n", nm, m[0][0], m[0][1], m[0][2], m[0][3], m[1][0], m[1][1], m[1][2], m[1][3], m[2][0], m[2][1], m[2][2], m[2][3], m[3][0], m[3][1], m[3][2], m[3][3]); };
                             std::fprintf(stderr, "[seamvk]   draw %zu consts: prog %u stride %u ofx %g ofy %g colA [%g %g %g %g] misc [%g %g %g %g] pivA [%g %g %g] pivB [%g %g %g]\n", i, d.prog, d.stride, t.ofx / 16.0f, t.ofy / 16.0f, c.colA[0], c.colA[1], c.colA[2], c.colA[3], c.misc[0], c.misc[1], c.misc[2], c.misc[3], c.pivA[0], c.pivA[1], c.pivA[2], c.pivB[0], c.pivB[1], c.pivB[2]);
@@ -1391,21 +1391,25 @@ namespace seamvk
         static const bool s_noDate = [](){ const char *v = std::getenv("PS2X_SEAMVK_NODATE"); return v && v[0] && v[0] != '0'; }();
         static const bool s_feedback = [](){ const char *v = std::getenv("PS2X_SEAMVK_FEEDBACK"); return v && v[0] && v[0] != '0'; }();
         static const bool s_batch = [](){ const char *v = std::getenv("PS2X_SEAMVK_BATCH"); return !(v && v[0] == '0'); }();   // [batch] merge seam chunks (=0: one draw per chunk)
-        static const std::vector<uint32_t> s_dumpAt = [](){ std::vector<uint32_t> v; if (const char *e = std::getenv("PS2X_SEAMVK_DUMPAT")) { const char *p = e; while (*p) { v.push_back((uint32_t)std::strtoul(p, (char **)&p, 10)); while (*p == ',' || *p == ' ') ++p; } } return v; }();
+        static const std::vector<uint32_t> s_dumpAt = [](){ std::vector<uint32_t> v; if (const char *e = std::getenv("PS2X_SEAMVK_DUMPAT")) { const char *p = e; while (*p) { v.push_back((uint32_t)std::strtoul(p, (char **)&p, 10)); while (*p == ',' || *p == ' ') ++p; } } std::sort(v.begin(), v.end()); return v; }();
         size_t drawIdx = 0;
         for (size_t di0 = 0; di0 < f.draws.size(); ++di0)
         {
             const seamgs::Draw &d = f.draws[di0];
             const seamgs::State &t = d.st;
             const size_t di = di0; drawIdx = di0 + 1;
-            if (dumpNow && !s_dumpAt.empty() && std::find(s_dumpAt.begin(), s_dumpAt.end(), (uint32_t)di) != s_dumpAt.end() && std::getenv("PS2X_SEAMVK_TEXDUMP"))
+            static size_t s_dumpAtNext = 0;   // the listed indices in ascending order; a dump fires at the first draw AT OR AFTER each (batched host draws skip indices)
+            if (dumpNow && di == 0) s_dumpAtNext = 0;
+            if (dumpNow && s_dumpAtNext < s_dumpAt.size() && (uint32_t)di >= s_dumpAt[s_dumpAtNext] && std::getenv("PS2X_SEAMVK_TEXDUMP"))
             {   // PS2X_SEAMVK_DUMPAT: the targets as they are just BEFORE this draw (submit what was recorded, wait, dump, go on)
                 if (inPass) { cmd->end_render_pass(); inPass = false; }
                 Vulkan::Fence fe; dev.submit(cmd, &fe); fe->wait(); dev.wait_idle();   // the readback below must see every draw so far
                 cmd = dev.request_command_buffer();
                 curFbp = ~0u; curZbp = ~0u;
-                char suf[32]; std::snprintf(suf, sizeof(suf), "_at%zu", di);
+                char suf[32]; std::snprintf(suf, sizeof(suf), "_at%u", s_dumpAt[s_dumpAtNext]);
+                std::fprintf(stderr, "[seamvk] DUMPAT %u fires at draw %zu\n", s_dumpAt[s_dumpAtNext], di);
                 dumpTargets(dev, std::getenv("PS2X_SEAMVK_TEXDUMP"), suf);
+                while (s_dumpAtNext < s_dumpAt.size() && (uint32_t)di >= s_dumpAt[s_dumpAtNext]) ++s_dumpAtNext;
             }
             static const int s_skip = [](){ const char *v = std::getenv("PS2X_SEAMVK_SKIP"); return v && v[0] ? std::atoi(v) : 0; }();   // [perf attribution] 1 = no rt decodes, 2 = no main draws, 4 = no native steps (the picture breaks; only the GPU time matters)
             if (s_skip && ((d.kind == 2 && (s_skip & 1)) || (d.kind <= 1 && (s_skip & 2)) || (d.kind == 3 && (s_skip & 4))
