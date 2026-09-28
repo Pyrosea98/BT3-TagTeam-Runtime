@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace ps2x::gfx
 {
@@ -120,6 +121,17 @@ namespace ps2x::gfx
         {
             if (UiSdlInputActive()) UiSdlNewFrame(); else feedImGuiInput();
             ImGui_ImplOpenGL3_NewFrame();
+            {   // [uisize] PS2X_UILOG=1: the overlay's idea of the screen vs raylib's, whenever either changes (window-mode switches)
+                static const bool s_log = [](){ const char *v = std::getenv("PS2X_UILOG"); return v && v[0] && v[0] != '0'; }();
+                if (s_log)
+                {
+                    const ImGuiIO &io = ImGui::GetIO();
+                    static float prev[6] = {-1, -1, -1, -1, -1, -1};
+                    const float cur[6] = { io.DisplaySize.x, io.DisplaySize.y, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y, (float)bt3GetScreenWidth(), (float)bt3GetScreenHeight() };
+                    bool ch = false; for (int i = 0; i < 6; ++i) ch |= cur[i] != prev[i];
+                    if (ch) { std::memcpy(prev, cur, sizeof prev); std::fprintf(stderr, "[uisize] imgui display %.0fx%.0f fbscale %.2fx%.2f | raylib screen %dx%d render %dx%d fullscreen %d\n", cur[0], cur[1], cur[2], cur[3], bt3GetScreenWidth(), bt3GetScreenHeight(), bt3GetRenderWidth(), bt3GetRenderHeight(), (int)bt3IsWindowFullscreen()); }
+                }
+            }
             ImGui::NewFrame();
         }
     }

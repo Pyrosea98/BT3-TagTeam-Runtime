@@ -317,6 +317,35 @@ static void ps2xSetFullscreen(bool on, int windowW, int windowH, int monitor)
         if (windowW >= 320 && windowH >= 240) bt3SetWindowSize(windowW, windowH);
     }
 }
+// [winmode] The Display popup's window-mode switch (also driven by PS2X_WINMODE_TEST). Fullscreen and borderless are
+// window STATES, not flags you can just add on top: switching back to windowed has to CLEAR them, otherwise the window
+// keeps the borderless chrome -- no title bar, nothing to drag, nothing to resize (that was the old behaviour).
+// Windowed = resizable + decorated; borderless = monitor-sized, no chrome; fullscreen = the monitor's own mode.
+static void ps2xApplyWindowMode(int mode, int mon, int w, int h)
+{
+    if (mode == 2)
+    {
+        bt3ClearWindowState(BT3_FLAG_BORDERLESS_WINDOWED_MODE | BT3_FLAG_WINDOW_UNDECORATED);
+        bt3SetWindowMonitor(mon);
+        bt3SetWindowSize(w, h);
+        bt3SetWindowState(BT3_FLAG_FULLSCREEN_MODE);
+    }
+    else if (mode == 1)
+    {
+        bt3ClearWindowState(BT3_FLAG_FULLSCREEN_MODE);
+        bt3SetWindowMonitor(mon);
+        const int mw = bt3GetMonitorWidth(mon), mh = bt3GetMonitorHeight(mon);
+        if (mw >= 320 && mh >= 240) bt3SetWindowSize(mw, mh);
+        bt3SetWindowState(BT3_FLAG_BORDERLESS_WINDOWED_MODE | BT3_FLAG_WINDOW_UNDECORATED);
+    }
+    else
+    {
+        bt3ClearWindowState(BT3_FLAG_FULLSCREEN_MODE | BT3_FLAG_BORDERLESS_WINDOWED_MODE | BT3_FLAG_WINDOW_UNDECORATED);
+        bt3SetWindowMonitor(mon);
+        bt3SetWindowSize(w, h);
+        bt3SetWindowState(BT3_FLAG_WINDOW_RESIZABLE);
+    }
+}
 // [wshudmap] live HUD-layout state, defined in ps2_gs_gpu_renderer.cpp
 extern std::atomic<int> g_wsHudLayout;
 extern std::atomic<int> g_wsHudOffLQ, g_wsHudOffCQ, g_wsHudOffRQ;
@@ -1065,6 +1094,38 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
             toggleVisible();
     }
 
+    {   // [winmodetest] PS2X_WINMODE_TEST=1 (dev): scripted window-mode switches, no keyboard needed (headless rigs, XWayland):
+        // t=20 s fullscreen, t=26 s windowed, t=27 s overlay shown, t=40 s fullscreen again (overlay stays), t=48 s windowed.
+        static const int s_wmTest = [](){ const char *v = std::getenv("PS2X_WINMODE_TEST"); return v && v[0] ? std::atoi(v) : 0; }();
+        if (s_wmTest)
+        {
+            static const auto s_t0 = std::chrono::steady_clock::now();
+            static int s_step = 0;
+            const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - s_t0).count();
+            auto fs = [&](bool on) { m_settings.fullscreen = on; ps2xSetFullscreen(on, m_settings.windowW, m_settings.windowH, m_settings.monitor); m_settings.windowMode = on ? 2 : 0;
+                                     std::fprintf(stderr, "[winmodetest] t=%.1f fullscreen=%d -> screen %dx%d\n", t, (int)on, bt3GetScreenWidth(), bt3GetScreenHeight()); };
+            auto wm = [&](int mode) { ps2xApplyWindowMode(mode, m_settings.monitor, m_settings.windowW, m_settings.windowH); m_settings.windowMode = mode; m_settings.fullscreen = (mode == 2);
+                                      std::fprintf(stderr, "[winmodetest] t=%.1f popup mode=%d -> screen %dx%d\n", t, mode, bt3GetScreenWidth(), bt3GetScreenHeight()); };
+            // F11 path: fullscreen (20 s) -> windowed (26 s), overlay shown (27 s); popup path: borderless (34 s) -> windowed (40 s),
+            // fullscreen (46 s) -> windowed (52 s)
+            if (s_wmTest == 2)
+            {   // =2: the user's report -- launched fullscreen (settings window_mode 2), the popup switches to windowed
+                if (s_step == 0 && t >= 20.0) { wm(0); s_step = 1; }
+                else if (s_step == 1 && t >= 21.0) { if (!m_visible) toggleVisible(); s_step = 2; }
+                else if (s_step == 2 && t >= 30.0) { wm(2); s_step = 3; }
+                else if (s_step == 3 && t >= 38.0) { wm(0); s_step = 4; }
+                else if (s_step == 4 && t >= 46.0) { wm(1); s_step = 5; }
+                else if (s_step == 5 && t >= 54.0) { wm(0); s_step = 6; }
+            }
+            else if (s_step == 0 && t >= 20.0) { fs(true); s_step = 1; }
+            else if (s_step == 1 && t >= 26.0) { fs(false); s_step = 2; }
+            else if (s_step == 2 && t >= 27.0) { if (!m_visible) toggleVisible(); s_step = 3; }
+            else if (s_step == 3 && t >= 34.0) { wm(1); s_step = 4; }
+            else if (s_step == 4 && t >= 40.0) { wm(0); s_step = 5; }
+            else if (s_step == 5 && t >= 46.0) { wm(2); s_step = 6; }
+            else if (s_step == 6 && t >= 52.0) { wm(0); s_step = 7; }
+        }
+    }
     // --- F11: toggle fullscreen / windowed ---
     if (bt3IsKeyPressed(BT3_KEY_F11))
     {
@@ -1600,34 +1661,7 @@ void PS2SettingsOverlay::drawVideoTab()
     
             auto applyLive = [&]()
             {
-                // [winmode] Fullscreen and borderless are window STATES, not flags you can just add on
-                // top: switching back to windowed has to CLEAR them, otherwise the window keeps the
-                // borderless chrome -- no title bar, nothing to drag, nothing to resize (that was the
-                // old behaviour). Windowed = resizable + decorated; borderless = monitor-sized, no
-                // chrome; fullscreen = the monitor's own mode.
-                if (eMode == 2)
-                {
-                    bt3ClearWindowState(BT3_FLAG_BORDERLESS_WINDOWED_MODE | BT3_FLAG_WINDOW_UNDECORATED);
-                    bt3SetWindowMonitor(eMon);
-                    bt3SetWindowSize(kW[eRes], kH[eRes]);
-                    bt3SetWindowState(BT3_FLAG_FULLSCREEN_MODE);
-                }
-                else if (eMode == 1)
-                {
-                    bt3ClearWindowState(BT3_FLAG_FULLSCREEN_MODE);
-                    bt3SetWindowMonitor(eMon);
-                    const int mw = bt3GetMonitorWidth(eMon), mh = bt3GetMonitorHeight(eMon);
-                    if (mw >= 320 && mh >= 240) bt3SetWindowSize(mw, mh);
-                    bt3SetWindowState(BT3_FLAG_BORDERLESS_WINDOWED_MODE | BT3_FLAG_WINDOW_UNDECORATED);
-                }
-                else
-                {
-                    bt3ClearWindowState(BT3_FLAG_FULLSCREEN_MODE | BT3_FLAG_BORDERLESS_WINDOWED_MODE |
-                                        BT3_FLAG_WINDOW_UNDECORATED);
-                    bt3SetWindowMonitor(eMon);
-                    bt3SetWindowSize(kW[eRes], kH[eRes]);
-                    bt3SetWindowState(BT3_FLAG_WINDOW_RESIZABLE);
-                }
+                ps2xApplyWindowMode(eMode, eMon, kW[eRes], kH[eRes]);
                 if (!envUserSet("PS2X_PGS_SSAA")) ps2x_pgs::setRenderScale(eScale);   // live on paraLLEl-GS
             };
             if (ImGui::Button("Reset")) eInit = false;
