@@ -14,6 +14,9 @@
 #include "seamvk/seamgs_internal.h"
 
 #include "device.hpp"
+#include "context.hpp"     // [standalone] the seam's own Vulkan context/device
+#include "thread_id.hpp"   // [standalone] Util::register_thread_index
+#include "runtime/ps2_memory.h"   // [standalone] GSRegisters (the live privileged-register block)
 #include "command_buffer.hpp"
 #include "image.hpp"
 #include "buffer.hpp"
@@ -1213,6 +1216,82 @@ namespace seamvk
         return true;
     }
 
+    // ---- [standalone] own device + stream-ordered display block ---------------------------------------------------
+    namespace
+    {
+        struct OwnDevice { Vulkan::Context ctx; Vulkan::Device dev; bool inited = false, failed = false; };
+        OwnDevice *g_own = nullptr;   // heap, never freed: threads that touch the device (the readback consumer) outlive static destruction at exit
+        std::mutex g_privMtx;
+        const GSRegisters *g_liveRegs = nullptr;
+        uint64_t g_streamLo[16] = {}; uint32_t g_streamHave = 0;
+        uint64_t g_streamDispfb1 = 0; bool g_haveStreamFlip = false;
+        std::atomic<uint32_t> g_presentW{0}, g_presentH{0};
+        extern "C" bool ps2xStage1FenceC();
+        bool ensureOwnDevice()
+        {
+            static thread_local bool t_reg = false;
+            if (!t_reg) { Util::register_thread_index(0); t_reg = true; }   // Granite keys per-thread command pools by a registered index
+            if (g_own && g_own->inited) return true;
+            if (g_own && g_own->failed) return false;
+            if (!g_own) g_own = new OwnDevice();
+            g_own->failed = true;
+            auto fail = [](const char *why) { std::fprintf(stderr, "[seamvk] %s -- native renderer unavailable\n", why); return false; };
+            if (!Vulkan::Context::init_loader(nullptr)) return fail("Vulkan loader init failed");
+            g_own->ctx.set_num_thread_indices(1);
+            if (!g_own->ctx.init_instance_and_device(nullptr, 0, nullptr, 0,
+                                                     Vulkan::CONTEXT_CREATION_ENABLE_PUSH_DESCRIPTOR_BIT |
+                                                     Vulkan::CONTEXT_CREATION_ENABLE_DESCRIPTOR_HEAP_BIT |
+                                                     Vulkan::CONTEXT_CREATION_ENABLE_DESCRIPTOR_BUFFER_BIT))
+                return fail("Vulkan instance/device init failed");
+            g_own->dev.set_context(g_own->ctx);
+            g_own->dev.init_frame_contexts(4);
+            g_own->failed = false; g_own->inited = true;
+            std::fprintf(stderr, "[seamvk] own Vulkan device: %s (no paraLLEl-GS backend)\n", g_own->dev.get_gpu_properties().deviceName);
+            return true;
+        }
+        PrivRegs composePriv()
+        {   // the same choice paraLLEl-GS's copyPrivLocked makes: stream-ordered display block, live block as the fallback
+            std::lock_guard<std::mutex> lk(g_privMtx);
+            PrivRegs pr;
+            if (const GSRegisters *r = g_liveRegs)
+            {
+                static const bool s_useStream = [](){ const char *v = std::getenv("PS2X_PGS_LIVEFLIP"); return !(v && v[0] && v[0] != '0'); }();
+                if (ps2xStage1FenceC())
+                {
+                    auto pick = [&](uint32_t slot, uint64_t live) { return (g_streamHave & (1u << slot)) ? g_streamLo[slot] : live; };
+                    pr.pmode = pick(0, r->pmode); pr.dispfb1 = pick(7, r->dispfb1); pr.display1 = pick(8, r->display1);
+                    pr.dispfb2 = pick(9, r->dispfb2); pr.display2 = pick(10, r->display2); pr.bgcolor = pick(14, r->bgcolor);
+                    return pr;
+                }
+                pr.pmode = r->pmode; pr.display1 = r->display1; pr.display2 = r->display2; pr.bgcolor = r->bgcolor;
+                pr.dispfb1 = (s_useStream && g_haveStreamFlip) ? g_streamDispfb1 : r->dispfb1;
+                pr.dispfb2 = (s_useStream && g_haveStreamFlip && r->dispfb2 == r->dispfb1) ? g_streamDispfb1 : r->dispfb2;
+                return pr;
+            }
+            pr.pmode = g_streamLo[0]; pr.dispfb1 = g_streamLo[7]; pr.display1 = g_streamLo[8]; pr.dispfb2 = g_streamLo[9]; pr.display2 = g_streamLo[10]; pr.bgcolor = g_streamLo[14];
+            return pr;
+        }
+    }
+    void setLiveRegs(const GSRegisters *regs) { std::lock_guard<std::mutex> lk(g_privMtx); g_liveRegs = regs; }
+    void streamPriv(uint32_t regOff, uint64_t value)
+    {
+        const uint32_t slot = regOff >> 4;
+        if (slot >= 16u) return;
+        std::lock_guard<std::mutex> lk(g_privMtx);
+        g_streamLo[slot] = value; g_streamHave |= 1u << slot;
+        if (slot == 7u) { g_streamDispfb1 = value; g_haveStreamFlip = true; }
+    }
+    void streamFlip(uint64_t dispfb1) { std::lock_guard<std::mutex> lk(g_privMtx); g_streamDispfb1 = dispfb1; g_haveStreamFlip = true; }
+    void setPresentSize(uint32_t w, uint32_t h) { g_presentW.store(w, std::memory_order_relaxed); g_presentH.store(h, std::memory_order_relaxed); }
+    void onSwap()
+    {
+        if (!on()) return;
+        if (!ensureOwnDevice()) return;
+        const PrivRegs pr = composePriv();
+        renderFrame(g_own->dev, pr);
+        g_own->dev.next_frame_context();   // fences and command buffers recycle per context
+    }
+
     void renderFrame(Vulkan::Device &dev, const PrivRegs &priv)
     {
         const auto tA = std::chrono::steady_clock::now();
@@ -1262,7 +1341,8 @@ namespace seamvk
             if (const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP"))
             {   // the backend's view of the targets this frame decodes from, for comparison with rt_*.ppm
                 g_gpu.dumpRt = true;
-                for (const seamgs::RtDecode &r : f.rtDecodes) { ps2x_pgs::TargetDumpReq q; q.fbp = r.srcFbp; q.fbw = r.srcFbw; q.w = r.srcFbw * 64u; q.h = r.srcRows * 32u; q.dir = dir; ps2x_pgs::requestTargetDump(q); }
+                static const bool s_refDump = [](){ const char *v = std::getenv("PS2X_SEAMVK_REF"); return v && v[0] && v[0] != '0'; }();   // [standalone] target oracles need the reference backend
+                if (s_refDump) for (const seamgs::RtDecode &r : f.rtDecodes) { ps2x_pgs::TargetDumpReq q; q.fbp = r.srcFbp; q.fbw = r.srcFbw; q.w = r.srcFbw * 64u; q.h = r.srcRows * 32u; q.dir = dir; ps2x_pgs::requestTargetDump(q); }
             }   // PS2X_SEAMVK_DUMPFRAME=<n>: what the front-end produced for that frame (=1: the first frame with > 200 seam meshes, i.e. a fight)
             if (!reqHit) s_dumped = true;
             if (const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP"))
@@ -1278,7 +1358,8 @@ namespace seamvk
             if (const char *dir = std::getenv("PS2X_SEAMVK_TEXDUMP"))
             {   // the mirror and the backend's VRAM at this very swap, for a byte-level diff (tools/gsvram.py)
                 char pm[512], pb[512], pt[512]; std::snprintf(pm, sizeof(pm), "%s/mirror_vram.bin", dir); std::snprintf(pb, sizeof(pb), "%s/pgs_vram.bin", dir); std::snprintf(pt, sizeof(pt), "%s/pgs_vram.txt", dir);
-                std::fprintf(stderr, "[seamvk]  vram dumps: mirror %s, backend %s\n", seamgs::dumpMirror(pm) ? "ok" : "FAILED", ps2x_pgs::dumpVramRawUnderLock(pb, pt) ? "ok" : "FAILED");
+                static const bool s_ref = [](){ const char *v = std::getenv("PS2X_SEAMVK_REF"); return v && v[0] && v[0] != '0'; }();   // [standalone] the backend's VRAM exists only in reference mode
+                std::fprintf(stderr, "[seamvk]  vram dumps: mirror %s, backend %s\n", seamgs::dumpMirror(pm) ? "ok" : "FAILED", s_ref ? (ps2x_pgs::dumpVramRawUnderLock(pb, pt) ? "ok" : "FAILED") : "skipped (standalone)");
             }
             for (uint32_t cbp : { 0x2c8cu, 0x2cacu, 0x3e84u })
             {   // the front-end's view of a few palettes (mirror) for comparison with the backend's VRAM

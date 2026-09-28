@@ -7978,20 +7978,20 @@ void PS2Runtime::run()
             UploadFrame(frameTex, this, presentWidth, presentHeight);
         }
         bt3Texture2D *pgsTexPtr = nullptr;   // [pgsfit] set when the paraLLEl-GS scanout is what gets presented
-        if (gpuMode && ps2x_pgs::enabled())
-        {   // [pgs] the paraLLEl-GS scanout arrives as an RGBA8 buffer; upload it and present that instead
+        if (gpuMode && (ps2x_pgs::enabled() || seamvk::on()))
+        {   // [pgs] the paraLLEl-GS scanout arrives as an RGBA8 buffer; upload it and present that instead ([standalone]: the native frame likewise)
             static bt3Texture2D s_pgsTex{};
             static uint32_t s_pw = 0, s_ph = 0;
             static std::vector<uint8_t> s_pgsBuf;
             uint32_t pw = 0, ph = 0;
-            if (ps2x_pgs::takeFrame(s_pgsBuf, pw, ph) && pw && ph && s_pgsBuf.size() >= size_t(pw) * ph * 4u)
+            if ((seamvk::on() ? seamvk::takeFrame(s_pgsBuf, pw, ph) : ps2x_pgs::takeFrame(s_pgsBuf, pw, ph)) && pw && ph && s_pgsBuf.size() >= size_t(pw) * ph * 4u)
             {
                 {   // [presentlat] PS2X_PRESENTLAT=1: how many game frames old the image handed to the window is (renderer + hand-off pipeline latency)
                     static const bool s_lat = [](){ const char *v = std::getenv("PS2X_PRESENTLAT"); return v && v[0] && v[0] != '0'; }();
                     if (s_lat)
                     {
                         static uint64_t s_sum = 0, s_min = ~0ull, s_max = 0; static unsigned s_n = 0;
-                        const uint64_t now = g_bt3FrameCount.load(std::memory_order_relaxed), shown = ps2x_pgs::lastFrameGframe();
+                        const uint64_t now = g_bt3FrameCount.load(std::memory_order_relaxed), shown = seamvk::on() ? seamvk::lastFrameGframe() : ps2x_pgs::lastFrameGframe();
                         const uint64_t d = now >= shown ? now - shown : 0ull;
                         s_sum += d; s_min = std::min(s_min, d); s_max = std::max(s_max, d);
                         if (++s_n == 120u) { std::fprintf(stderr, "[presentlat] shown frame is %.2f game frames old (min %llu max %llu, %u presents, gframe %llu)\n", double(s_sum) / s_n, (unsigned long long)s_min, (unsigned long long)s_max, s_n, (unsigned long long)now); s_sum = 0; s_min = ~0ull; s_max = 0; s_n = 0; }
@@ -8523,6 +8523,7 @@ void PS2Runtime::run()
             static const bool s_mip = [](){ const char *v = std::getenv("PS2X_PGS_PRESENTMIP"); return !(v && v[0] == '0'); }();
             const float ratio = std::max(srcWidth / std::max(1.0f, dstWidth), srcHeight / std::max(1.0f, dstHeight));
             ps2x_pgs::setPresentSize(uint32_t(dstWidth + 0.5f), uint32_t(dstHeight + 0.5f));
+            seamvk::setPresentSize(uint32_t(dstWidth + 0.5f), uint32_t(dstHeight + 0.5f));   // [standalone]
             if (s_mip && ratio > 1.5f) { bt3GenTextureMipmaps(pgsTexPtr); bt3SetTextureFilter(*pgsTexPtr, TEXTURE_FILTER_TRILINEAR); }
             else if (ratio > 1.001f) bt3SetTextureFilter(*pgsTexPtr, TEXTURE_FILTER_BILINEAR);
             else bt3SetTextureFilter(*pgsTexPtr, TEXTURE_FILTER_POINT);

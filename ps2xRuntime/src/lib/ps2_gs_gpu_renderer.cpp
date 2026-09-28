@@ -9,6 +9,7 @@
 
 #include "runtime/ps2_gs_gpu_renderer.h"
 #include "runtime/ps2_gs_pgs.h"   // [pgs]
+#include "runtime/ps2_seamvk.h"   // [standalone] seamvk::onSwap
 
 #include <cstdlib>
 #include <cstdio>
@@ -7045,7 +7046,11 @@ void GsGpuRenderer::swapFrame()
         int h = g_netJumpHold.load(std::memory_order_relaxed);
         if (h > 0) { g_netJumpHold.store(h - 1, std::memory_order_relaxed); return; }
     }
-    ps2x_pgs::onSwap();   // [pgs] flush + scanout + readback of the paraLLEl-GS frame (no-op when off)
+    {   // [standalone] the native renderer swaps on its own device; PS2X_SEAMVK_REF=1 keeps the backend running beside it
+        static const bool s_ref = [](){ const char *v = std::getenv("PS2X_SEAMVK_REF"); return v && v[0] && v[0] != '0'; }();
+        if (seamvk::on() && !s_ref) seamvk::onSwap();
+        else ps2x_pgs::onSwap();   // [pgs] flush + scanout + readback of the paraLLEl-GS frame (no-op when off)
+    }
     flushStage();   // [recstage]
     g_gsGuestSwapCount.fetch_add(1, std::memory_order_relaxed);
     {   // [guestbusy] the guest thread's CPU time per published frame (the game paces in whole vsyncs, so the fps counter

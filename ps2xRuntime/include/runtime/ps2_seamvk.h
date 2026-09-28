@@ -75,11 +75,25 @@ namespace seamgs
     bool peekTexel(int32_t slot, uint32_t x, uint32_t y, uint32_t &rgba);   // diagnostics: a decoded texel of a cached slot (textures up to 256x256)
 }
 
+struct GSRegisters;
+namespace seamvk
+{
+    // [standalone] The native renderer on its own Vulkan device, no paraLLEl-GS backend instantiated:
+    //  - the display block arrives in stream order (the same [s1fence] GsApply jobs and [displatch] flip the backend got),
+    //    with the live register block as the fallback for registers never written on the stream;
+    //  - onSwap() at the GS renderer's frame swap composes the CRTC circuits from that block and renders the frame.
+    void setLiveRegs(const GSRegisters *regs);         // the runtime's live privileged-register block
+    void streamPriv(uint32_t regOff, uint64_t value);  // [s1fence] a display register, stream-ordered
+    void streamFlip(uint64_t dispfb1);                 // [displatch] the game's DISPFB1 flip, stream-ordered
+    void setPresentSize(uint32_t w, uint32_t h);       // the window's present size (HUD squeeze factor)
+    void onSwap();                                     // GS thread: render the frame on the seam's own device
+}
 #ifdef PS2X_HAVE_PGS
 namespace Vulkan { class Device; }
 namespace seamvk
 {
-    // GS thread, under the paraLLEl-GS state lock, at the frame swap.
+    // GS thread, under the paraLLEl-GS state lock, at the frame swap (PS2X_SEAMVK_REF=1: the reference backend runs
+    // beside the native renderer on the backend's device).
     void renderFrame(Vulkan::Device &device, const PrivRegs &priv);
 }
 #endif

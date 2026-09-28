@@ -3,6 +3,7 @@
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_statesync.h"   // [statesync]
 #include "runtime/ps2_gs_pgs.h"   // [pgs]
+#include "runtime/ps2_seamvk.h"   // [standalone] the native renderer's display block
 #if !defined(_WIN32)
 #include <pthread.h>
 #endif
@@ -432,6 +433,7 @@ bool PS2Memory::initialize(size_t ramSize)
         gs_regs.synch2 = 0x000000000033a4d8ULL;
         gs_regs.syncv  = 0x00c7800601a01801ULL;
         ps2x_pgs::setRegs(&gs_regs);   // [pgs] the backend reads this block at every swap
+        seamvk::setLiveRegs(&gs_regs);   // [standalone] so does the native renderer
 
         // Allocate GS VRAM (4MB)
         m_gsVRAM = new uint8_t[PS2_GS_VRAM_SIZE];
@@ -1076,7 +1078,7 @@ static void ps2xPrivInStream(PS2Memory *mem, uint32_t regOff, uint64_t value)
     if (!PS2Memory::stage1FenceEnabled()) return;
     if (regOff != 0x00u && regOff != 0x20u && regOff != 0x70u && regOff != 0x80u && regOff != 0x90u && regOff != 0xA0u && regOff != 0xE0u) return;
     PS2Memory::KickJob j; j.kind = PS2Memory::KickJob::GsApply;
-    j.fn = [regOff, value]() { ps2x_pgs::streamPriv(regOff, value); };
+    j.fn = [regOff, value]() { ps2x_pgs::streamPriv(regOff, value); seamvk::streamPriv(regOff, value); };
     mem->enqueueKickJob(std::move(j));
 }
 

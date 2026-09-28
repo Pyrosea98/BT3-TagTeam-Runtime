@@ -2,6 +2,7 @@
 #include "runtime/ps2_guestprof.h"
 #include "runtime/ps2_gs_gpu.h"
 #include "runtime/ps2_gs_pgs.h"   // [pgs]
+#include "runtime/ps2_seamvk.h"   // [standalone]
 #include "runtime/ps2_gs_common.h"
 #include "runtime/ps2_gs_psmct16.h"
 #include "runtime/ps2_gs_psmct32.h"
@@ -5453,6 +5454,7 @@ std::atomic<unsigned long> g_ps2xDispFlipHookCalls{0}, g_ps2xDispPrivCalls{0};  
 extern "C" void ps2xGsDisplayFlipHook(unsigned long long dispfb)
 {
     ps2x_pgs::streamFlip((uint64_t)dispfb);   // [pgs] stream-ordered flip for the backend's scanout
+    seamvk::streamFlip((uint64_t)dispfb);     // [standalone] and for the native renderer's
     g_ps2xDispFlipHookCalls.fetch_add(1u, std::memory_order_relaxed);
     if (GsGpuRenderer::enabled())
         ps2GpuRenderer().setDisplay(static_cast<uint32_t>(dispfb & 0x1FFu), static_cast<uint32_t>((dispfb >> 9) & 0x3Fu));
