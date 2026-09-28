@@ -22,6 +22,7 @@ layout(location = 4) flat in vec4 vRect;   // [spriterect] the sprite's texel re
 layout(set = 0, binding = 1) uniform sampler2D uTex;   // RGBA8, raw GS alpha bytes / 255
 layout(input_attachment_index = 0, set = 0, binding = 2) uniform subpassInput uDst;   // the destination itself (DATE), alpha stored as A/128
 #include "pc.glsl"
+layout(depth_less) out float gl_FragDepth;   // [zquant] the depth only ever decreases (truncation), so early-Z can still reject
 layout(location = 0, index = 0) out vec4 outColor;   // stored: exact GS bytes / 255
 layout(location = 0, index = 1) out vec4 outBlend;   // dual-source: alpha = As / 128 for the blend factors
 
@@ -43,6 +44,8 @@ vec4 fetchT(ivec2 t) { return texelFetch(uTex, wrapT(t), 0); }
 
 void main()
 {
+    // [zquant] truncate the interpolated depth to the Z buffer's integer step, as the GS compares integers (pc.fogcol.w = 2^24 for Z24, 0 = off)
+    gl_FragDepth = pc.fogcol.w > 0.0 ? floor(gl_FragCoord.z * pc.fogcol.w) / pc.fogcol.w : gl_FragCoord.z;
     int flags = pc.fA.x;
     if ((flags & 512) != 0)
     {   // DATE: draw only where the destination alpha's bit 7 equals DATM (stored A/128 saturates at 1.0 for A >= 128)

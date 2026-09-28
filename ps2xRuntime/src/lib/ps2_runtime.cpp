@@ -8001,11 +8001,25 @@ void PS2Runtime::run()
                     static const char *s_dumpDir = std::getenv("PS2X_PGS_DUMP");
                     static const int s_dumpEvery = [](){ const char *v = std::getenv("PS2X_PGS_DUMPEVERY"); return v && v[0] ? std::max(1, std::atoi(v)) : 60; }();
                     static unsigned s_dumpN = 0;
-                    if (s_dumpDir && s_dumpDir[0] && (s_dumpN++ % (unsigned)s_dumpEvery) == 0u)
+                    // PS2X_PGS_DUMPFROM / PS2X_PGS_DUMPTO=<game frame>: only inside that window (a 10 s stretch, not the whole run)
+                    static const uint64_t s_dumpFrom = [](){ const char *v = std::getenv("PS2X_PGS_DUMPFROM"); return v && v[0] ? (uint64_t)std::atoll(v) : 0ull; }();
+                    static const uint64_t s_dumpTo = [](){ const char *v = std::getenv("PS2X_PGS_DUMPTO"); return v && v[0] ? (uint64_t)std::atoll(v) : ~0ull; }();
+                    const uint64_t gfNow = g_bt3FrameCount.load(std::memory_order_relaxed);
+                    if (s_dumpDir && s_dumpDir[0] && gfNow >= s_dumpFrom && gfNow <= s_dumpTo && (s_dumpN++ % (unsigned)s_dumpEvery) == 0u)
                     {
                         bt3Image im{}; im.data = s_pgsBuf.data(); im.width = (int)pw; im.height = (int)ph; im.mipmaps = 1; im.format = BT3_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-                        char path[512]; std::snprintf(path, sizeof(path), "%s/pgs_%05u.png", s_dumpDir, s_dumpN - 1u);
-                        bt3ExportImage(im, path);
+                        char path[512];
+                        static const bool s_raw = [](){ const char *v = std::getenv("PS2X_PGS_DUMPRAW"); return v && v[0] && v[0] != '0'; }();   // =1: PPM (fast: every frame of a window without stalling the presenter)
+                        if (s_raw)
+                        {
+                            std::snprintf(path, sizeof(path), "%s/pgs_%05u_g%llu.ppm", s_dumpDir, s_dumpN - 1u, (unsigned long long)gfNow);
+                            if (FILE *fp = std::fopen(path, "wb")) { std::fprintf(fp, "P6\n%u %u\n255\n", pw, ph); for (size_t i = 0; i < size_t(pw) * ph; ++i) std::fwrite(s_pgsBuf.data() + i * 4u, 1, 3, fp); std::fclose(fp); }
+                        }
+                        else
+                        {
+                            std::snprintf(path, sizeof(path), "%s/pgs_%05u_g%llu.png", s_dumpDir, s_dumpN - 1u, (unsigned long long)gfNow);
+                            bt3ExportImage(im, path);
+                        }
                         auto writeAlpha = [&](const char *tag, const uint8_t *rgba, uint32_t w, uint32_t h)
                         {   // the alpha plane as PGM: the destination-alpha masks, native vs backend
                             char pa[512]; std::snprintf(pa, sizeof(pa), "%s/%s_%05u_a.pgm", s_dumpDir, tag, s_dumpN - 1u);

@@ -775,6 +775,19 @@ namespace seamvk
             }
         }
 
+        // [zquant] The GS interpolates Z in fixed point and compares INTEGERS: two coplanar passes of the same triangle
+        // (BT3's terrain draws a base pass and an overlay pass whose vertices differ by 1/16 px) get the same 24-bit
+        // Z per pixel and GEQUAL passes everywhere. Interpolated in float, the overlay's z lands a hair below the base's
+        // on half the pixels: wedge-shaped z-fight slivers that shift every frame when flying far (user, 2026-09-28).
+        // The fragment shader truncates its depth to the Z buffer's integer step before the test (gl_FragDepth,
+        // declared depth_less so early-Z survives for fragments that already fail). PS2X_SEAMVK_ZQUANT=0 disables.
+        float zQuantum(uint32_t zpsm)
+        {
+            static const bool s_on = [](){ const char *v = std::getenv("PS2X_SEAMVK_ZQUANT"); return !(v && v[0] == '0'); }();
+            if (!s_on) return 0.0f;
+            switch (zpsm & 0xFu) { case 0: return 0.0f; case 1: return 16777216.0f; default: return 65536.0f; }   // Z32: float cannot hold 2^32 steps; Z24; Z16/Z16S
+        }
+
         // Cv = (A - B) * C + D with A,B,D in {Cs, Cd, 0} and C in {As, Ad, FIX}: the Vulkan factors when expressible.
         bool blendFor(const seamgs::State &t, VkBlendFactor &sf, VkBlendFactor &df, VkBlendOp &op)
         {
@@ -871,7 +884,7 @@ namespace seamvk
             pc.fA[1] = t.tfx; pc.fA[2] = t.wms | (t.wmt << 2); pc.fA[3] = t.atst | (t.aref << 3) | (t.afail << 11);
             pc.fB[0] = t.minu; pc.fB[1] = t.maxu; pc.fB[2] = t.minv; pc.fB[3] = t.maxv;
             pc.blend[0] = t.abe; pc.blend[1] = int32_t(t.aA | (t.aB << 2) | (t.aC << 4) | (t.aD << 6)); pc.blend[2] = t.fix; pc.blend[3] = t.colclamp;   // [shaderblend]
-            pc.fogcol[0] = (t.fogcol & 0xFFu) / 255.0f; pc.fogcol[1] = ((t.fogcol >> 8) & 0xFFu) / 255.0f; pc.fogcol[2] = ((t.fogcol >> 16) & 0xFFu) / 255.0f; pc.fogcol[3] = 1.0f;
+            pc.fogcol[0] = (t.fogcol & 0xFFu) / 255.0f; pc.fogcol[1] = ((t.fogcol >> 8) & 0xFFu) / 255.0f; pc.fogcol[2] = ((t.fogcol >> 16) & 0xFFu) / 255.0f; pc.fogcol[3] = zQuantum(t.zpsm);   // [zquant] fogcol.w = the GS depth quantum (2^24 for Z24), 0 = off
             cmd.push_constants(&pc, 0, sizeof(pc));
             {   // [hwfilter] bilinear with plain REPEAT or CLAMP on both axes: let the sampler filter (4 manual fetches + wrap math otherwise)
                 const bool hw = tex && t.mmag && t.wms <= 1u && t.wmt == t.wms;
