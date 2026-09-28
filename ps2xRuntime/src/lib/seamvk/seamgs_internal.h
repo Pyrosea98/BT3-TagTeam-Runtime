@@ -87,10 +87,12 @@ namespace seamgs
         struct RegEvent { uint32_t drawIndex; uint8_t path, hostGif, addr; uint64_t value; };   // FRAME/SCISSOR writes in stream order (diagnostics)
         std::vector<RegEvent> regEvents;
         uint64_t frame = 0;
+        int32_t dispSlot[2] = { -1, -1 }; uint32_t dispFbp[2] = { ~0u, ~0u };   // [dispvram] per circuit: the slot holding a VRAM decode of the display buffer (movies: uploaded, never drawn)
     };
 
-    // Renderer side, at the swap: take everything recorded since the last swap.
-    void takeFrame(FrameList &out);
+    // Renderer side, at the swap: take everything recorded since the last swap. dispfb[2] / enMask: the CRTC circuits
+    // at this swap ([dispvram]: a display buffer the game uploaded into after its last draw is decoded from the mirror).
+    void takeFrame(FrameList &out, const uint64_t dispfb[2], uint32_t enMask);
     // Front-end reset when the renderer drops all GPU textures.
     void dropAllTextures();
 }

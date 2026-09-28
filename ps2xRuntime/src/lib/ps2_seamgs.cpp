@@ -1289,9 +1289,42 @@ namespace seamgs
         }
     }
 
-    void takeFrame(FrameList &out)
+    // [dispvram] Movies (and any frame the game builds by DMA image transfers alone) reach the display buffer without a
+    // single draw: the IPU output is uploaded straight into the frame buffer and DISPFB shows it. The renderer composes
+    // from its render targets, which such uploads never touch (black). At the swap: if every page of a circuit's display
+    // buffer was written by an upload more recently than any draw touched it, queue a decode of the buffer from the GPU
+    // copy of VRAM (the [gpudecode] path) into a per-circuit slot; the circuit blit samples that slot instead.
+    static int32_t g_dispSlot[2] = { -1, -1 };
+    static void displayDecodeLocked(int i, uint64_t dispfb)
+    {
+        const uint32_t fbp = (uint32_t)(dispfb & 0x1FFu) << 5, fbw = (uint32_t)((dispfb >> 9) & 0x3Fu), psm = (uint32_t)((dispfb >> 15) & 0x1Fu);
+        if (fbw == 0u || fbw > 16u) return;
+        const uint32_t w = fbw * 64u, h = 448u;
+        bool uploaded = false, drawnAfter = false;
+        std::vector<std::pair<uint16_t, uint32_t>> pages;
+        for (uint32_t y = 0; y < h; y += 32u)
+            for (uint32_t x = 0; x < w; x += 64u)
+            {
+                const uint32_t p = pageOf(psm, fbp, fbw, x, y);
+                if (p >= kPages) continue;
+                if (g_pageWrite[p] != 0u && g_pageWrite[p] > g_pageDrawn[p]) uploaded = true;
+                if (g_pageDrawn[p] != 0u && g_pageDrawn[p] >= g_pageWrite[p]) drawnAfter = true;
+                bool dup = false; for (const auto &q : pages) if (q.first == p) { dup = true; break; }
+                if (!dup) pages.emplace_back((uint16_t)p, g_pageWrite[p]);
+            }
+        if (!uploaded || drawnAfter) return;   // the targets hold the frame (the normal case)
+        if (g_dispSlot[i] < 0) { g_dispSlot[i] = (int32_t)g_tex.size(); g_tex.emplace_back(); }   // outside the texture cache: never evicted
+        uint32_t tw = 6; while ((1u << tw) < w && tw < 10u) ++tw;
+        TexEntry e; e.w = 1u << tw; e.h = 512u; e.pages = std::move(pages); e.gpuDecode = true;
+        const uint64_t tex0 = (uint64_t)fbp | ((uint64_t)fbw << 14) | ((uint64_t)psm << 20) | ((uint64_t)tw << 26) | (9ull << 30);
+        vramDecodeFor(g_dispSlot[i], e, tex0);
+        g_list.dispSlot[i] = g_dispSlot[i]; g_list.dispFbp[i] = fbp;
+    }
+
+    void takeFrame(FrameList &out, const uint64_t dispfb[2], uint32_t enMask)
     {
         std::lock_guard<std::mutex> lk(g_mtx);
+        for (int i = 0; i < 2; ++i) if (enMask & (1u << i)) displayDecodeLocked(i, dispfb[i]);
         ++g_frame;
         ++g_swapsSeen; if (g_swapHash == g_lastSwapHash) ++g_sameSwaps; g_lastSwapHash = g_swapHash; g_swapHash = 1469598103934665603ull; g_swapBytes = 0;
         if (g_list.draws.size() > 1500u) ++g_busyFrames;
@@ -1299,6 +1332,7 @@ namespace seamgs
         g_list.frame = g_frame;
         out.draws.swap(g_list.draws); out.verts.swap(g_list.verts); out.texUploads.swap(g_list.texUploads); out.texFrees.swap(g_list.texFrees); out.rtDecodes.swap(g_list.rtDecodes); out.vramPages.swap(g_list.vramPages); out.vramBytes.swap(g_list.vramBytes); out.stepCluts.swap(g_list.stepCluts); out.regEvents.swap(g_list.regEvents);
         out.frame = g_frame;
+        for (int i = 0; i < 2; ++i) { out.dispSlot[i] = g_list.dispSlot[i]; out.dispFbp[i] = g_list.dispFbp[i]; g_list.dispSlot[i] = -1; g_list.dispFbp[i] = ~0u; }   // [dispvram]
         g_list.draws.clear(); g_list.verts.clear(); g_list.texUploads.clear(); g_list.texFrees.clear(); g_list.rtDecodes.clear(); g_list.vramPages.clear(); g_list.vramBytes.clear(); g_list.stepCluts.clear(); g_list.regEvents.clear();
         g_texFree.insert(g_texFree.end(), g_retired.begin(), g_retired.end()); g_retired.clear();
         g_texDirty = true;   // a new frame: re-resolve (the renderer may have dropped slots)

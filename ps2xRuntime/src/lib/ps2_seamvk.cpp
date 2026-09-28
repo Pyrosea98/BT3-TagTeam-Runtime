@@ -889,7 +889,7 @@ namespace seamvk
             if (t.date) { ++g_gpu.dateDraws; if (d.kind == 1) ++g_gpu.dateHost; }
         }
 
-        void composeCircuit(Vulkan::CommandBuffer &cmd, uint64_t dispfb, uint64_t display, float alpha, bool blend)
+        void composeCircuit(Vulkan::CommandBuffer &cmd, uint64_t dispfb, uint64_t display, float alpha, bool blend, const seamgs::FrameList &f, int circuit)
         {
             const uint32_t fbp = (uint32_t)(dispfb & 0x1FFu) * 32u, fbw = (uint32_t)((dispfb >> 9) & 0x3Fu);
             const uint32_t dbx = (uint32_t)((dispfb >> 32) & 0x7FFu), dby = (uint32_t)((dispfb >> 43) & 0x7FFu);
@@ -899,6 +899,23 @@ namespace seamvk
             if (srcW == 0u) srcW = (fbw ? fbw : 8u) * 64u;
             if (srcH == 0u) srcH = kOutH;
             auto it = g_gpu.targets.find(fbp);
+            const int32_t ds = f.dispSlot[circuit];
+            if (ds >= 0 && f.dispFbp[circuit] == fbp && (size_t)ds < g_gpu.tex.size() && g_gpu.tex[ds])
+            {   // [dispvram] the display buffer was uploaded, not drawn (movies): show the decode of the VRAM copy, 1 GS px per texel
+                const Vulkan::ImageHandle &img = g_gpu.tex[ds];
+                const float tw = float(img->get_width()), th = float(img->get_height());
+                PresentPC p = {};
+                p.src[0] = float(dbx) / tw; p.src[1] = float(dby) / th; p.src[2] = float(srcW) / tw; p.src[3] = float(srcH) / th;
+                p.dst[0] = -1.0f; p.dst[1] = -1.0f; p.dst[2] = 1.0f; p.dst[3] = 1.0f;
+                p.alpha[0] = alpha; p.taps[2] = 1.0f;
+                cmd.set_blend_enable(blend);
+                if (blend) { cmd.set_blend_factors(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA); cmd.set_blend_op(VK_BLEND_OP_ADD); }
+                cmd.push_constants(&p, 0, sizeof(p));
+                cmd.set_texture(0, 0, img->get_view(), Vulkan::StockSampler::LinearClamp);
+                cmd.draw(4);
+                static int s_n = 0; if (s_n++ < 3) std::fprintf(stderr, "[dispvram] circuit %d fbp 0x%x shown from the VRAM decode (slot %d, %ux%u)\n", circuit, fbp, ds, img->get_width(), img->get_height());
+                return;
+            }
             { static int s_n = 0; if (s_n++ < 6) std::fprintf(stderr, "[seamvk] circuit (alpha %.2f blend %d): dispfb %016llx display %016llx -> fbp 0x%x fbw %u dbx %u dby %u mag %ux%u dw %u dh %u src %ux%u target %s\n",
                                                              alpha, blend ? 1 : 0, (unsigned long long)dispfb, (unsigned long long)display, fbp, fbw, dbx, dby, magh, magv, dw, dh, srcW, srcH, it == g_gpu.targets.end() ? "MISSING" : "ok"); }
             if (it == g_gpu.targets.end() || !it->second.img) return;
@@ -951,7 +968,7 @@ namespace seamvk
     {
         const auto tA = std::chrono::steady_clock::now();
         seamgs::FrameList f;
-        seamgs::takeFrame(f);
+        { const uint64_t db[2] = { priv.dispfb1, priv.dispfb2 }; seamgs::takeFrame(f, db, (uint32_t)(priv.pmode & 3u)); }   // [dispvram]
         if (!ensureGpu(dev)) return;
         const auto tB = std::chrono::steady_clock::now();
         const uint32_t sc = g_gpu.scale;
@@ -1458,8 +1475,8 @@ namespace seamvk
             cmd->set_depth_test(false, false);
             cmd->set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
             const bool sameBuf = en1 && en2 && (priv.dispfb1 & 0x7FFFu) == (priv.dispfb2 & 0x7FFFu);   // both circuits on one frame: one opaque blit
-            if (en2 && !sameBuf) composeCircuit(*cmd, priv.dispfb2, priv.display2, 1.0f, false);
-            if (en1) composeCircuit(*cmd, priv.dispfb1, priv.display1, (en2 && !sameBuf) ? (mmod ? alp / 255.0f : 0.5f) : 1.0f, en2 && !sameBuf);
+            if (en2 && !sameBuf) composeCircuit(*cmd, priv.dispfb2, priv.display2, 1.0f, false, f, 1);
+            if (en1) composeCircuit(*cmd, priv.dispfb1, priv.display1, (en2 && !sameBuf) ? (mmod ? alp / 255.0f : 0.5f) : 1.0f, en2 && !sameBuf, f, 0);
             cmd->end_render_pass();
         }
         cmd->image_barrier(*g_gpu.out, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
