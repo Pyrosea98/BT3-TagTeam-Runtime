@@ -1437,6 +1437,7 @@ void PS2SettingsOverlay::drawVideoTab()
             "Skip post pass", "Skip stale VRAM",
         };
         static bool sAdvOpen = false, sB[5];
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));   // [popupcentre] every frame: a modal keeps its first position otherwise, and a window-mode switch made from INSIDE it (Display settings -> Windowed) left it anchored at the old screen's centre, off-screen (user, 2026-09-28)
         if (ImGui::BeginPopupModal("Visual Effects", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
             if (!sAdvOpen)
@@ -1543,6 +1544,7 @@ void PS2SettingsOverlay::drawVideoTab()
         // [texui] Texture Replacement popup: pack status + the pack options. Opened by the
         // "Texture Replacement..." button above (same ID scope). Video overlay applies on restart
         // (the native PSS/ADX swap happens at loadELF -- see ps2_fmv_override.cpp).
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));   // [popupcentre] every frame: a modal keeps its first position otherwise, and a window-mode switch made from INSIDE it (Display settings -> Windowed) left it anchored at the old screen's centre, off-screen (user, 2026-09-28)
         if (ImGui::BeginPopupModal("Texture Replacement", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
             const bool havePack = ps2tex::replacementsEnabled();
@@ -1588,6 +1590,7 @@ void PS2SettingsOverlay::drawVideoTab()
         static bool eInit = false;
         static int eMode = 0, eMon = 0, eScale = 1, eRes = 0;
         // OpenPopup and BeginPopupModal must share the ID scope (same rule as the Controller Bindings popup).
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));   // [popupcentre] every frame: a modal keeps its first position otherwise, and a window-mode switch made from INSIDE it (Display settings -> Windowed) left it anchored at the old screen's centre, off-screen (user, 2026-09-28)
         if (ImGui::BeginPopupModal("Display settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
             if (!eInit)
@@ -1758,6 +1761,7 @@ void PS2SettingsOverlay::drawControllersTab()
         static int  pPlayer = 0, pDev = 0;
         static float pDz = 0.12f;
         // OpenPopup and BeginPopupModal must share the ID scope (same rule as the other popups).
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));   // [popupcentre] every frame: a modal keeps its first position otherwise, and a window-mode switch made from INSIDE it (Display settings -> Windowed) left it anchored at the old screen's centre, off-screen (user, 2026-09-28)
         if (ImGui::BeginPopupModal("Player & Device", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
             if (!pInit)
