@@ -14,7 +14,8 @@
 #include "runtime/ps2_gs_gpu.h"          // [seampack] GSTex0Reg / GSTexaReg / GSTexClutReg
 #include "runtime/ps2_gs_rasterizer.h"   // [seampack] GSRasterizer::fillClutForBackend (the pack hashes the CLUT in this layout)
 #include "runtime/ps2_texreplace.h"      // [seampack] ps2tex::identify / loadReplacement
-#include "runtime/ps2_gs_pgs.h"          // [seampack] ps2xBcDecode
+#include "runtime/ps2_gs_pgs.h"
+#include "runtime/ps2_wshud.h"   // [wshud]          // [seampack] ps2xBcDecode
 #include <unordered_set>
 
 #include <algorithm>
@@ -163,7 +164,7 @@ namespace seamgs
         {   // at the swap: the scene gate (5-frame hysteresis), the debounced squeeze, the fight gate
             if (g_ws.frameHad3d) { g_ws.active = true; g_ws.no3dRun = 0; } else if (++g_ws.no3dRun >= 5) g_ws.active = false;
             g_ws.frameHad3d = false;
-            const float raw = ps2x_pgs::wsHudRawInv(g_ws.sceneFbw);
+            const float raw = ps2x_wshud::rawInv(g_ws.sceneFbw);
             if (raw < 0.999f)
             {   // [wsjit] commit a raw value only once it repeats (menus alternate 512/640-wide frames)
                 if (!g_ws.invInit) { g_ws.inv = raw; g_ws.lastRawInv = raw; g_ws.invRun = 1; g_ws.invInit = true; }
@@ -1148,7 +1149,7 @@ namespace seamgs
                 if (!s.tme && s.abe && s.aA == 2u && s.aB == 0u && s.aC == 1u && s.aD == 1u && scene)
                 {   // the cel-outline darkener (Cd - Cs * Ad): Cel Outline OFF drops it; ink strength / colour scale its colour
                     if (!GsGpuRenderer::outlineEnabled()) { ++g_ws.inkDropped; return; }
-                    const int pct = GsGpuRenderer::inkStrengthPct(); const uint32_t col = ps2x_pgs::inkColor();
+                    const int pct = GsGpuRenderer::inkStrengthPct(); const uint32_t col = ps2x_wshud::inkColor();
                     if (pct != 199 || col != 0u)
                     {
                         const float k = float(pct) / 199.0f;
@@ -1502,7 +1503,7 @@ namespace seamgs
             if (g_nativeHud && !s.tme && s.abe && s.aA == 2u && s.aB == 0u && s.aC == 1u && s.aD == 1u && wsScene(s.fbp, s.fpsm))
             {   // [nativehud] the outline ink draw as a native pass: Cel Outline OFF drops it, ink strength / colour scale it
                 if (!GsGpuRenderer::outlineEnabled()) { ++g_ws.inkDropped; return; }
-                const int pct = GsGpuRenderer::inkStrengthPct(); const uint32_t col = ps2x_pgs::inkColor();
+                const int pct = GsGpuRenderer::inkStrengthPct(); const uint32_t col = ps2x_wshud::inkColor();
                 if (pct != 199 || col != 0u)
                 {
                     const float k = float(pct) / 199.0f;

@@ -858,7 +858,7 @@ if (EXISTS "${PS2X_PGS_DIR}/CMakeLists.txt" AND NOT PS2X_DISABLE_PGS)
 
     set(PARALLEL_GS_STANDALONE ON CACHE BOOL "" FORCE)
     add_subdirectory("${PS2X_PGS_DIR}" "${CMAKE_BINARY_DIR}/parallel-gs" EXCLUDE_FROM_ALL)
-    target_sources(ps2_runtime PRIVATE src/lib/ps2_gs_pgs.cpp src/lib/ps2_seamvk.cpp src/lib/ps2_seamgs.cpp)   # [seamvk] native Vulkan renderer for the seam
+    target_sources(ps2_runtime PRIVATE src/lib/ps2_gs_pgs.cpp src/lib/ps2_seamvk.cpp src/lib/ps2_seamgs.cpp src/lib/ps2_wshud.cpp)   # [seamvk] native Vulkan renderer for the seam
     target_link_libraries(ps2_runtime PUBLIC parallel-gs)
     target_compile_definitions(ps2_runtime PUBLIC PS2X_HAVE_PGS=1)
     message(STATUS "[pgs] paraLLEl-GS backend enabled from ${PS2X_PGS_DIR}")

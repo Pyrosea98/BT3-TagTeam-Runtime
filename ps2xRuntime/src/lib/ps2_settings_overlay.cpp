@@ -645,14 +645,22 @@ static void exportRendererEnv(int renderer, bool texPack, bool forceBilinear)
         return;
     }
 #if defined(PS2X_HAVE_PGS)
-    if (renderer == 2 || renderer == 4)
+    if (renderer == 4)
+    {   // [nativeopt][standalone] the native Vulkan renderer on its own device: no paraLLEl-GS backend. The environment
+        // still wins (PS2X_SEAMVK=1 on a "parallel-gs" settings file is how the dev scripts run it, PS2X_SEAMVK_REF=1 the
+        // side-by-side reference).
+        static const bool s_ref = [](){ const char *v = std::getenv("PS2X_SEAMVK_REF"); return v && v[0] && v[0] != '0'; }();
+        setEnvDefault("PS2X_PGS", s_ref ? "1" : "0");
+        setEnvDefault("PS2X_SEAMVK", "1");
+        seamvk::configure(true);   // the flag may already have been read (a static initializer): decide it here too
+        { const char *sv = std::getenv("PS2X_SEAMVK"); std::fprintf(stderr, "[nativeopt] renderer %d -> PS2X_SEAMVK=%s, native %s, PS2X_PGS=%s\n", renderer, sv ? sv : "(unset)", seamvk::on() ? "ON" : "off", std::getenv("PS2X_PGS")); }
+        return;
+    }
+    if (renderer == 2)
     {
         setEnvDefault("PS2X_PGS", "1");
-        // [nativeopt] renderer 4 = the native Vulkan renderer: paraLLEl-GS's device with the seam in front of it. The
-        // environment still wins (PS2X_SEAMVK=1 on a "parallel-gs" settings file is how the dev scripts run it).
-        setEnvDefault("PS2X_SEAMVK", renderer == 4 ? "1" : "0");
-        seamvk::configure(renderer == 4);   // the flag may already have been read (a static initializer): decide it here too
-        { const char *sv = std::getenv("PS2X_SEAMVK"); std::fprintf(stderr, "[nativeopt] renderer %d -> PS2X_SEAMVK=%s, native %s\n", renderer, sv ? sv : "(unset)", seamvk::on() ? "ON" : "off"); }
+        setEnvDefault("PS2X_SEAMVK", "0");   // (an explicit PS2X_SEAMVK=1 in the environment wins: the dev scripts run the seam on a "parallel-gs" file)
+        if (!envUserSet("PS2X_SEAMVK")) seamvk::configure(false);
         // [pgslive] pack mode only when a pack is actually INDEXED (PS2X_TEXREPLACE or data/Textures): the Texture
         // Replacement switch is greyed out without one, and pack mode costs a second packet walk per frame (a laptop
         // 4060 log showed 17-26 ms/swap of backend CPU at 4x with the switch on and NO pack). With a pack the switch

@@ -1,7 +1,8 @@
 #include "runtime/ps2_gif_arbiter.h"
 #include "runtime/ps2_seamprobe.h"   // [pktoracle]
 #include "runtime/ps2_seamvk.h"   // [seamvk]
-#include "runtime/ps2_gs_pgs.h"   // [pgs]
+#include "runtime/ps2_gs_pgs.h"
+#include "runtime/ps2_wshud.h"   // [wshud] the HUD packet walker (shared, backend-neutral)   // [pgs]
 #include <cstdlib>
 extern "C" void ps2xGsRecordPacket(uint8_t path, const uint8_t *data, uint32_t sizeBytes);   // [recpgs] ps2_gs_gpu.cpp
 #include <algorithm>
@@ -355,7 +356,7 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
         if (magic == seamvk::kHostGifMagic && size >= sizeof(seamvk::HostGifHeader))
         {   // 'SVKG': the host-transformed GIF packet -> the native front-end (registers only) and the GS backend as PATH1
             data += sizeof(seamvk::HostGifHeader); size -= sizeof(seamvk::HostGifHeader); pathId = 1u;
-            if (!seamvk::nativeHudOn() || ps2x_pgs::vpKeepOn()) { size_t sz = size; ps2x_pgs::wsHudPreprocess(pathId, data, sz, true); size = (uint32_t)sz; }   // [seamwshud] the walker tracks registers across every packet ([wshudhost]: registers only here); [nativehud]: not needed
+            if (!seamvk::nativeHudOn() || ps2x_wshud::vpKeepOn()) { size_t sz = size; ps2x_wshud::preprocess(pathId, data, sz, true); size = (uint32_t)sz; }   // [seamwshud] the walker tracks registers across every packet ([wshudhost]: registers only here); [nativehud]: not needed
             seamvk::onGifPacket(pathId, data, size, true);
         }
         else { seamvk::onHostDraw(data, size); return; }
@@ -367,7 +368,7 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
     else if (seamvk::on())
     {   // [seamwshud] the widescreen HUD squeeze (edge / centered layouts) is a packet rewrite on paraLLEl-GS's path; the
         // native front end parses the rewritten packet
-        if (!seamvk::nativeHudOn() || ps2x_pgs::vpKeepOn()) { size_t sz = size; ps2x_pgs::wsHudPreprocess(pathId, data, sz); size = (uint32_t)sz; }   // [nativehud]: the front end lays the HUD out itself
+        if (!seamvk::nativeHudOn() || ps2x_wshud::vpKeepOn()) { size_t sz = size; ps2x_wshud::preprocess(pathId, data, sz); size = (uint32_t)sz; }   // [nativehud]: the front end lays the HUD out itself
         seamvk::nativeParse(g_parseStep);   // [clutpass]
         seamvk::onGifPacket(pathId, data, size, false);
         seamvk::nativeParse(-1);

@@ -2505,7 +2505,7 @@ bool PS2Memory::stage1FenceEnabled()
     // kick_drain 208 -> 1.5 ms/s, display registers identical, user saw nothing broken (fence1.txt). PS2X_S1FENCE=0 restores
     // the full drain.
     static const bool s_on = [](){ const char *v = std::getenv("PS2X_S1FENCE"); const bool want = !(v && v[0] == '0');
-                                   const bool on = want && vu1PipeEnabled() && ps2x_pgs::enabled();
+                                   const bool on = want && vu1PipeEnabled() && (ps2x_pgs::enabled() || seamvk::on());   // [standalone] any Vulkan backend
                                    std::fprintf(stderr, on   ? "[s1fence] stage-1 SyncPath fence ON: guest GIF + display regs in stream order, presenter on the stream block (PS2X_S1FENCE=0 restores the full drain)\n"
                                                         : want ? "[s1fence] OFF: needs [vu1pipe] + paraLLEl-GS (full drain)\n"
                                                                : "[s1fence] OFF (PS2X_S1FENCE=0): full two-stage drain at sceGsSyncPath\n");

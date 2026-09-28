@@ -11,6 +11,7 @@
 #include "runtime/ps2_seamvk.h"
 #include "runtime/ps2_gs_gpu_renderer.h"   // [dofoff] GsGpuRenderer::dofBlurEnabled
 #include "runtime/ps2_gs_pgs.h"   // [targetdump] the backend's view of a target
+#include "runtime/ps2_wshud.h"   // [wshud]
 #include "seamvk/seamgs_internal.h"
 
 #include "device.hpp"
@@ -1282,12 +1283,13 @@ namespace seamvk
         if (slot == 7u) { g_streamDispfb1 = value; g_haveStreamFlip = true; }
     }
     void streamFlip(uint64_t dispfb1) { std::lock_guard<std::mutex> lk(g_privMtx); g_streamDispfb1 = dispfb1; g_haveStreamFlip = true; }
-    void setPresentSize(uint32_t w, uint32_t h) { g_presentW.store(w, std::memory_order_relaxed); g_presentH.store(h, std::memory_order_relaxed); }
+    void setPresentSize(uint32_t w, uint32_t h) { g_presentW.store(w, std::memory_order_relaxed); g_presentH.store(h, std::memory_order_relaxed); ps2x_wshud::setPresentSize(w, h); }
     void onSwap()
     {
         if (!on()) return;
         if (!ensureOwnDevice()) return;
         const PrivRegs pr = composePriv();
+        ps2x_wshud::noteSwap(g_gpu.scale ? g_gpu.h / g_gpu.scale : 448u);   // [wshud] the walker's per-frame reset (scanout height, 1x domain)
         renderFrame(g_own->dev, pr);
         g_own->dev.next_frame_context();   // fences and command buffers recycle per context
     }
