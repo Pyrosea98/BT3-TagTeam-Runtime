@@ -91,8 +91,8 @@ namespace seamvk
         struct RtPC { uint32_t tex[4], clut[4], src[4], texa[4]; };
         struct AliasPC { uint32_t tgt[4], v16[4]; int32_t fA[4], blend[4], texInfo[4]; float col[4]; };   // alias16.frag
 
-        struct PC { float view[4]; float texInfo[4]; int32_t fA[4]; int32_t fB[4]; float fogcol[4]; int32_t blend[4]; };   // [shaderblend] + packed GS blend
-        static_assert(sizeof(PC) == 96, "push constants");
+        struct PC { float view[4]; float texInfo[4]; int32_t fA[4]; int32_t fB[4]; float fogcol[4]; int32_t blend[4]; int32_t misc[4]; };   // [shaderblend] + packed GS blend; [rtnative] misc.x
+        static_assert(sizeof(PC) == 112, "push constants");
         struct PresentPC { float src[4], dst[4], alpha[4], taps[4]; };   // [outscale] taps = (footprint u, footprint v, K, 0): K x K box over one output pixel
 
         constexpr uint32_t kLogicalW = 1024, kLogicalH = 512;
@@ -411,6 +411,22 @@ namespace seamvk
         }
 
         // kind 2: build texture slot r.slot from a render target (see rtdecode.frag)
+        // [rtnative] A texture decoded from a render TARGET is built at the target's native resolution (GS size x render
+        // scale) instead of the GS size: every "target read as a texture" effect -- DoF, glow, the blur chain, the dash blur,
+        // HUD portraits, the game's own outline -- then stays native-res instead of being resampled through a 512x448 texture
+        // (why DoF/glow looked blocky at scale 2). PS2X_SEAMVK_RTNATIVE=<max GS texture dim> (default 512; 0 = off): larger
+        // declared textures (a 1024x1024 PSMZ16 view) stay GS-res. VRAM-sourced decodes are always GS-res.
+        uint32_t rtNativeFactor(const seamgs::RtDecode &r)
+        {
+            static const uint32_t s_max = [](){ const char *v = std::getenv("PS2X_SEAMVK_RTNATIVE"); return v && v[0] ? (uint32_t)std::atoi(v) : 512u; }();
+            if (r.fromVram || s_max == 0u || r.w > s_max || r.h > s_max) return 1u;
+            // only full-resolution sources (the frame at fbp 0/0xe00 and the Z buffer: 512-wide targets); the half- and
+            // quarter-res scratch buffers of the blur chain (fbw 4/2/1) ARE the intended blur -- decoding them larger costs
+            // 9x the pixels at scale 3 for nothing (GPU 22 -> 35 %, 97 decodes/frame)
+            if (r.srcFbw < 8u) return 1u;
+            return std::max(1u, g_gpu.scale);
+        }
+
         void runRtDecode(Vulkan::CommandBuffer &cmd, Vulkan::Device &dev, const seamgs::FrameList &f, const seamgs::RtDecode &r, Vulkan::ImageHandle *into = nullptr)
         {   // into: [hoist] decode into this image instead of the slot's (the slot is pointed at it when the stream reaches the decode)
             if (r.slot < 0 || r.w == 0 || r.h == 0) return;
@@ -444,14 +460,16 @@ namespace seamvk
                 }
                 if (g_gpu.dumpRt) std::fprintf(stderr, "[seamvk] decode slot %d %ux%u psm %u from target %x (%ux%u) depth %u clutFromTarget %u\n", r.slot, r.w, r.h, r.psm, r.srcFbp, srcp ? srcp->img->get_width() : 0u, srcp ? srcp->img->get_height() : 0u, r.depthSrc, r.clutFromTarget);
             }
+            const uint32_t nat = srcp ? rtNativeFactor(r) : 1u;   // [rtnative]
+            const uint32_t iw = r.w * nat, ih = r.h * nat;
             if ((size_t)r.slot >= g_gpu.tex.size()) g_gpu.tex.resize(size_t(r.slot) + 1u);
             Vulkan::ImageHandle &img = into ? *into : g_gpu.tex[r.slot];
             if (g_gpu.dumpRt) img.reset();   // dumping: every decode keeps its own image (a slot decoded twice in the frame would show only the last)
-            if (!img || img->get_width() != r.w || img->get_height() != r.h)
+            if (!img || img->get_width() != iw || img->get_height() != ih)
             {
-                auto ci = Vulkan::ImageCreateInfo::render_target(r.w, r.h, VK_FORMAT_R8G8B8A8_UNORM);
+                auto ci = Vulkan::ImageCreateInfo::render_target(iw, ih, VK_FORMAT_R8G8B8A8_UNORM);
                 ci.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
-                if (mipsOn()) { ci.levels = 0; ci.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT; }   // [mips] full chain, generated after the decode
+                if (mipsOn() && !srcp) { ci.levels = 0; ci.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT; }   // [mips] full chain, generated after the decode -- VRAM textures only: a target read back as a texture is sampled at 1:1 or 2:1, never minified ([rtnative]: ~97 chains/frame were generated for nothing)
                 img = dev.create_image(ci);
             }
             auto finishDecode = [&]()
@@ -488,10 +506,10 @@ namespace seamvk
                 // (a PSMZ16 view of the 512x448 frame is declared 1024x1024 but only 512x896 of it exists)
                 const bool v16 = r.psm == 2u || r.psm == 10u || r.psm == 50u || r.psm == 58u;
                 const uint32_t ew = std::min(r.w, (srcp->img->get_width() / g_gpu.scale)), eh = std::min(r.h, (srcp->img->get_height() / g_gpu.scale) * (v16 ? 2u : 1u));
-                VkRect2D sr = {}; sr.extent.width = std::max(1u, ew); sr.extent.height = std::max(1u, eh); cmd.set_scissor(sr);
+                VkRect2D sr = {}; sr.extent.width = std::max(1u, ew) * nat; sr.extent.height = std::max(1u, eh) * nat; cmd.set_scissor(sr);
             }
             RtPC pc = {};
-            pc.tex[0] = r.tbp; pc.tex[1] = r.tbw; pc.tex[2] = r.psm; pc.tex[3] = 0;
+            pc.tex[0] = r.tbp; pc.tex[1] = r.tbw; pc.tex[2] = r.psm; pc.tex[3] = nat;   // [rtnative] w = native factor
             pc.clut[0] = r.cbp; pc.clut[1] = r.cpsm; pc.clut[2] = r.csa; pc.clut[3] = (r.clutFromTarget ? 1u : 0u) | ((r.depthSrc && dz) ? 2u : 0u);
             if (srcp) { pc.src[0] = r.srcFbp; pc.src[1] = srcp->img->get_width() / (g_gpu.scale * 64u); pc.src[2] = srcp->img->get_height() / (g_gpu.scale * 32u); pc.src[3] = g_gpu.scale; }   // the image's own geometry, not the front end's last notion of it
             pc.texa[0] = (uint32_t)(r.texa & 0xFFu); pc.texa[1] = (uint32_t)((r.texa >> 15) & 1u); pc.texa[2] = (uint32_t)((r.texa >> 32) & 0xFFu); pc.texa[3] = 0;
@@ -877,8 +895,11 @@ namespace seamvk
             pc.view[0] = t.ofx / 16.0f; pc.view[1] = t.ofy / 16.0f; pc.view[2] = float(targetW(t.fbw)); pc.view[3] = float(kLogicalH);
             const bool tex = t.tme && t.tex >= 0 && (size_t)t.tex < g_gpu.tex.size() && g_gpu.tex[t.tex];
             if (t.tme && !tex) ++g_gpu.texMissing;
+            uint32_t nat = 1u;   // [rtnative] the slot image is a multiple of the GS texture size when decoded from a target at native res
+            if (tex && t.texW && t.texH && g_gpu.tex[t.tex]->get_width() % t.texW == 0u && g_gpu.tex[t.tex]->get_width() / t.texW == g_gpu.tex[t.tex]->get_height() / t.texH) nat = std::max(1u, g_gpu.tex[t.tex]->get_width() / t.texW);
             else if (tex && (g_gpu.tex[t.tex]->get_width() != t.texW || g_gpu.tex[t.tex]->get_height() != t.texH)) ++g_gpu.texMismatch;
             pc.texInfo[0] = float(t.texW ? t.texW : 1u); pc.texInfo[1] = float(t.texH ? t.texH : 1u);
+            pc.misc[0] = int32_t(nat);
             pc.fA[0] = (tex ? 1 : 0) | (t.fst ? 2 : 0) | (t.mmag ? 8 : 0) | (t.ate ? 16 : 0) | (t.fba ? 32 : 0) | (t.tcc ? 128 : 0) | (t.fge ? 256 : 0)
                      | ((t.date && !stencilDate()) ? 512 : 0) | (t.datm ? 1024 : 0) | ((t.abe && t.aC == 1u) ? 16384 : 0) | (blendInShader(t) ? 65536 : 0) | ((s_dateDbg == 1 && t.date) ? 2048 : 0) | ((s_dateDbg == 2 && t.date) ? 4096 : 0) | (((s_dateDbg == 3 || (s_dateDbg == 4 && ((g_gpu.frames / 300u) & 1u))) && t.date) ? 8192 : 0);   // =4: alternate with normal rendering every 300 frames (the capture cadence)
             pc.fA[1] = t.tfx; pc.fA[2] = t.wms | (t.wmt << 2); pc.fA[3] = t.atst | (t.aref << 3) | (t.afail << 11);
@@ -1199,7 +1220,7 @@ namespace seamvk
                     const seamgs::RtDecode &r = f.rtDecodes[d.rt];
                     Vulkan::ImageHandle img;
                     for (size_t i = 0; i < g_gpu.hoistFree.size(); ++i)
-                        if (g_gpu.hoistFree[i]->get_width() == r.w && g_gpu.hoistFree[i]->get_height() == r.h) { img = g_gpu.hoistFree[i]; g_gpu.hoistFree[i] = g_gpu.hoistFree.back(); g_gpu.hoistFree.pop_back(); break; }
+                        if (g_gpu.hoistFree[i]->get_width() == r.w * rtNativeFactor(r) && g_gpu.hoistFree[i]->get_height() == r.h * rtNativeFactor(r)) { img = g_gpu.hoistFree[i]; g_gpu.hoistFree[i] = g_gpu.hoistFree.back(); g_gpu.hoistFree.pop_back(); break; }
                     runRtDecode(*cmd, dev, f, r, &img);
                     g_gpu.decTexels += uint64_t(r.w) * r.h;
                     hoistImg[d.rt] = img; ++k; ++g_gpu.decHoisted;

@@ -28,16 +28,17 @@ layout(location = 0, index = 1) out vec4 outBlend;   // dual-source: alpha = As 
 
 ivec2 wrapT(ivec2 t)
 {
-    ivec2 size = ivec2(pc.texInfo.xy);
+    int nat = max(pc.misc.x, 1);   // [rtnative] texel coordinates are in native texels: the GS sizes and region bounds scale
+    ivec2 size = ivec2(pc.texInfo.xy) * nat;
     int wms = pc.fA.z & 3, wmt = (pc.fA.z >> 2) & 3;
     if (wms == 0) t.x = t.x & (size.x - 1);
     else if (wms == 1) t.x = clamp(t.x, 0, size.x - 1);
-    else if (wms == 2) t.x = clamp(t.x, pc.fB.x, pc.fB.y);
-    else t.x = (t.x & pc.fB.x) | pc.fB.y;
+    else if (wms == 2) t.x = clamp(t.x, pc.fB.x * nat, pc.fB.y * nat + nat - 1);
+    else t.x = ((t.x / nat & pc.fB.x) | pc.fB.y) * nat + (t.x % nat);
     if (wmt == 0) t.y = t.y & (size.y - 1);
     else if (wmt == 1) t.y = clamp(t.y, 0, size.y - 1);
-    else if (wmt == 2) t.y = clamp(t.y, pc.fB.z, pc.fB.w);
-    else t.y = (t.y & pc.fB.z) | pc.fB.w;
+    else if (wmt == 2) t.y = clamp(t.y, pc.fB.z * nat, pc.fB.w * nat + nat - 1);
+    else t.y = ((t.y / nat & pc.fB.z) | pc.fB.w) * nat + (t.y % nat);
     return clamp(t, ivec2(0), size - 1);
 }
 vec4 fetchT(ivec2 t) { return texelFetch(uTex, wrapT(t), 0); }
@@ -61,12 +62,14 @@ void main()
     if ((flags & 1) != 0)
     {
         vec2 uv = ((flags & 2) != 0) ? vTex.xy : (vTex.xy / vTex.z) * pc.texInfo.xy;
+        float natf = float(max(pc.misc.x, 1)); uv *= natf;   // [rtnative] into native texels
+        vec4 rectN = vRect * natf;
         // [spriterect] the whole bilinear footprint (uv - 0.5 .. uv + 0.5) stays inside the primitive's own texels: a quad whose v runs
         // 0.5..64.5 over 64 rows samples p = v - 0.5 up to 63.75 at render scale 2 -- 75 % of row 64, which REPEAT wraps to row 0
         // (the HUD plate's light top edge showed as a 1-px line under the ki gauge). Clamp uv to [rmin, rmax - 1].
-        if (vRect.x >= 0.0 && (flags & (32768 | 8)) != 0) uv = min(max(uv, vRect.xy), max(vRect.zw - 1.0, vRect.xy));
+        if (vRect.x >= 0.0 && (flags & (32768 | 8)) != 0) uv = min(max(uv, rectN.xy), max(rectN.zw - 1.0, rectN.xy));
         vec4 ct;
-        if ((flags & 32768) != 0) ct = texture(uTex, uv / pc.texInfo.xy);   // [hwfilter] plain REPEAT/CLAMP bilinear through the sampler: hardware samples texel index uv - 0.5 at coordinate uv / size, the GS convention
+        if ((flags & 32768) != 0) ct = texture(uTex, uv / (pc.texInfo.xy * natf));   // [hwfilter] plain REPEAT/CLAMP bilinear through the sampler: hardware samples texel index uv - 0.5 at coordinate uv / size, the GS convention
         else if ((flags & 8) != 0)
         {   // bilinear, GS convention: the sample point is uv - 0.5
             vec2 p = uv - 0.5;

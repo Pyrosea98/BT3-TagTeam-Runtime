@@ -70,15 +70,16 @@ ivec2 rtPixel(uint a) { return rtPixelL(a, false); }
 #ifdef FROM_VRAM
 uint rtDword(uint a) { return uVram.w[(a & 0x3FFFFFu) >> 2]; }
 #else
+ivec2 gSub = ivec2(0);   // [rtnative] this output texel's sub-position inside its GS texel (0 at GS res)
 uint rtDword(uint a)
 {
     ivec2 p = rtPixel(a & ~3u);
     if (p.x < 0) return 0u;
-    ivec2 sp = p * int(pc.src.w);
+    ivec2 sp = p * int(pc.src.w) + gSub;
     uint d = packUnorm4x8(texelFetch(uSrc, sp, 0));
     if ((pc.clut.w & 2u) != 0u)
     {   // depth buffer: the Z24 value from the depth image (Z32 layout), the top byte from the colour target (CT32 layout)
-        ivec2 zp = rtPixelL(a & ~3u, true) * int(pc.src.w);
+        ivec2 zp = rtPixelL(a & ~3u, true) * int(pc.src.w) + gSub;
         float z = texelFetch(uDepth, zp, 0).r;
         uint zi = uint(clamp(z, 0.0, 1.0) * 16777216.0 + 0.5) & 0xFFFFFFu;
         d = (d & 0xFF000000u) | zi;
@@ -105,7 +106,11 @@ uint clutEntry(uint i)
 
 void main()
 {
-    uint x = uint(gl_FragCoord.x), y = uint(gl_FragCoord.y);
+    uint nat = max(pc.tex.w, 1u);   // [rtnative] the output is nat x the GS texture size; each GS texel maps to the target pixel's nat x nat sub-pixels
+    uint x = uint(gl_FragCoord.x) / nat, y = uint(gl_FragCoord.y) / nat;
+#ifndef FROM_VRAM
+    gSub = ivec2(int(uint(gl_FragCoord.x) % nat), int(uint(gl_FragCoord.y) % nat));
+#endif
     uint tbp = pc.tex.x, tbw = pc.tex.y, psm = pc.tex.z;
     uint csaOff = (psm == 20u || psm == 36u || psm == 44u) ? (pc.clut.z & 15u) * 16u : 0u;
     uint v;
