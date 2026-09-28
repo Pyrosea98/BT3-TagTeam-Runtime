@@ -396,6 +396,7 @@ namespace seamgs
         bool g_forceCpuDecode = false;   // [gpudecode] cpuTargetOk: decode this one on the CPU regardless of the threshold
         bool g_texDirty = true; int32_t g_curTex = -1; uint32_t g_curTexW = 0, g_curTexH = 0;
         uint64_t g_kickCount = 0, g_hostSkipChecks = 0, g_hostSkipMismatch = 0;   // [hostskip] verify mode (PS2X_SEAMGS_HOSTSKIP=2)
+        uint64_t g_lineKicks = 0;   // [lines] line-primitive kicks drawn as quads
         const int g_hostSkipMode = [](){ const char *v = std::getenv("PS2X_SEAMGS_HOSTSKIP"); return v && v[0] ? std::atoi(v) : 1; }();   // 0 off, 1 on, 2 verify (both paths, compare)
         // [fxpkt] PS2X_SEAMVK_PKTPROGS=<mask>: host programs drawn from their host-transformed packet vertices (the VU1 program's exact
         // output incl. its clipper's fans) instead of the GPU vertex program. Default: the effects program (bit 1) -- its shadow
@@ -1597,7 +1598,22 @@ namespace seamgs
                         g_rectPad[0] = g_rectPad[1] = 0u;
                         break;
                     }
-                    default: break;   // points and lines: not drawn (none in BT3's streams)
+                    case 1: case 2:
+                    {   // [lines] LINE / LINESTRIP as a 1-GS-px-wide quad along the segment (the GS draws lines one pixel wide, no
+                        // antialiasing). BT3 uses them for the Dragon History map's cursor box; vertex colours as given (iip per PRIM).
+                        const GsVert &a = g_vq[0], &b = g_vq[1];
+                        const float dx = (float)(int32_t)b.x - (float)(int32_t)a.x, dy = (float)(int32_t)b.y - (float)(int32_t)a.y;
+                        const float len = std::sqrt(dx * dx + dy * dy);
+                        float nx = 0.0f, ny = 8.0f;   // half a GS pixel in 1/16 px units, perpendicular to the segment
+                        if (len > 0.0f) { nx = -dy / len * 8.0f; ny = dx / len * 8.0f; }
+                        auto off = [](const GsVert &v, float ox, float oy) { GsVert o = v; o.x = (uint32_t)std::max(0.0f, (float)(int32_t)v.x + ox); o.y = (uint32_t)std::max(0.0f, (float)(int32_t)v.y + oy); return o; };
+                        GsVert a0 = off(a, nx, ny), a1 = off(a, -nx, -ny), b0 = off(b, nx, ny), b1 = off(b, -nx, -ny);
+                        emitTriangle(&a0, &b0, &a1, s);
+                        emitTriangle(&b0, &b1, &a1, s);
+                        ++g_lineKicks;
+                        break;
+                    }
+                    default: break;   // points: not drawn (none in BT3's streams)
                     }
                 }
             }

@@ -1694,6 +1694,16 @@ namespace seamvk
         // ---- compose the CRTC circuits into the output frame ----
         const uint32_t en1 = (uint32_t)(priv.pmode & 1u), en2 = (uint32_t)((priv.pmode >> 1) & 1u);
         const uint32_t mmod = (uint32_t)((priv.pmode >> 5) & 1u), alp = (uint32_t)((priv.pmode >> 8) & 0xFFu);
+        {   // [crtclog] PS2X_SEAMVK_CRTCLOG=1: the CRTC state whenever it changes (which buffers the two circuits show, and how)
+            static const bool s_log = [](){ const char *v = std::getenv("PS2X_SEAMVK_CRTCLOG"); return v && v[0] == '1'; }();
+            static uint64_t s_last[5] = {};
+            const uint64_t cur[5] = { priv.pmode, priv.dispfb1, priv.display1, priv.dispfb2, priv.display2 };
+            if (s_log && std::memcmp(cur, s_last, sizeof(cur)) != 0)
+            {
+                std::memcpy(s_last, cur, sizeof(cur));
+                std::fprintf(stderr, "[crtclog] gframe %llu pmode %04llx dispfb1 %08llx display1 %016llx dispfb2 %08llx display2 %016llx\n", (unsigned long long)f.gameFrame, (unsigned long long)priv.pmode, (unsigned long long)priv.dispfb1, (unsigned long long)priv.display1, (unsigned long long)priv.dispfb2, (unsigned long long)priv.display2);
+            }
+        }
         for (auto &kv : g_gpu.targets) if (kv.second.img && kv.second.layout != VK_IMAGE_LAYOUT_UNDEFINED) toSampled(*cmd, kv.second);
         cmd->image_barrier(*g_gpu.out, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
