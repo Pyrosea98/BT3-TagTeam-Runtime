@@ -67,7 +67,9 @@ void main()
         // [spriterect] the whole bilinear footprint (uv - 0.5 .. uv + 0.5) stays inside the primitive's own texels: a quad whose v runs
         // 0.5..64.5 over 64 rows samples p = v - 0.5 up to 63.75 at render scale 2 -- 75 % of row 64, which REPEAT wraps to row 0
         // (the HUD plate's light top edge showed as a 1-px line under the ki gauge). Clamp uv to [rmin, rmax - 1].
-        if (vRect.x >= 0.0 && (flags & (32768 | 8)) != 0) uv = min(max(uv, rectN.xy), max(rectN.zw - 1.0, rectN.xy));
+        // The margin is one GS texel = natf native texels: a 4x replacement clamped by one NATIVE texel still reached the row past
+        // the art and wrapped (the grey line under the HUD came back with the texture pack).
+        if (vRect.x >= 0.0 && (flags & (32768 | 8)) != 0) uv = min(max(uv, rectN.xy), max(rectN.zw - natf, rectN.xy));
         vec4 ct;
         if ((flags & 32768) != 0) ct = texture(uTex, uv / (pc.texInfo.xy * natf));   // [hwfilter] plain REPEAT/CLAMP bilinear through the sampler: hardware samples texel index uv - 0.5 at coordinate uv / size, the GS convention
         else if ((flags & 8) != 0)
