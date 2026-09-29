@@ -630,13 +630,12 @@ namespace ps2_stubs
     void sceSifResetIop(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         // [r3000] Bring up the IOPRP resident modules (CDVDMAN/CDVDFSV) natively, in place of the
-        // HLE. On by default (opt out with PS2X_IOP_IOPRP=0).
+        // HLE. On by default (opt out with PS2X_IOP_IOPRP=0). The path is resolved, not assumed:
+        // data/IRX/ is the disc layout, the CD root is the flat one.
         if (const char *e = std::getenv("PS2X_IOP_IOPRP"); !(e && e[0] == '0'))
         {
-            std::string dir = "data/IRX/";
-            if (const char *d = std::getenv("PS2X_IOP_DIR"); d && d[0]) dir = d;
-            runtime->loadAndRunIopModule((dir + "CDVDMAN.IRX").c_str());
-            runtime->loadAndRunIopModule((dir + "CDVDFSV.IRX").c_str());
+            runtime->loadAndRunIopModule(PS2Runtime::resolveIopModulePath("CDVDMAN.IRX").c_str());
+            runtime->loadAndRunIopModule(PS2Runtime::resolveIopModulePath("CDVDFSV.IRX").c_str());
         }
         setReturnS32(ctx, 1);
     }

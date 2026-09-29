@@ -507,15 +507,27 @@ namespace ps2_stubs
 
     static void mcTrace(const char *fmt, ...)
     {
+        // [mclog] PS2X_MCLOG=1 traces the whole save conversation, not just GetDir:
+        // the freeze we are chasing could be a stall in Open/Read/GetInfo/Write, so
+        // every entry point logs. The cap is per-process and was raised from 300
+        // because the save-load conversation alone exceeds that; PS2X_MCLOGMAX
+        // overrides it (0 = unlimited).
         static const bool s_ml = [](){ const char *v = std::getenv("PS2X_MCLOG"); return v && v[0] && v[0] != 0; }();
+        static const int s_max = [](){
+            const char *m = std::getenv("PS2X_MCLOGMAX");
+            if (m && m[0] && m[0] != 0) return std::atoi(m);
+            return 4000;
+        }();
         static int s_n = 0;
-        if (!s_ml || s_n >= 300) return;
+        if (!s_ml) return;
+        if (s_max > 0 && s_n >= s_max) return;
         ++s_n;
         va_list ap; va_start(ap, fmt);
         std::fprintf(stderr, "[mclog] ");
         std::vfprintf(stderr, fmt, ap);
         std::fprintf(stderr, "\n");
         va_end(ap);
+        std::fflush(stderr);
     }
 
     void sceMcChangeThreadPriority(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -674,6 +686,7 @@ namespace ps2_stubs
     {
         const int32_t port = static_cast<int32_t>(getRegU32(ctx, 4));
         const int32_t slot = static_cast<int32_t>(getRegU32(ctx, 5));
+        mcTrace("Format port=%d slot=%d  <-- BORRA la card", port, slot);
 
         int32_t result = kMcResultNoEntry;
         {
@@ -708,6 +721,7 @@ namespace ps2_stubs
         // EE ABI passes args 5-8 in $t0-$t3 (registers 8-11), NOT on the stack.
         const int32_t maxEntries = static_cast<int32_t>(getRegU32(ctx, 8));
         const uint32_t tableAddr = getRegU32(ctx, 9);
+        mcTrace("GetDir ENTER port=%d slot=%d path='%s' maxent=%d table=0x%x", port, slot, rawPath.c_str(), maxEntries, tableAddr);
 
         std::vector<SceMcTblGetDir> entries;
         int32_t result = kMcResultNoEntry;
@@ -849,22 +863,14 @@ namespace ps2_stubs
 
             setMcCommandResultLocked(kMcCmdGetDir, result);
         }
-        // [mclog] (PS2X_MCLOG): the save-detection conversation — what the game asks
-        // for and what we answer. Continue-grayed-with-valid-save debugging.
-        {
-            static const bool s_ml = [](){ const char *v = std::getenv("PS2X_MCLOG"); return v && v[0] && v[0] != '0'; }();
-            static int s_n = 0;
-            if (s_ml && s_n < 80)
-            {
-                ++s_n;
-                std::fprintf(stderr, "[mclog] GetDir port=%d slot=%d path='%s' maxent=%d table=0x%x -> result=%d entries=%zu\n",
-                             port, slot, rawPath.c_str(), maxEntries, tableAddr, result, entries.size());
-                for (size_t e = 0; e < entries.size() && e < 4; ++e)
-                    std::fprintf(stderr, "[mclog]   entry[%zu]='%s' attr=0x%x size=%u\n",
-                                 e, reinterpret_cast<const char *>(entries[e].EntryName),
-                                 entries[e].AttrFile, entries[e].FileSizeByte);
-            }
-        }
+        // [mclog] The EXIT line matters as much as the ENTER one: if the game hangs
+        // while loading a real save, the last ENTER without a matching EXIT names the
+        // call that never came back.
+        mcTrace("GetDir EXIT  -> result=%d entries=%zu", result, entries.size());
+        for (size_t e = 0; e < entries.size() && e < 4; ++e)
+            mcTrace("  entry[%zu]='%s' attr=0x%x size=%u", e,
+                    reinterpret_cast<const char *>(entries[e].EntryName),
+                    entries[e].AttrFile, entries[e].FileSizeByte);
         setReturnS32(ctx, 0);
     }
 
@@ -880,6 +886,7 @@ namespace ps2_stubs
         const uint32_t typePtr = getRegU32(ctx, 6);
         const uint32_t freePtr = getRegU32(ctx, 7);
         const uint32_t formatPtr = getRegU32(ctx, 8); // arg 5 in $t0 (EE ABI, not stack)
+        mcTrace("GetInfo port=%d slot=%d", port, slot);
 
         int32_t cardType = 0;
         int32_t freeBlocks = 0;
@@ -1079,6 +1086,7 @@ namespace ps2_stubs
         const uint32_t dstAddr = getRegU32(ctx, 5);
         const int32_t size = static_cast<int32_t>(getRegU32(ctx, 6));
         uint8_t *dst = (size > 0) ? getMemPtr(rdram, dstAddr) : nullptr;
+        mcTrace("Read fd=%d dst=0x%x size=%d (dst=%p)", fd, dstAddr, size, (void *)dst);
 
         int32_t result = kMcResultNoEntry;
         {
@@ -1288,6 +1296,7 @@ namespace ps2_stubs
         const uint32_t srcAddr = getRegU32(ctx, 5);
         const int32_t size = static_cast<int32_t>(getRegU32(ctx, 6));
         const uint8_t *src = (size > 0) ? getConstMemPtr(rdram, srcAddr) : nullptr;
+        mcTrace("Write fd=%d src=0x%x size=%d (src=%p)", fd, srcAddr, size, (const void *)src);
 
         int32_t result = kMcResultNoEntry;
         {

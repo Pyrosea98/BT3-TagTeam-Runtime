@@ -10,6 +10,8 @@
 #include "runtime/ps2_gs_gpu_renderer.h"
 #include "runtime/ps2_gs_pgs.h"   // [pgs]
 #include "runtime/ps2_seamvk.h"   // [standalone] seamvk::onSwap
+#include "runtime/ps2x_perf_status.h"   // [perf] the shared fps / frame-time / GPU-busy readout
+#include "runtime/ps2x_dueldump.h"   // [dueldump] texture-sample capture (PS2X_DUELDUMP=1)
 
 #include <cstdlib>
 #include <cstdio>
@@ -2213,6 +2215,10 @@ namespace
         {
             last = now;
             double tot = 0; for (int i = 0; i < GS_N; ++i) tot += g_gsAcc[i];
+            // [perf] In split mode the whole-frame [gputime] query is replaced by these class queries,
+            // so the shared readout used to read a flat 0 -- indistinguishable from an idle GPU. Hand
+            // it the sum of the classes instead; it is the same work, just attributed.
+            ps2x::PerfAddGpuBusyNs(static_cast<unsigned long long>(tot * 1.0e6), 1, 0);
             std::fprintf(stderr, "[gpusplit] gpu ms/s total %.1f:", tot / dt);
             for (int i = 0; i < GS_N; ++i) std::fprintf(stderr, " %s %.1f", kGsName[i], g_gsAcc[i] / dt);
             std::fprintf(stderr, " | calls/s %.0f switches/call %.1f | shaded Mfrag/s %.1f (%.2f Mfrag/call)\n", g_gsFrames / dt,
@@ -2236,10 +2242,20 @@ namespace
 // then shows directly whether a machine is GPU-bound (gpu_ms per game frame vs the 33 ms
 // budget) instead of inferring it from render-thread stalls. Ring of 4 queries, results read
 // 3 calls later without blocking. PS2X_GPUTIME=0 disables.
+//
+// What this is NOT, because it gets mistaken for it constantly: it is not a GPU utilisation
+// percentage and it does not cover the whole frame. The queries span only renderAndGetTextureId, so
+// compositing, the present/swap and any upload outside those spans are uncounted -- against a vendor
+// 3D-engine counter this therefore reads LOW, and it is a lower bound, not the same measurement. It
+// is also normalised per GAME frame while Task Manager reports per wall-clock second, so the two
+// only line up when the frame rates agree. That is why the [fps] line also prints gpu_busy_pct,
+// divided by wall_ms, and prints its sample coverage so a window that dropped queries is visible
+// rather than silently optimistic.
 namespace
 {
     unsigned int g_gpqIds[4] = {0u, 0u, 0u, 0u}; bool g_gpqIssued[4] = {false, false, false, false}; int g_gpqSlot = 0; bool g_gpqInit = false;
     std::atomic<uint64_t> g_gpuNsAccum{0}; std::atomic<uint64_t> g_gpuCallsAccum{0};
+    std::atomic<uint64_t> g_gpuDropped{0};
     bool gpuTimeOn() { static const bool s = [](){ const char *v = std::getenv("PS2X_GPUTIME"); return !(v && v[0] == '0'); }(); return s; }
     void gpuTimeBegin()
     {
@@ -2251,8 +2267,26 @@ namespace
         if (g_gpqIssued[old])
         {
             unsigned int avail = 0u; glGetQueryObjectuiv(g_gpqIds[old], 0x8867u /*GL_QUERY_RESULT_AVAILABLE*/, &avail);
-            unsigned int ns = 0u; glGetQueryObjectuiv(g_gpqIds[old], 0x8866u /*GL_QUERY_RESULT*/, &ns);   // blocks only if the 3-call-old result is still pending
-            g_gpuNsAccum.fetch_add(ns, std::memory_order_relaxed); g_gpuCallsAccum.fetch_add(1u, std::memory_order_relaxed);
+            // Believe the answer. This used to fetch the availability flag into a local, ignore it,
+            // and read GL_QUERY_RESULT anyway -- and that read is a blocking query BY SPEC, so every
+            // slot whose result had not landed yet stalled the GL thread inside the frame. That is a
+            // hitch source in its own right and a distortion of the number being measured. Drop the
+            // sample instead of waiting for it; g_gpuDropped says how much of the window was lost.
+            if (avail)
+            {
+                unsigned int ns = 0u; glGetQueryObjectuiv(g_gpqIds[old], 0x8866u /*GL_QUERY_RESULT*/, &ns);
+                g_gpuNsAccum.fetch_add(ns, std::memory_order_relaxed); g_gpuCallsAccum.fetch_add(1u, std::memory_order_relaxed);
+                // [perf] Feed the shared readout too, not just the [fps] line's own accumulator: the
+                // overlay reads ps2x::GetPerfStatus() and has no access to these statics. The landed
+                // count matters as much as the time: a window where the guest issued no draw list
+                // collects no samples at all, and that has to be distinguishable from an idle GPU.
+                ps2x::PerfAddGpuBusyNs(ns, 1, 0);
+            }
+            else
+            {
+                g_gpuDropped.fetch_add(1u, std::memory_order_relaxed);
+                ps2x::PerfAddGpuBusyNs(0, 0, 1);
+            }
             g_gpqIssued[old] = false;
         }
         glBeginQuery(0x88BFu /*GL_TIME_ELAPSED*/, g_gpqIds[old]);
@@ -2265,10 +2299,13 @@ namespace
         g_gpqIssued[g_gpqSlot] = true; g_gpqSlot = (g_gpqSlot + 1) & 3;
     }
 }
-extern "C" double ps2xGpuMsTake(uint64_t *calls)
-{   // [gputime] for the [fps] line: GPU ms accumulated since the last take, and how many calls it covers
+extern "C" double ps2xGpuMsTake(uint64_t *calls, uint64_t *dropped)
+{   // [gputime] for the [fps] line: GPU ms accumulated since the last take, how many calls it
+    // covers, and how many samples were dropped because the result had not landed in time.
     const uint64_t ns = g_gpuNsAccum.exchange(0u); const uint64_t c = g_gpuCallsAccum.exchange(0u);
+    const uint64_t d = g_gpuDropped.exchange(0u);
     if (calls) *calls = c;
+    if (dropped) *dropped = d;
     return (double)ns / 1.0e6;
 }
 extern thread_local bool g_stageWrites;   // ps2_gs_gpu.cpp: staging pass captures writes for the guest
@@ -4783,8 +4820,13 @@ void decPoolWorker()
         int subW = 0; std::vector<uint8_t> rgba;
         job->ras->decodeSnapshot(*job, scratch.data(), scratch.size(), subW, rgba);
         int upW = subW, upH = job->texH, upFmt = 0, upScale = 1; float upAlpha = 1.0f;
-        GSRasterizer::applyTexReplacement(scratch.data(), job->tex0, job->clut, job->clutKey, job->texa, job->texKey, subW, job->texH,
-                                          job->subDxW == 0 && !job->rawAlphaDec, rgba, upW, upH, upFmt, upScale, upAlpha);
+                GSRasterizer::applyTexReplacement(scratch.data(), job->tex0, job->clut, job->clutKey, job->texa, job->texKey, subW, job->texH,
+                                                   job->subDxW == 0 && !job->rawAlphaDec, rgba, upW, upH, upFmt, upScale, upAlpha);
+                // [dueldump] total capture: record the sample + offer the decode for a PNG
+                ps2x_dueldump::offerTextureSample(scratch.data(), job->tex0.tbp0, job->tex0.tbw, job->tex0.psm,
+                    job->tex0.tw, job->tex0.th, job->clut, job->texa.ta0, job->texa.aem, job->texa.ta1,
+                    job->tex0.cbp, job->tex0.csa, job->tex0.csm, job->tex0.cpsm, job->texKey, subW, job->texH,
+                    rgba.data(), "pool");
         job->rend->putTexture(job->texKey, std::move(rgba), upW, upH, job->pageLo, job->pageHi, upFmt, upScale, upAlpha, (int64_t)job->seq);
         g_decPool.nsDecode.fetch_add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(), std::memory_order_relaxed);
         g_decPool.nJobs.fetch_add(1u, std::memory_order_relaxed);
@@ -4966,7 +5008,7 @@ void GsGpuRenderer::putTexture(uint64_t key, std::vector<uint8_t> rgba, int w, i
     // [texblackrace] g_texAlphaBinary is filled on the GL thread (see the s_ups upload pass in
     // renderAndGetTextureId), NOT here: putTexture runs on decode/worker threads and the draw
     // loop reads it WITHOUT m_mtx (PS2X_DATE, default on). A concurrent rehash crashed the map.
-    // [texcache] Write-back lives in GSRasterizer::applyTexReplacement (it knows whether the pack
+    // Write-back lives in GSRasterizer::applyTexReplacement (it knows whether the pack
     // replacement is final vs still pending). See the comment there.
 }
 

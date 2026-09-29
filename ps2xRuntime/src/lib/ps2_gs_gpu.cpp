@@ -540,28 +540,66 @@ static void ps2xSubpixTally(float x, float y)
                      a, nFrac.load(), nHalfY.load());
 }
 
+// [vram-dump] Declared here rather than in a header because it is a diagnostic entry point with
+// exactly one caller (the main-menu lifecycle dumper in ps2_runtime.cpp), and putting it in
+// ps2_gs_gpu.h would make the whole GS API depend on "someone might want a dump".
+bool ps2xVramDumpTo(const char *path);   // in GS::init's translation unit
+
 void GS::init(uint8_t *vram, uint32_t vramSize, GSRegisters *privRegs)
 {
     m_vram = vram;
     m_vramSize = vramSize;
     m_privRegs = privRegs;
-    if (std::getenv("PS2X_VRAM_DUMP") && !g_vramDumpPtr)
+    if (const char *dumpPath = std::getenv("PS2X_VRAM_DUMP"))
     {
-        g_vramDumpPtr = vram;
-        std::fprintf(stderr, "[vram-dump] armed (vram=%p)\n", (void *)vram);
+        if (dumpPath[0] && dumpPath[0] != '0' && !g_vramDumpPtr)
+        {
+            g_vramDumpPtr = vram;
+            std::fprintf(stderr, "[vram-dump] armed (vram=%p, %u bytes)\n", (void *)vram, vramSize);
+        }
         std::atexit([]() {
-            if (!g_vramDumpPtr)
+            // [vram-dump] The path used to be a hardcoded /home/z3/Desktop/bt3/work/vram.bin, which
+            // exists on exactly one machine and nowhere else, so the dump silently did nothing
+            // everywhere else -- fopen failing was never reported. Take it from the env var and
+            // say so when it cannot be written.
+            const char *p = std::getenv("PS2X_VRAM_DUMP");
+            if (!g_vramDumpPtr || !p || !p[0] || p[0] == '0')
                 return;
-            FILE *vf = std::fopen("/home/z3/Desktop/bt3/work/vram.bin", "wb");
-            if (vf)
+            if (FILE *vf = std::fopen(p, "wb"))
             {
                 std::fwrite(g_vramDumpPtr, 1, 4u * 1024u * 1024u, vf);
                 std::fclose(vf);
-                std::fprintf(stderr, "[vram-dump] wrote 4MB VRAM at exit\n");
+                std::fprintf(stderr, "[vram-dump] wrote 4MB VRAM to %s\n", p);
+            }
+            else
+            {
+                std::fprintf(stderr, "[vram-dump] CANNOT write %s\n", p);
             }
         });
     }
     reset();
+}
+
+// [vram-dump] Write VRAM to `path` right now, independent of process exit.
+//
+// The exit hook is not enough for the main-menu work: the plates' icons are assembled, colour-
+// converted and uploaded by the game, so the pixels only exist in VRAM while the menu is up, and
+// quitting the process to reach them means giving up the moment. The caller (the main-menu
+// lifecycle dumper) decides WHEN, from the gate.
+bool ps2xVramDumpTo(const char *path)
+{
+    if (!g_vramDumpPtr || !path || !path[0])
+        return false;
+    FILE *f = std::fopen(path, "wb");
+    if (!f)
+    {
+        std::fprintf(stderr, "[vram-dump] CANNOT write %s\n", path);
+        return false;
+    }
+    std::fwrite(g_vramDumpPtr, 1, 4u * 1024u * 1024u, f);
+    std::fclose(f);
+    std::fprintf(stderr, "[vram-dump] wrote 4MB VRAM to %s\n", path);
+    return true;
 }
 
 void GS::reset()

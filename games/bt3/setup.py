@@ -48,16 +48,17 @@ ELF_SHA256 = "811188ba9b416500d921cd4d9514df0cbf42f3a41a99cf5aac5a3da37171bf99"
 # job count is auto-sized from CPU/RAM (see plan_build), and 16 GB lands back on this value.
 DEFAULT_JOBS = "3"
 
+# Name of the deployed executable (and therefore the process name on Windows). It carries
+# spaces and a hyphen on purpose, so every script that touches it has to quote it. Keep it
+# byte-identical to the kProductName title in ps2xRuntime/src/main.cpp.
+PRODUCT_NAME = "Dragon Ball Z Budokai Tenkaichi 3 - Recompiled"
+
 # Pinned tool versions (stage 2 installs exactly these; keep in sync with the release builds).
 CMAKE_MIN = (3, 21)
-QT_VERSION = "6.5.3"
-# Preferred Windows kit. 6.5.x only ships win64_msvc2019_64 (no msvc2022 kit), so that is the pin;
-# _pick_qt_kit() falls back to whatever aqt offers for the configured version.
-QT_KIT_WINDOWS = "win64_msvc2019_64"
 MESA_LAVAPIPE_VERSION = "26.2.0"
 DEPS_7ZR_URL = "https://www.7-zip.org/a/7zr.exe"
 
-# Linux package groups per package manager (stage 2). Split so a missing FFmpeg or Qt can be
+# Linux package groups per package manager (stage 2). Split so a missing FFmpeg can be
 # installed without re-running the whole toolchain install; "extras" are optional (a failure only
 # warns). Package names follow each distro family.
 LINUX_GROUPS: dict[str, dict[str, str]] = {
@@ -66,7 +67,6 @@ LINUX_GROUPS: dict[str, dict[str, str]] = {
                      "libxi-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev libglu1-mesa-dev "
                      "libarchive-tools p7zip-full",
         "ffmpeg": "libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev",
-        "qt": "qt6-base-dev",
         "extras": "ccache mold",
     },
     "dnf": {   # Fedora, RHEL 8+, CentOS Stream, Nobara
@@ -74,7 +74,6 @@ LINUX_GROUPS: dict[str, dict[str, str]] = {
                      "libXrandr-devel libXi-devel libXcursor-devel libXinerama-devel mesa-libGL-devel "
                      "mesa-libGLU-devel libarchive p7zip",
         "ffmpeg": "ffmpeg-devel",   # needs RPM Fusion on Fedora
-        "qt": "qt6-qtbase-devel",
         "extras": "ccache mold",
     },
     "yum": {   # older RHEL/CentOS (dnf preferred when present)
@@ -82,14 +81,12 @@ LINUX_GROUPS: dict[str, dict[str, str]] = {
                      "libXi-devel libXcursor-devel libXinerama-devel mesa-libGL-devel "
                      "mesa-libGLU-devel libarchive",
         "ffmpeg": "ffmpeg-devel",
-        "qt": "qt6-qtbase-devel",
         "extras": "ccache",
     },
     "pacman": {   # Arch, Manjaro, EndeavourOS
         "toolchain": "clang cmake ninja pkgconf git libx11 libxrandr libxi libxcursor "
                      "libxinerama mesa glu libarchive p7zip",
         "ffmpeg": "ffmpeg",
-        "qt": "qt6-base",
         "extras": "ccache mold",
     },
     "zypper": {   # openSUSE Tumbleweed/Leap
@@ -97,28 +94,24 @@ LINUX_GROUPS: dict[str, dict[str, str]] = {
                      "libXi-devel libXcursor-devel libXinerama-devel Mesa-libGL-devel glu-devel "
                      "libarchive p7zip",
         "ffmpeg": "ffmpeg-devel",   # may need the Packman repo
-        "qt": "qt6-base-devel",
         "extras": "ccache mold",
     },
     "apk": {   # Alpine (musl; best effort)
         "toolchain": "clang cmake ninja pkgconf git libx11-dev libxrandr-dev libxi-dev "
                      "libxcursor-dev libxinerama-dev mesa-dev glu-dev libarchive-tools",
         "ffmpeg": "ffmpeg-dev",
-        "qt": "qt6-qtbase-dev",
         "extras": "ccache mold",
     },
     "xbps": {   # Void
         "toolchain": "clang cmake ninja pkgconf git libX11-devel libXrandr-devel libXi-devel "
                      "libXcursor-devel libXinerama-devel MesaLib-devel glu-devel libarchive-tools",
         "ffmpeg": "ffmpeg-devel",
-        "qt": "qt6-base-devel",
         "extras": "ccache mold",
     },
     "eopkg": {   # Solus
         "toolchain": "clang cmake ninja pkgconf git libx11-devel libxrandr-devel libxi-devel "
                      "libxcursor-devel libxinerama-devel mesa-devel glu-devel libarchive",
         "ffmpeg": "ffmpeg-devel",
-        "qt": "qt6-base-devel",
         "extras": "ccache",
     },
 }
@@ -127,7 +120,7 @@ LINUX_GROUPS: dict[str, dict[str, str]] = {
 GENTOO_HINT = ("emerge -a sys-devel/clang dev-build/cmake dev-build/ninja dev-util/pkgconf "
                "dev-vcs/git x11-libs/libX11 x11-libs/libXrandr x11-libs/libXi x11-libs/libXcursor "
                "x11-libs/libXinerama media-libs/mesa media-libs/glu app-arch/libarchive "
-               "media-libs/ffmpeg dev-qt/qtbase")
+               "media-libs/ffmpeg")
 
 # Stage registry: name -> (number, callable). Order matters.
 STAGES: list[tuple[str, str]] = [
@@ -487,39 +480,6 @@ def _distro_pretty() -> str:
     return ""
 
 
-def _qt_prefix() -> Optional[Path]:
-    for env in ("QT_ROOT", "QTDIR", "CMAKE_PREFIX_PATH"):
-        v = os.environ.get(env)
-        if not v:
-            continue
-        for candidate in v.split(os.pathsep):
-            p = Path(candidate)
-            if (p / "lib" / "cmake" / "Qt6").is_dir() or (p / "bin" / "qmake6").exists():
-                return p
-    candidates = [
-        ROOT / "build" / "qt" / QT_VERSION / QT_KIT_WINDOWS,
-        Path.home() / "Qt" / QT_VERSION / QT_KIT_WINDOWS,
-    ]
-    # Any kit already unpacked under build/qt/<ver>/<kit> counts, but only on Windows: those kits are
-    # MSVC builds and unusable on Linux/macOS.
-    if os.name == "nt" and (ROOT / "build" / "qt").is_dir():
-        candidates += sorted((ROOT / "build" / "qt").glob(f"*/{QT_KIT_WINDOWS}"))
-        candidates += sorted((ROOT / "build" / "qt").glob("*/*"))
-    if sys.platform == "darwin":
-        brew = shutil.which("brew")
-        if brew:
-            prefix = run_capture([brew, "--prefix", "qt"]).strip()
-            if prefix:
-                candidates.insert(0, Path(prefix))
-    for c in candidates:
-        if (c / "lib" / "cmake" / "Qt6").is_dir() or (c / "bin" / "qmake6").exists():
-            return c
-    for p in (Path("/usr/lib/cmake/Qt6"), Path("/usr/lib/x86_64-linux-gnu/cmake/Qt6")):
-        if p.is_dir():
-            return p.parent.parent
-    return None
-
-
 def _mesa_dir_present(c: Optional[Path]) -> bool:
     return bool(c) and ((c / "vulkan_lvp.dll").exists() or (c / "lavapipe" / "vulkan_lvp.dll").exists())
 
@@ -674,7 +634,6 @@ class PlatformInfo:
     in_container: bool
     interactive: bool
     tools: dict = field(default_factory=dict)      # name -> description/path/None
-    qt_prefix: Optional[Path] = None
     lavapipe_dir: Optional[Path] = None
     unity_batch: Optional[int] = None              # auto-tune: unity batch, None = CMake default
     use_ccache: bool = False                       # auto-tune: ccache launcher when sccache is absent
@@ -768,8 +727,6 @@ def detect_platform() -> PlatformInfo:
     info.tools["cmake_ok"] = "yes" if (cmv and cmv >= CMAKE_MIN) else "no"
     for name in ("ninja", "git", "clang", "clang-cl", "clang++", "bsdtar", "7z", "pkg-config", "ccache", "mold"):
         info.tools[name] = shutil.which(name)
-    info.qt_prefix = _qt_prefix()
-    info.tools["qt"] = str(info.qt_prefix) if info.qt_prefix else None
     if osname == "windows":
         info.tools["vswhere"] = _vswhere()
         info.tools["msvc"] = "yes" if _msvc_toolset_present() else None
@@ -794,7 +751,7 @@ def print_platform_report(info: PlatformInfo) -> None:
     LOG.info(f"Work dir : {WORK}")
     LOG.info("Tools:")
     for name in ("cmake", "cmake_ok", "ninja", "git", "clang", "clang-cl", "bsdtar", "7z",
-                 "pkg-config", "ccache", "mold", "vswhere", "msvc", "vcvars", "qt"):
+                 "pkg-config", "ccache", "mold", "vswhere", "msvc", "vcvars"):
         if name not in info.tools:
             continue
         value = info.tools[name]
@@ -867,29 +824,6 @@ def _inst_pip(ctx: "Context", module: str) -> None:
     run([sys.executable, "-m", "pip", "install", "--upgrade", module])
 
 
-def _pick_qt_kit() -> str:
-    """The Windows Qt kit aqt actually offers for QT_VERSION. 6.5.x has no msvc2022_64, and a hard pin
-    made the install fail with 'packages [qt_base] were not found'."""
-    archs = run_capture([sys.executable, "-m", "aqt", "list-qt", "windows", "desktop",
-                         "--arch", QT_VERSION]).split()
-    if QT_KIT_WINDOWS in archs:
-        return QT_KIT_WINDOWS
-    for pref in ("win64_msvc2022_64", "win64_msvc2019_64"):
-        if pref in archs:
-            return pref
-    for a in archs:
-        if a.startswith("win64_msvc") and a.endswith("_64"):
-            return a
-    return QT_KIT_WINDOWS
-
-
-def _inst_aqt(ctx: "Context") -> None:
-    kit = _pick_qt_kit()
-    LOG.info(f"  aqt kit: {kit}")
-    run([sys.executable, "-m", "aqt", "install-qt", "windows", "desktop",
-         QT_VERSION, kit, "--outputdir", str(ROOT / "build" / "qt")])
-
-
 def _inst_mesa(ctx: "Context") -> None:
     mesa_dir = ROOT / "build" / "mesa"
     seven = mesa_dir / "7zr.exe"
@@ -930,7 +864,7 @@ def _module_ok(module: str) -> bool:
 
 def _is_store_python() -> bool:
     """True for the Microsoft Store Python (App Execution Alias under WindowsApps). Seen on a user
-    box: `pip show aqtinstall` was OK but `python -m aqt` -> 'No module named aqt'."""
+    box: `pip show <pkg>` was OK but `python -m <pkg>` -> 'No module named <pkg>'.`,"""
     exe = (sys.executable or "").lower()
     return "windowsapps" in exe or "pythonsoftwarefoundation" in exe
 
@@ -962,7 +896,7 @@ def _install_dropped(d: "Dep", archive: Path) -> None:
         raise RuntimeError(f"{d.name} has no drop-in archive; {d.hint}")
     name = archive.name.lower()
     if name.endswith((".exe", ".msi")):
-        # An official installer (Qt): run it interactively, then the caller re-checks the dep.
+        # An official installer: run it interactively, then the caller re-checks the dep.
         run([str(archive)] if name.endswith(".exe") else ["msiexec", "/i", str(archive)])
         return
     if not fnmatch.fnmatch(name, spec.glob.lower()):
@@ -1106,21 +1040,10 @@ def _deps_for_platform(info: PlatformInfo) -> list[Dep]:
                                     BUILD / "tools" / "ninja", "**/ninja.exe")),
             Dep("Python 3", _have("python"), "winget install Python.Python.3.12",
                 lambda ctx: _inst_winget(ctx, "Python.Python.3.12")),
-            Dep("aqtinstall (pip)",
-                lambda i: _module_ok("aqt"),   # honest: `pip show` passes on a broken/Store Python
-                "python -m pip install aqtinstall",
-                lambda ctx: _inst_pip(ctx, "aqtinstall")),
             Dep("pefile (pip)",
                 lambda i: _module_ok("pefile"),
                 "python -m pip install pefile",
                 lambda ctx: _inst_pip(ctx, "pefile")),
-            Dep(f"Qt {QT_VERSION} ({QT_KIT_WINDOWS})",
-                lambda i: bool(i.qt_prefix) or _qt_prefix() is not None,
-                f"aqt install-qt windows desktop {QT_VERSION} {QT_KIT_WINDOWS} --outputdir build/qt",
-                _inst_aqt,
-                droppable=Droppable("https://www.qt.io/download-qt-installer",
-                                    "qt-unified-windows-x64-*-online.exe", "qt-unified-windows*.exe",
-                                    BUILD / "qt", "**/bin/qmake.exe")),
             Dep("Mesa lavapipe (Vulkan fallback)",
                 lambda i: bool(i.lavapipe_dir) or _mesa_dir_present(ROOT / "build" / "mesa" / "x64"),
                 f"download mesa-dist-win {MESA_LAVAPIPE_VERSION} and extract to build/mesa",
@@ -1142,8 +1065,6 @@ def _deps_for_platform(info: PlatformInfo) -> list[Dep]:
             Dep("FFmpeg", lambda i: bool(shutil.which("pkg-config")) and
                 subprocess.run(["pkg-config", "--exists", "libavcodec"], capture_output=True).returncode == 0,
                 "brew install ffmpeg", lambda ctx: _inst_brew(ctx, "ffmpeg")),
-            Dep("Qt 6", lambda i: bool(i.qt_prefix), "brew install qt",
-                lambda ctx: _inst_brew(ctx, "qt")),
         ]
     mgr = info.pkg_mgr or "apt"
     if mgr == "emerge":
@@ -1160,10 +1081,8 @@ def _deps_for_platform(info: PlatformInfo) -> list[Dep]:
             pkg_hint("toolchain"), lambda ctx: _inst_pkg(ctx, "toolchain")),
         Dep("FFmpeg dev libs", lambda i: bool(shutil.which("pkg-config")) and
             subprocess.run(["pkg-config", "--exists", "libavcodec"], capture_output=True).returncode == 0,
-            pkg_hint("ffmpeg"), lambda ctx: _inst_pkg(ctx, "ffmpeg")),
-        Dep("Qt 6 (launcher)", lambda i: bool(i.qt_prefix),
-            pkg_hint("qt"), lambda ctx: _inst_pkg(ctx, "qt")),
-    ]
+              pkg_hint("ffmpeg"), lambda ctx: _inst_pkg(ctx, "ffmpeg")),
+      ]
     if groups.get("extras"):
         deps.append(Dep("build cache (ccache/mold, optional)",
                         lambda i: bool(shutil.which("ccache") or shutil.which("mold")),
@@ -1225,17 +1144,119 @@ def _try_drop(ctx: "Context", d: "Dep") -> bool:
     return bool(d.check(ctx.platform))
 
 
+AUDIO_SUFFIXES = (".flac", ".mp3", ".ogg", ".wav", ".qoa")
+# The menu theme is always called this, whoever supplied it, so a drop-in replacement is one
+# file with a predictable name and the release does not ship someone's personal filename.
+MUSIC_NAME = "music.flac"
+
+
+def find_music(folder: Path) -> Optional[Path]:
+    """The audio file to use as the menu theme, preferring the canonical name."""
+    if not folder.is_dir():
+        return None
+    picks = [p for p in sorted(folder.iterdir())
+             if p.is_file() and p.suffix.lower() in AUDIO_SUFFIXES]
+    if not picks:
+        return None
+    for p in picks:
+        if p.stem.lower() == "music":
+            return p
+    return picks[0]
+
+
+def offer_music_by_hand(dest: Path) -> Optional[Path]:
+    """After a failed download, ask for a track on the console.
+
+    Dragging a file onto a Windows console pastes its quoted path, which is the whole point: the
+    user does not have to type a path. An empty line means "no thanks" and is not an error.
+    Skipped entirely when there is no terminal to ask, so CI and piped runs never block.
+    """
+    if not sys.stdin or not sys.stdin.isatty():
+        LOG.info(f"  drop any mp3/flac/ogg as {dest} to have a menu theme")
+        return None
+    print()
+    print("  No se pudo descargar la musica del menu.")
+    print(f"  Arrastra un archivo de audio (mp3/flac/ogg) sobre esta ventana y presiona Enter,")
+    print(f"  o solo presiona Enter para seguir sin musica.")
+    print(f"  Destino: {dest}")
+    try:
+        answer = input("  > ").strip().strip('"').strip("'")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    if not answer:
+        LOG.info("  menu theme skipped (empty answer)")
+        return None
+    src = Path(answer).expanduser()
+    if not src.is_file():
+        warn(f"not a file: {src}")
+        return None
+    if src.suffix.lower() not in AUDIO_SUFFIXES:
+        warn(f"unsupported audio format: {src.suffix} (use one of {', '.join(AUDIO_SUFFIXES)})")
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if src.resolve() != dest.resolve():
+        shutil.copy2(src, dest)
+    LOG.info(f"  menu theme -> {dest} ({dest.stat().st_size / 1048576:.1f} MB)")
+    return dest
+
+
+def fetch_music(ctx: "Context") -> Optional[Path]:
+    """Download the menu theme named by --music-url / BT3_MUSIC_URL into assets/music/.
+
+    There is no hash on purpose: the track is the user's own file, its name is normalised to
+    music.flac, and anyone can replace it by dropping their own music.flac in the same place.
+    The URL is never stored in the repository, so this has no default and does nothing unless
+    the user passes one.
+    """
+    url = ctx.args.music_url or os.environ.get("BT3_MUSIC_URL") or ""
+    # Into the source assets tree: CMake copies all of assets/ next to the runner on every build,
+    # so this lands in the build output, in the deploy tree and in the artifact without any of
+    # them needing to know about it. The folder is git-ignored, so it is never committed.
+    dest_dir = ROOT / "ps2xRuntime" / "assets" / "music"
+    dest = dest_dir / MUSIC_NAME
+    if dest.is_file() and not ctx.args.music_force:
+        LOG.info(f"  menu theme already there: {dest}")
+        return dest
+    if not url:
+        if not dest.is_file():
+            LOG.info(f"  no menu theme (pass --music-url or set BT3_MUSIC_URL; "
+                     f"or drop your own {MUSIC_NAME} in <exe>/assets/music/)")
+        return None
+    import urllib.request
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    step(f"downloading the menu theme from {url}")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r, tmp.open("wb") as f:
+            shutil.copyfileobj(r, f, 1024 * 1024)
+    except Exception as e:  # a missing track must never fail the build
+        warn(f"menu theme download failed: {e}")
+        tmp.unlink(missing_ok=True)
+        return offer_music_by_hand(dest)
+    if tmp.stat().st_size < 1024:
+        warn("menu theme download looks truncated")
+        tmp.unlink(missing_ok=True)
+        return offer_music_by_hand(dest)
+    tmp.replace(dest)
+    LOG.info(f"  menu theme -> {dest} ({dest.stat().st_size / 1048576:.1f} MB)")
+    return dest
+
+
 def stage_deps(ctx: "Context") -> None:
     """Report the platform dependencies, then resolve what is missing -- NEVER aborting on a single
     failure.
 
-    Windows rung per dependency: honest check -> auto (winget/aqt) -> a dropped release archive
+    Windows rung per dependency: honest check -> auto (winget) -> a dropped release archive
     (portable, no admin) -> manual instructions. A failure is accumulated and reported in the final
     RESULT; only the user's explicit Abort stops the run.
     """
     step("stage 2: dependencies")
     if VIEW is not None:
         VIEW.stage(2, 4, "dependencies" + (" (Windows)" if ctx.platform.is_windows else ""))
+    # Menu theme first: it is a user asset, not a build input, and fetching it before the
+    # dependency work means a failed download is reported before anything else happens.
+    fetch_music(ctx)
     deps = deps_for(ctx.platform)
     missing = [d for d in deps if not d.check(ctx.platform)]
     resolved, failed = [], []
@@ -1326,11 +1347,6 @@ def stage_deps(ctx: "Context") -> None:
                 VIEW.item(n, total, d.name, "fail")
             break
 
-    # detect_platform() cached qt_prefix before deps ran; aqt or a dropped Qt installer may have made
-    # Qt available since, so refresh it for the rest of this run (launcher config / Windows bundle).
-    ctx.platform.qt_prefix = _qt_prefix() or ctx.platform.qt_prefix
-    if ctx.platform.qt_prefix:
-        ctx.platform.tools["qt"] = str(ctx.platform.qt_prefix)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -1575,7 +1591,17 @@ def extract_inputs(ctx: "Context") -> None:
         # present in WORK.
         if WORK.exists():
             make_writable(WORK)
-        shutil.copyfile(src, ctx.elf)
+        # Re-running setup against an already-extracted tree is normal (the ELF is the build's own
+        # input, so there is no ISO to hand it), and copyfile() raises SameFileError when src and
+        # dst are the same path. Compare resolved paths and skip the copy in that case.
+        try:
+            same = src.resolve() == ctx.elf.resolve()
+        except OSError:
+            same = False
+        if not same:
+            shutil.copyfile(src, ctx.elf)
+        else:
+            LOG.info(f"NOTE: {ctx.elf.name} is already in place; reusing it as the build input.")
         make_writable(WORK)
         LOG.info("NOTE: you passed a bare ELF. The build also needs the ISO's")
         LOG.info(f"      BIN/DBZP.BIN next to it in {WORK}.")
@@ -1723,11 +1749,11 @@ def stage_build(ctx: "Context") -> None:
 # ------------------------------------------------------------------------------------------------
 # Stage 4: deploy (+ packaging, added in the packaging phase)
 # ------------------------------------------------------------------------------------------------
-def deploy_tree(runner: Path, out: Path) -> None:
+def deploy_tree(runner: Path, out: Path, keep_music: bool = False) -> None:
     """Assemble the portable tree in OUT.
 
     layout: OUT/savedata/ (settings.toml; existing user saves are preserved), OUT/assets/ (fonts).
-    No game data is deployed: the launcher's install wizard extracts SLUS_216.78 + BIN/ DATA/ IRX/
+    No game data is deployed: the front-end's install wizard extracts SLUS_216.78 + BIN/ DATA/ IRX/
     SYSTEM.CNF from the user's own ISO into OUT/data on first run.
     """
     step(f"assembling deploy tree in {out}")
@@ -1743,6 +1769,27 @@ def deploy_tree(runner: Path, out: Path) -> None:
         src = runner.parent / a
         if src.exists():
             copytree_overlay(src, out / a)
+    # The menu theme is the game's own soundtrack: a local file the user supplies, never part of
+    # the release by default. When it is kept it is renamed to music.flac, so the artifact is
+    # reproducible and does not carry whatever filename the user happened to have.
+    theme = out / "assets" / "music"
+    if theme.is_dir():
+        shutil.rmtree(theme, ignore_errors=True)
+    src_theme = find_music(runner.parent / "assets" / "music")
+    if keep_music and src_theme is not None:
+        theme.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_theme, theme / MUSIC_NAME)
+        LOG.info(f"  menu theme -> {theme / MUSIC_NAME} (--with-music)")
+    elif src_theme is not None:
+        LOG.info("  dropped the menu theme (copyrighted audio, pass --with-music to keep it)")
+    # Mirror what CMake stages next to the runner. Only data/Textures, never all of data/: a build
+    # directory can hold a full installed game and that is gigabytes of user data.
+    for rel in ("data/Textures", "mods", "saves"):
+        src = runner.parent / rel
+        if src.is_dir():
+            copytree_overlay(src, out / rel)
+            LOG.info(f"  {rel} -> {out / rel}")
+    (out / "logs").mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
         for p in runner.parent.glob("*.dll"):
             shutil.copy2(p, out / p.name)
@@ -1757,43 +1804,6 @@ def _release_out(ctx: "Context") -> Path:
         return Path(ctx.args.output).resolve()
     sub = "release-windows" if ctx.platform.is_windows else "release"
     return BUILD / sub / "out"
-
-
-def _is_qt_debug_dll(p: Path) -> bool:
-    """Qt ships debug DLLs next to the release ones (Qt6Cored.dll). Only treat a file as debug when
-    the release counterpart exists: some TLS backends legitimately end in 'd.dll'."""
-    n = p.name
-    if not n.endswith("d.dll"):
-        return False
-    return p.with_name(n[:-5] + ".dll").exists()
-
-
-def build_launcher(ctx: "Context") -> Optional[Path]:
-    """Configure + build the Qt launcher and return the built artifact (.exe, binary or .app)."""
-    if ctx.args.skip_launcher or ctx.platform.is_macos:
-        return None
-    step("building the Qt launcher")
-    src = ROOT / "ps2xRuntime" / "src" / "launcher"
-    bdir = BUILD / ("launcher_qt" if ctx.platform.is_windows else "launcher")
-    prepare = _prepare_configure(ctx.platform, bdir)   # stale cache: a moved tool or generator
-    extra = ["-DCMAKE_BUILD_TYPE=Release"]
-    if ctx.platform.qt_prefix:
-        extra.append("-DCMAKE_PREFIX_PATH=" + str(ctx.platform.qt_prefix))
-    if ctx.platform.is_windows:
-        extra += ctx.platform.windows_generator_flags(bdir)
-    else:
-        # Same as the main tree: use Ninja when available, otherwise CMake defaults to Unix Makefiles
-        # (not installed on minimal distros like Arch) and the configure fails.
-        if not (bdir / "CMakeCache.txt").exists() and shutil.which("ninja"):
-            extra += ["-G", "Ninja"]
-        if ctx.platform.is_macos and os.environ.get("MACOSX_DEPLOYMENT_TARGET"):
-            extra.append("-DCMAKE_OSX_DEPLOYMENT_TARGET=" + os.environ["MACOSX_DEPLOYMENT_TARGET"])
-    run(["cmake", "-S", src, "-B", bdir] + extra + prepare)
-    cmake_build(ctx.platform, bdir, "Launcher", ctx.jobs)
-    exe = bdir / ctx.platform.exe("Launcher")
-    if not exe.exists():
-        die(f"Launcher not found after build ({exe})")
-    return exe
 
 
 def _vc_runtime_dll(name: str) -> Optional[Path]:
@@ -1822,17 +1832,17 @@ def copy_licences(stage: Path) -> None:
             warn(f"licence file not found: {lic}")
 
 
-def bundle_windows(ctx: "Context", stage: Path, runner: Path, launcher: Path) -> None:
-    """Flat self-contained layout: Qt + VC runtime + FFmpeg in lib/, critical DLLs next to the EXEs,
-    qt.conf for plugin discovery, lavapipe as the software Vulkan fallback."""
+def bundle_windows(ctx: "Context", stage: Path, runner: Path) -> None:
+    """Flat self-contained layout: VC runtime + FFmpeg in lib/, critical DLLs next to the exe,
+    lavapipe as the software Vulkan fallback. The UI is the runner's own front-end, so there is
+    no Qt dependency to stage any more."""
     step("bundling the Windows runtime")
     stage_assets = stage / "assets"
     stage_assets.mkdir(parents=True, exist_ok=True)
     stage_lib = stage_assets / "lib"
     stage_lib.mkdir(parents=True, exist_ok=True)
 
-    # The launcher boots <appDir>/bt3-runner.exe: rename the built ps2EntryRunner.exe.
-    runner_name = "bt3-runner.exe"
+    runner_name = PRODUCT_NAME + ".exe"
     if (stage / runner_name).exists():
         pass
     elif (stage / "ps2EntryRunner.exe").exists():
@@ -1840,34 +1850,12 @@ def bundle_windows(ctx: "Context", stage: Path, runner: Path, launcher: Path) ->
     else:
         shutil.copy2(runner, stage / runner_name)
 
-    qt_bin = (ctx.platform.qt_prefix / "bin") if ctx.platform.qt_prefix else None
-    if not qt_bin or not qt_bin.is_dir():
-        die("Qt bin directory not found; install Qt (stage 2) or set QT_ROOT")
-    for p in qt_bin.glob("Qt6*.dll"):
-        if not _is_qt_debug_dll(p):
-            shutil.copy2(p, stage_lib / p.name)
-
-    plugins_src = None
-    for cand in (ctx.platform.qt_prefix / "plugins", ctx.platform.qt_prefix / "share" / "qt6" / "plugins"):
-        if cand.is_dir():
-            plugins_src = cand
-            break
-    plugins_dst = stage_lib / "qt6" / "plugins"
-    if plugins_src:
-        plugins_dst.mkdir(parents=True, exist_ok=True)
-        for p in plugins_src.rglob("*"):
-            if p.is_dir():
-                continue
-            rel = p.relative_to(plugins_src)
-            if rel.parts and rel.parts[0] == "sqldrivers":
-                continue   # qsqlpsql needs a non-system LIBPQ.dll; unused
-            if _is_qt_debug_dll(p):
-                continue
-            dst = plugins_dst / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(p, dst)
-    else:
-        warn("Qt plugins directory not found; the platform plugin will be missing")
+    # [fps60] the pacing table is build-time data the runner reads on the first enable, so it
+    # belongs next to the runner (where CMake stages it). It used to go to savedata/, which made
+    # the 60 fps switch depend on the save folder.
+    fps60 = HERE / "fps60_sites.txt"
+    if fps60.exists() and not (stage / "fps60_sites.txt").exists():
+        shutil.copy2(fps60, stage / "fps60_sites.txt")
 
     # FFmpeg DLLs staged next to the runner by CMake POST_BUILD.
     for pattern in ("avcodec-*.dll", "avformat-*.dll", "avutil-*.dll",
@@ -1884,15 +1872,13 @@ def bundle_windows(ctx: "Context", stage: Path, runner: Path, launcher: Path) ->
             warn(f"VC++ runtime {dll} not found; the target machine must install the VC++ redistributable")
 
     # Windows resolves DLLs from the EXE's directory before main(): flatten EVERY bundled DLL next to
-    # the executables so a double-click on bt3-runner.exe works (and the launcher does not need PATH
-    # gymnastics). assets/lib stays the canonical bundle; the flat copies are the load-time safety net.
+    # the executable so a double-click on it works. assets/lib stays the canonical bundle;
+    # the flat copies are the load-time safety net.
     flat = 0
     for p in stage_lib.glob("*.dll"):
         shutil.copy2(p, stage / p.name)
         flat += 1
-    print(f"  flattened {flat} DLLs next to the executables")
-
-    (stage / "qt.conf").write_text("[Paths]\nPrefix = .\nPlugins = assets/lib/qt6/plugins\n", encoding="ascii")
+    print(f"  flattened {flat} DLLs next to the executable")
 
     copy_licences(stage)
 
@@ -1906,12 +1892,6 @@ def bundle_windows(ctx: "Context", stage: Path, runner: Path, launcher: Path) ->
             shutil.copy2(icd, lvp_dst / "lvp_icd.x86_64.json")
     else:
         warn("lavapipe not found; the Windows Vulkan fallback will be unavailable (stage 2 installs it)")
-
-    if launcher is not None:
-        shutil.copy2(launcher, stage / "Launcher.exe")
-        assets = launcher.parent / "assets"
-        if assets.is_dir():
-            copytree_overlay(assets, stage / "assets")
 
 
 LINUX_LIB_BLACKLIST = (
@@ -1961,52 +1941,22 @@ def _bundle_closure(binaries: list[Path], stage_lib: Path) -> None:
             queue.append(dst)
 
 
-def bundle_linux(ctx: "Context", stage: Path, runner: Path, launcher: Optional[Path]) -> None:
+def bundle_linux(ctx: "Context", stage: Path, runner: Path) -> None:
     step("bundling the Linux runtime")
     stage_assets = stage / "assets"
     stage_assets.mkdir(parents=True, exist_ok=True)
     stage_lib = stage_assets / "lib"
     stage_lib.mkdir(parents=True, exist_ok=True)
 
-    bin_runner = stage / "bt3-runner"
+    bin_runner = stage / PRODUCT_NAME
     shutil.copy2(runner, bin_runner)
     bin_runner.chmod(bin_runner.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    raw = stage / "ps2EntryRunner"   # deploy_tree dropped the build name here; the launcher boots bt3-runner
+    raw = stage / "ps2EntryRunner"   # deploy_tree dropped the build name here
     if raw.exists() and raw != bin_runner:
         raw.unlink()
     targets = [bin_runner]
 
-    if launcher is not None:
-        bin_launcher = stage / "Launcher"
-        shutil.copy2(launcher, bin_launcher)
-        bin_launcher.chmod(bin_launcher.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        targets.append(bin_launcher)
-        assets = launcher.parent / "assets"
-        if assets.is_dir():
-            copytree_overlay(assets, stage / "assets")
-
     _bundle_closure(targets, stage_lib)
-
-    # Qt platform plugins are dlopened, so ldd does not see them: copy them explicitly plus their own
-    # dependencies.
-    plugin_src = None
-    for cand in (Path("/usr/lib/x86_64-linux-gnu/qt6/plugins"), Path("/usr/lib/qt6/plugins")):
-        if cand.is_dir():
-            plugin_src = cand
-            break
-    plugins_dst = stage_lib / "qt6" / "plugins" / "platforms"
-    if plugin_src and (plugin_src / "platforms").is_dir():
-        plugins_dst.mkdir(parents=True, exist_ok=True)
-        extra_bins = []
-        for name in ("libqxcb.so", "libqoffscreen.so"):
-            src = plugin_src / "platforms" / name
-            if src.exists():
-                shutil.copy2(src, plugins_dst / name)
-                extra_bins.append(plugins_dst / name)
-        if extra_bins:
-            _bundle_closure(extra_bins, stage_lib)
-    else:
-        warn("Qt platform plugins not found; the launcher will not start without them")
 
     copy_licences(stage)
 
@@ -2020,16 +1970,13 @@ def bundle_linux(ctx: "Context", stage: Path, runner: Path, launcher: Optional[P
 
 
 def seed_savedata(ctx: "Context", stage: Path) -> None:
-    """settings.toml (only when absent), fps60 pacing table and the memory-card slot."""
+    """settings.toml (only when absent) and the memory-card slot."""
     savedata = stage / "savedata"
     savedata.mkdir(parents=True, exist_ok=True)
     default = ROOT / "scripts" / "settings.toml.default"
     cfg = savedata / "settings.toml"
     if default.exists() and not cfg.exists():
         shutil.copy2(default, cfg)
-    fps60 = HERE / "fps60_sites.txt"
-    if fps60.exists():
-        shutil.copy2(fps60, savedata / "fps60_sites.txt")
     (savedata / "BASLUS-21678DBZT3").mkdir(exist_ok=True)
 
 
@@ -2128,16 +2075,9 @@ def stage_package(ctx: "Context") -> None:
     step("stage 4: deploy/package")
     if VIEW is not None:
         VIEW.stage(4, 4, "package")
-    # detect_platform() cached qt_prefix before deps ran; a stage 2 (or an external aqt/brew install)
-    # may have made Qt available since, so re-detect before the launcher/bundle steps use it.
-    ctx.platform.qt_prefix = _qt_prefix() or ctx.platform.qt_prefix
     ensure_msvc_env(ctx)
     if ctx.runner is None:
         ctx.runner = find_binary("ps2EntryRunner")
-
-    if ctx.args.deploy and not ctx.args.package:
-        deploy_tree(ctx.runner, Path(ctx.args.deploy).resolve())
-        return
 
     out_root = _release_out(ctx)
     stage = out_root / "stage"
@@ -2150,11 +2090,9 @@ def stage_package(ctx: "Context") -> None:
             VIEW.item(n, 6, name, status)
 
     item(1, "Assemble deploy tree")
-    deploy_tree(ctx.runner, stage)
+    deploy_tree(ctx.runner, stage, ctx.args.with_music)
     item(2, "Seed savedata")
     seed_savedata(ctx, stage)
-    if ctx.args.deploy:
-        deploy_tree(ctx.runner, Path(ctx.args.deploy).resolve())
 
     if ctx.platform.is_macos:
         bundler = ROOT / "tools" / "macos" / "deploy.py"
@@ -2165,17 +2103,26 @@ def stage_package(ctx: "Context") -> None:
         LOG.info(f"App bundle ready: {app}")
         return
 
-    item(3, "Build launcher (Qt)")
-    launcher = build_launcher(ctx)
-    item(4, "Bundle runtime")
+    item(3, "Bundle runtime")
     if ctx.platform.is_windows:
-        bundle_windows(ctx, stage, ctx.runner, launcher)
+        bundle_windows(ctx, stage, ctx.runner)
     else:
-        bundle_linux(ctx, stage, ctx.runner, launcher)
+        bundle_linux(ctx, stage, ctx.runner)
 
     if not ctx.args.no_gate:
         item(5, "Dependency gate")
         run_gate(ctx, stage)
+
+    # --deploy mirrors the finished stage, so the copy carries the seeded savedata, the bundled
+    # runtime and the release exe name. Re-assembling from the build dir instead (the old
+    # behaviour) produced a tree missing all three, which is why --no-package --deploy was not a
+    # playable tree. copytree_overlay overwrites but never prunes: --deploy can point at a
+    # directory that already holds an installed game, and that must survive.
+    if ctx.args.deploy:
+        item(4, "Mirror to --deploy")
+        deploy_out = Path(ctx.args.deploy).resolve()
+        copytree_overlay(stage, deploy_out)
+        LOG.info(f"  mirrored stage -> {deploy_out}")
 
     if ctx.args.package:
         item(6, "Package artifact")
@@ -2225,10 +2172,17 @@ def parse_args(argv=None) -> argparse.Namespace:
                     help="produce the release artifact for this OS (+ checksum); on by default")
     ap.add_argument("--no-package", dest="package", action="store_false",
                     help="do not produce the release artifact (stage 4 assembles the deploy tree only)")
+    ap.add_argument("--with-music", action="store_true",
+                    help="keep the menu theme (assets/music) in the deploy tree and the artifact; "
+                         "off by default because the track is copyrighted game audio that the "
+                         "project does not redistribute")
+    ap.add_argument("--music-url", metavar="URL",
+                    help="download the menu theme from URL into assets/music/music.flac (stage 2); "
+                         "no default, nothing is fetched unless you ask for it")
+    ap.add_argument("--music-force", action="store_true",
+                    help="re-download the menu theme even when assets/music/music.flac exists")
     ap.add_argument("--output", metavar="DIR",
                     help="where the stage tree and the artifact go (default build/release-<os>/out)")
-    ap.add_argument("--skip-launcher", action="store_true",
-                    help="do not build the Qt launcher (developer tree without the UI)")
     ap.add_argument("--no-gate", dest="no_gate", action="store_true",
                     help="skip the release gate (PE imports / glibc floor)")
     ap.add_argument("--dest", metavar="DIR",
@@ -2305,8 +2259,8 @@ WELCOME = [
     "",
     "  * Just want to PLAY? Download a release build instead of running this.",
     "  * This flow needs an ISO/dump of Budokai Tenkaichi 3 (USA), several GB",
-    "    of disk, and it installs a C++ toolchain + Qt on this machine.",
-    "  * It builds the runner and the launcher, packages a release artifact",
+    "    of disk, and it installs a C++ toolchain on this machine.",
+    "  * It builds the runner (front-end included), packages a release artifact",
     "    and then asks where to put it.",
 ]
 

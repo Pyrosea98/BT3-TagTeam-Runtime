@@ -47,8 +47,33 @@ extern "C" unsigned long long ps2xWinThreadCpuNs();
 #include "ps2_log.h"
 #include "runtime/pad_config.h"
 #include "runtime/ps2_memory.h"
+#include "Kernel/Stubs/MemoryCard.h"   // [savestate] getMemoryCardDebugSnapshot (deferred quickload)
+#include "runtime/ps2x_dueldump.h"
 #include "runtime/ps2_netplay.h"   // [netplay]
 #include "runtime/ps2_seamprobe.h"  // [seamprobe]
+#include "runtime/ps2x_achieve.h"  // [ach]
+#include "runtime/ps2x_notify.h"   // [notify] the drop box
+
+// [notify] Where the drop box lives: <exeDir>/savedata, the same directory settings.toml is in.
+// The CWD is tried first because the front-end runs with the deploy as its working directory and a
+// dev build run from the build tree should find the tree's savedata; the exe dir is the fallback for
+// a launch from anywhere else. The current_path() branch is only taken if savedata actually exists
+// there, so a stray savedata in an unrelated working directory cannot shadow the real one.
+extern "C" const char *ps2xDropBoxDir()
+{
+    static const std::string s_dir = []() {
+        std::error_code ec;
+        const std::filesystem::path cwd = std::filesystem::current_path() / "savedata";
+        if (std::filesystem::is_directory(cwd, ec) && !ec)
+            return cwd.string();
+        extern const char *ps2xExeDirC();   // main.cpp: <exeDir> (honors PS2X_EXEDIR)
+        const char *xd = ps2xExeDirC();
+        if (xd && xd[0])
+            return (std::filesystem::path(xd) / "savedata").string();
+        return cwd.string();
+    }();
+    return s_dir.c_str();
+}
 
 // [netjump] Frames of display HOLD remaining. While non-zero, GsGpuRenderer::swapFrame() returns
 // immediately, so the screen keeps showing the last presented frame. The menu transition needs a
@@ -57,6 +82,20 @@ extern "C" unsigned long long ps2xWinThreadCpuNs();
 // of pretending they are not needed. Counts DOWN in swapFrame so a failed transition cannot
 // freeze the picture forever.
 std::atomic<int> g_netJumpHold{0};
+
+// [netjump] The overlay curtain's TARGET, not its level: 1 = cover the screen with black and show
+// "Loading..." while the transition runs, 0 = take it away again. The level lives with whoever
+// draws (ps2_settings_overlay.cpp), because a fade needs a frame clock and this file is the
+// guest's, not the renderer's -- and because the reverse has to be smooth on the way out too,
+// which is the give-up path, and that one lives here.
+//
+// This is a black RECTANGLE over the game, not the hold above. The hold stops the frame being
+// published, which freezes the picture on the main menu; this covers whatever is there with
+// something that says what is happening. Both are wanted: the hold is what keeps the versus menu
+// from being seen operated, the curtain is what the player looks at while it happens.
+std::atomic<int> g_netCurtainWant{0};
+
+
 #define XXH_INLINE_ALL
 #include "thirdparty/xxhash.h"   // [dethash]
 #include "runtime/ps2_gs_gpu_renderer.h"
@@ -451,6 +490,159 @@ namespace
     // module polls it -- it completes on a press, and no amount of variable writing substitutes
     // for that loading. One press at a state we chose and can verify, not menu navigation.
     std::atomic<int> g_netJumpPressCross{0};
+
+    // [netjump] The player asking to abort, from CIRCLE. The ONLY new pad state this work needs:
+    // the freeze-with-an-exception and the two synthetic presses are the ones that already existed
+    // for the retired custom page (g_netMenuGate / g_netMenuPressFrames, kept for exactly this),
+    // and reusing them is the difference between one pad seam and two that can disagree.
+    //
+    // It has to be a flag because the jump runs on the guest thread with no view of the pad, and the
+    // seam is the only place that sees one.
+    std::atomic<int> g_netJumpCancel{0};
+// [netmenu] frames of synthetic CROSS remaining for the custom page's direct-subtype start.
+// Same seam as the netjump's press, but NOT gated by netplay: BT3 never calls libpad, so the
+// only pad the game sees is built in writeNeutralPadPacket below.
+// [netmenu] synthetic button frames for the retired custom page. Same seam as the netjump's press,
+// but NOT gated by netplay: BT3 never calls libpad, so the only pad the game sees is built in
+// writeNeutralPadPacket below. Nothing drives these any more (the page that used them is gone), so
+// the mask stays 0 and this is inert; kept because it is the pad seam an entry test would need.
+std::atomic<uint32_t> g_netMenuPressMask{0};   // PS2 button mask (active low: clear the bit)
+std::atomic<int> g_netMenuPressFrames{0};
+extern "C" void ps2xNetMenuPress(int mask, int frames)
+{
+    g_netMenuPressMask.store((uint32_t)mask, std::memory_order_relaxed);
+    g_netMenuPressFrames.store(frames > 0 ? frames : 0, std::memory_order_relaxed);
+}
+// [netmenu] while a custom page owns the screen the guest must see NO input at all (the libpad
+// override is invisible to BT3, so this is the only place that can freeze it). The Cross pulse
+// above is applied AFTER the freeze, so the start sequence can still confirm. Unused for now --
+// see g_netMenuPressMask. The freeze releases buttons, both sticks and every socket, not just
+// player 1: a freeze that only cleared buttons leaked the sticks, because the only thing that used
+// to neutralise them (the gate below) is player 1 only.
+std::atomic<int> g_netMenuFreeze{0};
+extern "C" void ps2xNetMenuFreeze(int on)
+{ g_netMenuFreeze.store(on ? 1 : 0, std::memory_order_relaxed); }
+// [netmenu] Selective gate: while armed, ONLY the buttons in the allow mask pass through to the
+// guest (player 1 / socket 0); everything else is forced neutral. Unused for now -- see
+// g_netMenuPressMask.
+std::atomic<int> g_netMenuGate{0};
+std::atomic<uint32_t> g_netMenuAllowMask{0};
+extern "C" void ps2xNetMenuGate(int on, int allowMask)
+{
+    g_netMenuAllowMask.store((uint32_t)allowMask, std::memory_order_relaxed);
+    g_netMenuGate.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
+// [netmenu] Conditional AFS serve. While the net entry is active ONE chosen AFS slot is served
+// from an in-memory image instead of the folder file, so the SAME game code (the voice/BGM/loader
+// that already knows this container) runs on our converted Wii data -- and a native entry into the
+// same screen keeps the original bytes untouched. Zero-fills past the image end.
+// [netmenu] True only while the NET entry owns the screen. The [slot-read] trace keys off it, so
+// the log stays clean: it shows the reads that happen because the net entry was pressed.
+std::atomic<int> g_netEntryActive{0};
+extern "C" void ps2xNetEntrySetActive(int on)
+{ g_netEntryActive.store(on ? 1 : 0, std::memory_order_relaxed); }
+extern "C" int ps2xNetEntryActive()
+{ return g_netEntryActive.load(std::memory_order_relaxed); }
+
+// [netmenu] Drive the game's OWN SE playback from the host menu (no decoded WAVs).
+// The guest-side sePlay() needs rdram + runtime; bt3FrameKick() stashes them every frame.
+uint8_t *g_ps2xMenuRdram = nullptr;
+PS2Runtime *g_ps2xMenuRuntime = nullptr;
+// While the net entry freezes the game audio (sfx volume 0), keep the reserved SE stream audible
+// so the menu's effects play through the game's own mixer. Read by PS2AudioBackend.
+std::atomic<int> g_ps2xSeMenuBypass{0};
+extern "C" void ps2xSeMenuBypass(int on) { g_ps2xSeMenuBypass.store(on ? 1 : 0, std::memory_order_relaxed); }
+extern "C" int ps2xSeMenuBypassGet() { return g_ps2xSeMenuBypass.load(std::memory_order_relaxed); }
+
+std::atomic<int> g_netServeSwapActive{0};
+std::atomic<uint64_t> g_netServeSwapSlot{0};
+std::shared_ptr<std::vector<uint8_t>> g_netServeSwapData;
+extern "C" void ps2xNetServeSwapLoad(const char *path, unsigned long long slot)
+{
+    auto image = std::make_shared<std::vector<uint8_t>>();
+    if (path && path[0])
+    {
+        std::ifstream f(path, std::ios::binary);
+        if (f.is_open())
+        {
+            f.seekg(0, std::ios::end);
+            const std::streamoff n = f.tellg();
+            f.seekg(0, std::ios::beg);
+            if (n > 0)
+            {
+                image->resize(static_cast<size_t>(n));
+                f.read(reinterpret_cast<char *>(image->data()), n);
+            }
+        }
+    }
+    g_netServeSwapData = std::move(image);
+    g_netServeSwapSlot.store(slot, std::memory_order_relaxed);
+    g_netServeSwapActive.store(g_netServeSwapData->empty() ? 0 : 1, std::memory_order_relaxed);
+    std::fprintf(stderr, "[netmenu] serve-swap: slot %llu <- %s (%zu bytes)%s\n",
+                 slot, path ? path : "(none)", g_netServeSwapData->size(),
+                 g_netServeSwapData->empty() ? " [INACTIVE: empty]" : "");
+}
+extern "C" void ps2xNetServeSwapOff()
+{
+    g_netServeSwapActive.store(0, std::memory_order_relaxed);
+    std::fprintf(stderr, "[netmenu] serve-swap: off (original bytes)\n");
+}
+// [netmenu] Extra AFS slots silenced while the net entry is active: every OTHER BGM stream the game
+// keeps playing is served as zeros, so only the requested (swapped) one is heard.
+uint64_t g_netServeMuteSlots[16] = {};
+std::atomic<int> g_netServeMuteN{0};
+extern "C" void ps2xNetServeMuteSlots(const char *csv)
+{
+    int n = 0;
+    if (csv && csv[0])
+    {
+        const char *p = csv;
+        while (*p && n < 16)
+        {
+            char *end = nullptr;
+            const unsigned long long v = std::strtoull(p, &end, 0);
+            if (end == p) break;
+            g_netServeMuteSlots[n++] = (uint64_t)v;
+            p = (*end == ',') ? end + 1 : end;
+            if (*end == '\0') break;
+        }
+    }
+    g_netServeMuteN.store(n, std::memory_order_relaxed);
+    std::fprintf(stderr, "[netmenu] serve-swap: muting %d other BGM slot(s): %s\n", n, csv ? csv : "");
+}
+extern "C" int ps2xNetServeSwapRead(unsigned long long slotId, unsigned long long off,
+                                    unsigned char *dst, unsigned long long n)
+{
+    if (g_netServeSwapActive.load(std::memory_order_relaxed) == 0 || !dst)
+        return 0;
+    // [netmenu] The swap slot AND every "muted" slot are served the SAME image -- a valid silent
+    // stream. Serving raw zeros here produced decoder NOISE, not silence.
+    bool useImage = (slotId == g_netServeSwapSlot.load(std::memory_order_relaxed));
+    if (!useImage)
+    {
+        const int mn = g_netServeMuteN.load(std::memory_order_relaxed);
+        for (int i = 0; i < mn; ++i)
+            if (slotId == g_netServeMuteSlots[i]) { useImage = true; break; }
+    }
+    if (!useImage)
+        return 0;
+    static std::atomic<uint64_t> s_hits{0};
+    const uint64_t hit = s_hits.fetch_add(1, std::memory_order_relaxed);
+    if (hit < 12)
+        std::fprintf(stderr, "[netmenu] serve-swap HIT #%llu slot=%llu off=%llu n=%llu\n",
+                     hit, slotId, off, n);
+    const std::vector<uint8_t> &img = *g_netServeSwapData;
+    if (off >= img.size())
+        std::memset(dst, 0, static_cast<size_t>(n));
+    else
+    {
+        const size_t avail = static_cast<size_t>(std::min<unsigned long long>(img.size() - off, n));
+        std::memcpy(dst, img.data() + static_cast<size_t>(off), avail);
+        if (avail < n) std::memset(dst + avail, 0, static_cast<size_t>(n - avail));
+    }
+    return 1;
+}
     // [statesync] 0 = no jump this session, 1 = jumping, 2 = settled / gave up. The state sync waits for
     // 2 on both sides: the host publishes AFTER its jump (so the joiner adopts character select), the
     // joiner adopts only once its own jump has it in the same screen (comparable call chains).
@@ -559,7 +751,69 @@ namespace
         // pad and are sent to the peer; the REMOTE player's arrive over UDP. The game reads two
         // pads and cannot tell the difference. Input sampled now is applied delay frames later,
         // so the packet has that long to cross the network.
-        if (ps2NetActive())
+        // [netmenu] the custom page owns input: release everything for player 1 before the pulse below
+    // (and before the netplay block, so it holds offline too).
+    // [netmenu] the custom page owns input: release everything, every socket and both sticks, not
+    // just player 1's buttons -- the gate below is player 1 only, so a freeze that only cleared
+    // b0/b1 leaked the sticks. (And before the netplay block, so it holds offline too.)
+    if (g_netMenuFreeze.load(std::memory_order_relaxed) > 0)
+    {
+        b0 = 0xFFu;
+        b1 = 0xFFu;
+        rx = 0x80u; ry = 0x80u; lx = 0x80u; ly = 0x80u;
+    }
+    // [netmenu] Selective gate (see ps2xNetMenuGate): deny everything except the allowed buttons,
+    // and force the sticks neutral so the hidden state's menu cannot be navigated.
+    if ((socket & 3u) == 0u && g_netMenuGate.load(std::memory_order_relaxed) > 0)
+    {
+        const uint32_t allow = g_netMenuAllowMask.load(std::memory_order_relaxed);
+        const uint8_t a0 = static_cast<uint8_t>(allow & 0xFFu);
+        const uint8_t a1 = static_cast<uint8_t>((allow >> 8) & 0xFFu);
+        b0 = static_cast<uint8_t>(static_cast<uint8_t>(~a0) | (b0 & a0));
+        b1 = static_cast<uint8_t>(static_cast<uint8_t>(~a1) | (b1 & a1));
+        rx = 0x80u; ry = 0x80u; lx = 0x80u; ly = 0x80u;
+    }
+    // [netjump] CIRCLE is the cancel. It is SWALLOWED here and nothing is sent to the guest: the
+    // button the game needs is triangle, and step 4 already pulses triangle until the game reaches
+    // 0x04. Injecting a press here as well would give two independent triangle sources for one
+    // cancel, and the second one to arrive would be a stray press on whatever screen the first one
+    // landed on.
+    //
+    // Letting CIRCLE through instead is not an option: it means "abort the netplay transition",
+    // which is not a thing the versus menu has an opinion about, and the game would act on a
+    // button the player never pressed on this screen.
+    //
+    // A COUNTER, and it counts every edge. It was a flag guarded by `== 0` here, which meant the
+    // first press set it and this block then stopped looking -- so a second press was invisible and
+    // the two-press escape could not exist. The seam's only job is to notice presses; deciding what
+    // each one means belongs to whichever step of the jump is running.
+    //
+    // Only the edge fires, so holding circle does not re-send. Once per frame, on socket 0: the seam
+    // runs per socket and a per-socket read would fire three times over on a three-pad game.
+    if ((socket & 3u) == 0u)
+    {
+        static uint16_t s_prevHigh = 0xFFu;
+        // Active low: a press is the bit going from 1 to 0. Bit 13 is CIRCLE, bit 5 of the high byte.
+        const bool circleDown = (s_prevHigh & 0x20u) != 0u && (b1 & 0x20u) == 0u;
+        s_prevHigh = b1;
+        if (circleDown)
+        {
+            g_netJumpCancel.fetch_add(1, std::memory_order_relaxed);
+            b1 = static_cast<uint8_t>(b1 | 0x20u);   // keep CIRCLE released: the guest must not see it
+        }
+    }
+
+    // [netmenu] synthetic button (player 1 / socket 0). Applied here, NOT inside the netplay
+    // block, so it works offline too. Runs AFTER the freeze above, so a press still lands while
+    // the guest input is held.
+    if ((socket & 3u) == 0u && g_netMenuPressFrames.load(std::memory_order_relaxed) > 0)
+    {
+        g_netMenuPressFrames.fetch_sub(1, std::memory_order_relaxed);
+        const uint32_t m = g_netMenuPressMask.load(std::memory_order_relaxed);
+        b0 = static_cast<uint8_t>(b0 & ~(uint8_t)(m & 0xFFu));
+        b1 = static_cast<uint8_t>(b1 & ~(uint8_t)((m >> 8) & 0xFFu));
+    }
+    if (ps2NetActive())
         {
             const uint32_t frame = static_cast<uint32_t>(g_bt3FrameCount.load(std::memory_order_relaxed));
             const int pl = static_cast<int>(socket & 3u) + 1;          // socket 0/1 -> player 1/2
@@ -2791,12 +3045,93 @@ namespace
     // previous stream, otherwise the leftovers would be credited to the new one.
     //
     // The timestamp is only used by the legacy PS2X_SNDNOSTOP=drain mode.
+    // ===================== [statelog] what screen is this, and what is playing =====================
+    //
+    // ONE table, because there used to be two and they disagreed. ps2_runtime.cpp's [hstate] switch
+    // labels 0x27 "FIGHT"; docs/MAIN-MENU.md labels it CHARACTER_SELECT and puts the fight at 0x2D.
+    // Both are named tables of the same field -- the top-level state at [[0x2ff10c]+0x18] -- and
+    // having to pick one to read a log is how a wrong name survives for months. This is the one
+    // now; the [hstate] switch is the thing to fix next, against these values.
+    //
+    // The names come from the jump table the main menu actually uses (0x3364f4..0x336534) plus the
+    // duel's own module states. "PREFIGHT_SETUP" for 0x28/0x29 is the game's own naming as recorded
+    // in MAIN-MENU.md; whether those two are one screen or two is exactly what [statelog] is for.
+    static const char *bt3StateName(uint32_t s)
+    {
+        switch (s)
+        {
+        case 0x01u: return "BOOT";
+        case 0x06u: return "LOADING";
+        case 0x0Bu: return "?0x0B";
+        case 0x0Du: return "ULTIMATE_BATTLE";
+        case 0x0Eu: return "?0x0E";
+        case 0x10u: return "?0x10";
+        case 0x11u: return "?0x11";
+        case 0x1Au: return "?0x1A";
+        case 0x1Du: return "?0x1D";
+        case 0x20u: return "?0x20";
+        case 0x21u: return "DRAGON_WORLD_TOUR";
+        case 0x26u: return "DUEL_MENU";          // the versus screen: mode, then battle type
+        case 0x27u: return "CHARACTER_SELECT";   // NOT the fight -- that is 0x2D
+        case 0x28u: return "PREFIGHT_SETUP";
+        case 0x29u: return "PREFIGHT_SETUP_2";  // same name as 0x28 upstream; may be the same screen
+        case 0x2Cu: return "ULTIMATE_TRAINING";
+        case 0x2Du: return "IN_FIGHT";
+        case 0x30u: return "EVOLUTION_Z";
+        case 0x35u: return "DATA_CENTER";
+        case 0x38u: return "POST_FIGHT";
+        case 0x3Cu: return "CHARACTER_REFERENCE";
+        case 0x3Eu: return "OPTIONS";
+        case 0x46u: return "EXTRA";
+        default:   return "?UNKNOWN";
+        }
+    }
+
+    // PS2X_STATELOG=1. Off by default: it is a diagnostic, and a per-frame probe of guest RAM that
+    // nobody asked for is not something to leave running in a shipping tree.
+    static bool bt3StateLogOn()
+    {
+        static const bool on = [](){ const char *v = std::getenv("PS2X_STATELOG");
+                                     return v && v[0] && v[0] != '0'; }();
+        return on;
+    }
+
+    // The current top-level state, or 0 when the state object does not exist yet (still booting).
+    // Resolved through the pointer at 0x2ff10c on purpose: it survives whatever the allocator does,
+    // whereas the [ach] tracker reads the state object's fields as flat addresses, which is fine
+    // because the layout is deterministic but would break the moment it is not.
+    static uint32_t bt3CurState(uint8_t *rdram)
+    {
+        const uint32_t so = sndRd32(rdram, 0x2ff10cu) & 0x1FFFFFFFu;
+        return so ? sndRd32(rdram, so + 0x18u) : 0u;
+    }
+
+    // The frame counter, for the music correlation. Read through the same atomic the rest of the
+    // netjump code uses, so a [statelog] line and a [netjump] line can be lined up by frame.
+    std::atomic<uint64_t> g_statelogLastStart{0};
+
     std::mutex g_streamStartM;
     std::map<uint32_t, std::chrono::steady_clock::time_point> g_streamStart;
     PS2Runtime::RecompiledFunction g_orig28b428 = nullptr;
     void bt3StreamStartNote(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // 0x28b428
     {
         const uint32_t obj = getRegU32(ctx, 4);
+        // [statelog] Every stream START, tagged with the screen it happened on.
+        //
+        // Deliberately NOT a track id: the stream object and its sink are runtime addresses that
+        // land differently every run, so a "track id" built from them would not survive to be
+        // compared. What IS worth having is the TIMING -- whether a START lands on a state
+        // transition is the whole question, because the code's own note is that after the title the
+        // BGM goes to state 0 "and never returns to 1". If these lines cluster on transitions, each
+        // screen has its own track. If they stop after the title, the music does not discriminate
+        // and the pad reads in [fightprobe] are what has to answer it.
+        if (bt3StateLogOn())
+        {
+            const uint32_t st = bt3CurState(rdram);
+            std::fprintf(stderr, "[statelog]   bgm START  state=0x%02x %-17s obj=0x%x sink=0x%x fr=%llu\n",
+                         st, bt3StateName(st), obj, sndRd32(rdram, obj + 8u),
+                         (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed));
+        }
         {
             std::lock_guard<std::mutex> lk(g_streamStartM);
             g_streamStart[obj] = ps2xNowSteady();
@@ -5397,6 +5732,127 @@ namespace
         return true;
     }
 
+    // [menujump] PS2X_MENU_JUMP=<state>: hold the host combo (keyboard P+L, or both mouse buttons held)
+    // to "detonate" a screen transition by code instead of navigating. One-shot per press.
+    // The env value is the target top-level state, decimal (4 = main menu, 38 = versus/duel,
+    // 39 = character select, ...). Forcing it while the game is still booting bypasses the intro
+    // FMV / title / splash logos: the state is written and the game's own transition (func_10D878
+    // through bt3MenuGoto) is re-run as soon as the menu object exists.
+    extern "C" bool IsKeyDown(int key);             // raylib; KEY_P == 80, KEY_L == 76
+    extern "C" bool IsMouseButtonDown(int button);  // raylib; MOUSE_BUTTON_LEFT == 0, RIGHT == 1
+    static void bt3MenuJumpFrame(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static const int s_target = [](){
+            const char *v = std::getenv("PS2X_MENU_JUMP");
+            return (v && v[0]) ? std::atoi(v) : 0;      // target top-level state (4 = main menu)
+        }();
+        static const bool s_auto = [](){
+            const char *v = std::getenv("PS2X_MENU_AUTO");
+            return v && v[0] && v[0] != '0';            // PS2X_MENU_AUTO=1: fire automatically
+        }();
+        if (s_target <= 0 || !rdram || !ctx || !runtime) return;
+
+        const uint32_t stateObj = rd32(rdram, 0x2ff10cu) & 0x1FFFFFFFu;
+        if (!stateObj) return;
+        const uint32_t cur     = rd32(rdram, stateObj + 0x18u);
+        const uint32_t menuObj = rd32(rdram, 0x3b0e80u) & 0x1FFFFFFFu;
+        const uint64_t fr      = g_bt3FrameCount.load(std::memory_order_relaxed);
+        // Boot markers: intro timer (*(*(0x3b0eb8)+0xc4) counts to 0x708) and the splash gate.
+        uint32_t introT = 0u;
+        if (const uint32_t ivp = rd32(rdram, 0x3b0eb8u) & 0x1FFFFFFFu)
+            introT = rd32(rdram, (ivp + 0xc4u) & 0x1FFFFFFFu);
+
+        // [menujump-diag] heartbeat: shows the boot flow (top-level state + whether the main-menu
+        // object exists yet) so a long boot is visibly alive and we can see the exact moment the
+        // menu comes up. Every 2 s.
+        static uint64_t s_lastLog = ~0ull;
+        if (fr != s_lastLog && (fr % 120u) == 0u)
+        {
+            s_lastLog = fr;
+            std::fprintf(stderr, "[menujump] frame=%llu cur=0x%02x menuObj=0x%x introT=%u/1800 target=0x%02x\n",
+                         (unsigned long long)fr, cur, menuObj, introT, s_target);
+        }
+
+        const char *why = nullptr;
+        if (s_auto)
+        {
+            // The main-menu object [0x3b0e80] exists ONLY while the main menu is displayed: the
+            // game frees it when leaving 0x04 (see the netjump notes below). So the primitive can
+            // only fire from 0x04 with the object alive -- exactly the state PS2X_NET_JUMP uses.
+            // Forcing a state before that (e.g. during boot) writes a value nobody reads and the
+            // menu is never built (measured: 0x01 -> 0x04 flips the state, menuObj stays 0).
+            static bool s_fired = false;
+            if (!s_fired && cur == 0x04u && menuObj)
+            {
+                s_fired = true;
+                std::fprintf(stderr, "[menujump] AUTO-VALIDATE: main menu up (menuObj=0x%x introT=%u fr=%llu) -> 0x%02x\n",
+                             menuObj, introT, (unsigned long long)fr, s_target);
+                why = "AUTO-VALIDATE(0x04)";
+            }
+        }
+        else
+        {
+            const bool kb = IsKeyDown(80) && IsKeyDown(76);
+            const bool ms = IsMouseButtonDown(0) && IsMouseButtonDown(1);
+            static bool s_armed = false;
+            if (!(kb || ms)) { s_armed = false; }
+            else if (!s_armed) { s_armed = true; why = "COMBO"; }
+        }
+        if (!why) return;
+
+        std::fprintf(stderr, "[menujump] %s: target=0x%02x cur=0x%02x menuObj=0x%x introT=%u fr=%llu\n",
+                     why, s_target, cur, menuObj, introT, (unsigned long long)fr);
+        if (!menuObj)
+        {   // no menu object: nothing to drive (forcing the state would be a no-op)
+            std::fprintf(stderr, "[menujump] no menuObj (cur=0x%02x) -- primitive needs the menu up\n", cur);
+            return;
+        }
+        bt3MenuGoto(rdram, ctx, runtime, (uint32_t)s_target);
+    }
+
+    // [statelog] One line per screen change, with everything that is cheap to read and hard to
+    // guess. The point is not the pretty name -- it is that each line carries the fields that
+    // DIFFER between screens, so a pasted log answers "which of these is character select" without
+    // anybody having to remember which offset means what.
+    //
+    //   duelObj   [0x3b38e8]  the duel module's object. Non-null only while the duel module is up,
+    //                          which is DUEL_MENU and the states it owns. Measured non-null -> null
+    //                          across 0x26 -> 0x27, so it separates "in the duel module" from "past
+    //                          it" -- which is the question character select turns on.
+    //   mode/type/dp  stateObj+0x620 / +0x624 / +0x630. The match setup. 0x620 is committed by
+    //                          the versus menu's confirm gate at 0x35622c; 0x624 is the one
+    //                          character select READS, at 0x352da8.
+    //   plates     [0x3b0e80]+0x144, the main menu's own build counter. Non-zero only on 0x04, so
+    //                          it is how a main-menu screen tells itself apart from everything else.
+    //   tlimit     stateObj+0x62c, next to the others, in case the time limit has a life of its own.
+    static void bt3StateLogFrame(uint8_t *rdram)
+    {
+        static uint32_t s_prev = ~0u;
+        const uint32_t st = bt3CurState(rdram);
+        if (st == s_prev)
+            return;
+        const uint32_t from = s_prev;
+        s_prev = st;
+
+        const uint64_t fr = g_bt3FrameCount.load(std::memory_order_relaxed);
+        const uint32_t so     = rd32(rdram, 0x2ff10cu) & 0x1FFFFFFFu;
+        const uint32_t duel   = rd32(rdram, 0x3b38e8u) & 0x1FFFFFFFu;
+        const uint32_t menu   = rd32(rdram, 0x3b0e80u) & 0x1FFFFFFFu;
+        const uint32_t plates = menu ? rd32(rdram, menu + 0x144u) : 0u;
+
+        std::fprintf(stderr,
+                     "[statelog] fr=%llu  0x%02x %-17s -> 0x%02x %-17s | stateObj=0x%x duelObj=0x%x"
+                     " menuObj=0x%x plates=%u | mode=%u type=%u dp=%u tlimit=%u\n",
+                     (unsigned long long)fr,
+                     from == ~0u ? 0u : from, from == ~0u ? "(start)" : bt3StateName(from),
+                     st, bt3StateName(st),
+                     so, duel, menu, plates,
+                     so ? rd32(rdram, so + 0x620u) : 0u,
+                     so ? rd32(rdram, so + 0x624u) : 0u,
+                     so ? rd32(rdram, so + 0x630u) : 0u,
+                     so ? rd32(rdram, so + 0x62cu) : 0u);
+    }
+
     static void bt3NetJumpCharSelect(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         // PS2X_NET_JUMP=1  go via the versus menu (0x04 -> 0x26 -> 0x27), the path the game
@@ -5411,11 +5867,42 @@ namespace
         // override for headless runs. Mode 2 (straight to 0x27) is env-only -- it cannot set the
         // versus mode, because the duel object that holds it is freed before character select.
         const int s_mode = s_env > 0 ? s_env : (ps2NetAutoJump() ? 1 : 0);
-        if (s_mode <= 0 || !rdram || !ps2NetActive() || !ps2NetPeerConnected()) return;
+        // The whole feature is behind NET_OVERLAY, transition included. The curtain lives in the
+        // overlay, so a jump without it would drive the menus while the player watches an unexplained
+        // sequence of screens -- the transition is not useful on its own, it is useful next to the
+        // thing that says what is happening.
+        if (!ps2xNetOverlayEnabled())
+            return;
+        const bool live = ps2NetActive() && ps2NetPeerConnected();
+        // [netjump] `live` is NOT an entry gate any more, and that is the fix for the curtain that
+        // never came down. It used to be one, and every path that CLEARS the curtain sits below
+        // here -- so the moment the session died (Disconnect, the peer leaving, the fake switched
+        // off) this function returned on its first line and nothing could ever clear it again. A
+        // black screen until the process restarted.
+        //
+        // It is a condition for ADVANCING instead, which is what it always meant: no session, no
+        // new jumps. The return trip and the curtain teardown keep running without one, because
+        // they are how a dead session gets cleaned up.
+        if (s_mode <= 0 || !rdram) return;
         // Reset per connection, so disconnecting and reconnecting jumps again instead of
         // remembering that it already ran once this process.
         static uint32_t s_session = 0;
         static int s_step = 0; static uint64_t s_waitUntil = 0;
+        // [netjump] "the duel module has been up at least once since the curtain went up". Needed
+        // because duelObj == 0 is ALSO true on the main menu, so on its own it cannot tell "we
+        // arrived at character select" from "we never left". Three states, not two: not started
+        // (never seen it), transitioning (seen it, still there), arrived (seen it, now gone).
+        static bool s_sawDuel = false;
+        // [netjump] The desync frame this transition STARTED with, so "a desync happened" can mean
+        // "a desync happened NOW". ps2NetDesyncFrame() latches the first mismatch and never clears
+        // it -- not even on a new connect -- so a bare `!= 0` would abort on a desync from the
+        // previous session, minutes or hours later. Comparing against this baseline is the only
+        // version of the test that means what it says.
+        static uint32_t s_desyncBase = 0;
+        // [netjump] When the return trip started, for its watchdog. 0 = not returning.
+        static uint64_t s_returnStart = 0;
+        // [netjump] So the "heading for 0x04" line prints once per trip, not once per process.
+        static bool s_saidEntry = false;
         // s_pulseStart lives HERE, not inside step 2, because a static in there survives the
         // connection: on a second connect it still held the first one's frame, so the 600-frame
         // timeout had already expired and step 2 gave up on its very first tick. Every piece of
@@ -5423,12 +5910,33 @@ namespace
         // left armed from a failed attempt fires on the NEXT connect before the duel module is up.
         static uint64_t s_pulseStart = 0;
         if (s_session != ps2NetSession())
-        { s_session = ps2NetSession(); s_step = 0; s_waitUntil = 0; s_pulseStart = 0; g_netJumpState.store(1, std::memory_order_relaxed);
+        { s_session = ps2NetSession(); s_step = 0; s_waitUntil = 0; s_pulseStart = 0; s_sawDuel = false;
+          s_desyncBase = ps2NetDesyncFrame();
+          s_returnStart = 0;
+          s_saidEntry = false;
+          g_netJumpState.store(1, std::memory_order_relaxed);
           g_netJumpSession.store(s_session, std::memory_order_relaxed);
           g_netJumpWantConfirm.store(false, std::memory_order_relaxed);
-          g_netJumpHold.store(0, std::memory_order_relaxed); }
-        if (s_step >= 3)
+          g_netJumpHold.store(0, std::memory_order_relaxed);
+          // The curtain and the return flag are per-connection state too. Left at 1 from a failed
+          // attempt they would cover the main menu forever: the forward machine only ever clears
+          // them on the paths that RUN, and a reset skips all of them.
+          g_netCurtainWant.store(0, std::memory_order_relaxed);
+          // The pad too. The gate outlives the session by design (it is a pad state, not a netplay
+          // one), so a reset that forgot it would leave the player on a dead controller with nothing
+          // on screen to explain it.
+          ps2xNetMenuGate(0, 0);
+          g_netJumpCancel.store(0, std::memory_order_relaxed);
+          g_netJumpPressCross.store(0, std::memory_order_relaxed); }
+        // == 3, NOT >= 3. Step 4 is the reverse trip and it lives BELOW this block, so a ">=" here
+        // swallowed it: the give-up set s_step = 4, the next tick fell into the re-assert arm and
+        // returned, and the trip back to the main menu was code that could never run. The log showed
+        // the give-up firing and then nothing at all, which is what dead code looks like from outside.
+        if (s_step == 3)
         {
+            // [netjump] Only while there is a session to set it up for. Without this the re-assert
+            // kept writing stateObj+0x620 into a local game forever, long after Disconnect.
+            if (!live) return;
             // HOLD the match setup. Writing it once is not enough: the mode is normally committed
             // inside func_356090 (the confirm gate) at 0x35622c, 25 frames BEFORE the 0x26 -> 0x27
             // transition. Jumping straight to character select skips that, and the screen's own
@@ -5437,14 +5945,26 @@ namespace
             const uint32_t so = rd32(rdram, 0x2ff10cu) & 0x1FFFFFFFu;
             if (!so) return;
             if (rd32(rdram, so + 0x18u) != bt3NetTargetState()) return;   // left the screen: done
-            if (rd32(rdram, so + 0x620u) != 1u)
+            // Check ALL THREE, not just the mode. The guard used to be `if (mode != 1)`, so once the
+            // versus menu had committed 1P VS 2P the whole block was skipped -- and if the screen's
+            // own entry code then put the DEFAULT battle type and DP budget back, nothing noticed
+            // and nothing repaired them. That is invisible for the defaults (Single is type 0 and
+            // 10 DP is dp 0, so a reset lands on the right value by accident) and only shows up
+            // when a NON-default is chosen, which is exactly the DP 15/20 case.
+            const uint32_t wantType = (uint32_t)ps2NetBattleType();
+            const uint32_t wantDp   = (uint32_t)ps2NetDpLimit();
+            const uint32_t haveMode = rd32(rdram, so + 0x620u);
+            const uint32_t haveType = rd32(rdram, so + 0x624u);
+            const uint32_t haveDp   = rd32(rdram, so + 0x630u);
+            if (haveMode != 1u || haveType != wantType || haveDp != wantDp)
             {
                 wr32(rdram, so + 0x620u, 1u);                  // 1P VS 2P
-                wr32(rdram, so + 0x624u, (uint32_t)ps2NetBattleType());
-                wr32(rdram, so + 0x630u, (uint32_t)ps2NetDpLimit());
+                wr32(rdram, so + 0x624u, wantType);
+                wr32(rdram, so + 0x630u, wantDp);
                 static std::atomic<uint32_t> s_n{0};
-                if (s_n.fetch_add(1u) < 5u)
-                    std::fprintf(stderr, "[netjump] re-asserted 1P VS 2P (something reset it)\n");
+                if (s_n.fetch_add(1u) < 8u)
+                    std::fprintf(stderr, "[netjump] re-asserted: mode %u->1 type %u->%u dp %u->%u\n",
+                                 haveMode, haveType, wantType, haveDp, wantDp);
             }
             return;
         }
@@ -5455,6 +5975,14 @@ namespace
         const uint32_t cur = rd32(rdram, stateObj + 0x18u);
         if (s_step == 0)
         {
+            // [netjump] Needs a session, like step 1. Removing `live` as an entry gate is what let a
+            // DEAD session start a transition: unchecking the fake box drops ps2NetSession() back to
+            // 0, the per-session reset fires and puts s_step back to 0, and step 0 -- the only step
+            // that had no live check -- went ahead and navigated to 0x26 with nobody connected. It
+            // raised the curtain, armed the pad gate, and had no way out, because F10 only exists in
+            // step 2. That is the "giving it test again does nothing": the second attempt was
+            // waiting on a main menu that the first one had already navigated away from.
+            if (!live) return;
             if (cur == bt3NetTargetState()) { s_step = 3; g_netJumpState.store(2, std::memory_order_relaxed); std::fprintf(stderr, "[netjump] already at character select\n"); return; }
             if (cur != 0x04u) return;                       // wait until the main menu is up
             if (s_mode >= 2)
@@ -5465,10 +5993,21 @@ namespace
             }
             if (!bt3MenuGoto(rdram, ctx, runtime, 0x26u)) return;
             g_netJumpHold.store(600, std::memory_order_relaxed);   // hide the menus (~20 s cap)
+            g_netCurtainWant.store(1, std::memory_order_relaxed);  // [netjump] black + "Loading..."
+            // [netjump] The transition owns the pad from here to the curtain coming down. The gate
+            // is the project's own selective freeze, kept since the custom page was retired, and
+            // the allow mask is CIRCLE alone -- so every button and both sticks are released and
+            // the one key the player is allowed is the one that aborts. Reusing it matters: a
+            // second freeze beside it is a second thing to keep in agreement with the seam.
+            // CIRCLE is bit 13 of the active-low pad word.
+            ps2xNetMenuGate(1, 1u << 13);
+            s_sawDuel = false;
             s_step = 1; return;   // no fixed wait: step 1 polls for the module itself
         }
         if (s_step == 1)
         {
+            if (!live) return;          // no session: stop advancing. The curtain and the gate come
+                                        // down on the session reset or the give-up, not here.
             if (cur != 0x26u) return;   // still switching modules: poll, do not give up
             // Choose 1P VS 2P *here*, on the versus menu, because this is the only place it can
             // be chosen: the duel module's object [0x3b38e8] holds the real setting and is FREED
@@ -5505,24 +6044,106 @@ namespace
         }
         if (s_step == 2)
         {
-            if (cur != bt3NetTargetState())
+            // [netjump] ARRIVAL, measured by the duel module and NOT by the state.
+            //
+            // duelObj ([0x3b38e8]) is non-null exactly while the versus menu is up and goes null the
+            // moment the game leaves it: 0xc4a340 across 0x26, 0 on 0x27 and on 0x28, for the whole
+            // run. The game writes it; we never do.
+            //
+            // The state cannot answer this question, because WE wrote it on the way in with
+            // bt3MenuGoto(0x26) -- reading it back only confirms our own write, which is precisely
+            // why the first version could sit at 0x26 for 600 frames with a gate armed and a
+            // curtain up and never notice anything was wrong.
+            const uint32_t duel = rd32(rdram, 0x3b38e8u) & 0x1FFFFFFFu;
+            if (duel) s_sawDuel = true;
+            if (duel || !s_sawDuel)
             {
-                // PULSE the confirm: there are TWO menus to get through (versus mode, then
-                // battle type), and a held button is ONE press -- a second menu needs a release
-                // in between. 3 frames down, 5 up, so roughly four presses a second. The previous
-                // version pressed once and waited 240 frames before retrying, which is the 8-second
-                // "slow clicking" -- that was my retry timer, not the game being slow.
+                // Still in the versus menu, or never got there. Keep the picture held: the count
+                // re-arms every frame, and the 600 below is the backstop for when this state
+                // machine stops running at all.
+                g_netJumpHold.store(600, std::memory_order_relaxed);
+                // PULSE the confirm: there are TWO menus to get through (versus mode, then battle
+                // type), and a held button is ONE press -- a second menu needs a release in between.
+                // 3 frames down, 5 up. The previous version pressed once and waited 240 frames
+                // before retrying, which is the 8-second "slow clicking" -- that was my retry timer,
+                // not the game being slow.
                 if (!s_pulseStart) s_pulseStart = now;
-                if (now - s_pulseStart > 600u)      // ~20 s: something is wrong, stop hiding it
+                // [netjump] Three ways out of here, all running the SAME teardown: the timeout, the
+                // test hook, and the player's circle. A cancel is not a fourth path, it is this one
+                // with a different reason -- which is why the curtain comes down the same way and
+                // there is only one reverse trip to get right.
+                // [netjump] the forced failure lands here, so it runs the SAME branch as the real
+                // timeout below rather than a copy of it -- a copy is a second thing to keep right.
+                const bool cancelled = g_netJumpCancel.exchange(0, std::memory_order_relaxed) != 0;
+                // [netjump] Losing the session is a fourth way out, and it has to be HERE. Steps 0
+                // and 1 now refuse to advance without one, so a session that dies mid-transition
+                // reaches this step with the curtain up and no way to lower it -- unless this is
+                // also a give-up. With it, every way of losing a session funnels into the same
+                // teardown and the same reverse trip, which is the only reason the curtain can be
+                // trusted to come down.
+                const bool lost = !live;
+                // [netjump] A desync during the transition is a give-up, same as a cancel. The two
+                // sides are supposed to be walking the same menus from the same frame; once the
+                // confirmed-state hashes differ, whatever is on screen is no longer a shared
+                // screen and letting the transition keep driving it is how you end up with two
+                // machines in different places and a curtain that never lifts.
+                //
+                // Only while the curtain is up, which is exactly this step -- that is where
+                // g_netCurtainWant is 1. Outside a transition a desync is a different problem with
+                // a different fix, and pretending otherwise here would abort a match that is
+                // playing perfectly well apart from one bad checksum.
+                const uint32_t desyncNow = ps2NetDesyncFrame();
+                const bool desync = desyncNow != 0u && desyncNow != s_desyncBase;
+                if (cancelled || lost || desync ||
+                    now - s_pulseStart > 600u)     // ~20 s: something is wrong, stop hiding it
                 {
-                    std::fprintf(stderr, "[netjump] stuck at state 0x%02x (wanted 0x%02x) -- giving up\n",
-                                 cur, bt3NetTargetState());
-                    g_netJumpHold.store(0, std::memory_order_relaxed); s_step = 3; g_netJumpState.store(2, std::memory_order_relaxed); return;
+                    // One reason, one line. The desync case carries its frame because the frame
+                    // number is the only thing that says WHICH desync, and there is one per session.
+                    char why[64];
+                    if (desync)
+                        std::snprintf(why, sizeof why, "desync at frame %u", desyncNow);
+                    else if (cancelled)
+                        std::snprintf(why, sizeof why, "cancelled by the player");
+                    else if (lost)
+                        std::snprintf(why, sizeof why, "session lost");
+                    else
+                        std::snprintf(why, sizeof why, "no progress");
+                    std::fprintf(stderr, "[netjump] giving up (%s) at state 0x%02x, duelObj=0x%x\n",
+                                 why, cur, duel);
+                    // Same thing in reverse, back to the main menu. The curtain comes down so the
+                    // player watches the way out instead of being cut to the menu, and the hold is
+                    // re-armed for the trip so the versus menu is not seen on the way either.
+                    // s_step = 4 keeps this machine out of the way while it runs; a new connect
+                    // bumps the session and resets it (see the reset above).
+                    // The curtain STAYS UP. The transition is one journey with two ends -- character
+                    // select, or the main menu -- and the curtain covers both; it comes down when
+                    // the game arrives at one of them, not when the machine decides to stop trying.
+                    // Dropping it here would cut from black straight to a versus menu the player was
+                    // just told they had left, which is the worst of both.
+                    //
+                    // So step 4 pulses triangle until 0x04, and the ONLY thing that can end this
+                    // short of arriving is the watchdog below.
+                    g_netJumpHold.store(600, std::memory_order_relaxed);
+                    s_returnStart = now;
+                    s_saidEntry = false;   // so the next trip announces itself too
+                    s_step = 4;
+                    g_netJumpState.store(3, std::memory_order_relaxed);   // 3 = returning: "Aborting..."
+                    return;
                 }
-                if (cur == 0x26u && ((now - s_pulseStart) % 8u) == 0u)
+                if (duel && ((now - s_pulseStart) % 8u) == 0u)
+                {
+                    // The project's own synthetic press, not g_netJumpPressCross: the retired page's
+                    // seam applies OUTSIDE the netplay block, so it works with no session at all --
+                    // which is what makes a faked test possible. CROSS is bit 14, active low.
+                    ps2xNetMenuPress(1 << 14, 3);
                     g_netJumpPressCross.store(3, std::memory_order_relaxed);
+                }
                 return;
             }
+            // ARRIVED. duelObj is gone, so the game has left the versus menu for character select
+            // (0x27 for Single) or the pre-fight setup (0x28 for Team and DP).
+            std::fprintf(stderr, "[netjump] arrived: duelObj released, state=0x%02x (%s)\n",
+                         cur, cur == 0x27u ? "character select" : "pre-fight setup");
             // Set the match up as 1P VS 2P, Single Battle.
             // These live INSIDE the state object, so they are reached through the pointer at
             // 0x2ff10c like the state itself -- no heap literal:
@@ -5540,6 +6161,12 @@ namespace
             wr32(rdram, stateObj + 0x624u, (uint32_t)ps2NetBattleType());
             wr32(rdram, stateObj + 0x630u, (uint32_t)ps2NetDpLimit());
             g_netJumpHold.store(0, std::memory_order_relaxed);   // character select is up: show it
+            g_netCurtainWant.store(0, std::memory_order_relaxed);  // [netjump] and take the curtain down
+            // The pad goes back with the curtain. Not before: a black screen with the pad already
+            // live lets the player drive menus they cannot see, which is worse than the two frames
+            // of the other way round.
+            ps2xNetMenuGate(0, 0);
+            g_netJumpCancel.store(0, std::memory_order_relaxed);
             static const char *kType[] = { "Single", "Team", "DP" };
             const unsigned bt = (unsigned)ps2NetBattleType();
             static const char *kDp[] = { "10 DP", "15 DP", "20 DP" };
@@ -5550,15 +6177,126 @@ namespace
                          bt == 2 ? ", " : "", (bt == 2 && dp < 3) ? kDp[dp] : "");
             s_step = 3; g_netJumpState.store(2, std::memory_order_relaxed);
         }
+
+    if (s_step == 4)
+    {
+        // [netjump] Back to the main menu, because a transition that gave up leaves the game sitting
+        // in the versus menu with nobody pressing anything, and that is worse to look at than being
+        // where you started. The curtain is already on its way down, so this runs under black and
+        // the player never sees the versus menu on the way out.
+        // [netjump] Step 4 was completely silent, which is why a failing return trip looked
+        // identical to a working one: the log just stopped after the give-up. Every branch below
+        // now says something, including a heartbeat, so "it is still trying" and "it is not
+        // running" are different things in the log instead of the same absence.
+        {
+            if (!s_saidEntry)
+            {
+                s_saidEntry = true;
+                std::fprintf(stderr, "[netjump] return trip: heading for 0x04, curtain stays up "
+                                     "(circle again to take the game back now)\n");
+            }
+        }
+        // [netjump] Nothing gates entry here any more. There used to be a one-shot
+        // g_netJumpReturn flag, consumed here with exchange(0), and it was the whole reason the
+        // return trip did nothing: the first tick took the 1 and carried on, the SECOND tick found
+        // 0 and did `s_step = 3; return`. One triangle pulse, then silence. The watchdog lives in
+        // this same block, so it never ran either -- the curtain went up and nothing was ever going
+        // to bring it down. `s_step == 4` already IS the state; a second signal saying the same
+        // thing, with the wrong lifetime, was the bug.
+        // [netjump] The second CIRCLE is the escape hatch. The first one asked for the trip back and
+        // the curtain is deliberately still up, waiting for the game to reach 0x04 -- so if the duel
+        // module will not release, the player is looking at a black screen that only a watchdog can
+        // end, twenty seconds later. They should not have to wait for a watchdog: pressing the
+        // cancel button again says "stop, give me my game back", and that is the one thing this
+        // whole arrangement owes them.
+        //
+        // Everything comes back at once, in the order that matters -- pad, then picture, then the
+        // curtain, which is also what carries the audio. No navigation, no attempt to reach 0x04:
+        // the player ends up wherever the game actually is, which is a real screen.
+        if (g_netJumpCancel.exchange(0, std::memory_order_relaxed) > 0)
+        {
+            std::fprintf(stderr, "[netjump] second circle at state 0x%02x -- handing the game back "
+                                 "where it is\n", cur);
+            ps2xNetMenuGate(0, 0);
+            g_netJumpHold.store(0, std::memory_order_relaxed);
+            g_netCurtainWant.store(0, std::memory_order_relaxed);
+            s_returnStart = 0;
+            s_step = 3;
+            g_netJumpState.store(0, std::memory_order_relaxed);
+            return;
+        }
+        // [netjump] The watchdog. The curtain is deliberately held until the game reaches 0x04, and
+        // step 4 is driving the menus to get it there -- so if the duel module will not release, the
+        // curtain would never come down on its own. That is the failure this whole arrangement
+        // risks, and it is the one that left a black screen and a dead controller before, so it gets
+        // its own exit: after 20 s of trying, hand everything back and stop pretending. The player
+        // ends up wherever the game is, which is a real screen, instead of on black.
+        if (s_returnStart && now - s_returnStart > 600u)
+        {
+            std::fprintf(stderr, "[netjump] the return trip timed out at state 0x%02x -- "
+                                 "releasing the player where the game is\n", cur);
+            g_netJumpHold.store(0, std::memory_order_relaxed);
+            g_netCurtainWant.store(0, std::memory_order_relaxed);
+            ps2xNetMenuGate(0, 0);
+            g_netJumpCancel.store(0, std::memory_order_relaxed);
+            s_returnStart = 0;
+            s_step = 3;
+            g_netJumpState.store(0, std::memory_order_relaxed);
+            return;
+        }
+        if (rd32(rdram, stateObj + 0x18u) == 0x04u)
+        {
+            g_netJumpHold.store(0, std::memory_order_relaxed);   // arrived: show the main menu
+            g_netCurtainWant.store(0, std::memory_order_relaxed);
+            ps2xNetMenuGate(0, 0);        // the pad comes back with the curtain, same as the
+            g_netJumpCancel.store(0, std::memory_order_relaxed);   // forward trip
+            s_step = 3;
+            g_netJumpState.store(0, std::memory_order_relaxed);
+            std::fprintf(stderr, "[netjump] back at the main menu -- curtain down, pad and audio back\n");
+            return;
+        }
+        if (now < s_waitUntil) return;
+        // The duel module owns the screen until it lets go, so confirm first and only then ask for
+        // the main menu -- the same order the forward path uses, in reverse. bt3MenuGoto needs the
+        // MAIN-MENU object, which only exists again once we are back, hence the second step below.
+        if (rd32(rdram, stateObj + 0x18u) == 0x26u)
+        {
+            // [netjump] TRIANGLE, and this is the bug the user's own test found: pressing cross here
+            // pushed the screen the WRONG way, forward into character select instead of back to the
+            // main menu. Walking 0x26 -> 0x04 by hand takes triangle. The two are separate bits --
+            // cross 14, triangle 12 -- so they need separate masks.
+            ps2xNetMenuPress(1 << 12, 3);
+            {   // [netjump] Every 30th pulse, so the log shows the trip is alive without becoming
+                // the log. A silent retry loop is indistinguishable from a dead one.
+                static uint32_t s_pulses = 0;
+                if ((++s_pulses % 30u) == 1u)
+                    std::fprintf(stderr, "[netjump] return trip: triangle pulse #%u at state 0x%02x\n",
+                                 s_pulses, cur);
+            }
+            s_waitUntil = now + 24u;
+            return;
+        }
+        if (!bt3MenuGoto(rdram, ctx, runtime, 0x04u)) { s_waitUntil = now + 30u; return; }
+        std::fprintf(stderr, "[netjump] 0x%02x -> 0x04 (back to the main menu)\n",
+                     rd32(rdram, stateObj + 0x18u));
+        s_waitUntil = now + 90u;
+        return;
+    }
     }
 
     // [dumpkey] PS2X_DUMPKEY=<prefix>: press F9 to write EE RAM to "<prefix>.<n>.bin".
-    // Needed because the RetroAchievements addresses do NOT transfer to this build: everything
-    // at 0x6afxxx is HEAP (the ELF's loaded segments end at 0x334bf8), and our recompilation
-    // runs its own allocator, so the game's menu objects land at different addresses than they
-    // do under PCSX2. Our own layout IS stable run to run (the state object is at 0x6b3180 every
-    // time), so the equivalents can be found -- but only by dumping at KNOWN screens and diffing,
-    // which means letting the player mark the moment.
+    // Needed to find the RetroAchievements addresses that are NOT the state object. The state
+    // object's are already translated: the achievements were written against PCSX2, where it sat at
+    // 0x6af180, and in this build it is at 0x6b3180 -- a flat +0x4000, confirmed from two
+    // directions because 0x006af7a0/0x006af7a4 land on stateObj+0x620/+0x624, which is where mode
+    // and battle type were already known to live. See scripts/gen_ach_patch.py, whose VERIFIED list
+    // is where that translation is applied and where the rest of the set is held back.
+    //
+    // The remaining regions are still HEAP (the ELF's loaded segments end at 0x334bf8) and still
+    // land at different addresses than under PCSX2, and our layout IS stable run to run, so the
+    // equivalents can be found by dumping at KNOWN screens and diffing -- which means letting the
+    // player mark the moment. PS2X_ACH_TRACE=1 logs every address the tracker reads, which is the
+    // other half of the same job.
     extern "C" bool IsKeyPressed(int key);   // raylib; KEY_F9 == 298
     static void bt3DumpKey(uint8_t *rdram)
     {
@@ -5740,6 +6478,9 @@ namespace
     extern "C" bool ps2xRenderSkipOn();                                                       // [rollback] ps2_memory.cpp
     void bt3FrameKick(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // FUN_00100ab8
     {
+        // [netmenu] stash the pointers so the host menu can call sePlay() (the game's own SE).
+        g_ps2xMenuRdram = rdram;
+        g_ps2xMenuRuntime = runtime;
         // Keep the SE stream fed from the active voices. Effects are produced incrementally so
         // a stop-by-serial can cut a voice's tail; without a per-frame top-up a long effect
         // would only advance when the next SE command happened to arrive.
@@ -5771,8 +6512,91 @@ namespace
             {
                 const char *c = std::strchr(s_save, ':');
                 const unsigned long long at = std::strtoull(s_save, nullptr, 10);
-                if (c && g_bt3FrameCount.load(std::memory_order_relaxed) >= at) { s_saved = true; bt3SaveState(c + 1, rdram, ctx, runtime); }
-            }
+                    if (c && g_bt3FrameCount.load(std::memory_order_relaxed) >= at) { s_saved = true; bt3SaveState(c + 1, rdram, ctx, runtime); }
+                }
+                // [savestate] hotkeys: F6 = quicksave, F7 = quickload. Edge-triggered (one action
+                // per press), same file for both. PS2X_SAVESTATE_PATH overrides it; default is the
+                // deploy's savedata folder. This is what lets the intro be skipped: boot, F6 once
+                // the menu is up, then on a later run press F7 (or leave PS2X_LOADSTATE set) and
+                // the snapshot's frame counter jumps the host straight past the FMV/title.
+                {
+                    // [savestate] quick keys (F6 quicksave / F7 quickload / PS2X_QUICK*_AT) are OFF
+                    // by default now; PS2X_QUICKSAVE=1 turns them back on. The env-driven
+                    // PS2X_SAVESTATE / PS2X_LOADSTATE path above is untouched.
+                    static const bool s_quickKeys = [](){
+                        const char *v = std::getenv("PS2X_QUICKSAVE");
+                        return v && v[0] && v[0] != '0';
+                    }();
+                    if (s_quickKeys)
+                    {
+                    static const char *s_slot = [](){
+                        const char *v = std::getenv("PS2X_SAVESTATE_PATH");
+                        return (v && v[0]) ? v : "savedata/bt3-quicksave.sst";
+                    }();
+                    // [savestate] deferred quickload: never load while the game is still opening
+                    // memory cards / bringing the IOP up. A frame-30 load restored the whole
+                    // IOP/EE/VU image into a process whose own init had not run yet: the sound
+                    // system came up silent (measured: "no BGM after 12s"). A quickload requested
+                    // before the memcard boot phase finishes is therefore DEFERRED until it does.
+                    static bool s_qlPending = false;
+                    const auto mcReady = []() -> bool {
+                        const ps2_stubs::MemoryCardDebugSnapshot mc = ps2_stubs::getMemoryCardDebugSnapshot();
+                        return mc.lastCmd != 0 && mc.openFiles.empty();
+                    };
+                    const auto doLoad = [&](const char *why){
+                        const uint64_t now = g_bt3FrameCount.load(std::memory_order_relaxed);
+                        std::fprintf(stderr, "[savestate] %s load <- %s (frame %llu, snapshot frame %llu)\n",
+                                     why, s_slot, (unsigned long long)now,
+                                     (unsigned long long)bt3PeekStateFrame(s_slot));
+                        bt3LoadState(s_slot, rdram, ctx, runtime);
+                    };
+                    const auto requestLoad = [&](const char *why){
+                        if (mcReady()) doLoad(why);
+                        else if (!s_qlPending)
+                        {
+                            s_qlPending = true;
+                            std::fprintf(stderr, "[savestate] %s load deferred until the memcard boot phase is done\n", why);
+                        }
+                    };
+                    if (s_qlPending && mcReady()) { s_qlPending = false; doLoad("deferred"); }
+                    static bool s_f6 = false, s_f7 = false;
+                    const bool f6 = IsKeyDown(295), f7 = IsKeyDown(296);
+                    if (f6 && !s_f6)
+                    {
+                        std::fprintf(stderr, "[savestate] F6 quicksave -> %s (frame %llu)\n",
+                                     s_slot, (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed));
+                        bt3SaveState(s_slot, rdram, ctx, runtime);
+                    }
+                    s_f6 = f6;
+                    if (f7 && !s_f7) requestLoad("F7");
+                    s_f7 = f7;
+                    // PS2X_QUICKLOAD_AT=<frame> / PS2X_QUICKSAVE_AT=<frame>: fire the same action
+                    // once, automatically, at that frame. This is the reproducible way to "force F7"
+                    // (e.g. PS2X_QUICKLOAD_AT=30 to slam a menu snapshot into a fresh boot and see
+                    // whether the intro is skipped or the mirrored host stack breaks).
+                    static const long s_qlAt = [](){ const char *v = std::getenv("PS2X_QUICKLOAD_AT");
+                        return (v && v[0]) ? std::atol(v) : -1L; }();
+                    static const long s_qsAt = [](){ const char *v = std::getenv("PS2X_QUICKSAVE_AT");
+                        return (v && v[0]) ? std::atol(v) : -1L; }();
+                    static bool s_qlDone = false, s_qsDone = false;
+                    const uint64_t frNow = g_bt3FrameCount.load(std::memory_order_relaxed);
+                    if (!s_qsDone && s_qsAt >= 0 && frNow >= (uint64_t)s_qsAt)
+                    {
+                        s_qsDone = true;
+                        std::fprintf(stderr, "[savestate] QUICKSAVE_AT frame %llu -> %s\n",
+                                     (unsigned long long)frNow, s_slot);
+                        bt3SaveState(s_slot, rdram, ctx, runtime);
+                    }
+                    if (!s_qlDone && s_qlAt >= 0 && frNow >= (uint64_t)s_qlAt)
+                    {
+                        s_qlDone = true;
+                        std::fprintf(stderr, "[savestate] QUICKLOAD_AT frame %llu <- %s (snapshot frame %llu)\n",
+                                     (unsigned long long)frNow, s_slot,
+                                     (unsigned long long)bt3PeekStateFrame(s_slot));
+                        requestLoad("QUICKLOAD_AT");
+                    }
+                    }   // [savestate] s_quickKeys
+                }
         }
         bt3StateWatch(rdram, ctx);   // [statewatch]
         bt3MatchWatch(rdram);        // [matchwatch]
@@ -5780,9 +6604,24 @@ namespace
         bt3MemWatch(rdram);          // [memwatch]
         bt3MemBlock(rdram);          // [memblock]
         bt3DumpKey(rdram);           // [dumpkey]
+        if (bt3StateLogOn()) bt3StateLogFrame(rdram);   // [statelog] one line per screen change
         bt3NetJumpCharSelect(rdram, ctx, runtime); // [netjump]
+        bt3MenuJumpFrame(rdram, ctx, runtime);     // [menujump] PS2X_MENU_JUMP + P+L / LMB+RMB combo
+        ps2x_dueldump::tick(rdram, runtime);   // [dueldump] PS2X_DUELDUMP=1
+        ps2x_dueldump::tickSettings(rdram);    // [duelsettings] PS2X_DUELSETTINGS=1
+        ps2x_dueldump::tickTime(rdram);        // [dueltime] PS2X_DUELTIME=1
         ps2NetInit();   // [netplay] no-op unless PS2X_NET / PS2X_NET_LISTEN is set
         ps2NetFrame(static_cast<uint32_t>(g_bt3FrameCount.load(std::memory_order_relaxed)));
+        // [ach] One condition evaluation per presented frame, next to the netplay tick because it
+        // is the same kind of guest-RAM observer. It is a no-op unless the tracker is on, and it
+        // runs on this thread rather than from swapFrame() so that the [netjump] freeze, which
+        // returns early in swapFrame() before reaching the renderer, cannot skip a frame of
+        // evaluation while the screen is held.
+        ps2AchFrame(rdram);
+        // [notify] The drop box, polled from here rather than from the overlay's draw(). The tick
+        // runs every frame whatever the UI is doing, and it is the only place with the guest RAM in
+        // hand -- which the box's `dump` verb needs. The module throttles the actual stat().
+        ps2xNotifyPollDropBox(ps2xDropBoxDir(), rdram);
         ps2DetHashFrame(rdram, ctx->vu0_r);   // [dethash]
         if (g_ps2StepCensus.load(std::memory_order_relaxed)) ps2StepCensusFrame(ctx);   // [stepcensus]
         ps2HalfStepFrame(ctx);        // [halfstep] (no-op unless configured; raises the macro switch on fight frames only)
@@ -6462,6 +7301,29 @@ namespace
         if (g_orig35DE58) g_orig35DE58(rdram, ctx, runtime);
     }
 
+    // [ovmain] The overlay ENTRY POINT f_334c00 (DBZP.BIN e_entry = 0x334c00) hangs with a REAL
+    // memory-card save loaded. overlay_register maps only two slots for it:
+    //     [0]  = 0x334c00 (entry)   [20] = 0x334c50 (the one real label)
+    // and leaves 1..19 NULL. The host re-dispatches the function with ctx->pc = 0x334c40 (mid-body,
+    // right before the first `jal`); the dispatcher resolves slot (0x334c40-0x334c00)/4 = 16, finds
+    // it NULL, and falls into the gap handler which re-dispatches the SAME pc -> infinite
+    // host-side re-entry. The profiler pegs 100% at 0x334c40 (that pc, not a guest loop). The
+    // empty save never reached the overlay, which is why this only appears with a populated card.
+    //
+    // Fix: point slot 16 at a stub that jumps to the return path (0x334c50, slot 20) so the
+    // pending call sequence completes instead of spinning. Same for the other mid-body slots
+    // (1..19) so any of them can re-enter without the same fate. PS2X_OVMAIN=0 disables.
+    void bt3OverlayMidReentry(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static int s_n = 0;
+        if (s_n < 20)
+        {
+            ++s_n;
+            std::fprintf(stderr, "[ovmain] mid-body re-entry at 0x%X -> jump 0x334c50\n", ctx->pc);
+        }
+        ctx->pc = 0x334c50u;   // the real label: the two `jal`s have already been dispatched
+    }
+
     void applyBt3SoundInitBypass(PS2Runtime &runtime)
     {
         std::cerr << "[game_overrides] BT3: sound init bypass + lock-callback stub" << std::endl;
@@ -6482,6 +7344,69 @@ namespace
             std::fprintf(stderr, "[movprobe] hooks start=%d stop=%d endpred=%d seq=%d\n",
                          g_orig126D40 ? 1 : 0, g_orig126DD8 ? 1 : 0,
                          g_orig126E88 ? 1 : 0, g_orig35DE58 ? 1 : 0);
+        }
+        {   // [ovmain] The overlay table is populated by a static initializer (overlay_register.cpp),
+            // so it is already filled when this runs -- this does NOT belong inside the
+            // PS2X_MOVIEPROBE gate above. Fill the NULL mid-body slots of the overlay entry
+            // f_334c00 (1..19, addresses 0x334c04..0x334c4c) with the re-entry stub so a host
+            // re-dispatch there resolves instead of falling into the gap handler and spinning.
+            static const bool s_ov = [](){ const char *v = std::getenv("PS2X_OVMAIN"); return !(v && v[0] == (char)48); }();
+            if (s_ov)
+            {
+                int n_filled = 0;
+                for (uint32_t slot = 1u; slot < 20u; ++slot)
+                {
+                    if (slot < g_ps2OverlayFunctionTableSlotCount && g_ps2OverlayFunctionTable[slot] == nullptr)
+                    {
+                        g_ps2OverlayFunctionTable[slot] = &bt3OverlayMidReentry;
+                        ++n_filled;
+                    }
+                }
+                std::fprintf(stderr, "[ovmain] filled %d mid-body re-entry slots (1..19) of f_334c00\n", n_filled);
+            }
+        }
+        {   // [ovlazy] Report NULL runs in the overlay dispatch table. The table gets one entry
+            // per LABEL the generator detected, so a function body with a single label leaves
+            // every intermediate slot NULL. A host re-dispatch at one of those slots falls into
+            // the gap handler, which re-dispatches the same PC forever -- that is what froze the
+            // game on a populated save (see docs/BUGFIXES-TODO.md). A NULL slot is not itself a
+            // bug: most of the body is straight-line code the host never re-enters. But a NULL
+            // run inside a function that HAS been re-dispatched is the signature, and a
+            // re-dispatch counter makes that visible without waiting for a hang.
+            // PS2X_OVLAZY=0 disables; PS2X_OVLAZYFULL=1 lists every run instead of the summary.
+            static const bool s_lazy = [](){ const char *v = std::getenv("PS2X_OVLAZY"); return !(v && v[0] == (char)48); }();
+            if (s_lazy)
+            {
+                const bool full = std::getenv("PS2X_OVLAZYFULL") != nullptr;
+                uint32_t n_null_total = 0u, n_runs = 0u, run_start = 0u;
+                bool in_run = false;
+                for (uint32_t slot = 0u; slot < g_ps2OverlayFunctionTableSlotCount; ++slot)
+                {
+                    const bool is_null = (g_ps2OverlayFunctionTable[slot] == nullptr);
+                    if (is_null)
+                    {
+                        ++n_null_total;
+                        if (!in_run) { in_run = true; run_start = slot; }
+                    }
+                    else if (in_run)
+                    {
+                        in_run = false;
+                        ++n_runs;
+                        if (full)
+                        {
+                            const uint32_t len = slot - run_start;
+                            std::fprintf(stderr, "[ovlazy] NULL run: slots %u..%u (0x%X..0x%X, %u)\n",
+                                         run_start, slot - 1u,
+                                         g_ps2OverlayFunctionTableBase + run_start * 4u,
+                                         g_ps2OverlayFunctionTableBase + slot * 4u - 4u, len);
+                        }
+                    }
+                }
+                if (in_run) ++n_runs;   // table ran out mid-run
+                std::fprintf(stderr, "[ovlazy] overlay table: %u slots, %u NULL in %u runs%s\n",
+                             g_ps2OverlayFunctionTableSlotCount, n_null_total, n_runs,
+                             full ? "" : "  (PS2X_OVLAZYFULL=1 to list them)");
+            }
         }
         if (std::getenv("PS2X_PROBE_STREAM"))
         {
@@ -7155,4 +8080,25 @@ namespace
     }
     PS2_REGISTER_GAME_OVERRIDE("BT3 NULL packet-list guard", "SLUS_216.78", 0u, 0u, &applyBt3NullPacketGuard);
     PS2_REGISTER_GAME_OVERRIDE("BT3 CD read-state edge guard", "SLUS_216.78", 0u, 0u, &applyBt3CdStateEdge);
+}
+
+// [netmenu] Play one of the game's OWN SEs (system bank A) from the host menu -- no decoded WAVs.
+// bank: a single-slot bitmask (1 = bank A, the 8-sample system set with cursor/confirm/popup).
+// Returns 1 if the bank was captured and a voice was queued, 0 otherwise (so the caller can warn).
+extern "C" int ps2xMenuSePlay(int bank, int idx)
+{
+    if (!g_ps2xMenuRdram || !g_ps2xMenuRuntime) return 0;
+    const uint32_t b = (bank > 0) ? (uint32_t)bank : 1u;
+    if (b == 0u || (b & (b - 1u)) != 0u) return 0;
+    const uint32_t slot = (uint32_t)__builtin_ctz(b);
+    {
+        std::lock_guard<std::mutex> lk(g_seBlobM);
+        if (slot >= kSeSlots || g_seSlot[slot].hdr.empty() || g_seSlot[slot].blob.empty())
+            return 0;
+    }
+    static std::atomic<uint32_t> s_serial{0x9000u};
+    // vol 100/127, pan centre: the exact path the guest uses (sePlay -> a voice into the SE stream).
+    sePlay(g_ps2xMenuRdram, g_ps2xMenuRuntime, b, (uint32_t)(idx < 0 ? 0 : idx), 100u, 64u,
+           s_serial.fetch_add(1u, std::memory_order_relaxed));
+    return 1;
 }

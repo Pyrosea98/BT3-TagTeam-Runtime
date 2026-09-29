@@ -7,6 +7,14 @@ supported — see `docs/MACOS-PORT.md`).
 
 This is an assessment only; no behavior was changed while writing it.
 
+> **Superseded in part.** The review below describes the state while the texture-pack
+> work landed, when the UI was a separate Qt launcher. The front-end now lives inside
+> the runtime (`ps2xRuntime/src/frontend/`), so `ps2xRuntime/src/launcher/` no longer
+> exists, and texture packs are installed from a local archive only (the Qt Network
+> download path was dropped). Section 4 is therefore resolved: the front-end embeds
+> libarchive, so no `7zr`/`tar.exe` and no system 7-Zip is involved any more. The
+> FFmpeg, path-resolution and macOS findings still stand.
+
 ## Summary
 
 | Area | Linux | Windows | macOS |
@@ -83,11 +91,13 @@ This is an assessment only; no behavior was changed while writing it.
 ## References
 
 - `ps2xRuntime/src/lib/ps2_fmv_override.cpp` — FMV override module (FFmpeg/avformat).
-- `ps2xRuntime/src/launcher/tex_pack.{h,cpp}`, `tex_install_dialog.{h,cpp}` — pack
-  location, download (Qt Network), unpacker selection.
+- `ps2xRuntime/src/frontend/fe_pages.cpp` — pack location and install-from-file UI
+  (the former `tex_pack` / `tex_install_dialog`).
+- `ps2xRuntime/src/frontend/archive_x.{h,cpp}` — the embedded libarchive unpacker
+  (replaces the 7z/unrar/bsdtar/tar probing).
 - `ps2xRuntime/CMakeLists.txt:284-380` — FFmpeg linkage (Windows prebuilt / pkg-config).
 - `ps2xRuntime/cmake/CopyFfmpegDlls.cmake:9` — Windows FFmpeg DLL staging.
-- `ps2xRuntime/src/launcher/CMakeLists.txt:14-16,68` — Qt Network.
-- `ps2xRuntime/src/launcher/launcher_window.cpp:227` — `PS2X_EXEDIR` export.
+- `ps2xRuntime/src/main.cpp` — `PS2X_EXEDIR` / `getExecutableDirectory()` resolution
+  (the former `launcher_window.cpp:227`).
 - `ps2xRuntime/src/lib/ps2_texreplace.cpp` — `data/Textures` default (via `ps2xExeDirC`).
 - `docs/MACOS-PORT.md` — macOS status and blockers.

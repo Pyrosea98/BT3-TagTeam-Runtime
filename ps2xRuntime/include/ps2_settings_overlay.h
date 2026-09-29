@@ -2,6 +2,8 @@
 
 #include "ps2_runtime.h"
 #include "runtime/pad_config.h"
+#include "runtime/ps2x_notify.h"     // [notify] NotifyKind, for the popup stack
+#include "runtime/ps2x_settings.h"   // EnvLock, for the keys the environment owns
 #include <string>
 #include <vector>
 #include <array>
@@ -14,6 +16,15 @@ class PS2SettingsOverlay
 public:
     struct Settings
     {
+        // [netplay] The Netplay overlay: the corner label, the panel behind it and the automatic
+        // character-select transition with its curtain. The launcher's Misc page has the same switch
+        // and both read and write the same settings.toml key, so the two cannot disagree; see
+        // ps2x_settings::Settings::netOverlay, which is the same field on the front-end's side.
+        bool netOverlay = true;
+        // [ach] The local RetroAchievements tracker. Same relationship as netOverlay above: this
+        // switch and the launcher's Misc page write the same settings.toml key. See
+        // ps2x_settings::Settings::achievements.
+        bool achievements = true;
         float masterVolume = 1.0f;
         float musicVolume = 1.0f;
         float sfxVolume = 0.4f;
@@ -46,6 +57,9 @@ public:
         bool introVideo = true; // [texui] 4K opening-video override when the pack ships it (applies on restart)
         int buttonLayout = 1;   // [texui] 0 = PS2 (Original Buttons), 1 = Xbox (Xbox Layout); applies on restart
         bool fps60 = false;   // [fps60] 60 fps mode: fight step 1 + the pacing table (applies between fights)
+    // [perf] Show the live fps / frame-time / GPU-busy block in this tab's STATUS section. Off by
+    // default because the GPU side costs a timing query per draw call.
+    bool showPerf = false;
         int inkStrength = 199;   // [inkstrength] cel-outline darkener, % of Cs (199 = hardware 255/128)
         int inkWidth = 100;      // [pgsink] paraLLEl-GS: outline stroke width, % of a PS2 texel (100 = native, 25 = thinnest)
         unsigned inkColor = 0;   // [pgsink] paraLLEl-GS: outline colour 0xRRGGBB (0 = the game's black)
@@ -69,7 +83,7 @@ public:
         bool operator==(const Settings &o) const;
     };
 
-    static bool isWidescreen() { return s_widescreen; }
+    static bool isWidescreen() { return true; }   // [netmenu] forced ON for the whole game (no env)
     static int getLogLevel() { return s_logLevel; }
     static int getStartupLogLevel() { return s_startupLogLevel; }
 
@@ -88,6 +102,21 @@ public:
 
     void initialize();
     void draw(PS2Runtime &runtime);
+    // [perf] El medidor de esquina. Se dibuja dentro del MISMO frame de ImGui que el panel: el
+    // HUD y el panel nunca coexisten, asi que draw() tiene una rama propia para cuando el panel esta
+    // retraido (el estado normal) y, cuando esta desplegandose, lo pinta antes del fade para que no
+    // herede su opacidad.
+    void drawPerfHud();
+
+    // [mmpopup] The main-menu popup: an icon in the bottom-right corner that unfolds a panel.
+    // Wanted() is what the draw() early-out asks, so a retracted panel with the perf HUD off still
+    // opens a frame for it (UiBegin/UiEnd may only happen once per iteration). It is also where
+    // the panel's open state is reset: the draw function only runs while the gate is OPEN, so the
+    // closing edge has to be caught here or the panel would come back open after leaving the
+    // menu. Off unless PS2X_MAINMENU_POPUP_TEST=1.
+    static bool mainMenuPopupWanted();
+    void drawMainMenuPopup();
+
     void shutdown();
 
 private:
@@ -104,6 +133,16 @@ private:
     std::string m_configPath;
     int m_activeTab = 0;
 
+    // [envpersist] Which keys the environment owns this session, as a ps2x_settings::EnvLock mask
+    // (spelled ps2x_settings::kLock*, not imported: a using-declaration for a namespace enumerator
+    // is ill-formed at class scope, and GCC rejects what clang-cl accepts). loadSettings() sets the
+    // bits as it walks its own guards, so that walk stays the one definition of which keys are
+    // env-overridable, and saveSettings() hands the mask to ps2x_settings::applyOverlayValues() so
+    // a locked key keeps the file's value. Persisting an env override turns a one-session
+    // experiment into a permanent setting, and settings.toml is the only record of what the user
+    // chose.
+    uint32_t m_envLocked = 0;
+
     // Open/close deploy animation. m_animT is an eased 0..1 value: 0 = fully
     // closed/hidden, 1 = fully open. It chases m_visible every frame, so the
     // panel keeps rendering (fading + sliding out) for a few frames AFTER
@@ -112,8 +151,14 @@ private:
 
     // Capsule HUD display font (Russo One), loaded once in initialize().
     // Null (falls back to the default ImGui font) if the .ttf couldn't be found.
-    ImFont *m_fontHudTitle = nullptr; // title bar
-    ImFont *m_fontHudLabel = nullptr; // tab labels + section headers
+    //
+    // REMOVED. Both were never assigned -- initialize() puts Russo One at Fonts[0] with
+    // io.Fonts->Clear() first, so the default font IS the HUD face and every caller gets it from
+    // ImGui::GetFont() without a member. A member that is always null is worse than no member: it
+    // reads like a loaded font, and handing it to ImDrawList::AddText() dereferences null and draws
+    // "???" where the text should be. That is exactly what happened to the [notify] cards.
+    //
+    // (Title bar and tab labels both render in the default font today, unchanged.)
 
     // Settings dump logging — which areas are captured to the dump log.
     bool m_dumpAudio = true;
@@ -149,6 +194,21 @@ private:
     // Whether the Bindings / Overlay-settings sub-window (popup) is open.
     bool m_showBindingsPopup = false;
 
+    // [notify] One card in the top-left stack. Held here rather than drawn straight out of the
+    // bus's queue, because a card has a life measured in seconds and the queue is drained once per
+    // frame: drawing from the queue directly would make a card vanish the frame it arrived, and two
+    // events in the same frame would overwrite each other instead of stacking.
+    struct Card
+    {
+        NotifyKind kind = NotifyKind::Netplay;
+        std::string title;
+        std::string body;
+        float age = 0.0f;    // seconds on screen, drives slide and fade
+        float hold = 3.0f;   // how long it stays fully opaque
+        float y = 0.0f;      // eased toward its slot, so a new card pushes the stack smoothly
+    };
+    std::vector<Card> m_cards;   // newest first
+
     void toggleVisible();
     void resetCaptureState();
     void loadSettings();
@@ -169,6 +229,8 @@ private:
     void drawLoggingTab();
     void drawAboutTab();
     void drawNetplayTab();   // [netplay]
+    void drawAchTab();       // [ach] the achievement list
+    void drawNotifyStack();  // [notify] the top-left popup stack, over whatever else is up
     void drawGamepadTestArea(const std::array<uint8_t, 32> &btnDown,
                              const std::array<float, 6> &axis);
     void drawBindingsTable();

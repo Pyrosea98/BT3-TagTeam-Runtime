@@ -7,6 +7,7 @@
 #include "runtime/ps2_gs_pgs.h"
 #include "runtime/ps2_seamvk.h"   // [seamvk]
 #include "runtime/ps2_wshud.h"   // [wshud] the HUD packet walker, shared with the native renderer
+#include "runtime/ps2x_perf_status.h"   // [perf] the shared fps / frame-time / GPU-busy readout
 #include "runtime/ps2_netplay.h"   // [vpdrop] follow the netplay player
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2_gs_gpu.h"
@@ -304,7 +305,11 @@ bool initLocked(State &s)
 #else
     if (packMode()) std::fprintf(stderr, "[pgs] texture pack requested but this paraLLEl-GS checkout has no replacement hook (upstream); packs stay off\n");
 #endif
-    s.timestamps = envOn("PS2X_PGS_TIMESTAMPS");
+    // [perf] Timestamps are also wanted whenever the perf readout is on, not only when someone sets
+    // the env by hand: this backend is registered as the FullFrame source, and a FullFrame claim with
+    // no data behind it is exactly the silent-zero bug the source/coverage fields exist to prevent.
+    // The query pool is created unconditionally by Granite, so this costs nothing to enable.
+    s.timestamps = envOn("PS2X_PGS_TIMESTAMPS") || ps2x::PerfOverlayEnabled();
     if (s.timestamps) { DebugMode dm = {}; dm.timestamps = true; s.iface.set_debug_mode(dm); }
     s.failed = false; s.inited = true;
     std::fprintf(stderr, "[pgs] paraLLEl-GS backend up: %s, ssaa=%u, force_bilinear=%d, replaced_per_sample=%d, skipkick=%u, %s\n",
@@ -936,6 +941,24 @@ void onSwap()
     s.readbackMs += std::chrono::duration<double, std::milli>(t2 - t1).count();
     s.swaps++;
     ps2x_wshud::noteSwap(s.baseH);   // [wshud] the walker's per-frame reset
+    // [perf] Feed the shared GPU-busy readout from the REAL GPU timestamps, per swap. The 5 s
+    // [pgs] line below reads the same counters but only for printing, and at that cadence it cannot
+    // drive a 1 Hz window. These nine buckets DO bracket the scanout and the readback, which is why
+    // this backend is registered as FullFrame while OpenGL can only claim its draw list.
+    if (s.timestamps)
+    {
+        static double lastSwap[int(TimestampType::Count)] = {};
+        double swapTotalS = 0.0;
+        for (int t = 0; t < int(TimestampType::Count); t++)
+        {
+            const double acc = s.iface.get_accumulated_timestamps(TimestampType(t));   // seconds
+            const double d = acc - lastSwap[t];
+            lastSwap[t] = acc;
+            if (d > 0.0)
+                swapTotalS += d;
+        }
+        ps2x::PerfAddGpuBusyNs(static_cast<unsigned long long>(swapTotalS * 1.0e9), 1, 0);
+    }
     const double dt = std::chrono::duration<double>(t2 - s.tStat).count();
     if (dt >= 5.0)
     {

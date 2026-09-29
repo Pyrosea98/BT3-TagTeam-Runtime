@@ -1,9 +1,10 @@
-#include "ps2_runtime.h"   // [fps60] ps2Set60Fps
+﻿#include "ps2_runtime.h"   // [fps60] ps2Set60Fps
 #include "runtime/ps2_texreplace.h"
 #include "runtime/ps2_seamvk.h"   // [nativeopt] seamvk::configure
 #include "runtime/ps2_wshud.h"   // [pgsink] ink colour / width live in the walker module
 #include "ps2_settings_overlay.h"
 #include "runtime/ps2_netplay.h"   // [netplay]
+#include "runtime/ps2x_achieve.h"  // [ach]
 #include "runtime/ps2_gs_pgs.h"   // [pgsink] backend ink width
 #include "runtime/ps2_gs_gpu_renderer.h"
 #include "runtime/ps2_render_scale.h"
@@ -16,10 +17,16 @@
 
 #include "imgui.h"
 #include "gfx/ps2x_ui.h"
-#include "runtime/ps2_video_status.h"   // [video] the status dots   // UiSetup/Begin/End: rlImGui (GL) or imgui_impl_dx11 (PS2X_D3D11)
+#include "runtime/ps2_video_status.h"   // [video] the status dots
+#include "runtime/ps2x_perf_status.h"   // [perf] the live fps / frame-time / GPU-busy readout   // UiSetup/Begin/End: rlImGui (GL) or imgui_impl_dx11 (PS2X_D3D11)
+#include "runtime/ps2x_mainmenu.h"      // [mmpopup] phase names + the plate-count the gate is made of
 #include "gfx/bt3gl_api.h"   // [B] bt3* API bridge
+#include "gfx/image_io.h"    // [netplay] PNG decode for the icon art
+#include <atomic>            // [netjump] g_netCurtainWant, raised by the transition
+#include <cfloat>            // [netjump] FLT_MAX for CalcTextSizeA
 
 #include "runtime/ps2_toml.h"
+#include "runtime/ps2x_settings.h"
 
 #include <fstream>
 #include <sstream>
@@ -31,14 +38,9 @@
 #include <cstring>
 #include <ctime>
 
-static const char *kConfigFileName = "settings.toml";        // launcher + overlay + FMV share this
+static const char *kConfigFileName = "settings.toml";        // front-end + overlay + FMV share this
 static const char *kLegacyConfigFileName = "bt3_settings.ini"; // 0.x format, migrated on first load
 static const char *kDumpFileName = "bt3_settings_dump.log";
-
-static const char *kConfigHeader =
-    "# Dragon Ball Z: Budokai Tenkaichi 3 - Recompiled\n"
-    "# User settings - written by the launcher and the in-game overlay.\n"
-    "# Delete this file to reset everything to defaults.\n\n";
 
 namespace
 {
@@ -138,6 +140,14 @@ namespace
     {
         return ImVec4(r, g, b, a);
     }
+    // [surface] #001B39 -- RGB 0, 27, 57. Every background in the overlay is painted with this one
+    // colour, so the settings panel, the main-menu popup, the popups, the tab strip, the table rows
+    // and the scrollbar read as the same navy. They used to be five different near-blacks
+    // (0.04/0.06/0.08 and friends) that were close enough to look like an accident rather than a
+    // choice. One constant, so the next change is one edit.
+    constexpr float kSurfR = 0.000f, kSurfG = 0.106f, kSurfB = 0.224f;   // 27/255, 57/255
+    ImVec4 surface(float a = 1.0f) { return dbz(kSurfR, kSurfG, kSurfB, a); }
+
     ImVec4 accent(float a = 1.0f) { return dbz(DBZ_R, DBZ_G, DBZ_B, a); }
     ImVec4 gold(float a = 1.0f)   { return dbz(GOLD_R, GOLD_G, GOLD_B, a); }
 
@@ -172,14 +182,14 @@ namespace
         {
             // Capsule HUD: near-black navy panel, thin orange edges, flat readout
             // rows instead of the previous purple-tinted "glow" surfaces.
-            ImGui::PushStyleColor(ImGuiCol_WindowBg,            dbz(0.04f, 0.06f, 0.08f, 0.97f));
-            ImGui::PushStyleColor(ImGuiCol_ChildBg,             dbz(0.06f, 0.08f, 0.10f, 0.60f));
-            ImGui::PushStyleColor(ImGuiCol_PopupBg,             dbz(0.04f, 0.06f, 0.08f, 0.98f));
+            ImGui::PushStyleColor(ImGuiCol_WindowBg,            surface(0.97f));
+            ImGui::PushStyleColor(ImGuiCol_ChildBg,             surface(0.60f));
+            ImGui::PushStyleColor(ImGuiCol_PopupBg,             surface(0.98f));
             ImGui::PushStyleColor(ImGuiCol_Border,              accent(0.55f));
             ImGui::PushStyleColor(ImGuiCol_BorderShadow,        dbz(0.0f, 0.0f, 0.0f, 0.0f));
-            ImGui::PushStyleColor(ImGuiCol_TitleBg,             dbz(0.04f, 0.06f, 0.08f));
-            ImGui::PushStyleColor(ImGuiCol_TitleBgActive,       dbz(0.04f, 0.06f, 0.08f));
-            ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed,    dbz(0.04f, 0.06f, 0.08f));
+            ImGui::PushStyleColor(ImGuiCol_TitleBg,             surface(1.0f));
+            ImGui::PushStyleColor(ImGuiCol_TitleBgActive,       surface(1.0f));
+            ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed,    surface(1.0f));
             ImGui::PushStyleColor(ImGuiCol_Text,                dbz(0.84f, 0.89f, 0.92f));
             ImGui::PushStyleColor(ImGuiCol_TextDisabled,        dbz(0.29f, 0.39f, 0.44f));
             ImGui::PushStyleColor(ImGuiCol_TextSelectedBg,      accent(0.30f));
@@ -201,15 +211,15 @@ namespace
             // Flat "ghost" tabs with a thin orange border (TabBarBorderSize above)
             // instead of a filled rounded-pill active tab — reads as a HUD section
             // switcher rather than a browser-style tab strip.
-            ImGui::PushStyleColor(ImGuiCol_Tab,                 dbz(0.04f, 0.06f, 0.08f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_Tab,                 surface(0.0f));
             ImGui::PushStyleColor(ImGuiCol_TabHovered,          accent(0.20f));
             ImGui::PushStyleColor(ImGuiCol_TabActive,           accent(0.14f));
-            ImGui::PushStyleColor(ImGuiCol_TabUnfocused,        dbz(0.04f, 0.06f, 0.08f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_TabUnfocused,        surface(0.0f));
             ImGui::PushStyleColor(ImGuiCol_TabUnfocusedActive,  accent(0.10f));
-            ImGui::PushStyleColor(ImGuiCol_TableHeaderBg,       dbz(0.08f, 0.10f, 0.12f));
-            ImGui::PushStyleColor(ImGuiCol_TableRowBg,          dbz(0.05f, 0.07f, 0.09f, 0.50f));
+            ImGui::PushStyleColor(ImGuiCol_TableHeaderBg,       surface(1.0f));
+            ImGui::PushStyleColor(ImGuiCol_TableRowBg,          surface(0.50f));
             ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt,       dbz(1.00f, 0.62f, 0.10f, 0.04f));
-            ImGui::PushStyleColor(ImGuiCol_ScrollbarBg,         dbz(0.04f, 0.06f, 0.08f, 0.60f));
+            ImGui::PushStyleColor(ImGuiCol_ScrollbarBg,         surface(0.60f));
             ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab,       accent(0.45f));
             ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered,accent(0.70f));
             ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, gold());
@@ -490,6 +500,10 @@ bool PS2SettingsOverlay::Settings::operator==(const Settings &o) const
            hudOffR == o.hudOffR &&
            overlayPadBtns == o.overlayPadBtns &&
            overlayKeys == o.overlayKeys &&
+           // [ach] netOverlay is absent from this comparison, and that is pre-existing: the
+           // overlay writes it through m_dirty when the switch moves. This one is here because
+           // the same tab owns the whole tracker and a change to it should read as unsaved.
+           achievements == o.achievements &&
            logLevel == o.logLevel;
 }
 
@@ -532,6 +546,7 @@ static bool envUserSet(const char *name)
 void PS2SettingsOverlay::loadSettings()
 {
     m_sawRendererKey = false;
+    m_envLocked = 0;
     // [defaults-sync] Seed from LIVE runtime state (env + main()'s baked defaults) so a
     // missing INI -- or a key the INI doesn't mention -- never pushes this struct's
     // hardcoded values over the validated configuration.
@@ -551,7 +566,13 @@ void PS2SettingsOverlay::loadSettings()
     {
             int r = nameToRenderer(doc.getS("video.renderer", rendererName(m_settings.renderer)), m_settings.renderer);
 #if !defined(PS2X_HAVE_PGS)
-            if (r == Settings::kRendererParallelGS) r = Settings::kRendererOpenGL;
+            if (r == Settings::kRendererParallelGS)
+            {
+                r = Settings::kRendererOpenGL;
+                // Build-capability fallback, not a migration: this build simply cannot run PGS, and
+                // writing the fallback back would erase the choice for a build that can.
+                m_envLocked |= ps2x_settings::kLockRenderer;
+            }
 #endif
 #if !defined(PS2X_HAVE_SEAMVK)
             if (r == Settings::kRendererNative) r = Settings::kRendererOpenGL;
@@ -562,33 +583,66 @@ void PS2SettingsOverlay::loadSettings()
             if (r >= 0 && r <= 4) { m_settings.renderer = r; m_sawRendererKey = true; }
             // [display] window mode / monitor: the popup owns them, defaulted from the legacy fullscreen flag
             m_settings.windowMode = doc.getI("video.window_mode", m_settings.fullscreen ? 2 : 0);
-            m_settings.monitor = doc.getI("video.monitor", 0);
-    }
-    if (!envUserSet("PS2X_GLOW")) m_settings.glow = doc.getB("video.glow", m_settings.glow);
-    if (!envUserSet("PS2X_GLOWFIX")) m_settings.glowFix = doc.getB("video.glowfix", m_settings.glowFix);
-    if (!envUserSet("PS2X_INKSTRENGTH") && !envUserSet("PS2X_ADGS"))
-        m_settings.inkStrength = std::clamp(doc.getI("video.ink_strength", m_settings.inkStrength), 100, 400);
-    m_settings.inkWidth = std::clamp(doc.getI("video.ink_width", m_settings.inkWidth), 25, 100);
-    m_settings.inkColor = hexToColor(doc.getS("video.ink_color", colorToHex(m_settings.inkColor)), m_settings.inkColor);
-    if (!envUserSet("PS2X_BILINEAR")) m_settings.bilinear = doc.getB("video.bilinear", m_settings.bilinear);
-    if (!envUserSet("PS2X_HALFTEXEL")) m_settings.halfTexel = doc.getB("video.halftexel", m_settings.halfTexel);
-    if (!envUserSet("PS2X_SKIPPOST")) m_settings.skipPost = doc.getB("video.skippost", m_settings.skipPost);
-    if (!envUserSet("PS2X_SKIP_STALE_VRAM")) m_settings.skipStaleVram = doc.getB("video.skip_stale_vram", m_settings.skipStaleVram);
-    if (!envUserSet("PS2X_RENDER_SCALE"))
-    {
-        const int s = doc.getI("video.render_scale", m_settings.renderScale);
-        m_settings.renderScale = (s >= 1 && s <= 4) ? s : 1;
-    }
-    if (!envUserSet("PS2X_OUTLINE")) m_settings.outline = doc.getB("video.outline", m_settings.outline);
-    if (!envUserSet("PS2X_TEXPACK")) m_settings.texPack = doc.getB("video.texture_pack", m_settings.texPack);
-    if (!envUserSet("PS2X_FMV_OVERRIDE")) m_settings.introVideo = doc.getB("video.intro_video", m_settings.introVideo);
-    if (!envUserSet("PS2X_BUTTONS")) m_settings.buttonLayout = doc.getI("video.button_layout", m_settings.buttonLayout);
-    if (!envUserSet("PS2X_SHADOWS")) m_settings.shadows = doc.getB("video.shadows", m_settings.shadows);
-    if (!envUserSet("PS2X_DOFMASK")) m_settings.dofBlur = doc.getB("video.dof_blur", m_settings.dofBlur);
-    if (!envUserSet("PS2X_DOFZFAR")) m_settings.dofZFar = std::clamp(doc.getI("video.dof_zfar", m_settings.dofZFar), 20000, 800000);
+            m_settings.monitor = doc.getI("video.monitor", m_settings.monitor);
+        }
+        // [netplay] The same key the front-end writes, so the launcher's Misc switch and this one
+        // are the same setting. NET_OVERLAY stays the default for a run with no saved value, which
+        // is why it is not env-locked the way the video switches are: a saved "off" is the user
+        // saying no, and a saved "on" is the user saying yes, and an environment default should
+        // not outvote either.
+        m_settings.netOverlay = doc.getB("netplay.overlay", m_settings.netOverlay);
+        // [ach] The same key the front-end's Misc page writes. Seeded here rather than only in
+        // applySettings() so the switch shows the saved value before the tab is ever opened.
+        m_settings.achievements = doc.getB("achievements.enabled", m_settings.achievements);
+        if (envUserSet("PS2X_GLOW")) m_envLocked |= ps2x_settings::kLockGlow;
+        else m_settings.glow = doc.getB("video.glow", m_settings.glow);
+        if (envUserSet("PS2X_GLOWFIX")) m_envLocked |= ps2x_settings::kLockGlowFix;
+        else m_settings.glowFix = doc.getB("video.glowfix", m_settings.glowFix);
+        if (envUserSet("PS2X_INKSTRENGTH") || envUserSet("PS2X_ADGS"))
+        {
+            m_envLocked |= ps2x_settings::kLockInkStrength;
+        }
+        else
+        {
+            m_settings.inkStrength = std::clamp(doc.getI("video.ink_strength", m_settings.inkStrength), 100, 400);
+        }
+        m_settings.inkWidth = std::clamp(doc.getI("video.ink_width", m_settings.inkWidth), 25, 100);
+        m_settings.inkColor = hexToColor(doc.getS("video.ink_color", colorToHex(m_settings.inkColor)), m_settings.inkColor);
+        if (envUserSet("PS2X_BILINEAR")) m_envLocked |= ps2x_settings::kLockBilinear;
+        else m_settings.bilinear = doc.getB("video.bilinear", m_settings.bilinear);
+        if (envUserSet("PS2X_HALFTEXEL")) m_envLocked |= ps2x_settings::kLockHalfTexel;
+        else m_settings.halfTexel = doc.getB("video.halftexel", m_settings.halfTexel);
+        if (envUserSet("PS2X_SKIPPOST")) m_envLocked |= ps2x_settings::kLockSkipPost;
+        else m_settings.skipPost = doc.getB("video.skippost", m_settings.skipPost);
+        if (envUserSet("PS2X_SKIP_STALE_VRAM")) m_envLocked |= ps2x_settings::kLockSkipStale;
+        else m_settings.skipStaleVram = doc.getB("video.skip_stale_vram", m_settings.skipStaleVram);
+        if (envUserSet("PS2X_RENDER_SCALE"))
+        {
+            m_envLocked |= ps2x_settings::kLockRenderScale;
+        }
+        else
+        {
+            const int s = doc.getI("video.render_scale", m_settings.renderScale);
+            m_settings.renderScale = (s >= 1 && s <= 4) ? s : 1;
+        }
+        if (envUserSet("PS2X_OUTLINE")) m_envLocked |= ps2x_settings::kLockOutline;
+        else m_settings.outline = doc.getB("video.outline", m_settings.outline);
+        if (envUserSet("PS2X_TEXPACK")) m_envLocked |= ps2x_settings::kLockTexPack;
+        else m_settings.texPack = doc.getB("video.texture_pack", m_settings.texPack);
+        if (envUserSet("PS2X_FMV_OVERRIDE")) m_envLocked |= ps2x_settings::kLockIntroVideo;
+        else m_settings.introVideo = doc.getB("video.intro_video", m_settings.introVideo);
+        if (envUserSet("PS2X_BUTTONS")) m_envLocked |= ps2x_settings::kLockButtonLay;
+        else m_settings.buttonLayout = doc.getI("video.button_layout", m_settings.buttonLayout);
+        if (envUserSet("PS2X_SHADOWS")) m_envLocked |= ps2x_settings::kLockShadows;
+        else m_settings.shadows = doc.getB("video.shadows", m_settings.shadows);
+        if (envUserSet("PS2X_DOFMASK")) m_envLocked |= ps2x_settings::kLockDofBlur;
+        else m_settings.dofBlur = doc.getB("video.dof_blur", m_settings.dofBlur);
+        if (envUserSet("PS2X_DOFZFAR")) m_envLocked |= ps2x_settings::kLockDofZFar;
+        else m_settings.dofZFar = std::clamp(doc.getI("video.dof_zfar", m_settings.dofZFar), 20000, 800000);
     m_settings.fullscreen = doc.getB("video.fullscreen", m_settings.fullscreen);
     m_settings.widescreen = doc.getB("video.widescreen", m_settings.widescreen);
-    m_settings.fps60 = doc.getB("video.fps60", m_settings.fps60);
+        m_settings.fps60 = doc.getB("video.fps60", m_settings.fps60);
+        m_settings.showPerf = doc.getB("video.show_perf", m_settings.showPerf);
     m_settings.windowW = doc.getI("video.window_w", m_settings.windowW);
     m_settings.windowH = doc.getI("video.window_h", m_settings.windowH);
     m_settings.forceBilinear = doc.getB("video.force_bilinear", m_settings.forceBilinear);
@@ -715,7 +769,7 @@ void PS2SettingsOverlay::preloadSettings()
     std::ifstream file(configPath);
     if (!file.is_open())
     {
-        // 0.x legacy INI: the launcher imports it and writes the TOML (dropping the old
+        // 0.x legacy INI: the front-end imports it and writes the TOML (dropping the old
         // file). Running the runner directly, just clear a stray leftover.
         const std::string legacy = s_configDir.empty()
             ? (std::filesystem::current_path() / kLegacyConfigFileName).string()
@@ -754,75 +808,72 @@ void PS2SettingsOverlay::preloadSettings()
 
 void PS2SettingsOverlay::saveSettings() const
 {
-    using ps2x_toml::fmtBool;
-    using ps2x_toml::fmtDbl;
-    using ps2x_toml::fmtInt;
-    using ps2x_toml::fmtIntArray;
-    using ps2x_toml::fmtStr;
+    // [settings] ONE writer for settings.toml: the front-end and this overlay both serialize
+    // through ps2x_settings, so the two cannot drift (the Qt launcher and this overlay did:
+    // the old launcher's `texcache` key was silently dropped every time a play session ended).
+    //
+    // Read-modify-write, and that is the part that matters. Default-constructing `out` made every
+    // key this overlay does not model snap back to its struct default on every save: video.gpu,
+    // and the whole [frontend] section, so the shell forgot the window size it was left at and
+    // the menu theme un-muted itself. Seeding from the file on disk carries those across, and also
+    // makes a key added later survive by default instead of needing a line here on day one.
+    ps2x_settings::Settings out;
+    ps2x_settings::loadFromFile(out, m_configPath);
 
-    std::ostringstream os;
-    os << kConfigHeader << "\n";
+    // The overlay's live values, in the shared module's own struct so the field names line up.
+    // device has no counterpart: the front-end has a single picker and P1 is what it writes.
+    ps2x_settings::Settings live;
+    live.netOverlay = m_settings.netOverlay;   // [netplay] the same key the front-end's Misc writes
+    live.achievements = m_settings.achievements;   // [ach] likewise
+    live.master = m_settings.masterVolume;
+    live.music = m_settings.musicVolume;
+    live.sfx = m_settings.sfxVolume;
+    live.renderer = m_settings.renderer;
+    live.glow = m_settings.glow;
+    live.glowFix = m_settings.glowFix;
+    live.inkStrength = m_settings.inkStrength;
+    live.inkWidth = m_settings.inkWidth;
+    live.inkColor = m_settings.inkColor;
+    live.bilinear = m_settings.bilinear;
+    live.halfTexel = m_settings.halfTexel;
+    live.skipPost = m_settings.skipPost;
+    live.skipStaleVram = m_settings.skipStaleVram;
+    live.renderScale = m_settings.renderScale;
+    live.outline = m_settings.outline;
+    live.texPack = m_settings.texPack;
+    live.introVideo = m_settings.introVideo;
+    live.buttonLayout = m_settings.buttonLayout;
+    live.shadows = m_settings.shadows;
+    live.dofBlur = m_settings.dofBlur;
+    live.dofZFar = m_settings.dofZFar;
+    live.fullscreen = m_settings.fullscreen;
+    live.windowMode = m_settings.windowMode;
+    live.monitor = m_settings.monitor;
+    live.widescreen = m_settings.widescreen;
+    live.windowW = m_settings.windowW;
+    live.windowH = m_settings.windowH;
+    live.forceBilinear = m_settings.forceBilinear;
+    live.fps60 = m_settings.fps60;
+    live.showPerf = m_settings.showPerf;
+    live.hudLayout = m_settings.hudLayout;
+    live.hudOffL = m_settings.hudOffL;
+    live.hudOffC = m_settings.hudOffC;
+    live.hudOffR = m_settings.hudOffR;
+    live.device = deviceIndexForPlayer(0);   // [paddev] P1 (the front-end has one picker)
+    live.deadzone = m_settings.deadzone;
+    live.overlayEnabled = m_settings.overlayEnabled;
+    live.overlayPadBtns = ps2x_settings::formatIntCsv(m_settings.overlayPadBtns);
+    live.overlayKeys = ps2x_settings::formatIntCsv(m_settings.overlayKeys);
+    live.logLevel = m_settings.logLevel;
+    live.dumpAudio = m_dumpAudio;
+    live.dumpVideo = m_dumpVideo;
+    live.dumpControllers = m_dumpControllers;
+    live.dumpRuntime = m_dumpRuntime;
+    live.dumpGamepad = m_dumpGamepad;
 
-    os << "[audio]\n";
-    os << "master_volume = " << fmtDbl(m_settings.masterVolume) << "\n";
-    os << "music_volume = " << fmtDbl(m_settings.musicVolume) << "\n";
-    os << "sfx_volume = " << fmtDbl(m_settings.sfxVolume) << "\n\n";
+    ps2x_settings::applyOverlayValues(out, live, m_envLocked);
 
-    os << "[video]\n";
-    os << "renderer = " << fmtStr(rendererName(m_settings.renderer)) << "\n";
-    os << "glow = " << fmtBool(m_settings.glow) << "\n";
-    os << "glowfix = " << fmtBool(m_settings.glowFix) << "\n";
-    os << "ink_strength = " << fmtInt(m_settings.inkStrength) << "\n";
-    os << "ink_width = " << fmtInt(m_settings.inkWidth) << "\n";
-    os << "ink_color = " << fmtStr(colorToHex(m_settings.inkColor)) << "\n";
-    os << "bilinear = " << fmtBool(m_settings.bilinear) << "\n";
-    os << "halftexel = " << fmtBool(m_settings.halfTexel) << "\n";
-    os << "skippost = " << fmtBool(m_settings.skipPost) << "\n";
-    os << "skip_stale_vram = " << fmtBool(m_settings.skipStaleVram) << "\n";
-    os << "render_scale = " << fmtInt(m_settings.renderScale) << "\n";
-    os << "outline = " << fmtBool(m_settings.outline) << "\n";
-    os << "texture_pack = " << fmtBool(m_settings.texPack) << "\n";
-    os << "intro_video = " << fmtBool(m_settings.introVideo) << "\n";
-    os << "button_layout = " << fmtInt(m_settings.buttonLayout) << "\n";
-    os << "shadows = " << fmtBool(m_settings.shadows) << "\n";
-    os << "dof_blur = " << fmtBool(m_settings.dofBlur) << "\n";
-    os << "dof_zfar = " << fmtInt(m_settings.dofZFar) << "\n";
-    os << "fullscreen = " << fmtBool(m_settings.fullscreen) << "\n";
-    os << "widescreen = " << fmtBool(m_settings.widescreen) << "\n";
-    os << "window_w = " << fmtInt(m_settings.windowW) << "\n";
-    os << "window_h = " << fmtInt(m_settings.windowH) << "\n";
-    os << "force_bilinear = " << fmtBool(m_settings.forceBilinear) << "\n";
-    os << "window_mode = " << m_settings.windowMode << "\n";
-            os << "monitor = " << m_settings.monitor << "\n";
-            os << "fps60 = " << fmtBool(m_settings.fps60) << "\n\n";
-
-    os << "[video.hud]\n";
-    os << "layout = " << fmtInt(m_settings.hudLayout) << "\n";
-    os << "offset_left = " << fmtInt(m_settings.hudOffL) << "\n";
-    os << "offset_center = " << fmtInt(m_settings.hudOffC) << "\n";
-    os << "offset_right = " << fmtInt(m_settings.hudOffR) << "\n\n";
-
-    os << "[controllers]\n";
-    os << "device = " << fmtInt(deviceIndexForPlayer(0)) << "\n";   // [paddev] P1 (the launcher has one picker)
-    os << "deadzone = " << fmtDbl(m_settings.deadzone) << "\n";
-    os << "overlay_enabled = " << fmtBool(m_settings.overlayEnabled) << "\n\n";
-
-    os << "[controllers.hotkey]\n";
-    os << "pad_btns = " << fmtIntArray(m_settings.overlayPadBtns) << "\n";
-    os << "keys = " << fmtIntArray(m_settings.overlayKeys) << "\n\n";
-
-    os << "[logging]\n";
-    os << "log_level = " << fmtInt(m_settings.logLevel) << "\n";
-    os << "dump_audio = " << fmtBool(m_dumpAudio) << "\n";
-    os << "dump_video = " << fmtBool(m_dumpVideo) << "\n";
-    os << "dump_controllers = " << fmtBool(m_dumpControllers) << "\n";
-    os << "dump_runtime = " << fmtBool(m_dumpRuntime) << "\n";
-    os << "dump_gamepad = " << fmtBool(m_dumpGamepad) << "\n";
-
-    std::ofstream file(m_configPath, std::ios::trunc);
-    if (!file.is_open())
-        return;
-    file << os.str();
+    ps2x_settings::saveToFile(out, m_configPath);
 }
 
 void PS2SettingsOverlay::applyDeadzone()
@@ -872,6 +923,20 @@ void PS2SettingsOverlay::syncFromRuntime()
 void PS2SettingsOverlay::applySettings()
 {
     ps2Set60Fps(m_settings.fps60, nullptr);   // [fps60]
+    // [ach] Both switches are applied here, not only where they are drawn, so a saved value takes
+    // effect at boot without the player having to open the tab first. applySettings() runs on the
+    // load path, so the tracker is armed before the first frame is evaluated.
+    //
+    // The ApplyDefault pair, not the plain setters: those are the player's click and give up the
+    // environment, and applySettings() runs right after init -- sharing one entry point would make
+    // NET_OVERLAY=0 and ACHIEVEMENTS=0 no-ops on the one boot they exist for.
+    //
+    // netOverlay is applied here too, which it was not before. It used to be pushed only from
+    // drawNetplayTab(), which meant the environment was the effective value at boot while the tab
+    // showed the saved one -- the two could disagree and nothing would say so.
+    ps2xNetOverlayApplyDefault(m_settings.netOverlay);
+    ps2xAchApplyDefault(m_settings.achievements);
+    ps2x::SetPerfOverlayEnabled(m_settings.showPerf);   // [perf] arm the GPU timing queries at boot too
     s_widescreen = m_settings.widescreen;
     PS2AudioBackend::setMasterVolume(m_settings.masterVolume);
     PS2AudioBackend::setMusicVolume(m_settings.musicVolume);
@@ -1078,6 +1143,744 @@ void PS2SettingsOverlay::readGamepadStateForDevice(
     // Keyboard: no gamepad axes/buttons to read
 }
 
+// [mmpopup] The main-menu test plate.
+//
+// Its whole job is to prove the gate end to end: if this plate is on screen, the runtime believes
+// the main menu is up, and it must vanish on exactly the frame the menu goes away. It is anchored
+// to the game's own plate-build counter (menuObj+0x144, which the build loop at 0x3355b8
+// increments once per entry until 11), NOT to a "menu is displayed" state field -- the addresses
+// docs/MAIN-MENU.md section 7 gives for that do not resolve in this build (*(0x3B38D8) reads 0),
+// so a gate built on them would never open.
+//
+// NET_OVERLAY, or the checkbox in the launcher's Misc page / this overlay's Netplay tab, turns the
+// whole feature on: the label, this panel, and the automatic transition with its curtain. Off by
+// default -- it is a new feature and a corner of someone's game screen is not something to put in
+// front of them unasked.
+extern std::atomic<uint32_t> g_bt3MenuShown;   // [mainmenu] ps2_runtime.cpp: 1 while the menu is up
+extern std::atomic<uint32_t> g_bt3MenuPhase;   // [mainmenu] the ps2x::mainmenu::Phase value
+extern std::atomic<uint32_t> g_bt3MenuPlates;  // [mainmenu] menuObj+0x144, the build counter
+extern "C" int  ps2xNetJumpState();             // [netjump] the jump's phase: 1 armed, 2 settled, 3 returning
+// [netjump] The curtain's TARGET. The level is integrated by drawNetCurtain() below, which is also
+// where this is declared for its own use; the label and the panel need it too, to know whether to
+// take input, and a window behind a curtain must not be clickable.
+extern std::atomic<int> g_netCurtainWant;   // game_overrides.cpp: 1 = cover the screen
+
+// [mmpopup] The panel's open state, plus the gate's previous value. File scope rather than a local
+// so the closing edge can be seen from mainMenuPopupWanted(): the draw function only runs while the
+// gate is OPEN, so by the time the menu is gone there is no longer a frame to notice it in.
+static bool s_mmPopupOpen = false;
+static bool s_mmGateWasOpen = false;
+
+// [mmpopup] Where the panel actually is between 0 (retracted) and 1 (deployed), so it can move
+// instead of appearing. s_mmPopupOpen stays the TARGET: the click and the gate's closing edge flip
+// the target, and this chases it, which means a click mid-animation reverses rather than restarts.
+//
+// Exponential smoothing on DeltaTime, not a per-frame step: at 30 fps a constant step would deploy
+// in half the time it takes at 144. The 0.11s constant is the time to close ~63% of the gap, so the
+// panel is most of the way out at ~0.25s and effectively done by ~0.4s.
+static float s_mmPanelAnim = 0.0f;
+
+bool PS2SettingsOverlay::mainMenuPopupWanted()
+{
+    // Reading the atomic (not the whole snapshot) keeps the draw path free of guest-RAM reads: the
+    // runtime samples once per frame and publishes, this only reads what it published.
+    const bool open = g_bt3MenuShown.load(std::memory_order_relaxed) != 0u;
+
+    // Leaving the menu closes the panel. On the closing edge only, not whenever the gate is shut:
+    // otherwise the panel would be unable to stay open across the frames where it is drawn, and
+    // "was open, now shut" is the one moment that means the menu is actually gone rather than
+    // never having been up.
+    if (s_mmGateWasOpen && !open)
+        s_mmPopupOpen = false;
+    s_mmGateWasOpen = open;
+
+    // Read the switch every call, not once: the two settings UIs flip it while the game is running
+    // and there is no frame to notice it in otherwise.
+    return ps2xNetOverlayEnabled() && open;
+}
+
+// [mmpopup] The Netplay icon: the Namek planet with a cloud drifting around it.
+//
+// The artwork is the Dragon Net menu's own (assets/DragonNet/menu in the old tree, now
+// assets/netplay/): a 464x524 planet and a 300x142 cloud. Both are plain RGBA8 PNGs, decoded once
+// with the same GsDecodeImageRGBA8 the launcher uses for its background.
+//
+// The cloud's motion comes from the design's inline styles, which drive it along a CSS
+// offset-path of two elliptical arcs -- "M48.3,262.5 A170,140 -18 1,1 371.7,157.5 A170,140 -18 1,1
+// 48.3,262.5 Z" -- over 6s, linear, infinite, with the sprite mirrored. Both arcs are the same
+// ellipse (a 170x140 arc is exactly a half-ellipse), so the whole path is one closed loop: centre
+// (210,210), radii (161.7, 52.5), rotated -18 degrees, and the cloud is 78px wide inside a 420px
+// card. Parametrising that ellipse is the same path, minus the browser.
+struct NetplayIcon
+{
+    unsigned long long planet = 0;
+    unsigned long long cloud  = 0;
+    int pw = 0, ph = 0, cw = 0, ch = 0;
+    bool tried = false;
+    bool ok() const { return planet != 0 && cloud != 0; }
+};
+
+static NetplayIcon g_netplayIcon;
+
+static void loadNetplayIcon()
+{
+    if (g_netplayIcon.tried)
+        return;
+    g_netplayIcon.tried = true;
+
+    // Relative to the working directory, which is the deploy root: the front-end runs with that as
+    // its working directory and CMake stages assets/ next to the executable.
+    const char *envDir = std::getenv("PS2X_NETPLAY_ART");
+    const std::string dir = (envDir && envDir[0]) ? envDir : "assets/netplay";
+
+    std::vector<uint8_t> rgba;
+    int w = 0, h = 0;
+    if (ps2x::gfx::GsDecodeImageRGBA8((dir + "/netplanet.png").c_str(), rgba, w, h) && w > 0 && h > 0)
+    {
+        g_netplayIcon.planet = ps2x::gfx::UiLoadTextureRgba(rgba.data(), w, h);
+        g_netplayIcon.pw = w;
+        g_netplayIcon.ph = h;
+    }
+    if (ps2x::gfx::GsDecodeImageRGBA8((dir + "/netcloud.png").c_str(), rgba, w, h) && w > 0 && h > 0)
+    {
+        g_netplayIcon.cloud = ps2x::gfx::UiLoadTextureRgba(rgba.data(), w, h);
+        g_netplayIcon.cw = w;
+        g_netplayIcon.ch = h;
+    }
+    std::fprintf(stderr, "[netplay-icon] planet=%dx%d cloud=%dx%d loaded=%d\n",
+                 g_netplayIcon.pw, g_netplayIcon.ph, g_netplayIcon.cw, g_netplayIcon.ch,
+                 g_netplayIcon.ok() ? 1 : 0);
+}
+
+// The one point of the design's orbit path, at phase t in [0,1).
+static void netOrbitPoint(float t, float cx, float cy, float rx, float ry, float rotDeg,
+                          float &x, float &y)
+{
+    const float a = t * 6.28318530718f;
+    const float ex = rx * std::cos(a);
+    const float ey = ry * std::sin(a);
+    const float r = rotDeg * 3.14159265359f / 180.0f;
+    const float cs = std::cos(r), sn = std::sin(r);
+    x = cx + ex * cs - ey * sn;
+    y = cy + ex * sn + ey * cs;
+}
+
+// [netplay] The form's values, shared by the settings tab and by the main-menu popup.
+//
+// They were function-local statics inside drawNetplayTab(), which quietly meant the two views could
+// not agree: set a port in the settings tab, open the popup, and it showed a stale 7777 because it
+// had no access to the other copy. One struct, two layouts, one set of values.
+//
+// Still not persisted -- these reset on every process start, so a game-mode change does not survive
+// quitting. Only `peer` can be seeded from outside, and only through PS2X_NET_PEER.
+struct NetplayForm
+{
+    char peer[64] = "127.0.0.1";
+    int  port    = 7777;
+    int  delay   = 2;      // frames; BT3 runs at 30 fps
+    int  battle  = 0;      // 0 Single, 1 Team, 2 DP
+    int  dp      = 0;      // 0 = 10 DP, 1 = 15, 2 = 20
+    int  time    = 3;      // 0..3 = 60/90/180/240 s, 4 = no limit
+    bool jump    = true;   // go to character select once connected
+    bool seeded  = false;
+    // The last connect attempt, for the popup's status monitor. ps2NetHost/ps2NetJoin already
+    // answer false when the socket will not open, but nothing in the API remembers it afterwards,
+    // so "failed to connect" would otherwise be indistinguishable from "never tried".
+    bool attempted = false;
+    bool faild     = false;
+
+    void seed()
+    {
+        if (seeded)
+            return;
+        seeded = true;
+        if (const char *e = std::getenv("PS2X_NET_PEER"))
+            std::snprintf(peer, sizeof peer, "%s", e);
+        if (port < 1 || port > 65535)
+            port = 7777;
+    }
+};
+static NetplayForm g_netForm;
+
+// A label above its widget, for the popup's narrow columns. The tab draws labels inline to the
+// left, which is fine at the 1080px the settings window is and does not fit the popup's 520.
+static void netLabel(const char *label)
+{
+    ImGui::TextUnformatted(label);
+    ImGui::SetNextItemWidth(-1.0f);   // the widget takes the whole cell, not the 120px default
+}
+
+// [netplay] The popup's body: the same form the settings tab shows, in the geometry that fits a
+// corner popup.
+//
+// Only the "Go to character select" checkbox is gone -- its value still lives in the shared form
+// (the tab owns the checkbox), because ps2_netplay's g_autoJump starts false and nothing else sets
+// it, so dropping it entirely would mean the game never jumps. Everything else is the tab's.
+static void drawNetplayPopupBody()
+{
+    g_netForm.seed();
+
+    // The status monitor, and the four states it can be in. This drives the header pill and is the
+    // only thing in the popup that says whether the last button press did anything.
+    struct Status { const char *text; ImVec4 color; int id; };
+    Status st;
+    if (!ps2NetActive())
+    {
+        // No session. If one was asked for and is not here, it did not come up.
+        if (g_netForm.attempted) { st = {"FAILED TO CONNECT", {0.95f, 0.34f, 0.31f, 1.0f}, 3}; }
+        else                     { st = {"WAITING",           {0.62f, 0.68f, 0.74f, 1.0f}, 0}; }
+    }
+    else if (!ps2NetPeerConnected())
+    {
+        st = {"CONNECTING", {1.00f, 0.72f, 0.20f, 1.0f}, 1};
+    }
+    else
+    {
+        st = {"CONNECTED", {0.35f, 0.88f, 0.45f, 1.0f}, 2};
+    }
+
+    // The pill's two animations. Both key off the state id, not off the strings, so a rename cannot
+    // silently restart the flash.
+    //
+    //   CONNECTING breathes, because it is the one state that means "something is happening and
+    //   the answer has not arrived". A steady amber pill reads as a setting; a pulsing one reads as
+    //   a wait. The other three hold still, because they are answers, not waits.
+    //   Any change of state flashes the new colour white and lets it decay, so a transition that
+    //   happens off-screen (a peer that never showed up) is still visible when you look back.
+    const float now = float(ImGui::GetTime());
+    static int   s_lastId = -1;
+    static float s_changedAt = -10.0f;
+    if (st.id != s_lastId)
+    {
+        // The flash, and only the flash. The matching card and sound are raised by ps2NetFrame() in
+        // the netplay module, which runs on every frame of the game; this function only runs while
+        // the panel is open, so a session that connected during a fight would never be announced
+        // from here. One edge detector, in the one place that is always awake.
+        s_lastId = st.id;
+        s_changedAt = now;
+    }
+    const float since = now - s_changedAt;
+    const float flash = since < 0.45f ? (1.0f - since / 0.45f) : 0.0f;
+    // 1.3s per breath, eased so it lingers at each end instead of sweeping linearly.
+    const float breathe = st.id == 1
+        ? 0.62f + 0.38f * (0.5f + 0.5f * std::sin(float(now / 1.3 * 6.28318530718)))
+        : 1.0f;
+    const float lum = (0.55f + 0.45f * flash) * breathe;
+
+    // Header: the Namek mark, the word, and the status pill on the right. Drawn by hand rather than
+    // laid out with SameLine, because the mark is an image on the draw list and the pill has to be
+    // right-aligned to the panel's edge; doing it in one pass keeps all three on one baseline.
+    const float hdrH  = 42.0f;
+    const float hdrW  = ImGui::GetContentRegionAvail().x;
+    const ImVec2 h0   = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(0.0f, hdrH));
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    const ImVec4 gold(1.00f, 0.80f, 0.30f, 1.0f);
+    const float  midY = h0.y + hdrH * 0.5f;
+
+    const float markW = 30.0f;
+    if (g_netplayIcon.ok())
+    {
+        const float markH = markW * float(g_netplayIcon.ph) / float(g_netplayIcon.pw);
+        dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.planet),
+                     ImVec2(h0.x, midY - markH * 0.5f),
+                     ImVec2(h0.x + markW, midY + markH * 0.5f));
+    }
+    const ImVec2 titleSz = ImGui::CalcTextSize("Netplay");
+    dl->AddText(ImVec2(h0.x + markW + 10.0f, midY - titleSz.y * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(gold), "Netplay");
+
+    // The pill, flush right: a soft fill of the state colour, its border, and its name. The flash
+    // lifts the colour toward white and grows the pill a little, and the breath scales the alpha, so
+    // both show up in the border and the text and not only in the fill.
+    ImVec4 sc(st.color.x, st.color.y, st.color.z, 1.0f);
+    sc.x += (1.0f - sc.x) * flash * 0.75f;
+    sc.y += (1.0f - sc.y) * flash * 0.75f;
+    sc.z += (1.0f - sc.z) * flash * 0.75f;
+    const float grow = flash * 2.0f;
+    const ImVec2 stSz = ImGui::CalcTextSize(st.text);
+    const float  pillH = stSz.y + 8.0f + grow;
+    const float  pillW = stSz.x + 22.0f + grow * 2.0f;
+    const ImVec2 p1(h0.x + hdrW - pillW * 0.5f, midY - pillH * 0.5f);
+    const ImVec2 p0(p1.x - pillW, midY - pillH * 0.5f);
+    if (flash > 0.0f)   // the halo, so the change is visible from across the screen
+        dl->AddRect(ImVec2(p0.x - 3.0f, p0.y - 3.0f), ImVec2(p1.x + 3.0f, p1.y + 3.0f),
+                    ImGui::ColorConvertFloat4ToU32(ImVec4(sc.x, sc.y, sc.z, flash * 0.35f)),
+                    pillH * 0.5f + 3.0f, 0, 1.0f);
+    dl->AddRectFilled(p0, p1, ImGui::ColorConvertFloat4ToU32(
+                        ImVec4(sc.x, sc.y, sc.z, 0.16f * lum)), pillH * 0.5f);
+    dl->AddRect(p0, p1, ImGui::ColorConvertFloat4ToU32(ImVec4(sc.x, sc.y, sc.z, lum)),
+                pillH * 0.5f, 0, 1.0f + flash);
+    dl->AddText(ImVec2(p0.x + 11.0f, p0.y + 4.0f),
+                ImGui::ColorConvertFloat4ToU32(ImVec4(sc.x, sc.y, sc.z, lum)), st.text);
+
+    ImGui::Separator();
+
+    if (ps2NetActive())
+    {
+        ImGui::Text("You are player %d", ps2NetLocalPlayer());
+        ImGui::Text("Input delay: %u frames (%u ms at 30 fps)", ps2NetDelay(),
+                    ps2NetDelay() * 33u);
+        { const char *bn[] = {"Single Battle", "Team Battle", "DP Battle"};
+          const char *tn[] = {"60 s", "90 s", "180 s", "240 s", "no limit"};
+          const char *dn[] = {"10 DP", "15 DP", "20 DP"};
+          const int bt = ps2NetBattleType(), tl = ps2NetTimeLimit(), dp = ps2NetDpLimit();
+          ImGui::Text("Game mode: %s%s%s   |   time limit: %s",
+                      (bt >= 0 && bt < 3) ? bn[bt] : "?",
+                      bt == 2 ? " / " : "", (bt == 2 && dp >= 0 && dp < 3) ? dn[dp] : "",
+                      (tl >= 0 && tl < 5) ? tn[tl] : "?"); }
+        ImGui::TextDisabled("Only buttons cross the wire. Each side renders its own player "
+                            "full-screen.");
+        ImGui::Spacing();
+        if (ImGui::Button("Disconnect", ImVec2(-1.0f, 0.0f)))
+        {
+            ps2NetDisconnect("popup");
+            g_netForm.attempted = false;   // back to WAITING, not left reading FAILED
+            g_netForm.faild     = false;
+        }
+        return;
+    }
+
+    if (ImGui::BeginTable("##net_cols", 2, ImGuiTableFlags_SizingStretchProp))
+    {
+        ImGui::TableNextColumn();
+        netLabel("HOST ADDRESS (JOIN ONLY)");
+        ImGui::InputText("##peer", g_netForm.peer, sizeof g_netForm.peer);
+        netLabel("PORT");
+        ImGui::InputInt("##port", &g_netForm.port);
+        if (g_netForm.port < 1 || g_netForm.port > 65535)
+            g_netForm.port = 7777;   // same clamp the tab does, and equally silent
+
+        ImGui::TableNextColumn();
+        netLabel("GAME MODE");
+        { const char *kBattle[] = {"Single Battle", "Team Battle", "DP Battle"};
+          ImGui::Combo("##battle", &g_netForm.battle, kBattle, 3); }
+        netLabel("TIME LIMIT");
+        { const char *kTime[] = {"60 seconds", "90 seconds", "180 seconds",
+                                 "240 seconds (default)", "No limit"};
+          ImGui::Combo("##time", &g_netForm.time, kTime, 5); }
+        // DP Battle's point budget is a SEPARATE row of the versus menu (duelObj+0x118), so choosing
+        // DP without it left the screen playing like Team Battle: the right type, no budget behind it.
+        if (g_netForm.battle == 2)
+        {
+            netLabel("DP LIMIT");
+            const char *kDp[] = {"10 DP", "15 DP", "20 DP"};
+            ImGui::Combo("##dp", &g_netForm.dp, kDp, 3);
+        }
+        ImGui::EndTable();
+    }
+
+    netLabel("INPUT DELAY (FRAMES)");
+    ImGui::SliderInt("##delay", &g_netForm.delay, 1, 10);
+    ImGui::TextDisabled("The HOST's choices apply to both players.");
+
+    ImGui::Separator();
+    if (ImGui::Button("HOST  ·  you are Player 1", ImVec2(-1.0f, 0.0f)))
+    {
+        ps2NetSetAutoJump(g_netForm.jump);
+        ps2NetSetDelay(g_netForm.delay);
+        ps2NetSetBattleType(g_netForm.battle);
+        ps2NetSetTimeLimit(g_netForm.time);
+        ps2NetSetDpLimit(g_netForm.dp);
+        g_netForm.attempted = true;
+        g_netForm.faild     = !ps2NetHost(g_netForm.port, 1);
+    }
+    if (ImGui::Button("JOIN  ·  you are Player 2", ImVec2(-1.0f, 0.0f)))
+    {
+        ps2NetSetAutoJump(g_netForm.jump);
+        ps2NetSetDelay(g_netForm.delay);      // the host's game mode wins
+        char hp[96];
+        std::snprintf(hp, sizeof hp, "%s:%d", g_netForm.peer, g_netForm.port);
+        g_netForm.attempted = true;
+        g_netForm.faild     = !ps2NetJoin(hp, 2);
+    }
+    ImGui::TextDisabled("HOST: press Host and give the other player your IP and this port.");
+    ImGui::TextDisabled("JOIN: type the host's IP above, then press Join.");
+
+}
+
+// [netjump] The curtain: a black rectangle over the game with "Loading..." on it, while the netplay
+// transition walks the menus from the main menu to character select.
+//
+// It answers g_netCurtainWant, which bt3NetJumpCharSelect raises and lowers. The WANT is the
+// contract; the LEVEL is integrated here, because a fade needs a frame clock and the state machine
+// that raises it is the guest's, running at its own pace. Same exponential-on-DeltaTime chase as the
+// panel's, so the two never disagree about how fast things move, and a raise during a lower (or the
+// reverse) reverses rather than queueing.
+//
+// Drawn from BOTH frame paths. The early one is the usual in-game case -- no settings panel open --
+// and the late one is when the player had the panel up, where the curtain has to land on top of it
+// or the transition happens behind a settings window full of controls.
+//
+// A rectangle, not a swapFrame() hold: the hold stops the frame being published, which freezes the
+// picture on whatever was there. This covers it with something that says what is happening, and it
+// costs one full-screen quad. The game keeps rendering underneath, which is the cost of choosing
+// the overlay over the renderer.
+// The integrated level, at namespace scope so the frame function can ask whether the curtain still
+// needs drawing. It is the whole reason the curtain is not gated behind the popup test env any more:
+// see netCurtainBusy() below.
+static float s_curtainLevel = 0.0f;
+
+// True while the curtain is up OR still on its way down. The fade has to keep running after the
+// target drops, so "the target is 0" is not the same question as "is there nothing to draw".
+static bool netCurtainBusy()
+{
+    extern std::atomic<int> g_netCurtainWant;   // game_overrides.cpp: the target, not the level
+    return s_curtainLevel > 0.0f || g_netCurtainWant.load(std::memory_order_relaxed) != 0;
+}
+
+static void drawNetCurtain()
+{
+    const float want = g_netCurtainWant.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+    const float dt = ImGui::GetIO().DeltaTime;
+    s_curtainLevel += (want - s_curtainLevel) * (1.0f - std::exp(-dt / 0.28f));
+    if (std::fabs(s_curtainLevel - want) < 0.004f)
+        s_curtainLevel = want;   // settle, so the last frame of a fade is exactly opaque
+    const float s_level = s_curtainLevel;
+
+    // [netjump] The game is silenced for as long as the curtain is up. Deliberately not a volume
+    // change: the settings panel owns masterVolume and rewrites it from the ini, so this is a
+    // separate factor the mixer multiplies in. BGM and SFX both, because the point is not to hear
+    // the menus being operated under the black.
+    //
+    // BEFORE the early return below, which is the whole fix: the level settles to exactly 0 on the
+    // last frame of a fade, that frame returned before this block, and so the unmute never ran --
+    // the game came back from the transition silent and stayed that way. The mute has to be
+    // released on the frame the curtain reaches zero, which is the frame that draws nothing.
+    {
+        static bool s_muted = false;
+        const bool wantMute = s_level > 0.001f;
+        if (wantMute != s_muted)
+        {
+            s_muted = wantMute;
+            PS2AudioBackend::setCurtainMute(wantMute);   // global namespace: see ps2_audio.h
+        }
+    }
+    if (s_level <= 0.0f)
+        return;
+
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    const ImVec2 a = vp->Pos;
+    const ImVec2 b(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
+
+    // [mmpopup] Hidden from ImGui, drawn with the FRONT draw list. A window cannot do this job: a
+    // fullscreen NoDecoration window still gets whatever WindowBg the theme set, and the theme's
+    // alpha is not ours to push to 1 without unbalancing the style stack the theme pushed.
+    ImDrawList *dl = ImGui::GetForegroundDrawList();   // the main viewport, which is the one we sized
+    if (!dl)
+        return;
+    dl->AddRectFilled(a, b, ImGui::ColorConvertFloat4ToU32(ImVec4(0.0f, 0.0f, 0.0f, s_level)));
+
+    // Both strings ride the level, and their alpha leads the black slightly on the way in and trails
+    // it on the way out, so the text does not sit on a half-black screen looking like a rendering
+    // fault.
+    const float ta = std::min(1.0f, s_level * 1.6f) * 0.55f;   // under half opacity at full black
+    const ImU32 goldA = ImGui::ColorConvertFloat4ToU32(ImVec4(1.0f, 0.80f, 0.30f, ta));
+    const ImU32 greyA = ImGui::ColorConvertFloat4ToU32(ImVec4(0.72f, 0.76f, 0.80f, ta * 0.85f));
+    ImFont *font = ImGui::GetFont();
+    const float  cx   = (a.x + b.x) * 0.5f;
+    const float  cy   = (a.y + b.y) * 0.5f;
+    const float  edge = 34.0f;   // the same inset the corner label uses, so they line up
+
+    // "Loading...", dead centre, with the dots cycling at two per second.
+    // [netjump] Which half of the journey this is. g_netJumpState is the jump's own phase, and 3 is
+    // the one that means "heading back to the main menu" -- set by every give-up, whether it was
+    // the player, a lost session, a desync or the timeout. Saying so matters: a black screen that
+    // says "Loading..." while the game is walking backwards is the player wondering whether
+    // anything is happening, and "Aborting..." is the difference between a wait and a mistake.
+    // Through the accessor, not the variable: g_netJumpState lives in game_overrides.cpp's anonymous
+    // namespace, so it has internal linkage and there is nothing to link against.
+    const bool returning = ps2xNetJumpState() == 3;
+    const char *dots[4] = {"", ".", "..", "..."};
+    static const double s_t0 = ImGui::GetTime();
+    const int n = int((ImGui::GetTime() - s_t0) * 2.0) & 3;
+    char load[32];
+    std::snprintf(load, sizeof load, "%s%s", returning ? "Aborting" : "Loading", dots[n]);
+    // The size argument needs a face to draw with, not a number: the theme registered one font, so
+    // this scales that one rather than asking for a size that does not exist.
+    const float fsize = ImGui::GetFontSize() * 1.6f;
+    const ImVec2 lsz = font->CalcTextSizeA(fsize, FLT_MAX, 0.0f, load);
+    dl->AddText(font, fsize, ImVec2(cx - lsz.x * 0.5f, cy - lsz.y * 0.5f), goldA, load);
+
+    // "Press O circle to cancel", bottom right. Grey rather than gold: it is an instruction, not
+    // the state of things, and the eye should go to the centre first. Only drawn while the curtain
+    // is going UP or fully up -- once it starts coming down the transition is over one way or the
+    // other and offering a cancel would be a lie.
+    //
+    // Circle is true now: the transition arms the project's own pad gate with CIRCLE as the only
+    // allowed bit, so it is the one key the player has, and the seam hands its press to the jump
+    // instead of the game.
+    //
+    // F10 is the third way out, and it is on screen because it has to be: the test hook was a button
+    // in this panel, which the curtain covers. It is a key for the same reason -- you cannot click
+    // what you cannot see.
+    if (want > 0.0f)
+    {
+        // Two different hints, because the two phases ask for different things.
+        //
+        // Two lines because the two phases ask for different things.
+        //
+        // Going: one press asks for the trip back.
+        //
+        // Returning: TWO, and it says what the second one cancels. The first press keeps the curtain
+        // up while the game walks back through the Duel Menu, and a player who cannot get out of a
+        // black screen by pressing the same button again has been told to wait for a watchdog.
+        // Naming the screen is the part that makes it legible: "cancel" alone does not say what is
+        // being cancelled.
+        static const char *kCancel = returning
+            ? "press 2 times O to cancel (Go to Duel Menu)"
+            : "Press O circle to cancel";
+        const float csz = ImGui::GetFontSize();
+        const ImVec2 cs = font->CalcTextSizeA(csz, FLT_MAX, 0.0f, kCancel);
+        dl->AddText(font, csz, ImVec2(b.x - edge - cs.x, b.y - edge - cs.y), greyA, kCancel);
+    }
+}
+
+void PS2SettingsOverlay::drawMainMenuPopup()
+{
+    // [mmpopup] The LABEL: the corner affordance that unfolds the panel. It is the word "Netplay"
+    // and the Namek plate inside one rounded gold box, and the whole thing is the button -- the
+    // plate is not a control of its own, so the label is what you call it. Small thing on screen,
+    // panel on demand; nothing about the menu behind it is covered until you ask for it.
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    const float margin  = 18.0f;
+    const ImVec2 br(vp->Pos.x + vp->Size.x - margin, vp->Pos.y + vp->Size.y - margin);
+
+    // NoBackground is what keeps ImGui's own frame out of it. A zero alpha only hides the fill;
+    // ImGui strokes the window's border out of the same colour, so with NoDecoration alone the
+    // label still came out with a second gold line around it that nothing here had asked for. The
+    // one rectangle on screen is the pill drawn below.
+    // [netjump] NoInputs while the curtain is up. The curtain is a rectangle on the foreground draw
+    // list, which is paint only -- ImGui hit-tests by window rectangle, not by z-order -- so
+    // without this the label and the panel stay clickable while being invisible behind the black.
+    // A click there would land on a control nobody can see.
+    const bool curtainUp = g_netCurtainWant.load(std::memory_order_relaxed) != 0;
+    ImGuiWindowFlags labelFlags = ImGuiWindowFlags_NoDecoration |
+                                  ImGuiWindowFlags_NoBackground |
+                                  ImGuiWindowFlags_NoMove |
+                                  ImGuiWindowFlags_NoSavedSettings |
+                                  ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                  ImGuiWindowFlags_NoNav |
+                                  ImGuiWindowFlags_AlwaysAutoResize;
+    if (curtainUp)
+        labelFlags |= ImGuiWindowFlags_NoInputs;
+
+    loadNetplayIcon();
+
+    // [mmpopup] The metrics live out here, not inside the window: the panel below has to know how
+    // tall the label is to sit above it, and CalcTextSize needs a font, which only exists once the
+    // overlay's frame is open.
+    static const char *kLabel = "Netplay";
+    const ImVec2 labelSz = ImGui::CalcTextSize(kLabel);
+    const float padX  = 15.0f;
+    const float gap   = 10.0f;
+    const float artSz = 34.0f;   // planet width; its 464x524 aspect makes it taller than this
+    const float pillH  = 48.0f;
+    const float pillW  = padX + labelSz.x + gap + artSz + padX;
+    // A pill, not a rounded box: the radius is half the height, so the ends are semicircles.
+    const float pillR = pillH * 0.5f;
+
+    bool clicked = false;
+    ImGui::SetNextWindowPos(br, ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    if (ImGui::Begin("##mm_popup_label", nullptr, labelFlags))
+    {
+        // One InvisibleButton for the whole pill, so the label is clickable too and not just the
+        // artwork -- a 34px planet is a poor thing to ask someone to hit on its own.
+        ImGui::InvisibleButton("##icon", ImVec2(pillW, pillH));
+        clicked = ImGui::IsItemClicked();
+        const bool hovered = ImGui::IsItemHovered();
+
+        const ImVec2 a = ImGui::GetItemRectMin();
+        const ImVec2 b = ImGui::GetItemRectMax();
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        const ImU32 accent = ImGui::GetColorU32(ImVec4(1.00f, 0.80f, 0.30f,
+                                                       hovered ? 1.00f : 0.72f));
+        // [mmpopup] The latent glow: a soft halo of the same gold, breathing on a 3.5s sine, always
+        // on. This is not the status pill's flash -- that one answers a change of state. This one is
+        // the idle "there is something down here", the thing a corner affordance needs to be
+        // noticed at all when the menu behind it is already busy. Kept cheap on purpose: three 1px
+        // rounded strokes, no shader, no texture, nothing to allocate.
+        //
+        // It dims to a third while the panel is out. Open, the label has already done its job and a
+        // glow behind a panel you are reading is just noise.
+        const float breath = 0.5f + 0.5f * std::sin(float(ImGui::GetTime() / 3.5 * 6.28318530718));
+        const float glow   = (0.09f + 0.11f * breath) * (s_mmPopupOpen ? 0.34f : 1.0f);
+        for (int i = 3; i >= 1; --i)
+        {
+            const float e = 1.5f * float(i);
+            dl->AddRect(ImVec2(a.x - e, a.y - e), ImVec2(b.x + e, b.y + e),
+                        ImGui::ColorConvertFloat4ToU32(
+                            ImVec4(1.00f, 0.80f, 0.30f, glow * (4.0f - float(i)) / 3.0f)),
+                        pillR + e, 0, 1.0f);
+        }
+
+        // The box itself: border only. The menu shows through, same as the plate did on its own --
+        // a filled box here would cover the rows the panel is offering to jump to. The stroke picks
+        // up a little of the breath so the border and its halo are one object.
+        dl->AddRect(a, b, ImGui::GetColorU32(ImVec4(1.00f, 0.80f, 0.30f,
+                                                     (hovered ? 1.00f : 0.72f) + 0.10f * breath)),
+                    pillR, 0, s_mmPopupOpen ? 2.0f : 1.0f);
+
+        // The label, left of the artwork, vertically centred on the pill.
+        dl->AddText(ImVec2(a.x + padX, (a.y + b.y) * 0.5f - labelSz.y * 0.5f), accent, kLabel);
+
+        // The plate, in the right-hand slot of the pill.
+        const float cx = b.x - padX - artSz * 0.5f;
+        const float cy = (a.y + b.y) * 0.5f;
+        if (g_netplayIcon.ok())
+        {
+            const float ph = artSz * float(g_netplayIcon.ph) / float(g_netplayIcon.pw);
+            const ImVec2 pp(cx - artSz * 0.5f, cy - ph * 0.5f);
+            // Clipped to the slot, not to the pill: the orbit reaches past the planet's own width,
+            // and unclipped the cloud would print over the label and over the border.
+            dl->PushClipRect(ImVec2(cx - artSz * 0.5f, cy - ph * 0.5f),
+                             ImVec2(cx + artSz * 0.5f, cy + ph * 0.5f), true);
+            dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.planet), pp,
+                         ImVec2(pp.x + artSz, pp.y + ph));
+
+            // The same cloud on the same orbit the panel uses, with the design's ratios kept:
+            // 78px of cloud and a 323x105 ellipse inside a 232px planet.
+            const float cw = artSz * 0.336f;
+            const float ch = cw * float(g_netplayIcon.ch) / float(g_netplayIcon.cw);
+            const float t = float(ImGui::GetTime() / 6.0) - float((int)(ImGui::GetTime() / 6.0));
+            float ox = 0.0f, oy = 0.0f;
+            netOrbitPoint(t, cx, cy, artSz * 0.697f, artSz * 0.226f, -18.0f, ox, oy);
+            dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.cloud),
+                         ImVec2(ox - cw * 0.5f, oy - ch * 0.5f),
+                         ImVec2(ox + cw * 0.5f, oy + ch * 0.5f),
+                         ImVec2(1.0f, 0.0f), ImVec2(0.0f, 1.0f));
+            dl->PopClipRect();
+        }
+        else
+        {
+            // No art: three bars where the planet goes, rather than an empty slot.
+            const float w = artSz * 0.44f, h = 2.5f;
+            for (int i = 0; i < 3; ++i)
+            {
+                const float y = cy + (float(i) - 1.0f) * 7.0f;
+                dl->AddRectFilled(ImVec2(cx - w, y - h), ImVec2(cx + w, y + h), accent, h);
+            }
+        }
+    }
+    ImGui::End();
+    if (clicked)
+        s_mmPopupOpen = !s_mmPopupOpen;
+
+    // [mmpopup] Chase the target. A click in the middle of the animation reverses it, which is what
+    // makes a toggle feel like a toggle and not a queue of two animations.
+    {
+        const float dt = ImGui::GetIO().DeltaTime;
+        const float k  = 1.0f - std::exp(-dt / 0.11f);
+        s_mmPanelAnim += ((s_mmPopupOpen ? 1.0f : 0.0f) - s_mmPanelAnim) * k;
+        if (std::fabs(s_mmPanelAnim - (s_mmPopupOpen ? 1.0f : 0.0f)) < 0.004f)
+            s_mmPanelAnim = s_mmPopupOpen ? 1.0f : 0.0f;   // settle, so the last frame is exact
+    }
+    // Fully retracted: stop drawing. The panel has to keep being drawn on the way OUT (that is the
+    // animation), but once it is at 0 there is nothing left to show and this is the frame that lets
+    // the gate shut without the panel being a window that never ends.
+    if (s_mmPanelAnim <= 0.0f)
+        return;
+
+    // The panel unfolds above and to the left of the pill, so it grows into the screen instead of
+    // off the bottom-right edge. 520 is what the two-column form needs: the settings window this
+    // content came from is min(1080, vpW*0.96), and inline labels do not survive in anything
+    // narrower, which is why the popup's labels sit above their widgets instead.
+    const ImVec2 panelSize(520.0f, 0.0f);
+    // It comes UP out of the pill: 30px of travel, so it reads as the panel rising off the button
+    // that opened it rather than as a window fading in place.
+    const float slide = (1.0f - s_mmPanelAnim) * 30.0f;
+    ImGui::SetNextWindowPos(ImVec2(br.x, br.y - pillH - 10.0f + slide),
+                            ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowSize(panelSize, ImGuiCond_Always);
+    ImGuiWindowFlags panelFlags = ImGuiWindowFlags_NoDecoration |
+                                  ImGuiWindowFlags_NoMove |
+                                  ImGuiWindowFlags_NoSavedSettings |
+                                  ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                  ImGuiWindowFlags_NoNav |
+                                  ImGuiWindowFlags_AlwaysAutoResize;
+    if (curtainUp)   // [netjump] same reason as the label: behind the curtain, unreachable
+        panelFlags |= ImGuiWindowFlags_NoInputs;
+    // Opaque, or the game shows through and the readings are unreadable over moving artwork; the
+    // alpha rides the animation so the panel fades in with its travel instead of appearing at full
+    // strength and then sliding.
+    // ImGuiStyleVar_Alpha is what fades the CONTENT. There is no global alpha in ImGui, and fading
+    // each widget's colour by hand would mean finding every one of them; this multiplies them all.
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, s_mmPanelAnim);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, surface(0.96f * s_mmPanelAnim));
+    if (!ImGui::Begin("##mm_popup_panel", nullptr, panelFlags))
+    {
+        ImGui::End();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+        return;
+    }
+
+    loadNetplayIcon();
+    drawNetplayPopupBody();
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+}
+
+void PS2SettingsOverlay::drawPerfHud()
+{
+    // [perf] Medidor de esquina, arriba a la derecha. Solo el numero de presents por segundo: es lo
+    // unico que se lee de un vistazo sin tapar nada. Lo demas (p50/p95, gpu, cpu) esta en la pestana
+    // Video, que se abre cuando uno quiere el detalle.
+    //
+    // El dato se actualiza una vez por segundo, asi que no tiene sentido cambiar el texto 60 veces
+    // por segundo. Se limita la ACTUALIZACION a 4 Hz, no el dibujado: una ventana de ImGui que no
+    // se abre un frame simplemente no existe ese frame, asi que throttlear con un return temprano
+    // la hacia parpadear. Se dibuja siempre, con el ultimo valor conocido.
+    static double s_lastShown = -1.0;
+    static float s_shownAt = -1.0f;
+
+    const ps2x::PerfStatus pf = ps2x::GetPerfStatus();
+    if (!pf.valid)
+        return;
+
+    const float now = ImGui::GetTime();
+    if (s_shownAt < 0.0f || now - s_shownAt >= 0.25f)
+    {
+        s_shownAt = now;
+        s_lastShown = pf.displayFps;
+    }
+
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    const float margin = ImGui::GetFontSize() * 0.75f;
+    // Pivote (1,0): la BORDE derecho de la ventana cae en el del viewport, asi el ancho variable de
+    // AlwaysAutoResize nunca la empuja fuera de la pantalla.
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - margin, vp->Pos.y + margin),
+                            ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+
+    // NoInputs es lo que garantiza que no se coma clics: sin eso la ventana se traga el raton en la
+    // esquina. NoDecoration quita borde, titulo y boton de cerrar.
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration
+                                 | ImGuiWindowFlags_NoInputs
+                                 | ImGuiWindowFlags_AlwaysAutoResize
+                                 | ImGuiWindowFlags_NoSavedSettings
+                                 | ImGuiWindowFlags_NoFocusOnAppearing;
+    if (!ImGui::Begin("##bt3_perf_hud", nullptr, flags))
+    {
+        ImGui::End();
+        return;
+    }
+
+    // Acento para el numero y apagado para la unidad, igual que el resto del panel.
+    ImGui::PushStyleColor(ImGuiCol_Text, accent());
+    ImGui::Text("%.1f", s_lastShown);
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0.0f, 3.0f);
+    ImGui::TextDisabled("fps");
+    if (pf.displayRefreshHz > 0)
+    {
+        ImGui::SameLine(0.0f, 6.0f);
+        ImGui::TextDisabled("/ %d Hz", pf.displayRefreshHz);
+    }
+
+    ImGui::End();
+}
+
 void PS2SettingsOverlay::draw(PS2Runtime &runtime)
 {
     if (!m_initialized)
@@ -1201,8 +2004,55 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
             m_animT = std::max(target, m_animT - step);
     }
 
+    // [perf] Rama propia para cuando el panel esta retraido, que es el estado normal. El HUD y el
+    // panel NUNCA coexisten, y por eso esto no necesita un segundo frame: UiBegin() hace
+    // ImGui::NewFrame() y UiEnd() hace ImGui::Render(), o sea que el par es un frame completo y
+    // solo puede haber uno por iteracion. La rama del panel de mas abajo queda intacta.
     if (m_animT <= 0.0001f)
+    {
+        // [mmpopup] The main-menu test plate needs a frame of its own when the panel is retracted
+        // and the perf HUD is off, which is the usual state on the main menu. Without this the
+        // function returns before UiBegin() and the plate never appears at all.
+        const bool mmPopup = mainMenuPopupWanted();
+        // [netjump] The curtain is NOT behind the popup test env. It was, which meant that in a real
+        // two-instance session -- where PS2X_MAINMENU_POPUP_TEST is not set -- mainMenuPopupWanted()
+        // was false, this function returned before UiBegin(), and the transition ran with no curtain
+        // and no "Loading..." at all. A test switch controlling a shipping behaviour is the wrong way
+        // round; the curtain answers the netjump and nothing else.
+        const bool curtain = netCurtainBusy();
+        // [notify] A card on screen is a reason to open a frame here even with nothing else to
+        // draw: an unlock can land in a fight, where the panel is retracted and the main-menu popup
+        // does not apply at all, and a session can connect while the player is anywhere.
+        if (!m_settings.showPerf && !mmPopup && !curtain && m_cards.empty() &&
+            ps2xNotifyPending() == 0)
+            return;
+        try
+        {
+            ps2x::gfx::UiBegin();
+            pushDbzTheme();
+            DbzThemeScope dbzTheme;   // pops all 40 style colours on scope exit
+            if (m_settings.showPerf)
+                drawPerfHud();
+            if (mmPopup)
+                drawMainMenuPopup();
+            // [netjump] Last, so it covers the label and the panel: during the transition the player
+            // must not be able to see, or click, the popup that started it.
+            drawNetCurtain();
+            // [notify] Above the curtain, on purpose, and this is the one place the two overlap.
+            // The curtain is the netplay transition and it deliberately hides the thing that
+            // started it; but "your session connected" is the reason the curtain is up, and hiding
+            // that would leave the player looking at a black screen with no explanation. The card is
+            // in the opposite corner from the netplay label, so nothing of the curtain's own
+            // furniture is uncovered.
+            drawNotifyStack();
+        }
+        catch (...)
+        {
+            // Misma politica que el panel: un fallo dibujando nunca debe matar el juego.
+        }
+        ps2x::gfx::UiEnd();
         return;
+    }
 
     const float animEase = overlayAnimEase(m_animT);
 
@@ -1217,6 +2067,12 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
 
         pushDbzTheme();
         DbzThemeScope dbzTheme;   // pops all 40 style colours on scope exit
+
+        // [perf] El HUD va ANTES del fade: ScopedStyleVar animAlpha tiene scope hasta el final del
+        // try, asi que cualquier ventana abierta despues heredaria la opacidad del panel y el medidor
+        // se desvaneceria con el. Acá va a opacidad completa siempre.
+        if (m_settings.showPerf)
+            drawPerfHud();
 
         // Fade the whole window (and the bindings popup, if open) in/out with the
         // deploy animation.
@@ -1305,6 +2161,12 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
                     drawNetplayTab();
                     ImGui::EndTabItem();
                 }
+                if (ImGui::BeginTabItem("  Achievements"))
+                {
+                    m_activeTab = 5;
+                    drawAchTab();
+                    ImGui::EndTabItem();
+                }
                 if (ImGui::BeginTabItem("  Logging"))
                 {
                     m_activeTab = 3;
@@ -1354,6 +2216,11 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
         ImGui::End();
         if (wasVisible && !m_visible)
             ps2_stubs::PadConfig::setInputSuspended(false);
+        drawNetCurtain();   // [netjump] over the settings panel too
+        // [notify] Outside the alpha scope above, for the same reason the perf meter is: a card
+        // would otherwise inherit the panel's deploy fade and be unreadable while the panel is
+        // animating, and the two things it reports are not the panel's business.
+        drawNotifyStack();
     }
     catch (...)
     {
@@ -1387,6 +2254,22 @@ void PS2SettingsOverlay::drawAudioTab()
     volumeSlider("Music", &m_settings.musicVolume);
     volumeSlider("SFX", &m_settings.sfxVolume);
     ImGui::TextDisabled("Music = BGM streams. SFX = voices, effects and one-shots.");
+
+    // [notify] The notification sounds ride the SFX slider, so they belong in the same section as
+    // the thing they ride rather than in a tab named after whichever feature happens to raise the
+    // most of them. There is one switch for all of them: a player who wants the game quiet does not
+    // want a chime from a feature they have never turned on.
+    ImGui::Spacing();
+    {
+        bool sound = ps2xNotifySoundEnabled();
+        if (toggleSwitch("Notification sounds", &sound))
+        {
+            ps2xNotifySetSoundEnabled(sound);
+            m_dirty = true;
+        }
+        ImGui::TextDisabled("The short tones that go with the popups in the top-left corner "
+                            "(netplay, achievements). On by default; follows the SFX volume above.");
+    }
 
     ImGui::Spacing();
 }
@@ -1429,6 +2312,80 @@ void PS2SettingsOverlay::drawVideoTab()
             vs.upscale == ps2x::VideoState::Ok ? "active"
           : vs.scaleNeedsRestart               ? "applies on restart"
                                                : "not available (software renderer)");
+
+        // [perf] Live frame pacing. The nominal refresh is already in hand from the Monitor row, and
+        // showing it NEXT TO the measured rate is the whole trick: a bare "60" is unreadable (vsync
+        // locked? or a coincidence?), while "59.8 / 60 Hz" says at a glance whether the present is
+        // being held to the panel's rate or is running free.
+        if (m_settings.showPerf)
+        {
+            const ps2x::PerfStatus pf = ps2x::GetPerfStatus();
+            if (!pf.valid)
+            {
+                std::snprintf(val, sizeof val, "waiting for the first frame");
+                dot(ps2x::VideoState::Fallback, "FPS", val, "");
+            }
+            else
+            {
+                std::snprintf(val, sizeof val, "%.1f", pf.displayFps);
+                std::snprintf(note, sizeof note, "%s",
+                              pf.displayRefreshHz > 0 ? "" : "  (monitor refresh unknown)");
+                if (pf.displayRefreshHz > 0)
+                    std::snprintf(note, sizeof note, "de %d Hz", pf.displayRefreshHz);
+                dot(ps2x::VideoState::Ok, "FPS", val, note);
+
+                // p50 alone hides stutter completely: a mean of 16.7 can be all 16 ms frames plus
+                // one 80 ms hitch, which is exactly what the 60fps patch and the Windows
+                // micro-freezes look like. p95 is the frame that actually happened.
+                std::snprintf(val, sizeof val, "%.1f / %.1f / %.1f ms",
+                              static_cast<double>(pf.frameMsP50), static_cast<double>(pf.frameMsP95),
+                              static_cast<double>(pf.frameMsMax));
+                std::snprintf(note, sizeof note, "p50 / p95 / max  de %d frames", pf.frameSamples);
+                dot(pf.frameMsP95 > 1000.0 / 45.0 ? ps2x::VideoState::Fallback : ps2x::VideoState::Ok,
+                    "Frame", val, note);
+
+                // The GPU line names its own source and coverage. Without that, a 0 here is
+                // unreadable -- it used to mean "not measured" on two of the three backends.
+                const bool noGpu = pf.gpuSource == ps2x::GpuSource::SoftwareCpu
+                                || pf.gpuSource == ps2x::GpuSource::None;
+                if (noGpu)
+                {
+                    std::snprintf(val, sizeof val, "n/d");
+                    std::snprintf(note, sizeof note, "%s",
+                                  pf.gpuSource == ps2x::GpuSource::SoftwareCpu
+                                      ? "rasterized by CPU, there is no GPU to measure"
+                                      : "the renderer reports no GPU timings");
+                    dot(ps2x::VideoState::Fail, "GPU", val, note);
+                }
+                else if (!pf.gpuMeasured())
+                {
+                    // The backend is live but collected nothing this window. Measured live: three
+                    // windows in a row went 61% -> 0.65% -> 0.61% only because the guest stopped
+                    // issuing draw lists. A 0% here would read as an idle GPU, which is the opposite
+                    // of the truth, so say what actually happened.
+                    std::snprintf(val, sizeof val, "no samples");
+                    std::snprintf(note, sizeof note, "the game emitted no draw list in this second");
+                    dot(ps2x::VideoState::Fallback, "GPU", val, note);
+                }
+                else
+                {
+                    std::snprintf(val, sizeof val, "%.0f %%", pf.gpuBusyPct);
+                    const char *src = pf.gpuSource == ps2x::GpuSource::VulkanTimestamps ? "Vulkan, frame completo"
+                                    : pf.gpuSource == ps2x::GpuSource::OpenGL ? "OpenGL" : "?";
+                    if (pf.gpuCoverage >= 1.0)
+                        std::snprintf(note, sizeof note, "%s  -  %.1f ms/frame, %d muestras", src, pf.gpuMsPerFrame, pf.gpuSamples);
+                    else
+                        std::snprintf(note, sizeof note,
+                                      "%s, draw-list only: it is a minimum  -  %.1f ms/frame, %d samples",
+                                      src, pf.gpuMsPerFrame, pf.gpuSamples);
+                    dot(ps2x::VideoState::Ok, "GPU", val, note);
+                }
+
+                std::snprintf(val, sizeof val, "invitado %.0f %%  submit %.0f %%", pf.guestPct, pf.submitPct);
+                std::snprintf(note, sizeof note, "of CPU time, over the real time");
+                dot(ps2x::VideoState::Ok, "CPU", val, note);
+            }
+        }
     }
 
     // [display] Display settings live in a popup so the tab stays short. Apply = live only; Save = live
@@ -1521,6 +2478,13 @@ void PS2SettingsOverlay::drawVideoTab()
             ps2Set60Fps(m_settings.fps60, nullptr);
             m_dirty = true;
         }
+        // [perf] Toggling this also arms the runtime, which is what turns the GPU timing queries on:
+        // they are not free, so nothing should pay for them unless someone is reading the numbers.
+        if (toggleSwitch("FPS meter (corner)", &m_settings.showPerf))
+        {
+            ps2x::SetPerfOverlayEnabled(m_settings.showPerf);
+            m_dirty = true;
+        }
         if (toggleSwitch("Character Shadows", &m_settings.shadows))
             m_dirty = true;
         if (toggleSwitch("Depth-of-Field Blur", &m_settings.dofBlur))
@@ -1586,11 +2550,11 @@ void PS2SettingsOverlay::drawVideoTab()
                 ImGui::TextColored(ImVec4(0.97f, 0.32f, 0.29f, 1.0f), "*");
                 ImGui::SameLine(0.0f, 8.0f);
                 ImGui::TextUnformatted("No texture pack indexed");
-                ImGui::TextDisabled("Install one from the launcher (Misc tab) or set PS2X_TEXREPLACE=<dir>.");
+                ImGui::TextDisabled("Install one from the front-end (Misc tab) or set PS2X_TEXREPLACE=<dir>.");
             }
             ImGui::Separator();
             if (!havePack) ImGui::BeginDisabled();
-            if (toggleSwitch("Video overlay (4K intro)", &m_settings.introVideo))
+            if (toggleSwitch("4K intro video", &m_settings.introVideo))
                 m_dirty = true;
             ImGui::TextDisabled("Video overlay replaces the opening movie; applies on restart.");
             ImGui::Spacing();
@@ -2190,7 +3154,7 @@ void PS2SettingsOverlay::drawBindingsPopup()
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, dbz(1.00f, 0.62f, 0.10f, 0.30f));
         if (ImGui::Button("Close", ImVec2(100, 30)))
         {   // [noapply] closing the popup saves: settings + per-action bindings (pad.conf), so bindings
-            // edited here survive a restart and reach the Qt launcher's Bindings tab.
+            // edited here survive a restart and reach the front-end's Bindings tab.
             m_showBindingsPopup = false;
             applySettings();
             saveSettings();
@@ -2208,17 +3172,23 @@ void PS2SettingsOverlay::drawBindingsPopup()
 // menu sequence so both sides land on character select together (see ps2NetBeginAutoStart).
 void PS2SettingsOverlay::drawNetplayTab()
 {
-    static char s_peer[64] = "127.0.0.1";
-    static int  s_port = 7777;
-    static bool s_loaded = false;
-    if (!s_loaded)
-    {
-        s_loaded = true;
-        if (const char *e = std::getenv("PS2X_NET_PEER")) { std::snprintf(s_peer, sizeof s_peer, "%s", e); }
-    }
+    // The values live in NetplayForm (see above drawMainMenuPopup), shared with the main-menu
+    // popup: they were statics local to this function, so the two views could not see each other.
+    g_netForm.seed();
 
     ImGui::TextUnformatted("Online play (deterministic lockstep)");
     ImGui::Separator();
+
+    // [netplay] The overlay switch, first thing in the tab, because everything else on this screen
+    // only matters if it is on: the main-menu label, the panel and the automatic transition. Reads
+    // and writes the same saved setting as the launcher's Misc page, so the two cannot disagree.
+    if (toggleSwitch("Netplay overlay", &m_settings.netOverlay))
+    {
+        ps2xSetNetOverlayEnabled(m_settings.netOverlay);
+        m_dirty = true;
+    }
+    ImGui::TextDisabled("A Netplay label in the corner of the main menu, and the walk to character "
+                        "select with a black curtain when a session connects. Default: NET_OVERLAY.");
 
     if (ps2NetActive())
     {
@@ -2251,62 +3221,458 @@ void PS2SettingsOverlay::drawNetplayTab()
         return;
     }
 
-    static int  s_delay = 2;
-    static int  s_battle = 0;
-    static int  s_time = 3;
-    static int  s_dp = 0;          // DP Battle budget: 0 = 10 DP, 1 = 15, 2 = 20
-    static bool s_jump = true;
     // [rollback] The rollback window and state-sync controls are hidden until rollback ships (2026-09-17):
     // netplay is lockstep. The environment defaults (PS2X_NETROLLBACK / state sync) still reach the
     // connect calls below, so developers can keep testing without the UI advertising it.
     static int  s_rollback = ps2NetRollbackSetting();
     static bool s_sync = ps2NetSyncSetting();
-    ImGui::Checkbox("Go to character select once connected", &s_jump);
+    ImGui::Checkbox("Go to character select once connected", &g_netForm.jump);
     ImGui::TextDisabled("The HOST's choice applies to both; the menus are hidden while it happens.");
     ImGui::Separator();
     // Only Join uses the address: hosting binds the port and learns the peer from its first
     // packet, which is why only one side needs a reachable port.
-    ImGui::InputText("Host address (Join only)", s_peer, sizeof s_peer);
-    ImGui::InputInt("Port", &s_port);
+    ImGui::InputText("Host address (Join only)", g_netForm.peer, sizeof g_netForm.peer);
+    ImGui::InputInt("Port", &g_netForm.port);
     const char *kBattle[] = { "Single Battle", "Team Battle", "DP Battle" };
-    ImGui::Combo("Game mode", &s_battle, kBattle, 3);
+    ImGui::Combo("Game mode", &g_netForm.battle, kBattle, 3);
     // DP Battle's point budget is a SEPARATE row of the versus menu (duelObj+0x118, committed to
     // stateObj+0x630 = RetroAchievements' 0x6af7b0). Selecting DP without it left the screen
     // playing like Team Battle: the right type with no budget behind it.
-    if (s_battle == 2)
+    if (g_netForm.battle == 2)
     {
         const char *kDp[] = { "10 DP", "15 DP", "20 DP" };
-        ImGui::Combo("DP limit", &s_dp, kDp, 3);
+        ImGui::Combo("DP limit", &g_netForm.dp, kDp, 3);
     }
     // Battle Settings time-limit indices, confirmed in game:
     //   0 = 60 s, 1 = 90 s, 2 = 180 s, 3 = 240 s (default), 4 = no limit
     const char *kTime[] = { "60 seconds", "90 seconds", "180 seconds", "240 seconds (default)", "No limit" };
-    ImGui::Combo("Time limit", &s_time, kTime, 5);
+    ImGui::Combo("Time limit", &g_netForm.time, kTime, 5);
     ImGui::TextDisabled("The HOST's choices apply to both players.");
-    ImGui::SliderInt("Input delay (frames)", &s_delay, 1, 10);
+    ImGui::SliderInt("Input delay (frames)", &g_netForm.delay, 1, 10);
     ImGui::TextDisabled("BT3 runs at 30 fps, so each frame is 33 ms. Use 1 on the same machine,");
     ImGui::TextDisabled("2 on a LAN. Raise it only if you see stalls.");
-    if (s_port < 1 || s_port > 65535) s_port = 7777;
+    if (g_netForm.port < 1 || g_netForm.port > 65535) g_netForm.port = 7777;
 
     if (ImGui::Button("Host (you are Player 1)"))
     {
-        ps2NetSetAutoJump(s_jump); ps2NetSetDelay(s_delay); ps2NetSetBattleType(s_battle);
-        ps2NetSetTimeLimit(s_time); ps2NetSetDpLimit(s_dp);
+        ps2NetSetAutoJump(g_netForm.jump); ps2NetSetDelay(g_netForm.delay);
+        ps2NetSetBattleType(g_netForm.battle);
+        ps2NetSetTimeLimit(g_netForm.time); ps2NetSetDpLimit(g_netForm.dp);
         ps2NetSetRollback(s_rollback); ps2NetSetSync(s_sync);
-        ps2NetHost(s_port, 1);
+        ps2NetHost(g_netForm.port, 1);
     }
     ImGui::SameLine();
     if (ImGui::Button("Join (you are Player 2)"))
     {
-        ps2NetSetAutoJump(s_jump); ps2NetSetDelay(s_delay);   // the host's game mode wins
+        ps2NetSetAutoJump(g_netForm.jump); ps2NetSetDelay(g_netForm.delay);  // host's mode wins
         ps2NetSetRollback(s_rollback); ps2NetSetSync(s_sync);
-        char hp[96]; std::snprintf(hp, sizeof hp, "%s:%d", s_peer, s_port);
+        char hp[96]; std::snprintf(hp, sizeof hp, "%s:%d", g_netForm.peer, g_netForm.port);
         ps2NetJoin(hp, 2);
     }
     ImGui::Separator();
     ImGui::TextWrapped("HOST: just press Host -- leave the address blank, give the other player "
                        "your IP and this port. JOIN: type the host's IP above, then press Join. "
                        "Only the host needs the UDP port reachable.");
+}
+
+// [ach] Badges for the achievement list. The PNGs are downloaded by scripts/gen_ach_patch.py into
+// assets/badges/<id>.png -- at build time, because nothing in the runtime is allowed to touch the
+// network -- and decoded here once per id.
+//
+// Keyed by ACHIEVEMENT ID, not by list index. The list is sorted (earned first, then by id) and the
+// id is the only thing that survives a re-sort, a patch reload and a rebuild; an index-keyed cache
+// would show one achievement's badge on another's row the moment the order changed.
+struct AchBadge
+{
+    unsigned long long tex = 0;   // what UiLoadTextureRgba returns; 0 = none
+    bool tried = false;
+};
+
+namespace {
+constexpr float kBadge = 26.0f;   // a badge is 64x64 on RA; this is a row, not a gallery
+std::vector<AchBadge> g_achBadges;
+std::unordered_map<uint32_t, size_t> g_achBadgeIndex;
+}   // namespace
+
+static const AchBadge &achBadgeAt(int index)
+{
+    static const AchBadge kNone;
+    if (index < 0 || index >= static_cast<int>(g_achBadges.size()))
+        return kNone;
+    return g_achBadges[static_cast<size_t>(index)];
+}
+
+// Decodes anything that has not been attempted yet, and re-uses the existing entry otherwise.
+static void ensureAchBadges(int total)
+{
+    if (static_cast<int>(g_achBadges.size()) < total)
+        g_achBadges.resize(static_cast<size_t>(total));
+
+    std::error_code ec;
+    const char *envDir = std::getenv("PS2X_ACH_BADGES");
+    const std::string dir = (envDir && envDir[0]) ? envDir : "assets/badges";
+
+    for (int i = 0; i < total; ++i)
+    {
+        AchBadge &slot = g_achBadges[static_cast<size_t>(i)];
+        if (slot.tried)
+            continue;
+        slot.tried = true;
+
+        const uint32_t id = ps2xAchIdAt(i);
+        if (!id)
+            continue;
+
+        std::vector<uint8_t> rgba;
+        int w = 0, h = 0;
+        const std::string path = dir + "/" + std::to_string(id) + ".png";
+        if (ps2x::gfx::GsDecodeImageRGBA8(path.c_str(), rgba, w, h) && w > 0 && h > 0)
+            slot.tex = ps2x::gfx::UiLoadTextureRgba(rgba.data(), w, h);
+        // A missing badge is not a failure worth a log line every frame: a custom achievement has
+        // none by definition, and the row falls back to its bullet.
+    }
+}
+
+// [ach] The Achievements tab. The switch, the counts, and the list of what is actually being
+// evaluated -- which is deliberately a short list, and the tab says so rather than showing 154
+// rows with 149 of them greyed out. A list of everything the database holds would be a promise the
+// build cannot keep: those conditions point at addresses this recomp does not use, and evaluating
+// them would report unlocks that did not happen.
+void PS2SettingsOverlay::drawAchTab()
+{
+    ImGui::Spacing();
+
+    sectionHeader("ACHIEVEMENTS");
+
+    if (toggleSwitch("Achievements", &m_settings.achievements))
+    {
+        ps2xSetAchEnabled(m_settings.achievements);
+        m_dirty = true;
+    }
+    ImGui::TextDisabled("Tracked locally: the definitions are a file in assets/, your progress is "
+                        "a file in savedata/achievements.progress. No account, no network. "
+                        "Default: ACHIEVEMENTS.");
+
+    // [ach] Attribution, and it is not decoration. The 154 achievements and their names, points and
+    // conditions are RetroAchievements' work, not ours; the badges are their images too. This build
+    // reads their public definitions and evaluates them locally, which is a thing they support --
+    // rcheevos is their own library, vendored under its MIT licence. Saying so here, where the
+    // list is, is the right place for it: the player is looking at their content and should know
+    // where it came from.
+    ImGui::Spacing();
+    {
+        ScopedStyleColor c(ImGuiCol_Text, dbz(0.50f, 0.55f, 0.62f));
+        ImGui::TextWrapped("Achievements and badges are the work of RetroAchievements.org, "
+                           "used here under their public definitions. The rcheevos library that "
+                           "evaluates them is theirs too, MIT licensed. Thank you.");
+    }
+
+    ImGui::Spacing();
+
+    const int total = ps2xAchTotal();
+    if (total <= 0)
+    {
+        ImGui::TextWrapped("%s",
+                           m_settings.achievements
+                               ? "Nothing loaded yet. The counts appear once the game has run a "
+                                 "frame -- the patch is read at that point, not before."
+                               : "Turn the switch on to start tracking. It costs one condition "
+                                 "evaluation per presented frame.");
+        return;
+    }
+
+    char head[220];
+    int verified = 0;
+    for (int i = 0; i < total; ++i)
+        verified += ps2xAchAddrVerified(i) ? 1 : 0;
+    std::snprintf(head, sizeof head, "%d of %d earned  --  %d of %d points  --  %d with a mapped address",
+                  ps2xAchUnlocked(), total, ps2xAchPointsEarned(), ps2xAchPointsTotal(), verified);
+    ImGui::TextUnformatted(head);
+    if (verified < total)
+    {
+        ImGui::TextColored(dbz(0.78f, 0.62f, 0.28f, 1.0f),
+                           "%d of them still read the address RetroAchievements wrote, which points "
+                           "at unrelated memory here, so they cannot be earned by playing yet. An "
+                           "unlock on one of those rows is not something you did.",
+                           total - verified);
+    }
+    ImGui::Spacing();
+
+    if (ImGui::BeginChild("##achlist", ImVec2(-1, 0), ImGuiChildFlags_Borders))
+    {
+        ImGui::Spacing();
+        // [ach] Badges, decoded once, lazily, the first frame this tab is drawn. Doing it per frame
+        // would decode four PNGs to redraw them unchanged; doing it at patch load would decode images
+        // for a list nobody opened.
+        ensureAchBadges(total);
+        // Earned first, and within each group the patch's own order (by id, which is the order the
+        // authors numbered them). Two passes over the list rather than a sort, because the order
+        // belongs to the module -- the overlay draws it, it does not decide it -- and because
+        // sorting a five-entry list on every frame to put a bool first is not a thing to do for a
+        // cosmetic preference.
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            const bool wantUnlocked = (pass == 0);
+            for (int i = 0; i < total; ++i)
+            {
+                char title[160] = {};
+                char desc[320] = {};
+                int points = 0;
+                bool unlocked = false;
+                if (!ps2xAchListGet(i, title, sizeof title, desc, sizeof desc, &points, &unlocked))
+                    continue;
+                if (unlocked != wantUnlocked)
+                    continue;
+
+                ImGui::PushID(i);
+                {
+                    // The badge, or a text bullet when there is none -- a custom achievement has no
+                    // badge by definition. Both occupy the same 26 px column so the titles line up
+                    // either way: a column that shifts when an image is missing is worse than no
+                    // image, and the bullet is what carries the state when there is no art to.
+                    const AchBadge &b = achBadgeAt(i);
+                    if (b.tex)
+                    {
+                        ImGui::Image((ImTextureID)b.tex, ImVec2(kBadge, kBadge));
+                    }
+                    else
+                    {
+                        ImGui::Dummy(ImVec2(kBadge, kBadge));
+                        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x,
+                                                        ImGui::GetCursorScreenPos().y +
+                                                            (kBadge - ImGui::GetTextLineHeight()) * 0.5f));
+                        // Green for earned, dim for not.
+                        ScopedStyleColor c(ImGuiCol_Text, unlocked ? dbz(0.45f, 0.85f, 0.50f)
+                                                                    : dbz(0.62f, 0.62f, 0.66f));
+                        ImGui::TextUnformatted(unlocked ? "*" : "-");
+                    }
+                }
+                ImGui::SameLine();
+                {
+                    ScopedStyleColor c(ImGuiCol_Text, unlocked ? dbz(0.93f, 0.96f, 0.94f)
+                                                                : dbz(0.62f, 0.62f, 0.66f));
+                    ImGui::TextUnformatted(title);
+                }
+                // [ach] The honesty marker. 149 of these still read RetroAchievements' own
+                // addresses, which in this build point at unrelated memory -- so an unlock on one of
+                // them is not evidence the player did the thing. Marked in the row, because the
+                // alternative is a list where an accidental unlock is indistinguishable from a real
+                // one, and the whole point of loading them was to find out which is which.
+                if (!ps2xAchAddrVerified(i))
+                {
+                    ScopedStyleColor c(ImGuiCol_Text, dbz(0.78f, 0.62f, 0.28f));
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted("  (addr not mapped)");
+                }
+                {
+                    ScopedStyleColor c(ImGuiCol_Text, gold());
+                    const std::string pts = std::to_string(points) + " pts";
+                    const float w = ImGui::CalcTextSize(pts.c_str()).x;
+                    ImGui::SameLine(ImGui::GetContentRegionMax().x - w - 12.0f);
+                    ImGui::TextUnformatted(pts.c_str());
+                }
+                if (desc[0])
+                {
+                    ImGui::Indent(24.0f);
+                    {
+                        ScopedStyleColor c(ImGuiCol_Text, dbz(0.45f, 0.45f, 0.50f));
+                        ImGui::TextUnformatted(desc);
+                    }
+                    ImGui::Unindent(24.0f);
+                }
+                ImGui::Spacing();
+                ImGui::PopID();
+            }
+        }
+        ImGui::Spacing();
+    }
+    ImGui::EndChild();
+}
+
+// [ach] The unlock notification. Bottom-centre, above everything except the curtain -- the curtain
+// is the netplay transition and is allowed to cover it, because during that transition the player
+// is not meant to be looking at the screen at all.
+//
+// ---------------------------------------------------------------------------------------------
+// [notify] The popup stack. Top-left, newest on top.
+// ---------------------------------------------------------------------------------------------
+//
+// The corner is not arbitrary and not free. The netplay label owns the bottom-right of the main
+// menu, the perf meter owns the top-right during a match, and the settings panel is centred. That
+// leaves the top-left, and it is the right place on its own terms: it is the corner the eye goes to
+// for something that was just added to the page, it is the furthest from the thumbstick's usual
+// resting arc so it does not sit under the player's hand, and it is far enough from the netplay
+// label that a session change and an unlock arriving together are two separate cards rather than
+// one smear.
+//
+// The cards carry their producer's identity -- a coloured edge, a small glyph, and a source label
+// in the accent -- so a netplay card and an achievement card are distinguishable at a glance
+// without reading them. That is the whole reason the two are separate kinds and not one "message"
+// type: the sharing is in the position and the motion, never in the identity.
+//
+// Motion: each card slides in from the left while fading up, holds, then fades out. Cards below
+// ease toward their slot rather than snapping, so a new arrival pushes the stack down smoothly
+// instead of making everything jump. One card animating never disturbs the ImGui layout of another:
+// they are all absolutely positioned from the viewport, and they take no input.
+void PS2SettingsOverlay::drawNotifyStack()
+{
+    constexpr int   kMaxLive = 5;
+    // Sized to the content, not to a panel's worth of content. A card carries a small source label,
+    // a title and at most one line of body, so anything wider than this is a rectangle with a
+    // sentence in it. 292 px fits the longest title in the patch ("Now Where's My Trucker Hat...")
+    // and the longest body ("Coming back to the main menu after all this time. It has been a
+    // while.") at the sizes below, which is what set the number rather than taste.
+    constexpr float kW = 292.0f, kPadX = 11.0f, kPadY = 8.0f;
+    constexpr float kEdge = 2.5f;              // the producer's accent, as a left rule
+    constexpr float kIn = 0.20f, kOut = 0.45f;
+    constexpr float kHoldAch = 3.6f, kHoldNet = 2.8f;
+    constexpr float kGap = 6.0f;
+    constexpr float kMarginL = 20.0f, kMarginT = 18.0f;
+    // Three text rows at their own sizes, plus the padding, rather than a frame-height formula. The
+    // label is small, the title is the body size, and the body is slightly under it; adding those
+    // up is the only way the card is exactly as tall as what is on it.
+    const float rowLabel = ImGui::GetFontSize() * 0.82f;
+    const float rowTitle = ImGui::GetFontSize() * 1.00f;
+    const float rowBody = ImGui::GetFontSize() * 0.88f;
+    const float rowH = kPadY * 2.0f + rowLabel + rowTitle + rowBody + 6.0f;
+
+    // Newest on top, so the thing that just happened is the thing you see. The queue is drained in
+    // order and prepended, which is why the drain is a ring and not an index into a sorted list.
+    NotifyEvent incoming[kMaxLive];
+    const int n = ps2xNotifyDrain(incoming, kMaxLive);
+    for (int i = 0; i < n; ++i)
+    {
+        Card c;
+        c.kind = incoming[i].kind;
+        c.title = incoming[i].title ? incoming[i].title : "";
+        c.body = incoming[i].body ? incoming[i].body : "";
+        c.age = 0.0f;
+        c.hold = (incoming[i].kind == NotifyKind::Achievement) ? kHoldAch : kHoldNet;
+        c.y = 0.0f;   // starts at the target and is pulled out by the slide
+        m_cards.insert(m_cards.begin(), c);
+    }
+    while (static_cast<int>(m_cards.size()) > kMaxLive)
+        m_cards.pop_back();
+
+    for (size_t i = 0; i < m_cards.size(); ++i)
+    {
+        Card &c = m_cards[i];
+        c.age += ImGui::GetIO().DeltaTime;
+        c.y += ((static_cast<float>(i) * (rowH + kGap)) - c.y) *
+               (1.0f - std::exp(-ImGui::GetIO().DeltaTime / 0.09f));
+    }
+    // Retire from the back: the tail is the oldest, and retiring the front would make the cards
+    // below it jump a slot as they take the index of a card that is still on screen.
+    while (!m_cards.empty() &&
+           m_cards.back().age >= kIn + m_cards.back().hold + kOut)
+        m_cards.pop_back();
+    if (m_cards.empty())
+        return;
+
+    // The FOREGROUND draw list, not the window one. This runs outside any ImGui window -- the
+    // retracted branch of draw() opens no window at all -- and GetWindowDrawList() with no current
+    // window hands back the implicit "Debug##Default" one, which ImGui then draws as a large empty
+    // frame. That is not a cosmetic mistake: it means the cards were being positioned in that
+    // window's coordinate space instead of the screen's, so the top-left margin was measured from
+    // wherever that window happened to be. GetForegroundDrawList() has no window of its own and its
+    // coordinates are the viewport's, which is what "the top-left corner" means.
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    const ImVec2 vp = ImGui::GetIO().DisplaySize;
+
+    for (const Card &c : m_cards)
+    {
+        const float t = c.age;
+        const float alpha = t < kIn ? (t / kIn)
+                                    : (t < kIn + c.hold
+                                           ? 1.0f
+                                           : std::max(0.0f, 1.0f - (t - kIn - c.hold) / kOut));
+        if (alpha <= 0.001f)
+            continue;
+        const float slide = t < kIn ? (1.0f - t / kIn) : 0.0f;   // 0 = settled, 1 = still coming
+
+        // The draw list wants packed colours, not ImVec4, and every colour on this card shares the
+        // one alpha -- so the conversion is a local lambda that folds it in. Written out per colour
+        // it would be six places to get the alpha argument wrong, and a card that faded its border
+        // but not its text is worse than one that does not fade at all.
+        const auto col = [alpha](float r, float g, float b, float a) {
+            return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a * alpha));
+        };
+
+        const ImVec4 accent4 = (c.kind == NotifyKind::Achievement) ? gold()
+                                                                  : ImVec4(0.36f, 0.74f, 0.92f, 1.0f);
+
+        const float x = kMarginL - slide * (kW * 0.35f);
+        const float y = kMarginT + c.y;
+        const ImVec2 a(x, y), b(x + kW, y + rowH);
+
+        // The panel colour is the overlay's own background, not a new one: the card has to belong
+        // to this UI, and #001B39 is what the settings panel and the netplay popup already are.
+        dl->AddRectFilled(a, b, col(0.043f, 0.106f, 0.227f, 0.94f));
+        // Border at 1 px and a low-contrast blue. At 2 px and full contrast it reads as a framed
+        // panel, and a 292x60 card with a 2 px frame looks like a window rather than a notification.
+        dl->AddRect(a, b, col(0.14f, 0.19f, 0.28f, 0.70f), 2.0f, 0, 1.0f);
+        // The accent rule, at the very left. This is the producer's colour and the only saturated
+        // thing on the card, which is what makes a netplay card and an achievement card tell
+        // themselves apart at a glance.
+        dl->AddRectFilled(ImVec2(a.x, a.y + 1.5f), ImVec2(a.x + kEdge, b.y - 1.5f),
+                          col(accent4.x, accent4.y, accent4.z, 1.0f));
+
+        const ImVec2 textL(a.x + kEdge + kPadX, a.y + kPadY);
+
+        // Three rows, each positioned from the one above it rather than from a frame height, so the
+        // text lands inside the box the height was computed for. The y offsets are the same numbers
+        // rowH was summed from, which is why the card is exactly as tall as what is on it.
+        const float yLabel = textL.y;
+        const float yTitle = yLabel + rowLabel;
+        const float yBody = yTitle + rowTitle;
+
+        // Source label, in the accent, small. The card's title is the loudest thing on it; this is
+        // the quietest, because it is the part you already know.
+        //
+        // ImGui::GetFont(), and deliberately not m_fontHudLabel: that member is never assigned
+        // anywhere in the tree, so it is a null ImFont*, and AddText dereferences it. Russo One IS
+        // the default font -- initialize() makes it Fonts[0] with io.Fonts->Clear() first -- so
+        // GetFont() is the HUD face and nothing needs pushing.
+        {
+            const char *src = (c.kind == NotifyKind::Achievement) ? "ACHIEVEMENT" : "NETPLAY";
+            dl->AddText(ImGui::GetFont(), rowLabel, ImVec2(textL.x, yLabel),
+                        col(accent4.x, accent4.y, accent4.z, 0.92f), src);
+        }
+        dl->AddText(ImGui::GetFont(), rowTitle, ImVec2(textL.x, yTitle),
+                    col(0.93f, 0.95f, 0.98f, 1.0f), c.title.c_str());
+        // Body, one line. Deliberately not wrapped: a card whose height depends on its text would
+        // make the whole stack reflow as it animates. The strings in the tree fit; a longer one from
+        // the drop box gets clipped at the card's edge, which is the right failure -- the card does
+        // not grow and shove the stack down.
+        if (!c.body.empty())
+            dl->AddText(ImGui::GetFont(), rowBody, ImVec2(textL.x, yBody),
+                        col(0.62f, 0.66f, 0.72f, 1.0f), c.body.c_str());
+
+        // The glyph, right-aligned: a filled diamond for netplay (its own shape language, matching
+        // the planet art), a five-point star for an achievement. Drawn rather than loaded, because
+        // there is no art for either and two lines of geometry beat a new asset.
+        const ImVec2 g(b.x - 26.0f, (a.y + b.y) * 0.5f);
+        if (c.kind == NotifyKind::Achievement)
+        {
+            ImVec2 star[10];
+            for (int k = 0; k < 10; ++k)
+            {
+                const float ang = -3.14159265f * 0.5f + k * 3.14159265f / 5.0f;
+                const float rad = (k & 1) ? 5.0f : 11.5f;
+                star[k] = ImVec2(g.x + std::cos(ang) * rad, g.y + std::sin(ang) * rad);
+            }
+            dl->AddConvexPolyFilled(star, 10, col(accent4.x, accent4.y, accent4.z, 1.0f));
+        }
+        else
+        {
+            // Solid, not outlined: AddConvexPolyFilled() has no thickness parameter, and faking a
+            // ring with a second inner polygon just makes a dot inside a diamond. At 18 px this is
+            // read as a shape, not as an outline.
+            const ImVec2 d[4] = {ImVec2(g.x, g.y - 11.0f), ImVec2(g.x + 9.0f, g.y),
+                                 ImVec2(g.x, g.y + 11.0f), ImVec2(g.x - 9.0f, g.y)};
+            dl->AddConvexPolyFilled(d, 4, col(accent4.x, accent4.y, accent4.z, 0.92f));
+        }
+    }
 }
 
 void PS2SettingsOverlay::drawLoggingTab()
@@ -2368,7 +3734,7 @@ void PS2SettingsOverlay::drawAboutTab()
     ImGui::TextWrapped("z3xox - owner / lead developer");
     ImGui::TextDisabled("  recompiler, runtime (EE/GS/VU1/scheduler), renderer, game overrides, generators");
     ImGui::TextWrapped("RexxColder - supporter / colaborador");
-    ImGui::TextDisabled("  optimizacion (perf/async), launcher + install wizard, input & gamepads, "
+    ImGui::TextDisabled("  optimizacion (perf/async), front-end + install wizard, input & gamepads, "
                         "build/release, deploy, game-data (AFS/AFL), docs");
     ImGui::TextWrapped("valenvivaldi - colaborador");
     ImGui::TextDisabled("  port macOS arm64, packaging, audio");

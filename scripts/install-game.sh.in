@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install Dragon Ball Budokai Tenkaichi 3 (Recompiled) into this user's home:
 # copies the portable tree to ~/.local/share/bt3-recomp and registers a
-# launcher entry (with the game icon) in the application menu.
+# menu entry (with the game icon) in the application menu.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -11,10 +11,10 @@ DEST="$BASE/bt3-recomp"
 echo "== installing to $DEST"
 mkdir -p "$DEST"
 
-cp -a "$SRC"/Launcher "$SRC"/bt3-runner "$SRC"/assets "$DEST"/
+cp -a "$SRC"/"Dragon Ball Z Budokai Tenkaichi 3 - Recompiled" "$SRC"/assets "$DEST"/
 
-# no game data here: the launcher's install wizard extracts it from the user's
-# own ISO into $DEST/data on first run. Existing $DEST/data is left untouched.
+# no game data here: the install wizard in the front-end extracts it from the
+# user's own ISO into $DEST/data on first run. Existing $DEST/data is left untouched.
 
 # savedata: keep an existing install's saves/settings
 if [[ -d "$SRC/savedata" ]]; then
@@ -31,16 +31,15 @@ if [[ -f "$SRC/savedata/fps60_sites.txt" ]]; then
     cp -a "$SRC/savedata/fps60_sites.txt" "$DEST/savedata/"
 fi
 
-# launcher wrapper
-WRAP="$BASE/bt3-launcher.sh"
+# menu wrapper
+WRAP="$BASE/bt3-recomp.sh"
 cat > "$WRAP" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$DEST"
 export LD_LIBRARY_PATH="\$PWD/assets/lib"
-export QT_PLUGIN_PATH="\$PWD/assets/lib/qt6/plugins"
 export PS2X_EXEDIR="\$PWD"
-exec ./Launcher "\$@"
+exec "./Dragon Ball Z Budokai Tenkaichi 3 - Recompiled" "\$@"
 EOF
 chmod +x "$WRAP"
 
@@ -62,7 +61,6 @@ EOF
 echo
 echo "Installed:"
 echo "  game:      $DEST"
-echo "  launcher:  $WRAP"
 echo "  menu:      $BASE/applications/Dragon-Ball-Budokai-Tenkaichi-3.desktop"
 echo "Run it from the application menu, or:  \"$WRAP\""
 echo "You can now delete the portable folder:  \"$SRC\""

@@ -1,5 +1,13 @@
 # macOS port — current status and plan
 
+> **The Qt6 launcher is gone.** The UI now lives inside the runtime
+> (`ps2xRuntime/src/frontend/`, ImGui on the SDL2 backend), so every Qt-specific item
+> below — the `src/launcher` blocker row, the `macdeployqt` dependency, the hard-coded
+> Qt6 `CMAKE_PREFIX_PATH`, the `qt` packages to install — no longer applies. The `.app`
+> is now built around the runner alone: `tools/macos/deploy.py` walks the runner's
+> dylib closure into `Contents/Frameworks` with `install_name_tool` instead of calling
+> `macdeployqt`, and the runner's own remaining blockers (B1–B3) are unchanged.
+
 ## Implementation update · 2026-09-09
 
 The original report below is kept as the initial diagnosis; its "does not compile"
@@ -21,15 +29,15 @@ Changes implemented:
 - The first real generation exposed a recompiler race: a freshly finished result
   could still sit in `readyCode` while checking whether a function was missing.
   The check and the pending-result cap were fixed.
-- `scripts/build-macos.sh` and `tools/macos/deploy.py` prepare a `.app` with
-  `macdeployqt`, a dependency/architecture/minimum-version audit and ad-hoc
-  signing. Data, saves and settings stay outside the bundle, in
+- `scripts/build-macos.sh` and `tools/macos/deploy.py` prepare a `.app` with an
+  `install_name_tool` dylib closure, a dependency/architecture/minimum-version audit
+  and ad-hoc signing. Data, saves and settings stay outside the bundle, in
   `~/Library/Application Support/BT3-Recomp/`.
 
 Port commands:
 
 ```sh
-brew install cmake ninja pkg-config ffmpeg qt
+brew install cmake ninja pkg-config ffmpeg
 python3 games/bt3/setup.py /path/bt3-usa.iso --jobs 3
 ./scripts/build-macos.sh --skip-setup --output /path/BT3-Recomp.app
 ```
@@ -41,7 +49,7 @@ equivalent to Developer ID or notarization.
 Tests done so far on Apple Silicon, macOS 26.2, AppleClang 17:
 
 - SHA-256 verification of the USA ISO and full runner and overlay generation.
-- Build of the runtime and the Qt launcher; brief launcher start, also from a
+- Build of the runtime (front-end included); brief front-end start, also from a
   working directory other than the bundle's.
 - Self-contained 178 MB ARM64 bundle: external dependencies audited, ad-hoc
   signature verified with `codesign --verify --deep --strict`, Cocoa plugin included.
@@ -128,7 +136,7 @@ to Apple hard.
 |---|---|---|
 | `ps2xRecomp` | The recompiler: ELF → C++ | Pure C++, portable. No findings. |
 | `ps2xRuntime` | Runtime + renderer + game runner | Where the 4 blockers are. |
-| `ps2xRuntime/src/launcher` | Qt6 launcher (settings, wizard) | No platform guards. Blocker. |
+| `ps2xRuntime/src/frontend` | In-runtime front-end (settings, wizard) | No platform guards; builds with the runtime. |
 | `ps2xAnalyzer` | ELF analysis tool | No platform findings. |
 | `games/bt3/setup.py` | Pipeline: ISO → generation → build | Only two branches: Windows and "the rest". |
 | `scripts/build-linux.sh` | Assembles the self-extracting ELF | Useless on macOS. Rewrite. |
@@ -274,7 +282,7 @@ equivalent.
 | `sha256sum` | `scripts/build-linux.sh:125` | `shasum -a 256` |
 | `nproc` | `scripts/build-linux.sh:27` | `sysctl -n hw.ncpu` |
 | `realpath -m` | `scripts/build-linux.sh:49` | Does not exist. `python3 -c os.path.abspath` or brew's coreutils. |
-| Hard-coded Qt6 path | `scripts/build-linux.sh:148` | `/usr/lib/cmake/Qt6/Qt6Config.cmake` will never exist; use `CMAKE_PREFIX_PATH` with `brew --prefix qt6`. |
+| Hard-coded Qt6 path | `scripts/build-linux.sh:148` | Resolved: no Qt path remains in the scripts. |
 | Concatenate ELF + footer | `scripts/build-linux.sh:128-135` | `.app` bundle, or DMG. Mach-O does not support this trick as-is. |
 | Runner copy | `setup.py:212-217` | The `else` branch assumes Linux; on macOS it lands here through `os.name == "posix"` (`setup.py:36`). |
 | Linux glibc floor | `scripts/check_floor.sh` | A portable Linux artifact targets glibc 2.35 (Ubuntu 22.04) via `BT3_GLIBC_MAX`; a native build defaults to the host glibc. On macOS the equivalent is `-mmacosx-version-min` + `MACOSX_DEPLOYMENT_TARGET`, and a Mac is needed to produce it. |
@@ -283,10 +291,9 @@ equivalent.
 
 - A `BT3-Recomp.app` bundle: binary in `Contents/MacOS`, dylibs in `Contents/Frameworks`,
   assets in `Contents/Resources`, plus an `Info.plist` with the minimum system version.
-- `install_name_tool` / `@rpath` to relocate dylibs. There are `dylibbundler` and
-  `macdeployqt`; **`macdeployqt`** also resolves the Qt plugins, which is the part that
-  is always forgotten and produces the "could not find the Qt platform plugin cocoa"
-  failure.
+- `install_name_tool` / `@rpath` to relocate dylibs. `tools/macos/deploy.py` does
+  this itself (`dylib_closure`) and `audit()` then rejects any dependency still
+  pointing outside the bundle, which is the check `macdeployqt` used to provide.
 - `codesign --sign -` (ad-hoc) at minimum. Without a signature, Gatekeeper kills any
   binary the user has downloaded. To distribute for real, Developer ID + notarization
   are needed, which implies a paid Apple account: **a product decision, not a technical
@@ -371,8 +378,7 @@ work on the next one on a foundation that does not hold.
 
 Resolve the four blockers with guards and stubs. No reimplementing profilers or input
 backends: the goal is a binary that links. Dependencies via Homebrew
-(`cmake ninja pkg-config ffmpeg qt6 zstd`) and configure with `CMAKE_PREFIX_PATH`
-pointing at Qt6.
+(`cmake ninja pkg-config ffmpeg zstd`) with no Qt anywhere in the toolchain.
 
 **Gate:** `ps2EntryRunner` links and starts without crashing before the first frame.
 
@@ -397,7 +403,8 @@ This is the least reliable estimate in the report.
 ### Phase 4 — `.app` bundle and distribution · ≈2-3 days · rewrite, not patch
 
 A new `scripts/build-macos.sh`, sibling of the Linux one, not an `if` version.
-Bundle, `macdeployqt`, ad-hoc signing, and a declared `MACOSX_DEPLOYMENT_TARGET` that
+Bundle, relocate the dylib closure, ad-hoc signing, and a declared
+`MACOSX_DEPLOYMENT_TARGET` that
 plays the role the glibc 2.35 floor plays on Linux. Update `README.md` and
 `docs/DEPLOY.md`, which today state "Linux or Windows".
 
@@ -435,9 +442,9 @@ Things that will cost time to anyone who does not know them in advance.
 - **macOS's bash is 3.2.** Any new script using `mapfile`, `${x,,}` or associative arrays
   fails on a clean Mac. Either stick to bash 3.2, or explicitly declare that it needs
   Homebrew's bash.
-- **The Qt6 launcher without `macdeployqt` will start on the build machine and nowhere
-  else.** The typical failure is "could not find the Qt platform plugin cocoa", and it
-  confuses because the binary exists and has permissions.
+- **A bundle whose dylib closure is not relocated will start on the build machine and
+  nowhere else.** The typical failure is a `@rpath` that resolves only on the build
+  machine, and it confuses because the binary exists and has permissions.
 - **Gatekeeper.** An unsigned `.app` that gets downloaded is quarantined and will not
   start; it works locally, but not in someone else's hands. It is the kind of bug that
   shows up right when you publish.
@@ -454,17 +461,17 @@ For whoever continues: this is what to run first, before writing a line.
 
 ```sh
 # 1. Dependencies (Intel Mac for phase 1)
-brew install cmake ninja pkg-config ffmpeg qt6 zstd python@3.12
+brew install cmake ninja pkg-config ffmpeg zstd python@3.12
 
 # 2. Confirm the 4 blockers in the current checkout (these and only these should show)
 grep -rn "x86intrin\|__rdtsc" ps2xRuntime/include ps2xRuntime/src
-grep -rn "linux/input.h" ps2xRuntime/src/launcher
+grep -rn "linux/input.h" ps2xRuntime/src
 sed -n '20,35p;150p;250,260p' ps2xRuntime/src/lib/ps2_eeprof.cpp
 
-# 3. Configure only the runtime; Qt6 located by brew
+# 3. Configure only the runtime
 cmake -S . -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH="$(brew --prefix qt6)"
+  
 
 # 4. Full pipeline from the ISO (adjust --jobs to the real cores)
 python3 games/bt3/setup.py /path/bt3-usa.iso --jobs 10

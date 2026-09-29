@@ -45,6 +45,8 @@ namespace ps2tex
 
     // [texui] Pack status for the launcher/overlay "Texture Replacement" popup.
     size_t replacementsCount();       // files actually indexed (0 = no pack)
+    // [texui] Button layout preference: 0 = PS2 (Original Buttons), 1 = Xbox (Xbox Layout).
+    int packButtonLayout();
     const char *replacementsRoot();   // indexed root directory ("" if none)
     bool replacementsHave3D();        // true = full pack (Characters/Body present); false = 2D-only Lite
 
@@ -78,9 +80,8 @@ namespace ps2tex
     bool loadReplacement(const TexIdent &id, uint64_t texKey, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt, int *mips = nullptr);
     bool takeReadySwap(uint64_t texKey);
 
-    // [texcache] True while the async replacement for `id` is queued/decoding (its first decode
-    // uploads the ORIGINAL). The texcache must NOT store the result then, or it would bake the
-    // original and the read hook would cancel the later swap re-decode.
+    // True while the async replacement for `id` is queued/decoding (its first decode uploads the
+    // ORIGINAL), so a caller must re-decode rather than reuse the first decode's result.
     bool replacementPending(const TexIdent &id);
 
     // [texmega] One-shot diagnostic dump (enable PS2X_TEXMEGA=1, arm with F9). While armed it
@@ -96,4 +97,7 @@ namespace ps2tex
                     const uint8_t *origRgba, int ow, int oh,
                     const uint8_t *repRgba, int rw, int rh, int rfmt);
 }
+// [texui] extern "C" accessor for the runner (menu2d button icons).
+extern "C" int ps2xPackButtonLayout();
+
 #endif

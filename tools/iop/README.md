@@ -1,127 +1,127 @@
-# Native IOP (R3000) — estado
+# Native IOP (R3000) — status
 
-Subsistema para correr los módulos IOP (`data/IRX/*.IRX`) **recompilados a nativo** en vez de
-emularlos/HLEarlos. Todo esto está en la rama de desarrollo (`texpack-pak-texcache`), **no** en
-el PR de producto.
+Subsystem for running the IOP modules (`data/IRX/*.IRX`) **recompiled to native** instead of
+emulating/HLE-ing them. All of this is on the development branch
+(`texpack-pak-texcache`), **not** in the product PR.
 
 ## Pipeline
 
-1. **Recompilar**: `ps2xRecomp` con `arch="r3000"` (backend MIPS I; rechaza MMI/VU/FPU/COP1-2/64-bit).
-   - Mapa de funciones: `tools/iop/irx_functions.py` (entradas = export fptrs, JAL, punteros
-     `lui+ori/addiu` alineados ≥0x100, y stubs de import).
-   - Imports del IRX → `runtime->iopImport(rdram, ctx, "<mod>", <ordinal>)` (HLE del kernel).
-   - Llamadas internas → `runtime->dispatchIopBranch(...)`; registro vía
+1. **Recompile**: `ps2xRecomp` with `arch="r3000"` (MIPS I backend; rejects MMI/VU/FPU/COP1-2/64-bit).
+   - Function map: `tools/iop/irx_functions.py` (inputs = export fptrs, JAL, aligned
+     `lui+ori/addiu` pointers ≥0x100, and import stubs).
+   - IRX imports → `runtime->iopImport(rdram, ctx, "<mod>", <ordinal>)` (kernel HLE).
+   - Internal calls → `runtime->dispatchIopBranch(...)`; registration via
      `extern "C" void ps2x_register_<mod>()`.
-2. **Integrar**: los generados van a `ps2xRuntime/src/iop_native/<mod>/` y se listan en
+2. **Integrate**: the generated files go to `ps2xRuntime/src/iop_native/<mod>/` and are listed in
    `ps2xRuntime/CMakeLists.txt` (`target_sources(ps2EntryRunner ...)`).
-3. **Correr**: `SifLoadModule` mapea el IRX en la **RAM IOP** (misma sparse mapping con
-   `rdram` desplazado por base) y llama a su `entry` nativo.
+3. **Run**: `SifLoadModule` maps the IRX into **IOP RAM** (the same sparse mapping with `rdram`
+   shifted by base) and calls its native `entry`.
 
 ## Runtime (ps2_runtime.cpp)
 
-- **RAM IOP**: mapeo sparse (`mmap MAP_NORESERVE`, Linux) que cubre RAM + registros
-  `0x1F80xxxx`/`0xBF80xxxx`; cada módulo recibe una **base propia** (tamaño real del módulo).
-- **Scheduler IOP** cooperativo: hilos con `yield` por excepción (`IopYield`); retoma por
-  `ctx->pc` (resume labels del recompilador). `WaitSema`/`WaitEventFlag`/`Sleep/DelayThread`
-  estacionan; `SignalSema`/`SetEventFlag`/`WakeupThread` despiertan.
+- **IOP RAM**: sparse mapping (`mmap MAP_NORESERVE`, Linux) covering RAM + the
+  `0x1F80xxxx`/`0xBF80xxxx` registers; each module gets its **own base** (the module's real size).
+- **Cooperative IOP scheduler**: threads yielding via exception (`IopYield`); resume through
+  `ctx->pc` (recompiler resume labels). `WaitSema`/`WaitEventFlag`/`Sleep/DelayThread`
+  park; `SignalSema`/`SetEventFlag`/`WakeupThread` wake.
 - **Kernel HLE** (`iopImport`): `loadcore`, `stdio`, `sysclib`, `dmacman`, `thbase`, `thevent`,
-  `thsemap`, `intrman`, `sysmem`, `sifman`, `sifcmd` con estado real (hilos/semáforos/eventos).
-- **SIF RPC**: `sifcmd` registra servidores (`sceSifRegisterRpc`); `ps2xInvokeIopRpc` entrega
-  RPCs del EE al handler nativo (copia cross-space + ABI `(command,data,size)`).
-- **Loader**: `loadAndRunIopModule` — guard: header `text==0` inválido → HLE.
+  `thsemap`, `intrman`, `sysmem`, `sifman`, `sifcmd` with real state (threads/semaphores/events).
+- **SIF RPC**: `sifcmd` registers servers (`sceSifRegisterRpc`); `ps2xInvokeIopRpc` delivers
+  EE RPCs to the native handler (cross-space copy + `(command,data,size)` ABI).
+- **Loader**: `loadAndRunIopModule` — guard: invalid header `text==0` → HLE.
 
 ## Flags
 
-| env | efecto |
+| env | effect |
 |---|---|
-| `PS2X_IOP_DIR` | carpeta de IRX (default `data/IRX/`) |
-| `PS2X_IOP_MODULES` | lista de stems a correr nativo, o `all` (default: set validado) |
-| `PS2X_IOP_SCHED=0` | desactiva el scheduler |
-| `PS2X_IOP_NATIVE_DBCMAN=0` | desactiva el routing RPC de pad a DBCMAN nativo |
-| `PS2X_IOP_NOENTRY=<substr>` | carga el módulo sin ejecutar su `entry` (diagnóstico) |
-| `PS2X_IOP_WATCHDOG=<seg>` | SIGALRM + backtrace si un entry se cuelga (diagnóstico) |
-| `PS2X_IOP_XCALL_RESOLVE_ONLY=1` | resuelve llamadas cruzadas sin ejecutar el callee |
+| `PS2X_IOP_DIR` | IRX folder (default `data/IRX/`) |
+| `PS2X_IOP_MODULES` | list of stems to run natively, or `all` (default: validated set) |
+| `PS2X_IOP_SCHED=0` | disables the scheduler |
+| `PS2X_IOP_NATIVE_DBCMAN=0` | disables RPC routing from pad to native DBCMAN |
+| `PS2X_IOP_NOENTRY=<substr>` | loads the module without running its `entry` (diagnostic) |
+| `PS2X_IOP_WATCHDOG=<sec>` | SIGALRM + backtrace if an entry hangs (diagnostic) |
+| `PS2X_IOP_XCALL_RESOLVE_ONLY=1` | resolves cross calls without executing the callee |
 
-Set validado (default): `SIO2MAN,SIO2D,DBCMAN,LIBSD,SDRDRV,CDVDSTM,MCMAN`. **Pad nativo por
-defecto** vía DBCMAN.
+Validated set (default): `SIO2MAN,SIO2D,DBCMAN,LIBSD,SDRDRV,CDVDSTM,MCMAN`. **Native pad by
+default** via DBCMAN.
 
-## Módulos
+## Modules
 
-### Nativos OK (corren en el juego, sin romper boot)
-| módulo | notas |
+### Working natives (run in-game, do not break boot)
+| module | notes |
 |---|---|
-| `SIO2MAN` | entry 0x634; su hilo espera la int. SIO2 (event flag) |
-| `DBCMAN` | **pad nativo** (registra 4 servidores RPC; RPCs del juego → handlers nativos) |
+| `SIO2MAN` | entry 0x634; its thread waits on the SIO2 interrupt (event flag) |
+| `DBCMAN` | **native pad** (registers 4 RPC servers; game RPCs → native handlers) |
 | `SIO2D` | entry 0xe14 |
-| `LIBSD` | librería (no registra RPC) |
+| `LIBSD` | library (registers no RPC) |
 | `SDRDRV` | entry 0x3a0 |
 | `CDVDSTM` | entry 0x15dc |
 | `MCMAN` | memory card manager (entry 0x178) |
-| `MCSERV` | servidor de memory card (entry 0x40) |
-| `DS2U_D` | driver DualShock 2 (entry 0x0) |
-| `SOUNDS` | driver de sonido |
-| `MODHSYN` | síntesis |
-| `MODSESQ2` | secuenciador |
+| `MCSERV` | memory card server (entry 0x40) |
+| `DS2U_D` | DualShock 2 driver (entry 0x0) |
+| `SOUNDS` | sound driver |
+| `MODHSYN` | synthesis |
+| `MODSESQ2` | sequencer |
 
 Default: `SIO2MAN,SIO2D,DBCMAN,LIBSD,SDRDRV,CDVDSTM,MCMAN,MCSERV,SOUNDS,MODHSYN,MODSESQ2,DS2U_D`.
 
-### Rotos / bloqueados
-Los 17 IRX integrados corren nativos. El bug del **deadlock por re-entrada** (`iopImport`
-mantenía un mutex no recursivo y re-entraba por la llamada cruzada) era la causa de los stalls
-de `MCMAN`/`MCSERV`/`DS2U_D`/`CRI_ADXI`. Corregido con `std::recursive_mutex`.
+### Broken / blocked
+All 17 integrated IRX modules run natively. The **re-entrancy deadlock** bug (`iopImport`
+held a non-recursive mutex and re-entered through the cross call) was what caused the
+`MCMAN`/`MCSERV`/`DS2U_D`/`CRI_ADXI` stalls. Fixed with `std::recursive_mutex`.
 
-`DS2O_D`, `MODMIDI`, `MODSEIN`, `MODSESQ` integrados y habilitados, pero el juego **no los carga
-en el boot** (se cargan después o vía `IOPRP300.IMG`).
+`DS2O_D`, `MODMIDI`, `MODSEIN`, `MODSESQ` are integrated and enabled, but the game **does not load
+them at boot** (they load later or via `IOPRP300.IMG`).
 
-Probablemente funcionales (retornan y bootean): `SOUNDS`, `MODHSYN`, `MODSESQ2` — falta validar
-visualmente que el juego progrese a FIGHT.
+Probably functional (they return and boot): `SOUNDS`, `MODHSYN`, `MODSESQ2` — still needs visual
+validation that the game progresses to FIGHT.
 
-## Bugs ya corregidos
-- **Header IOP**: leer 34 bytes desde `p_offset` (varios declaran `p_filesz` < 34, p.ej. MCMAN → 32).
-- **Bases de módulos**: reservar el tamaño real (text+data+bss); 64 KB fijos hacían que MCMAN
-  (~74 KB) pisara al módulo siguiente.
-- **Start en 0** válido para IRX (código en vaddr 0).
-- **Exports con slots 0 interiores**: no truncar en el primer 0.
+## Bugs already fixed
+- **IOP header**: read 34 bytes from `p_offset` (several declare `p_filesz` < 34, e.g. MCMAN → 32).
+- **Module bases**: reserve the real size (text+data+bss); fixed 64 KB made MCMAN
+  (~74 KB) overwrite the next module.
+- **Start at 0** valid for IRX (code at vaddr 0).
+- **Exports with interior 0 slots**: do not truncate at the first 0.
 
-## Próximos pasos
-1. **CRI_ADXI**: aislar qué escritura corrompe (watchpoints / bounds de región).
-2. **DS2*/MOD***: modelar **SIO2 hardware/IRQ** (registros + interrupción) para que los waits
-   de los drivers de pad/secuenciador resuelvan.
-3. **MC (MCMAN+MCSERV)**: atacarlos juntos; necesitan SIF real (EE↔IOP) y/o SIO2 + la cadena
-   `ioman`/`secrman`/`cdvdman`.
-4. `IOPRP300.IMG`: módulos del kernel IOP aún sin tocar.
+## Next steps
+1. **CRI_ADXI**: isolate which write corrupts (watchpoints / region bounds).
+2. **DS2*/MOD***: model **SIO2 hardware/IRQ** (registers + interrupt) so the pad/sequencer
+   driver waits resolve.
+3. **MC (MCMAN+MCSERV)**: attack them together; they need real SIF (EE↔IOP) and/or SIO2 plus the
+   `ioman`/`secrman`/`cdvdman` chain.
+4. `IOPRP300.IMG`: IOP kernel modules still untouched.
 
-## IOPRP300.IMG (kernel IOP + residentes)
+## IOPRP300.IMG (IOP kernel + residents)
 
-`tools/iop/ioprp.py` lista/extrae la imagen (ROMDIR): 16 módulos ELF:
+`tools/iop/ioprp.py` lists/extracts the image (ROMDIR): 16 ELF modules:
 `SYSMEM LOADCORE SIFCMD SIFMAN THREADMAN IOMAN MODLOAD FILEIO CDVDMAN CDVDFSV LOADFILE TIMEMANI
-ROMDRV EESYNC SYSCLIB STDIO`. Nuestro **kernel HLE** cubre los del kernel
+ROMDRV EESYNC SYSCLIB STDIO`. Our **kernel HLE** covers the kernel ones
 (sysmem/loadcore/sifcmd/sifman/threadman/intrman/…).
 
-**Proveedores que faltan** (los importan los IRX del juego y ni los HLEamos ni están como módulo):
-- Residentes en IOPRP pero no HLE'd: **`ioman`, `cdvdman`, `modload`**.
-- No existen como módulo: **`secrman`, `heaplib`, `thmsgbx`, `timrman`, `vblank`**.
+**Missing providers** (imported by the game's IRX, neither HLE'd nor present as a module):
+- Resident in IOPRP but not HLE'd: **`ioman`, `cdvdman`, `modload`**.
+- Do not exist as a module: **`secrman`, `heaplib`, `thmsgbx`, `timrman`, `vblank`**.
 
-Hoy esas llamadas devuelven 0 (el juego igual bootea y llega a FIGHT). Para fidelidad plena
-(M C, CD, timers, vblank) hay que HLE'arlos o recompilar los residentes de IOPRP.
+Today those calls return 0 (the game still boots and reaches FIGHT). For full fidelity
+(MC, CD, timers, vblank) they need HLE-ing or recompiling the IOPRP residents.
 
-### Confirmación por ordinal
-Casi todos los imports de `ioman`/`cdvdman`/`modload`/`fileio`/… son **entre módulos de
-IOPRP** (CDVDFSV↔CDVDMAN↔FILEIO↔…), no del juego. Los módulos **del juego** usan:
+### Confirmation by ordinal
+Almost all imports of `ioman`/`cdvdman`/`modload`/`fileio`/… are **between IOPRP modules**
+(CDVDFSV↔CDVDMAN↔FILEIO↔…), not from the game. The **game** modules use:
 
-| game module | import | ordinal | semántica | valor "sano" |
+| game module | import | ordinal | semantics | "healthy" value |
 |---|---|---|---|---|
-| `MCMAN`,`CDVDSTM` | `ioman` | 20/21 | `AddDrv`/`DelDrv` | **0** (éxito) |
+| `MCMAN`,`CDVDSTM` | `ioman` | 20/21 | `AddDrv`/`DelDrv` | **0** (success) |
 | `MCMAN`,`SIO2D` | `secrman` | 4/5/6 | Set handlers / `SecrAuthCard` | **0** (ok) |
 | `MCMAN` | `modload` | 13 | module load | 0 |
 | `MCMAN` | `cdvdman` | 24 | CD | 0 |
 | `SOUNDS` | `timrman` | 4/6/20/22/23/24 | timers | id/0 |
 | `CRI_ADXI`,`SIO2D` | `vblank` | 4/5 | Wait* | 0 |
 
-El default (0 para lo no manejado) **ya coincide** con esos valores de éxito, por eso el boot no
-se rompe. Sólo `timrman#4` (AllocHardTimer) devuelve un id nuevo.
+The default (0 for anything unhandled) **already matches** those success values, which is why
+boot does not break. Only `timrman#4` (AllocHardTimer) returns a new id.
 
-**Complementos añadidos**: `ioman` (registro de devices + todas las `ops` ruteadas a los drivers
-nativos), `cdvdman` (sync/break/nop→1, disktype→DVD, readclock), `modload`→0, `secrman`→0 (éxito),
-y **SIO2/PIO**: write a CTRL marca STAT "ready" (+STAT inicial en lectura) para que los drivers que
-hacen poll de transferencia SIO2 salgan.
+**Added complements**: `ioman` (device registry + all `ops` routed to the native
+drivers), `cdvdman` (sync/break/nop→1, disktype→DVD, readclock), `modload`→0, `secrman`→0 (success),
+and **SIO2/PIO**: a write to CTRL sets STAT "ready" (+ initial STAT on read) so the drivers that
+poll SIO2 transfers exit.

@@ -539,6 +539,11 @@ public:
     // address (vaddr 0). Returns false if the IRX or the entry function is unavailable.
     bool loadAndRunIopModule(const char *path);
 
+    // [r3000] Where an IRX lives, without the name. Follows the CD root instead of assuming the
+    // process directory, honours PS2X_IOP_DIR, and returns "" when neither candidate exists so
+    // the caller can say the module is missing rather than opening a path that was never there.
+    static std::string resolveIopModulePath(const std::string &fileName);
+
     static const IoPaths &getIoPaths();
     static void setIoPaths(const IoPaths &paths);
     static void configureIoPathsFromElf(const std::string &elfPath);

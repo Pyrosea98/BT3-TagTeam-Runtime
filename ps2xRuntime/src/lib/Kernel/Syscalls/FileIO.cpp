@@ -86,7 +86,7 @@ namespace ps2_syscalls
             return;
         }
 
-        std::string hostPath = translatePs2Path(ps2Path);
+        std::string hostPath = resolvePs2HostPath(ps2Path);
         if (hostPath.empty())
         {
             std::cerr << "fioOpen error: Failed to translate path '" << ps2Path << "'" << std::endl;
@@ -350,7 +350,7 @@ namespace ps2_syscalls
             setReturnS32(ctx, -1); // -EFAULT
             return;
         }
-        std::string hostPath = translatePs2Path(ps2Path);
+        std::string hostPath = resolvePs2HostPath(ps2Path);
         if (hostPath.empty())
         {
             std::cerr << "fioMkdir error: Failed to translate path '" << ps2Path << "'" << std::endl;
@@ -384,7 +384,7 @@ namespace ps2_syscalls
             return;
         }
 
-        std::string hostPath = translatePs2Path(ps2Path);
+        std::string hostPath = resolvePs2HostPath(ps2Path);
         if (hostPath.empty())
         {
             std::cerr << "fioChdir error: Failed to translate path '" << ps2Path << "'" << std::endl;
@@ -418,7 +418,7 @@ namespace ps2_syscalls
             setReturnS32(ctx, -1);
             return;
         }
-        std::string hostPath = translatePs2Path(ps2Path);
+        std::string hostPath = resolvePs2HostPath(ps2Path);
         if (hostPath.empty())
         {
             std::cerr << "fioRmdir error: Failed to translate path '" << ps2Path << "'" << std::endl;
@@ -464,7 +464,7 @@ namespace ps2_syscalls
             return;
         }
 
-        std::string hostPath = translatePs2Path(ps2Path);
+        std::string hostPath = resolvePs2HostPath(ps2Path);
         if (hostPath.empty())
         {
             std::cerr << "fioGetstat error: Bad path translate" << std::endl;
@@ -486,7 +486,7 @@ namespace ps2_syscalls
             return;
         }
 
-        std::string hostPath = translatePs2Path(ps2Path);
+        std::string hostPath = resolvePs2HostPath(ps2Path);
         if (hostPath.empty())
         {
             std::cerr << "fioRemove error: Path translate fail" << std::endl;

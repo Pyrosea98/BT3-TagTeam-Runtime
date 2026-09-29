@@ -38,6 +38,13 @@ ps2xRuntime/include/ps2_overlay_functions.h
 # user's own ripped disc content, and it is gigabytes.
 games/bt3/work
 
+# Menu theme for the front-end. This is the game's own soundtrack, so it stays a local file the
+# user drops next to the executable: the front-end looks for <exeDir>/music/. Never commit, and
+# never let setup.py stage it into a distributed zip.
+music/
+ps2xRuntime/assets/music/
+
+
 # local build/deploy scratch
 log.txt
 log_*.txt
@@ -46,6 +53,10 @@ __pycache__/
 
 # local build trees (build_pre, build_pgs, ...)
 build_*/
+# ...and the hyphenated spelling, which is what PS2X_BUILD_DIR=build-linux wants: a Windows and a
+# Linux build cannot share one tree, since FetchContent's subbuild caches record the configuring
+# platform's absolute paths and CMake refuses to reuse them.
+build-*/
 
 # Agent instructions file, local only
 AGENTS.md
@@ -58,6 +69,15 @@ launcher-build-log.txt
 # runtime-generated game save data + imgui layout (local only)
 games/bt3/savedata/
 imgui.ini
+
+# [ach] The probe's own output when it runs from the source tree, same as any other savedata.
+ps2xRuntime/savedata/
+
+# [ach] Badge images, downloaded by scripts/gen_ach_patch.py at build time. Not committed: they are
+# RetroAchievements' artwork, not ours to vend -- the generator is the reproducible source, and a
+# checkout without network gets the 5 achievements that do not need a badge. Pass --no-badges to skip
+# the fetch on a machine that has none.
+ps2xRuntime/assets/badges/
 
 # orchestrator runtime state (dev-local corpus)
 tools/orchestrator/state.json

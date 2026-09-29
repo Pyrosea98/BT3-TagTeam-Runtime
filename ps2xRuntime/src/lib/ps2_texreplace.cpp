@@ -28,6 +28,7 @@
 #include <cstring>
 #include "gfx/bt3gl_api.h"   // [B] bt3* API bridge
 extern "C" const char *ps2xExeDirC();   // [mergefix] main.cpp
+extern "C" int ps2xNetEntryActive();    // [netmenu] gate the replacement to the NET entry
 
 namespace ps2tex
 {
@@ -188,26 +189,11 @@ namespace
     std::unordered_map<uint64_t, std::string> g_byTex0;
     std::once_flag g_once;
     bool g_on = false;
-    std::string g_root;   // [texui] the indexed pack root, for the launcher/overlay status
+    std::string g_root;   // [texui] the indexed pack root, for the front-end/overlay status
 
     inline uint64_t pairKey(uint64_t a, uint64_t b)
     {
         return a ^ (b << 1) ^ (b >> 63);
-    }
-
-    // [texui] Button layout preference: 0 = PS2 (Original Buttons), 1 = Xbox (Xbox Layout). Read from
-    // savedata/settings.toml [video] button_layout (default Xbox, matching the packs' replacements/
-    // Buttons). PS2X_BUTTONS=ps2|xbox overrides for A/B.
-    int packButtonLayout()
-    {
-        if (const char *v = std::getenv("PS2X_BUTTONS"); v && v[0])
-            return (v[0] == '0' || v[0] == 'p' || v[0] == 'P') ? 0 : 1;
-        const char *xd = ps2xExeDirC();
-        std::ifstream f(std::string((xd && xd[0]) ? xd : ".") + "/savedata/settings.toml");
-        if (!f.is_open()) return 1;
-        ps2x_toml::Document doc;
-        doc.parse(f);
-        return doc.getI("video.button_layout", 1);
     }
 
     void buildIndex()
@@ -291,9 +277,33 @@ namespace
     }
 }
 
+// [texui] Button layout preference: 0 = PS2 (Original Buttons), 1 = Xbox (Xbox Layout). Read from
+// savedata/settings.toml [video] button_layout (default Xbox, matching the packs' replacements/
+// Buttons). PS2X_BUTTONS=ps2|xbox overrides for A/B.
+int packButtonLayout()
+{
+    if (const char *v = std::getenv("PS2X_BUTTONS"); v && v[0])
+        return (v[0] == '0' || v[0] == 'p' || v[0] == 'P') ? 0 : 1;
+    const char *xd = ps2xExeDirC();
+    std::ifstream f(std::string((xd && xd[0]) ? xd : ".") + "/savedata/settings.toml");
+    if (!f.is_open()) return 1;
+    ps2x_toml::Document doc;
+    doc.parse(f);
+    return doc.getI("video.button_layout", 1);
+}
+
 bool replacementsEnabled()
 {
     std::call_once(g_once, buildIndex);
+    // [netmenu] The black-square kill is NET-ENTRY ONLY: outside it the game's own textures draw.
+    const int on = ps2xNetEntryActive();
+    static int s_last = -1;
+    if (on != s_last)
+    {
+        s_last = on;
+        std::fprintf(stderr, "[texreplace] net-entry gate -> %s (indexed=%d)\n", on ? "ON" : "off", (int)g_on);
+    }
+    if (!on) return false;
     return g_on;
 }
 
@@ -325,7 +335,7 @@ void maybeDumpResolved(const TexIdent &id, const uint8_t *rgba, int w, int h)
     bt3ExportImage(img, (base + ".png").c_str());
 }
 
-// [texui] Pack status for the launcher/overlay popup.
+// [texui] Pack status for the front-end/overlay popup.
 size_t replacementsCount()
 {
     std::call_once(g_once, buildIndex);
@@ -508,11 +518,35 @@ namespace
     }
 }
 
+// [netmenu] A ready-made opaque black RGBA8 image, used by the black-all kill. Uses the ORIGINAL's
+// dimensions (from the bits field: TW<<6 | TH<<10) so it passes the 1x upscale check.
+bool makeBlack(const TexIdent &id, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt)
+{
+    const uint32_t tw = (id.bits >> 6) & 0xFu, th = (id.bits >> 10) & 0xFu;
+    w = 1 << tw;
+    h = 1 << th;
+    if (w <= 0 || h <= 0 || w > 4096 || h > 4096) { w = h = 64; }
+    fmt = BT3_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    rgba.assign((size_t)w * (size_t)h * 4u, 0u);
+    for (size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255u;
+    return true;
+}
+
 bool loadReplacement(const TexIdent &id, std::vector<uint8_t> &rgba, int &w, int &h, int &fmt, int *mips)
 {
+    if (mips) *mips = 1;
     if (!replacementsEnabled()) return false;
     auto it = g_index.find(pairKey(id.tex0Hash, id.hasClut ? id.clutHash : 0ull));
-    if (it == g_index.end()) return false;
+    if (it == g_index.end())
+    {
+        // [netmenu] Black-all kill: no per-hash entry needed -- every texture becomes a black square.
+        static const bool s_blackAll = []() {
+            const char *v = std::getenv("PS2X_TEXPACK_BLACK_ALL");
+            return v && v[0] && v[0] != '0';
+        }();
+        if (s_blackAll) return makeBlack(id, rgba, w, h, fmt);
+        return false;
+    }
     return decodeFile(it->second, rgba, w, h, fmt, mips);
 }
 
@@ -523,7 +557,15 @@ bool loadReplacement(const TexIdent &id, uint64_t texKey, std::vector<uint8_t> &
     if (!asyncEnabled()) return loadReplacement(id, rgba, w, h, fmt, mips);
     const uint64_t key = pairKey(id.tex0Hash, id.hasClut ? id.clutHash : 0ull);
     auto it = g_index.find(key);
-    if (it == g_index.end()) return false;
+    if (it == g_index.end())
+    {
+        static const bool s_blackAll = []() {
+            const char *v = std::getenv("PS2X_TEXPACK_BLACK_ALL");
+            return v && v[0] && v[0] != '0';
+        }();
+        if (s_blackAll) return makeBlack(id, rgba, w, h, fmt);
+        return false;
+    }
     std::call_once(g_asyncOnce, startAsync);
     AsyncState *st = g_async;
     std::lock_guard<std::mutex> lk(st->mtx);
@@ -691,3 +733,7 @@ void megaLookup(const TexIdent &id, uint64_t texKey, uint32_t tbp0, uint32_t tbw
     }
 }
 }
+
+// [texui] extern "C" accessor so the runner (menu2d) can read the button layout: the
+// real function lives in the file-local anonymous namespace above.
+extern "C" int ps2xPackButtonLayout() { return ps2tex::packButtonLayout(); }

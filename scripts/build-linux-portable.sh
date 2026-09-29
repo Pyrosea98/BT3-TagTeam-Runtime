@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Build a **portable** Linux release against glibc 2.35 (Ubuntu 22.04), so the packaged
-# `bt3-runner`/`Launcher` run on Ubuntu/Kubuntu 22.04 and 24.04 (glibc 2.35 / 2.39) and other
+# the runner runs on Ubuntu/Kubuntu 22.04 and 24.04 (glibc 2.35 / 2.39) and other
 # distros with glibc >= 2.35.
 #
 # Why: a native build inherits the build host's glibc. Building on a rolling distro (e.g. Arch,
 # glibc 2.44) produces a binary that needs GLIBC_2.4x and aborts on 24.04 with:
-#     libm.so.6: version `GLIBC_2.43' not found (required by bt3-runner)
+#     libm.so.6: version `GLIBC_2.43' not found (required by the runner)
 # Self-builds on the user's own distro are unaffected (they use their own glibc); this wrapper is
 # only for producing a distributable artifact.
 #
@@ -48,7 +48,7 @@ echo "[portable] $BASE_IMAGE, glibc floor $FLOOR, engine $ENGINE"
             libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
             libgl1-mesa-dev libglu1-mesa-dev libarchive-tools libarchive-dev p7zip-full \
             libavcodec-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev \
-            qt6-base-dev ccache mold
+            ccache mold
         # The repo is owned by the host user but we run as root in the container; without this,
         # git refuses to operate ("dubious ownership") and the parallel-gs submodule is skipped.
         git config --global --add safe.directory /src

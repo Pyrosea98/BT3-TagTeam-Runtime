@@ -21,12 +21,16 @@ def output(*args):
     return subprocess.check_output(list(map(str, args)), text=True).strip()
 
 
+# Must match PRODUCT_NAME in games/bt3/setup.py. It carries spaces on purpose.
+RUNNER_NAME = "Dragon Ball Z Budokai Tenkaichi 3 - Recompiled"
+
+
 def version(value):
     return tuple((list(map(int, value.split("."))) + [0, 0])[:3])
 
 
 def make_icns(source, destination, workdir):
-    """Convert the launcher artwork to the native Finder/Dock icon format."""
+    """Convert the app artwork to the native Finder/Dock icon format."""
     iconset = workdir / "BT3-Recomp.iconset"
     iconset.mkdir()
     # iconutil requires square source images. Crop the artwork around its center
@@ -43,7 +47,7 @@ def make_icns(source, destination, workdir):
 
 def audit(app, minimum):
     """Reject unresolved external libraries and a falsely advertised OS floor."""
-    required_arches = set(output("lipo", "-archs", app / "Contents/MacOS/bt3-runner").split())
+    required_arches = set(output("lipo", "-archs", app / "Contents/MacOS" / RUNNER_NAME).split())
     macho = []
     seen = set()
     for path in app.rglob("*"):
@@ -76,9 +80,38 @@ def audit(app, minimum):
                     raise RuntimeError(f"{path.name} requires macOS {fields[1]}, above requested {minimum}")
     if not macho:
         raise RuntimeError("Bundle contains no Mach-O binaries")
-    if not (app / "Contents/PlugIns/platforms/libqcocoa.dylib").is_file():
-        raise RuntimeError("Qt Cocoa platform plugin is missing")
     return macho
+
+
+def dylib_closure(binary, frameworks):
+    """Copy the runner's non-system dylibs into Contents/Frameworks and repoint every load path at
+    @rpath. macdeployqt used to do this for the Qt launcher; the front-end has no Qt, so the closure
+    is walked here. audit() then rejects anything still pointing outside the bundle."""
+    rpath = "@executable_path/../Frameworks"
+    frameworks.mkdir(parents=True, exist_ok=True)
+    bundled = {}
+    queue = [binary]
+    walked = set()
+    while queue:
+        cur = queue.pop()
+        key = str(cur)
+        if key in walked:
+            continue
+        walked.add(key)
+        run("install_name_tool", "-add_rpath", rpath, cur)
+        for line in output("otool", "-L", cur).splitlines()[1:]:
+            dep = line.strip().split(" (compatibility version", 1)[0]
+            if not dep.startswith("/") or dep.startswith(("/usr/lib/", "/System/Library/")):
+                continue
+            name = Path(dep).name
+            if name not in bundled:
+                dst = frameworks / name
+                if not dst.exists():
+                    shutil.copy2(dep, dst)
+                bundled[name] = dst
+                run("install_name_tool", "-id", f"@rpath/{name}", dst)
+                queue.append(dst)
+            run("install_name_tool", "-change", dep, f"@rpath/{name}", cur)
 
 
 def main():
@@ -102,64 +135,43 @@ def main():
     if dest.suffix != ".app":
         parser.error("--output must name a .app path")
     build = Path(os.environ.get("PS2X_BUILD_DIR") or ROOT / "build").resolve()
-    qt = Path(output("brew", "--prefix", "qt"))
-    deployqt = qt / "bin/macdeployqt"
-    if not deployqt.is_file():
-        parser.error(f"macdeployqt not found at {deployqt}")
     env = dict(os.environ, MACOSX_DEPLOYMENT_TARGET=args.deployment_target)
     if not args.skip_build:
         setup = ["python3", ROOT / "games/bt3/setup.py"]
         setup += ["--skip-setup"] if args.skip_setup else [args.iso.expanduser().resolve()]
         run(*setup, "--jobs", args.jobs, env=env)
-        run("cmake", "-S", ROOT / "ps2xRuntime/src/launcher", "-B", build / "launcher",
-            "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_PREFIX_PATH={qt}",
-            f"-DCMAKE_OSX_DEPLOYMENT_TARGET={args.deployment_target}", env=env)
-        run("cmake", "--build", build / "launcher", "-j", args.jobs, env=env)
     runner = build / "ps2xRuntime/ps2EntryRunner"
-    launcher = build / "launcher/Launcher.app"
-    if not runner.is_file() or not launcher.is_dir():
-        parser.error("runner or Launcher.app is missing; build first")
+    if not runner.is_file():
+        parser.error("runner is missing; build first")
     dest.parent.mkdir(parents=True, exist_ok=True)
     # Publish only after deployment and verification succeed.
     with tempfile.TemporaryDirectory(prefix=".bt3-stage-", dir=dest.parent) as tmp:
         app = Path(tmp) / "BT3-Recomp.app"
-        shutil.copytree(launcher, app, symlinks=True)
-        bundled_runner = app / "Contents/MacOS/bt3-runner"
-        shutil.copy2(runner, bundled_runner)
+        # The front-end lives inside the runner, so the bundle is just the runner plus its
+        # resources, closure and icon; there is no second executable to embed.
+        bundled_runner = app / "Contents/MacOS" / RUNNER_NAME
         resources = app / "Contents/Resources"
+        bundled_runner.parent.mkdir(parents=True)
+        resources.mkdir(parents=True)
+        shutil.copy2(runner, bundled_runner)
         shutil.copytree(ROOT / "ps2xRuntime/assets", resources / "assets", dirs_exist_ok=True)
-        for name in ("background.png", "icon.png"):
-            src = ROOT / "ps2xRuntime/src/launcher/assets" / name
-            if src.is_file():
-                shutil.copy2(src, resources / "assets" / name)
-        plist = app / "Contents/Info.plist"
-        info = plistlib.loads(plist.read_bytes())
-        info["LSMinimumSystemVersion"] = args.deployment_target
-        plist.write_bytes(plistlib.dumps(info))
+        info = {
+            "CFBundleName": "BT3-Recomp",
+            "CFBundleDisplayName": "BT3-Recomp",
+            "CFBundleIdentifier": "org.bt3recomp.app",
+            "CFBundleExecutable": RUNNER_NAME,
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": "1.0",
+            "CFBundleVersion": "1.0",
+            "CFBundleIconFile": "BT3-Recomp.icns",
+            "NSHighResolutionCapable": True,
+            "LSMinimumSystemVersion": args.deployment_target,
+        }
+        (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
         make_icns(resources / "assets/icon.png", resources / "BT3-Recomp.icns", Path(tmp))
-        # Homebrew's Qt plugins use @rpath for non-Qt dependencies. macdeployqt
-        # only searches Qt's own prefix by default, so provide every installed
-        # formula lib directory and let it close the complete dependency graph.
-        brew_opt = Path(output("brew", "--prefix")) / "opt"
-        library_paths = sorted(
-            path for formula in brew_opt.iterdir()
-            if (path := formula / "lib").is_dir()
-        )
-        deploy_args = [deployqt, app, f"-executable={bundled_runner}",
-                       "-always-overwrite", "-no-codesign", "-no-plugins"]
-        deploy_args += [f"-libpath={path}" for path in library_paths]
-        run(*deploy_args)
-        # The launcher only needs Qt's Cocoa platform plugin. Copying every
-        # installed plugin drags WebEngine/PDF/virtual-keyboard dependency
-        # trees into an otherwise small Widgets application.
-        cocoa_src = qt / "share/qt/plugins/platforms/libqcocoa.dylib"
-        cocoa_dst = app / "Contents/PlugIns/platforms/libqcocoa.dylib"
-        cocoa_dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(cocoa_src, cocoa_dst)
-        run("install_name_tool", "-rpath", "@loader_path/../../../../lib",
-            "@loader_path/../../Frameworks", cocoa_dst)
+        dylib_closure(bundled_runner, app / "Contents/Frameworks")
         binaries = audit(app, args.deployment_target)
-        # Sign inside out, including the non-Qt runner and every deployed dylib.
+        # Sign inside out: the runner and every deployed dylib.
         for binary in sorted(binaries, key=lambda p: len(p.parts), reverse=True):
             run("codesign", "--force", "--sign", "-", binary)
         for framework in app.glob("Contents/Frameworks/*.framework"):
@@ -181,7 +193,34 @@ def main():
             raise
         if had_previous:
             shutil.rmtree(previous)
-    print(f"Ready: {dest}\nGame data and saves: ~/Library/Application Support/BT3-Recomp")
+
+    # The runtime anchors data/, savedata/ and logs/ to the executable directory, which inside a
+    # bundle is Contents/MacOS. Leaving them there would put gigabytes of game data (and the
+    # player's saves) inside the app, where replacing or moving the bundle loses them. Linking the
+    # writable names to Application Support is what actually makes the promise below true, and it
+    # needs no environment variable, so it works from Finder, Dock and `open` alike.
+    support = Path.home() / "Library" / "Application Support" / "BT3-Recomp"
+    macos_dir = dest / "Contents" / "MacOS"
+    linked = []
+    for name in ("data", "savedata", "mods", "logs"):
+        target = support / name
+        target.mkdir(parents=True, exist_ok=True)
+        link = macos_dir / name
+        if link.is_symlink() or link.exists():
+            if link.is_symlink() and link.resolve() == target.resolve():
+                linked.append(name)
+                continue
+            if link.is_dir() and not link.is_symlink():
+                # First run on a bundle that already collected data: move it out, then link.
+                for child in link.iterdir():
+                    shutil.move(str(child), str(target / child.name))
+                shutil.rmtree(link)
+            else:
+                link.unlink()
+        link.symlink_to(target, target_is_directory=True)
+        linked.append(name)
+    print(f"Ready: {dest}")
+    print(f"Game data and saves: {support}  (linked into the bundle: {', '.join(linked)})")
     print("Local ad-hoc signature; Developer ID and notarization are not performed.")
 
 

@@ -16,6 +16,8 @@
 //   PS2X_NET=<host>:<port>   connect to a peer        PS2X_NET_LISTEN=<port>   wait for one
 //   PS2X_NET_PLAYER=1|2      which player is local    PS2X_NET_DELAY=<frames>  default 4
 //   PS2X_NET_TIMEOUT=<ms>    stall limit, default 2000
+#include "runtime/ps2x_notify.h"   // [notify] the session cards and their sounds
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -141,6 +143,20 @@ struct Net
 };
 
 Net g;
+
+// [flush] Whether the session has entered the match flow, and how many frames it has then sat on the
+// main menu. Per-session, so both are reset on connect and on teardown: a latch that outlived its
+// session would fire on the next connect and drop a session that never left. It lives here, with
+// the rest of the state, rather than next to the check that reads it.
+static bool s_flushArmed = false;
+static int  s_flushMenuFrames = 0;
+
+// Declared here, inside the namespace it belongs to, because netStart() and ps2NetDisconnect() both
+// need it and both come later. Declared at file scope instead it would be a second, distinct
+// function and every call would be ambiguous.
+static void netFlushForget();
+static void netFlushForget() { s_flushArmed = false; s_flushMenuFrames = 0; }
+
 // [netjump] the HOST's choice, like the game mode: it rides in bit 7 of the timeLimit field
 // (indices use 3 bits) so a joiner that left its own box unticked still jumps with the host.
 std::atomic<bool> g_autoJump{false};
@@ -314,6 +330,17 @@ void pump()
             if (g.syncOn) { g.synced = false; g.syncOffered = false; g.syncDone = false; }   // [statesync] inputs wait for the state
             // host drives; the joiner just follows the inputs it receives
             if (g.listening) { if (const char *a = std::getenv("PS2X_NET_AUTOSTART")) ps2NetBeginAutoStart(a); }
+            // [notify] Announced from the packet path rather than from the UI, because this is the
+            // one place it is true no matter what the player is looking at. A session that comes up
+            // during a fight is exactly the case worth telling them about, and that is the case a
+            // panel-scoped observer would miss.
+            {
+                char body[96];
+                std::snprintf(body, sizeof body, "Player %u is in. The session is live.",
+                              (unsigned)p.player);
+                const NotifyEvent ev{NotifyKind::Netplay, NotifyTone::Good, "Connected", body};
+                ps2xNotifyPush(ev);
+            }
         }
         g.rx.fetch_add(1, std::memory_order_relaxed);
         if (p.kind == 1u)
@@ -369,6 +396,11 @@ int  ps2NetRollbackSetting()        { netEnvDefaults(); return (int)g.rbWindow; 
 void ps2NetSetSync(bool on)         { netEnvDefaults(); g.syncOn = on; }
 bool ps2NetSyncSetting()            { netEnvDefaults(); return g.syncOn; }
 
+// autoStartReset is defined next to the canned sequence it walks. Forward-declared because
+// ps2NetDisconnect needs it and comes first. netFlushForget is declared inside the namespace above,
+// where its definition is -- at file scope here it would be a different function.
+static void autoStartReset();
+
 static bool netStart(const char *conn, int listenPort, int player)
 {
     netEnvDefaults();
@@ -413,12 +445,94 @@ static bool netStart(const char *conn, int listenPort, int player)
     }
     setNonBlocking(g.sock);
     g.active = true;
+    netFlushForget();   // [flush] a fresh session starts un-armed: 0x04 is where it was opened
     return true;
 }
 
-bool ps2NetHost(int port, int player)              { return netStart(nullptr, port, player); }
-bool ps2NetJoin(const char *hostPort, int player)  { return netStart(hostPort, 0, player); }
+// [notify] One card per attempt, decided from netStart()'s single return value rather than
+// annotated onto each of its five failure paths. Those paths each already log their own reason to
+// the console -- a bad address, a taken port, a dead socket -- and the card does not need to
+// restate which one it was; the player pressed a button and it did not work.
+static void netStartAnnounce(bool ok, bool hosting, int player)
+{
+    if (ok)
+    {
+        const NotifyEvent ev{NotifyKind::Netplay, NotifyTone::Info, "Waiting for the other player",
+                             hosting ? "Listening. The session starts when someone joins."
+                                     : "Looking for the host."};
+        ps2xNotifyPush(ev);
+    }
+    else
+    {
+        const NotifyEvent ev{NotifyKind::Netplay, NotifyTone::Bad, "Could not start the session",
+                             "Check the address and the port, then try again."};
+        ps2xNotifyPush(ev);
+        (void)player;
+    }
+}
+
+bool ps2NetHost(int port, int player)
+{
+    const bool ok = netStart(nullptr, port, player);
+    netStartAnnounce(ok, true, player);
+    return ok;
+}
+
+bool ps2NetJoin(const char *hostPort, int player)
+{
+    const bool ok = netStart(hostPort, 0, player);
+    netStartAnnounce(ok, false, player);
+    return ok;
+}
+
 bool ps2NetPeerConnected()                         { return g.connected; }
+
+// [netplay] The overlay switch. Seeded from the environment once, then owned by whoever last set it.
+static std::atomic<int> g_netOverlay{0};
+static bool g_netOverlayEnvSet = false;   // the environment spoke, or the player did
+static bool ps2xNetOverlayInit()
+{
+    // Presence, not truthiness. The saved default is "on" now, so a plain "is it non-zero" test
+    // would make NET_OVERLAY=0 a no-op: the seed would be 0, applySettings() would push the saved
+    // "on" over it, and the one-session override would stop working. Same shape as the
+    // achievements module's ACHIEVEMENTS handling.
+    static const int seeded = [](){ const char *v = std::getenv("NET_OVERLAY");
+                                     if (!v || !v[0]) return -1;   // not set: the file decides
+                                     return (v[0] != '0') ? 1 : 0; }();
+    // Only seed when there is something to seed. -1 means "leave it alone", and the setting is
+    // offered by ps2xNetOverlayApplyDefault() right after this runs on the load path.
+    if (seeded >= 0)
+    {
+        g_netOverlay.store(seeded, std::memory_order_relaxed);
+        g_netOverlayEnvSet = true;
+    }
+    return g_netOverlay.load(std::memory_order_relaxed) != 0;
+}
+bool ps2xNetOverlayEnabled()
+{
+    static const bool seeded = ps2xNetOverlayInit();
+    (void)seeded;
+    return g_netOverlay.load(std::memory_order_relaxed) != 0;
+}
+void ps2xSetNetOverlayEnabled(bool on)
+{
+    ps2xNetOverlayInit();   // so a later enable does not get clobbered by the seed
+    g_netOverlayEnvSet = true;   // the player has spoken; the environment is done
+    g_netOverlay.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
+void ps2xNetOverlayApplyDefault(bool on)
+{
+    // The saved value, offered at boot. Not ps2xSetNetOverlayEnabled(), for the same reason the
+    // achievements module has a second entry point: that one is the player's click and gives up the
+    // environment, and applySettings() runs on the load path. Sharing it would make NET_OVERLAY=0 a
+    // no-op on the one boot it is supposed to apply to.
+    ps2xNetOverlayInit();
+    if (g_netOverlayEnvSet)
+        return;
+    g_netOverlay.store(on ? 1 : 0, std::memory_order_relaxed);
+}
+
 uint32_t ps2NetSession()                           { return g.session; }
 
 // A "bye" is an ordinary packet with player = 0xFF. Sending one means the peer tears down at
@@ -434,9 +548,19 @@ static void sendBye()
                  reinterpret_cast<sockaddr *>(&g.peer), sizeof g.peer);
 }
 
+// The auto-start cursor is declared further down, next to the sequence it walks, and the [flush]
+// latch likewise. Both are forward-declared above the teardown that needs them: a half-replayed
+// canned sequence is session state like any other, and leaving it running is how a new session
+// inherits the old one's cursor.
 void ps2NetDisconnect(const char *why)
 {
     if (!g.active) return;
+    // [notify] Captured before the teardown clears it. A disconnect is announced even when the
+    // session never connected -- the player pressed Disconnect or Join failed, and either way the
+    // thing they asked for is not happening, which is worth one card. `why` goes on the card
+    // because it is already a short phrase written for a human, and it is more useful than
+    // inventing a second string for the same event.
+    const bool wasLive = g.connected;
     sendBye();
     std::lock_guard<std::mutex> lk(g.mtx);
     if (g.sock != INVALID_SOCKET) { PS2X_CLOSESOCK(g.sock); g.sock = INVALID_SOCKET; }
@@ -446,7 +570,38 @@ void ps2NetDisconnect(const char *why)
     g.local.clear(); g.remote.clear(); g.peerHash.clear(); g.ourHash.clear();
     g.needBase = true; g.base = 0; g.checkFrame = 0; g.checkValue = 0;
     g.synced = true; g.syncOffered = false; g.syncDone = false;   // [statesync] (netStart re-derives syncOn from the setting)
-    std::fprintf(stderr, "[netplay] disconnected (%s) -- local pads restored\n", why ? why : "requested");
+
+    // [flush] Everything below is session state that outlived the teardown, and every one of these
+    // was a way for the next session to inherit the last one. They are all keyed by RELATIVE frame
+    // (see the [relframe] note on g.base), and g.base is re-derived from scratch on the next
+    // connect -- so a stale entry at relative frame 12 is not a stale entry at 12, it is a live
+    // wrong answer for the new session's frame 12. Frames being relative is what makes these
+    // collisions certain rather than merely possible.
+    g.predicted.clear();        // [rollback] a guess made for the old session's peer, replayed as if it were this one's
+    g.held.clear();             // fake-lag queue: a whole old session's NetPkt, released into the new one
+    g.rollbackTo = 0xFFFFFFFFu; // the earliest frame to re-simulate; stale, it would fire a bogus rollback
+    g.lastSent = 0;             // the send watermark, in old-session relative frames
+    g.lastRx = {};              // the watchdog's clock: zero, or the new session inherits a stale "last heard from"
+    g.syncFrame = 0; g.syncBytes = 0; g.syncPath[0] = '\0';
+    g.port = 0;
+    // desyncFrame is a latch that never clears on purpose -- EXCEPT across sessions, which is the
+    // one case where it must, and is the case its own comment describes. The netjump aborts a
+    // transition on it, so a desync from the previous match would abort the next one's setup
+    // before it began.
+    g.desyncFrame = 0;
+    g.stalls.store(0); g.stallNs.store(0); g.desyncs.store(0); g.rx.store(0); g.tx.store(0);
+    g.predictions.store(0); g.rollbacks.store(0); g.mispredicts.store(0);
+    autoStartReset();
+    netFlushForget();   // [flush] the latch belonged to the session that just ended
+
+    std::fprintf(stderr, "[netplay] disconnected (%s) -- local pads restored, session state flushed\n", why ? why : "requested");
+
+    if (wasLive)
+    {
+        const NotifyEvent ev{NotifyKind::Netplay, NotifyTone::Bad, "Session ended",
+                             why ? why : "The session was closed."};
+        ps2xNotifyPush(ev);
+    }
 }
 
 // [netjump] Whether a successful connection should take both sides to character select.
@@ -479,6 +634,18 @@ struct AutoSample { uint32_t frame; uint8_t player, pad0; uint16_t buttons; uint
 std::vector<Ps2xNetInput> g_auto;
 size_t g_autoPos = 0;
 bool   g_autoRunning = false;
+}
+
+// Defined here, called from the teardown above. The sequence file stays loaded on purpose: it is
+// the PS2X_NET_AUTOSTART setting, not session state, and re-reading it per connect would mean
+// touching the disk on every join. The CURSOR is the session state.
+static void autoStartReset()
+{
+    if (g_autoRunning)
+        std::fprintf(stderr, "[netplay] auto-start: cursor dropped at sample %zu of %zu\n",
+                     g_autoPos, g_auto.size());
+    g_autoPos = 0;
+    g_autoRunning = false;
 }
 
 void ps2NetBeginAutoStart(const char *path)
@@ -546,6 +713,26 @@ static void sendHello()
 }
 
 uint32_t ps2NetRollbackWindow() { return g.rbWindow; }
+
+// [flush] Read under the same lock the teardown takes, so a probe cannot read a half-cleared map.
+Ps2xNetResidue ps2NetResidue()
+{
+    std::lock_guard<std::mutex> lk(g.mtx);
+    Ps2xNetResidue r;
+    r.predicted   = static_cast<uint32_t>(g.predicted.size());
+    r.held        = static_cast<uint32_t>(g.held.size());
+    r.local       = static_cast<uint32_t>(g.local.size());
+    r.remote      = static_cast<uint32_t>(g.remote.size());
+    r.peerHash    = static_cast<uint32_t>(g.peerHash.size());
+    r.ourHash     = static_cast<uint32_t>(g.ourHash.size());
+    r.rollbackTo  = g.rollbackTo;
+    r.lastSent    = g.lastSent;
+    r.desyncFrame = g.desyncFrame;
+    r.autoRunning = g_autoRunning;
+    r.armed       = s_flushArmed;
+    r.menuFrames  = s_flushMenuFrames;
+    return r;
+}
 
 uint32_t ps2NetRollbackPoll(uint32_t frameAbs, bool *mustStall)
 {
@@ -667,9 +854,66 @@ void ps2NetSetChecksum(uint32_t frame, uint64_t hash)
     }
 }
 
+// [flush] Why this exists at all.
+//
+// A session that ends without a teardown goes on patching the game. The pad override in
+// game_overrides.cpp replaces player 2 with ps2NetGetInput() for as long as ps2NetActive() is
+// true, so a session left standing means the next 1P VS 2P is played with the last match's remote
+// inputs and the real pad 2 unplugged. Nothing announces it: the socket is open, the peer is
+// "connected", the status pill says CONNECTED, and the game plays a match nobody is in.
+//
+// The trigger is RETURNING to the main menu, not reaching it. 0x04 is where a session is started --
+// the Netplay popup only exists while the main menu is up -- so a bare "state == 0x04" would refuse
+// the very connect it is meant to serve. Being armed by the match flow is what makes 0x04 mean
+// "back" rather than "here", and it is the only difference between the state that opens a session
+// and the state that ends it.
+static void netFlushCheck()
+{
+    extern std::atomic<uint32_t> g_bt3StateLive;   // [barblock] refreshed every tick by the run loop
+    const uint32_t st = g_bt3StateLive.load(std::memory_order_relaxed);
+
+    // The match flow, from the state table in ps2_runtime.cpp: 0x26 duel menu, 0x27/0x28 character
+    // select (0x27 Single, 0x28 Team and DP, per the netjump walk), 0x29 also pre-fight setup,
+    // 0x2D in the fight, 0x38 post-fight.
+    //
+    // 0x2D and 0x38 are in the set for the reason that matters most. The bug as reported is a
+    // session that was PLAYED and then left behind, so arming only on the setup screens would
+    // never arm for a match that ran to the end and the stale session would survive the exact case
+    // being fixed. Arming on the setup screens alone would also be fragile in the other direction:
+    // any route through the fight that skipped them would leave the session un-armed forever.
+    if (st == 0x26u || st == 0x27u || st == 0x28u || st == 0x29u || st == 0x2Du || st == 0x38u)
+    {
+        if (!s_flushArmed)
+        {
+            s_flushArmed = true;
+            std::fprintf(stderr, "[netplay] entered the match flow (state 0x%02x)"
+                                 " -- returning to the main menu will end the session\n", st);
+        }
+        s_flushMenuFrames = 0;
+        return;
+    }
+
+    if (!s_flushArmed || st != 0x04u)
+        return;   // not armed yet, or passing through (0x06 LOADING on the way somewhere else)
+
+    // Debounced, because a one-frame misread here drops a live match on the floor and the two
+    // directions are not close to equally bad. A spurious disconnect mid-fight is a ruined game
+    // that two people were in; half a second of extra delay before the flush is nobody's problem.
+    // 0.5 s at BT3's 30 fps. PS2X_NET_FLUSHFRAMES overrides it, including downwards to 1, which is
+    // the setting to reach for when reproducing this -- a tight loop is how the race is found.
+    static const int s_menuFrames = [](){ const char *v = std::getenv("PS2X_NET_FLUSHFRAMES");
+                                          const int n = (v && v[0]) ? std::atoi(v) : 15; return n > 0 ? n : 15; }();
+    if (++s_flushMenuFrames < s_menuFrames)
+        return;
+
+    ps2NetDisconnect("returned to the main menu");
+}
+
 void ps2NetFrame(uint32_t frame)
 {
     if (!g.active) return;
+    netFlushCheck();
+    if (!g.active) return;   // [flush] netFlushCheck may have torn the session down
     pump();
     if (g.connected)
     {   // Watchdog: a peer that vanishes (crash, closed window, cable out) would otherwise make

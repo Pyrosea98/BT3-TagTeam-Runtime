@@ -6,6 +6,7 @@
 #endif
 
 #include "gfx/bt3gl_api.h"   // [B] bt3* API bridge
+#include "gfx/gl/GlApi.h"   // [netplay] the project's own GL entry points (ps2xgl::gl*)
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
 #include "runtime/ui_sdl.h"   // [C] ImGui platform backend on SDL2 (replaces rlImGui)
@@ -202,4 +203,39 @@ namespace ps2x::gfx
                          (int)(dd && dd->Valid), dd ? dd->CmdListsCount : -1, dd ? dd->TotalVtxCount : -1);
         }
     }
+}
+
+// [netplay] Upload RGBA8 and return the id to sample it with.
+//
+// This ImGui (1.93 docking) takes an ImTextureRef built from the backend's own handle -- there is
+// no ImGui::CreateTexture*, so the texture is created here with the same raw-GL recipe the
+// front-end already uses for its background (fe_background.cpp): glGenTextures + glTexImage2D.
+// ImGui's GL3 renderer binds whatever handle it is given, so no renderer-side registration is
+// needed as long as the context is current, which it is between UiBegin() and UiEnd().
+//
+// The native-D3D11 path has no texture-upload entry point in ui_d3d11.h, and adding Windows-only
+// code that cannot be compiled or tested from here is how a build gets broken on the one platform
+// nobody can check -- so that branch returns null and the popup draws without the art. PS2X_D3D11
+// is off by default; the default Windows path is OpenGL, which is the branch below and does show
+// it. Whoever implements the D3D11 side only has to fill that branch in.
+unsigned long long ps2x::gfx::UiLoadTextureRgba(const void *rgba, int w, int h)
+{
+    if (!rgba || w <= 0 || h <= 0)
+        return 0;
+    if (NativeVideo())
+        return 0;
+    ps2xgl::GLuint tex = 0;
+    ps2xgl::glGenTextures(1, &tex);
+    if (!tex)
+        return 0;
+    const unsigned char *px = static_cast<const unsigned char *>(rgba);
+    ps2xgl::glBindTexture(ps2xgl::GL_TEXTURE_2D, tex);
+    ps2xgl::glTexParameteri(ps2xgl::GL_TEXTURE_2D, ps2xgl::GL_TEXTURE_MIN_FILTER, ps2xgl::GL_LINEAR);
+    ps2xgl::glTexParameteri(ps2xgl::GL_TEXTURE_2D, ps2xgl::GL_TEXTURE_MAG_FILTER, ps2xgl::GL_LINEAR);
+    ps2xgl::glTexParameteri(ps2xgl::GL_TEXTURE_2D, ps2xgl::GL_TEXTURE_WRAP_S, ps2xgl::GL_CLAMP_TO_EDGE);
+    ps2xgl::glTexParameteri(ps2xgl::GL_TEXTURE_2D, ps2xgl::GL_TEXTURE_WRAP_T, ps2xgl::GL_CLAMP_TO_EDGE);
+    ps2xgl::glTexImage2D(ps2xgl::GL_TEXTURE_2D, 0, ps2xgl::GL_RGBA, w, h, 0, ps2xgl::GL_RGBA,
+                         ps2xgl::GL_UNSIGNED_BYTE, px);
+    ps2xgl::glBindTexture(ps2xgl::GL_TEXTURE_2D, 0);
+    return (unsigned long long)tex;
 }
