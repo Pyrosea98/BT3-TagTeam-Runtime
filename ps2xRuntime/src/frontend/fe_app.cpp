@@ -192,22 +192,13 @@ namespace
 
     // Footer actions. QUIT is the way back to the menu now that the top VOLVER is gone: the
     // window is only really quit from the menu (Esc or the X).
-    void drawPlayQuit(bool canPlay, bool &playAsked, bool &backAsked)
+    // [autosave] The settings pages' bar is one BACK button: changes are written to the file as they are made (see
+    // the auto-save in the settings frame), so there is nothing to confirm, and PLAY lives on the menu.
+    void drawBackButton(bool &backAsked)
     {
-                        ImGui::PushStyleColor(ImGuiCol_Button, dbz(0.18f, 0.55f, 0.30f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, dbz(0.25f, 0.73f, 0.40f));
-        ImGui::PushStyleColor(ImGuiCol_Text, dbz(0.02f, 0.06f, 0.03f));
-        ImGui::BeginDisabled(!canPlay);
-        const bool pressedPlay = ImGui::Button("PLAY", ImVec2(74.0f, 0.0f));
-        ImGui::EndDisabled();
-        ImGui::PopStyleColor(3);
-        if (pressedPlay && canPlay)
-            playAsked = true;
-
-        ImGui::SameLine(0.0f, 6.0f);
-        ImGui::PushStyleColor(ImGuiCol_Button, dbz(0.55f, 0.16f, 0.12f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, dbz(0.80f, 0.24f, 0.18f));
-        if (ImGui::Button("QUIT", ImVec2(74.0f, 0.0f)))
+        ImGui::PushStyleColor(ImGuiCol_Button, dbz(0.22f, 0.30f, 0.44f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, dbz(0.30f, 0.42f, 0.62f));
+        if (ImGui::Button("BACK", ImVec2(90.0f, 0.0f)))
             backAsked = true;
         ImGui::PopStyleColor(2);
     }
@@ -321,6 +312,16 @@ namespace frontend
         ps2x_settings::Settings settings;
         const bool settingsExisted = ps2x_settings::load(settings, configDir);
         ps2x_settings::Settings settingsSaved = settings;
+        // [autosave] a change is written 0.4 s after the last edit (so a slider drag is one write, not sixty a
+        // second), and at once when the pages are left; "saved" shows in the bar for a moment after each write
+        double dirtySince = -1.0, savedAt = -1e9;
+        const auto saveNow = [&]() {
+            const bool okSettings = ps2x_settings::save(settings, configDir);
+            const bool okPads = ps2_stubs::PadConfig::instance().save();
+            if (okSettings) { settingsSaved = settings; savedAt = ImGui::GetTime(); }
+            dirtySince = -1.0;
+            std::fprintf(stderr, "[fe] settings %s, pad config %s\n", okSettings ? "saved" : "SAVE FAILED", okPads ? "saved" : "not written");
+        };
 
         FeWindow win;
         if (!win.open(cfg.title, settings.feWidth, settings.feHeight))
@@ -760,34 +761,20 @@ namespace frontend
                                          ImGui::GetColorU32(fe::accent(0.35f)), 1.0f);
                         }
 
-                    bool playAsked = false;
                     bool backAsked = false;
-                    drawPlayQuit(canPlay, playAsked, backAsked);
-                        if (transition == Transition::None)
-                        {
-                            if (backAsked && fader.start(1.0f, 0.16f, 0.20f))
-                                transition = Transition::BackToMenu;
-                            else if (playAsked && fader.start(1.0f, 0.45f, 0.20f))
-                                transition = Transition::Play;
-                        }
-                        ImGui::SameLine(0.0f, 18.0f);
-                        if (settings != settingsSaved)
-                            ImGui::TextColored(fe::gold(), "unsaved changes");
-                        else
-                            ImGui::TextDisabled("no pending changes");
-                        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 150.0f);
-                        if (fe::primaryButton("SAVE AND APPLY", ImVec2(150.0f, 0.0f), true))
-                        {
-                            // Save and apply: the file is written now, and the per-player pad
-                            // profiles are flushed too, so what the game reads at boot is exactly
-                            // what the window shows.
-                            const bool okSettings = ps2x_settings::save(settings, configDir);
-                            const bool okPads = ps2_stubs::PadConfig::instance().save();
-                            if (okSettings)
-                                settingsSaved = settings;
-                            std::fprintf(stderr, "[fe] settings %s, pad config %s\n",
-                                         okSettings ? "saved" : "SAVE FAILED",
-                                         okPads ? "saved" : "not written");
+                    drawBackButton(backAsked);
+                        if (transition == Transition::None && backAsked && fader.start(1.0f, 0.16f, 0.20f))
+                            transition = Transition::BackToMenu;
+                        {   // [autosave]
+                            const double now = ImGui::GetTime();
+                            if (settings != settingsSaved) { if (dirtySince < 0.0) dirtySince = now; }
+                            else dirtySince = -1.0;
+                            if (dirtySince >= 0.0 && now - dirtySince > 0.4) saveNow();
+                            ImGui::SameLine(0.0f, 18.0f);
+                            if (now - savedAt < 1.5)
+                                ImGui::TextDisabled("saved");
+                            else
+                                ImGui::TextDisabled("changes are saved as you make them");
                         }
                         }   // fe_page
                         ImGui::PopStyleVar();
@@ -890,6 +877,7 @@ namespace frontend
                         applyScreenSize(false);   // [menusize]
                         break;
                     case Transition::BackToMenu:
+                        if (settings != settingsSaved) saveNow();   // [autosave]
                         {   // [menusize] the height the user left the pages at is the one to remember
                             int w = 0, h = 0;
                             if (win.querySize(&w, &h) && h > 0) { settings.feHeight = h; settingsSaved.feHeight = h; }
