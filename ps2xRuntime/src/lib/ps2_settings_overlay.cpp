@@ -2750,6 +2750,17 @@ void PS2SettingsOverlay::drawControllersTab()
         dot("Deadzone", val, note);
 
         ImGui::Spacing();
+        if (toggleSwitch("Vibration", &m_settings.rumble)) m_dirty = true;   // [rumble] same setting as the launcher's Pads page
+        if (m_settings.rumble)
+        {
+            ImGui::TextUnformatted("Vibration strength");
+            ImGui::SameLine(160);
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::SliderInt("##rumblestr", &m_settings.rumbleStrength, 0, 200, "%d%%")) m_dirty = true;
+            ImGui::TextDisabled("100%% = the game's own strengths. The game's Options > Controller > Vibration must be on too.");
+        }
+
+        ImGui::Spacing();
         if (ImGui::Button("Player & Device...", ImVec2(200.0f, 0.0f))) ImGui::OpenPopup("Player & Device");
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, dbz(0.20f, 0.17f, 0.12f));
@@ -3813,6 +3824,8 @@ void PS2SettingsOverlay::dumpSettingsToFile()
                          ? m_deviceList[m_selectedDevice].name : "?") << ")\n";
         file << "  edit_player     = " << m_editPlayer << "\n";
         file << "  deadzone        = " << m_settings.deadzone << "\n";
+        file << "  rumble          = " << (m_settings.rumble ? "true" : "false") << "\n";
+        file << "  rumble_strength = " << m_settings.rumbleStrength << "\n";
         file << "  overlay_gamepad = ";
         for (size_t i = 0; i < m_settings.overlayPadBtns.size(); ++i)
             file << (i ? "+" : "") << m_settings.overlayPadBtns[i];
