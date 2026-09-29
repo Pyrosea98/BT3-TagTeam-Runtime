@@ -4,11 +4,22 @@
 // oracle's exact rule), rgb only, pixels with A == 0 untouched. The destination is read in-pass (input attachment).
 layout(set = 0, binding = 1) uniform sampler2D uGlow;   // the 0x2a00 target (256 x scale wide)
 layout(input_attachment_index = 0, set = 0, binding = 2) uniform subpassInput uDst;   // the scene itself
+layout(set = 0, binding = 3) uniform sampler2D uDepth;   // [dofgraded] D32: Z24 / 2^24
+layout(push_constant) uniform PC { uint graded; float zFar; } pc;
 layout(location = 0) out vec4 outColor;
 void main()
 {
     vec4 f = subpassLoad(uDst);
     uint a = uint(f.a * 255.0 + 0.5);
+    if (pc.graded != 0u)
+    {   // [dofgraded] "Depth-of-Field Blur" on: the weight comes straight from depth, w = 1 - Z24 / zFar (sky Z ~ 0 fully
+        // soft, fighters ~110-140k half, the player's foreground past zFar crisp) -- the intent-semantics mask the
+        // OpenGL renderer ships (PS2X_DOFMASK=2, dof_zfar), user-matched to the console look. The game's own byte path
+        // (frame.A := Z24[15:8] through two CLUT ramps) wraps every 65536 Z units on the receding ground and drew the
+        // ramp's edge as thin tilted lines in front of and behind the player (2026-09-29, Windows report).
+        float z = clamp(texelFetch(uDepth, ivec2(gl_FragCoord.xy), 0).r, 0.0, 1.0) * 16777216.0;
+        a = uint(clamp(1.0 - z / pc.zFar, 0.0, 1.0) * 128.0 + 0.5);
+    }
     if (a == 0u) discard;
     vec2 p = vec2(gl_FragCoord.xy) - 0.5;              // native pixel index
     vec2 gs = vec2(textureSize(uGlow, 0));

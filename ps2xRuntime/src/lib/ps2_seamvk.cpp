@@ -321,9 +321,9 @@ namespace seamvk
                 }
                 {   // [postnative] step 4b: the 0x2a00 texture (1) + the destination as input attachment (2), as gs.frag's DATE read
                     Vulkan::ResourceLayout cv = {}, cf = {};
-                    cv.output_mask = 0x0u;
-                    cf.sets[0].sampled_image_mask = (1u << 1) | (1u << 2); cf.sets[0].meta[1].array_size = 1; cf.sets[0].meta[2].array_size = 1;
-                    cf.output_mask = 0x1u;
+                    cv.output_mask = 0x0u; cv.push_constant_size = 8;
+                    cf.sets[0].sampled_image_mask = (1u << 1) | (1u << 2) | (1u << 3); cf.sets[0].meta[1].array_size = 1; cf.sets[0].meta[2].array_size = 1; cf.sets[0].meta[3].array_size = 1;   // [dofgraded] 3 = the depth image
+                    cf.output_mask = 0x1u; cf.push_constant_size = 8;
                     g_gpu.progGlowComp = dev.request_program(kRtVert, sizeof(kRtVert), kGlowCompFrag, sizeof(kGlowCompFrag), &cv, &cf);
                 }
                 if (!g_gpu.progSeam || !g_gpu.progGs || !g_gpu.progSeamSt || !g_gpu.progGsSt || !g_gpu.progPresent || !g_gpu.progRt || !g_gpu.progAlias || !g_gpu.progOutline || !g_gpu.progOutlineH || !g_gpu.progDepthMask || !g_gpu.progVram || !g_gpu.vram) { g_gpu.failed = true; std::fprintf(stderr, "[seamvk] shader program creation FAILED\n"); return false; }
@@ -802,6 +802,8 @@ namespace seamvk
                     // (the front end marks 0x2a00 drawn at the marker: the blur chain decodes from this target)
                 }
                 {   // 4b: the composite into the scene, reading the scene in-pass (one subpass, colour = input attachment)
+                    Target *zp = depthFor(d.st.zbp, targetW(d.st.fbw));   // [dofgraded] the weight is read from depth when the blur is on
+                    if (zp) depthToSampled(cmd, *zp);
                     toSampled(cmd, gt);
                     toAttachment(cmd, ft, false);
                     Vulkan::RenderPassInfo rp = {};
@@ -821,6 +823,12 @@ namespace seamvk
                     VkRect2D sr = {}; sr.extent.width = w; sr.extent.height = std::min(h, 448u * g_gpu.scale); cmd.set_scissor(sr);
                     cmd.set_texture(0, 1, gt.img->get_view(), Vulkan::StockSampler::LinearClamp);
                     cmd.set_input_attachments(0, 2);
+                    {   // [dofgraded] blur on: weight = 1 - Z24 / dof_zfar from the depth image (the OpenGL renderer's graded mask);
+                        // off: the game's own chain, which the neutralised mask (step 0) leaves at "nothing blended in"
+                        struct { uint32_t graded; float zFar; } pcg = { (zp && GsGpuRenderer::dofBlurEnabled()) ? 1u : 0u, (float)GsGpuRenderer::dofZFar() };
+                        cmd.set_texture(0, 3, zp ? zp->img->get_view() : gt.img->get_view(), Vulkan::StockSampler::NearestClamp);
+                        cmd.push_constants(&pcg, 0, sizeof(pcg));
+                    }
                     cmd.draw(3);
                     cmd.end_render_pass();
                 }
@@ -887,7 +895,9 @@ namespace seamvk
                 {   // [dofoff] the overlay's "Depth-of-Field Blur" switch (live): off = the mask writes "near" everywhere,
                     // the same neutralisation paraLLEl-GS applies to the game's mask sprites. Without this the native
                     // renderer ignored the switch and the far field stayed blurred (and blocky: the blur buffer is GS-res).
-                    const uint32_t pcd[4] = { GsGpuRenderer::dofBlurEnabled() ? 0u : 1u, 0u, 0u, 0u };
+                    // [dofgraded] always neutralised now: with the blur on, the weight is taken from depth at the composite (step 4b)
+                    // instead of the game's byte chain (frame.A := Z24[15:8] wraps on the receding ground = tilted lines).
+                    const uint32_t pcd[4] = { 1u, 0u, 0u, 0u };
                     cmd.push_constants(pcd, 0, sizeof(pcd));
                 }
                 cmd.draw(3);
