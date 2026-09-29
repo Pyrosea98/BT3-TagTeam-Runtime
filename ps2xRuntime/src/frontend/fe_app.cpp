@@ -240,12 +240,14 @@ namespace
         ImGui::PopStyleColor(4);
     }
 
+    static constexpr int kMenuBarH = 76;   // [menusize] the PLAY / SETTINGS bar under the art
+
     void drawMenu(std::uint32_t bgTex, int bgW, int bgH, const ImVec2 &size, bool canPlay, bool &playAsked,
                   bool &settingsAsked, bool &navFocus)
     {
         // The bar owns the bottom strip; the artwork is laid out in what is left above it, so
         // nothing important ends up hidden behind the bar.
-        const float barH = 76.0f;
+        const float barH = (float)kMenuBarH;
         const ImVec2 artSize(size.x, size.y - barH);
 
         ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -491,6 +493,20 @@ namespace frontend
 
         int bgW = 0, bgH = 0;
         const std::uint32_t bgTex = loadBackground(exeDir / "assets" / "background.png", &bgW, &bgH);
+        // [menusize] The menu shows the art at its own aspect ratio, so its window height follows the width:
+        // art height + the button bar. The settings pages use the saved height. The window is resized on every
+        // screen change; the height saved to the settings file is always the pages' height.
+        const auto menuHeightFor = [&](int w) {
+            const int aw = bgW > 0 ? bgW : 1920, ah = bgH > 0 ? bgH : 620;
+            return (int)((long long)w * ah / aw) + kMenuBarH;
+        };
+        const auto applyScreenSize = [&](bool menu) {
+            int w = settings.feWidth, h = settings.feHeight;
+            win.querySize(&w, &h);
+            if (!menu && h < settings.feHeight) h = settings.feHeight;
+            win.setSize(w, menu ? menuHeightFor(w) : (h > 0 ? h : settings.feHeight));
+        };
+        applyScreenSize(screen == Screen::Menu);   // [menusize] the window opened at the pages' size
     // Menu theme from <exeDir>/music. Silence when there is no file, which is the normal case
     // for anyone who did not drop a track there.
     music::setMuted(settings.musicMuted);
@@ -871,10 +887,16 @@ namespace frontend
                     case Transition::OpenSettings:
                         screen = Screen::Settings;
                         navFocusWanted = true;
+                        applyScreenSize(false);   // [menusize]
                         break;
                     case Transition::BackToMenu:
+                        {   // [menusize] the height the user left the pages at is the one to remember
+                            int w = 0, h = 0;
+                            if (win.querySize(&w, &h) && h > 0) { settings.feHeight = h; settingsSaved.feHeight = h; }
+                        }
                         screen = Screen::Menu;
                         navFocusWanted = true;
+                        applyScreenSize(true);
                         break;
                     case Transition::SwitchPage:
                         page = transitionPage;
@@ -905,7 +927,9 @@ namespace frontend
         // it moved, on top of the usual "only if the game settings changed" rule.
         {
             int curW = settings.feWidth, curH = settings.feHeight;
-            if (win.querySize(&curW, &curH) && curW > 0 && curH > 0 &&
+            const bool got = win.querySize(&curW, &curH);
+            if (screen == Screen::Menu) curH = settings.feHeight;   // [menusize] the menu's height is derived, not saved
+            if (got && curW > 0 && curH > 0 &&
                 (curW != settings.feWidth || curH != settings.feHeight))
             {
                 settings.feWidth = curW;

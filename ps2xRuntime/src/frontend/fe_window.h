@@ -33,6 +33,8 @@ namespace frontend
         float dpiScale() const { return m_dpiScale; }
 
         void *sdlWindow() const { return m_window; }
+        // [menusize] resize in place (the menu and the settings pages want different heights)
+        void setSize(int width, int height);
         // Current drawable size of the window, so the shell can remember it. False when the
         // window is already gone.
         bool querySize(int *width, int *height) const;
