@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -473,101 +474,120 @@ namespace frontend
                                         ? "keyboard only"
                                         : "automatic (first pad)"));
 
+        // [padtest] The same tester as the in-game overlay's Controllers tab (drawGamepadTestArea), so the two
+        // read the same: a grid of the buttons with the pressed ones lit, then one row of the two sticks and the
+        // two trigger bars with a readout under each. The old one drew its own d-pad / diamond / boxes.
+        static const struct { int idx; const char *label; } kButtons[] = {
+            { GAMEPAD_BUTTON_MIDDLE_LEFT, "Select" }, { GAMEPAD_BUTTON_MIDDLE_RIGHT, "Start" }, { GAMEPAD_BUTTON_MIDDLE, "Guide" },
+            { GAMEPAD_BUTTON_LEFT_FACE_UP, "D-Up" },  { GAMEPAD_BUTTON_LEFT_FACE_DOWN, "D-Down" },
+            { GAMEPAD_BUTTON_LEFT_FACE_LEFT, "D-Left" }, { GAMEPAD_BUTTON_LEFT_FACE_RIGHT, "D-Right" },
+            { GAMEPAD_BUTTON_RIGHT_FACE_UP, "Y / Tri" }, { GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, "B / Cir" },
+            { GAMEPAD_BUTTON_RIGHT_FACE_DOWN, "A / X" }, { GAMEPAD_BUTTON_RIGHT_FACE_LEFT, "X / Sq" },
+            { GAMEPAD_BUTTON_LEFT_TRIGGER_1, "LB / L1" }, { GAMEPAD_BUTTON_RIGHT_TRIGGER_1, "RB / R1" },
+            { GAMEPAD_BUTTON_LEFT_THUMB, "L3" }, { GAMEPAD_BUTTON_RIGHT_THUMB, "R3" },
+        };
+        static const int kNumBtns = (int)(sizeof(kButtons) / sizeof(kButtons[0]));
         const float f = fe::unit();
-        ImDrawList *dl = ImGui::GetWindowDrawList();
-        const ImVec2 org = ImGui::GetCursorScreenPos();
-
-        const ImU32 off = ImGui::GetColorU32(fe::dbz(0.13f, 0.15f, 0.17f));
-        const ImU32 on = ImGui::GetColorU32(fe::okCol());
-        const ImU32 edge = ImGui::GetColorU32(fe::dbz(0.28f, 0.32f, 0.35f));
-        const ImU32 dim = ImGui::GetColorU32(fe::dbz(0.55f, 0.60f, 0.63f));
-
-        // The tester is laid out across the whole content width: d-pad, face buttons and the two
-        // analog boxes spread out so they nearly reach the right edge, all the same size, and the
-        // shoulder row on its own line underneath. Dummy() reserves both rows plus the captions,
-        // so the hint below never collides with the drawing.
-        const float f2 = f;
-        const float u = f2 * 1.5f;          // one button
-        const float block = u * 3.0f;      // d-pad and analog boxes are all 3u square
-        const float W = ImGui::GetContentRegionAvail().x;
-        // Inset from the content edges so nothing sits flush against the border.
-        const float m = f2 * 0.7f;
-        const float inner = W - m * 2.0f;
-        const float top = f2 * 0.9f;
-        const float capY = top + block + f2 * 0.25f;
-        const float row2Y = capY + f2 * 2.0f;
-        ImGui::Dummy(ImVec2(0.0f, row2Y + f2 * 1.2f));
-
-        auto pad = [&](float x, float y, float w, float h, bool pressed, const char *label) {
-            const ImVec2 a(org.x + x, org.y + y);
-            const ImVec2 b(a.x + w, a.y + h);
-            dl->AddRectFilled(a, b, pressed ? on : off, 3.0f);
-            dl->AddRect(a, b, pressed ? on : edge, 3.0f, 0, pressed ? 1.5f : 1.0f);
-            if (label && *label)
+        if (ImGui::BeginChild("##fe_pad_test", ImVec2(-1, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY))
+        {
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Buttons");
+            ImGui::Spacing();
+            const float availX = ImGui::GetContentRegionAvail().x;
+            const float btnW = std::max(24.0f, (availX - 8.0f * 9.0f) / 8.0f);
+            const float btnH = f * 1.5f;
+            int col = 0;
+            for (int i = 0; i < kNumBtns; ++i)
             {
-                const ImVec2 t = ImGui::CalcTextSize(label);
-                dl->AddText(ImGui::GetFont(), f * 0.8f,
-                            ImVec2(a.x + (w - t.x) * 0.5f, a.y + (h - f * 0.8f) * 0.5f),
-                            ImGui::GetColorU32(pressed ? fe::dbz(0.02f, 0.06f, 0.03f)
-                                                       : fe::dbz(0.70f, 0.74f, 0.76f)),
-                            label);
+                const bool down = ps2x_pad::buttonDown(slot, kButtons[i].idx);
+                if (down)
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Button, fe::accent());
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, fe::gold());
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, fe::gold());
+                    ImGui::PushStyleColor(ImGuiCol_Text, fe::dbz(0.10f, 0.07f, 0.03f));
+                }
+                else
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Button, fe::dbz(0.13f, 0.13f, 0.20f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, fe::dbz(0.18f, 0.18f, 0.26f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, fe::dbz(0.20f, 0.20f, 0.28f));
+                    ImGui::PushStyleColor(ImGuiCol_Text, fe::dbz(0.55f, 0.55f, 0.62f));
+                }
+                ImGui::Button(kButtons[i].label, ImVec2(btnW, btnH));
+                ImGui::PopStyleColor(4);
+                if (++col < 8) ImGui::SameLine(); else col = 0;
             }
-        };
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Axes");
+            ImGui::Spacing();
 
-        // D-pad: a plus sign.
-        const float dpx = m;
-        pad(dpx + u, top, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_LEFT_FACE_UP), "^");
-        pad(dpx, top + u, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_LEFT_FACE_LEFT), "<");
-        pad(dpx + u * 2.0f, top + u, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_LEFT_FACE_RIGHT), ">");
-        pad(dpx + u, top + u * 2.0f, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_LEFT_FACE_DOWN), "v");
-        dl->AddText(ImGui::GetFont(), f2 * 0.8f, ImVec2(org.x + dpx, org.y + capY), dim, "D-PAD");
-
-        // Face buttons in a diamond, PS2 names.
-        const float fx = m + inner * 0.20f;
-        pad(fx + u, top, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_FACE_UP), "TRI");
-        pad(fx, top + u, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_FACE_LEFT), "SQR");
-        pad(fx + u * 2.0f, top + u, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT), "CIR");
-        pad(fx + u, top + u * 2.0f, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_FACE_DOWN), "CRS");
-        dl->AddText(ImGui::GetFont(), f2 * 0.8f, ImVec2(org.x + fx, org.y + capY), dim, "BUTTONS");
-
-        // Analogs: same 3u square, live dot, caption and value underneath.
-        auto analog = [&](float x, int axisX, int axisY, bool clicked, const char *name) {
-            const ImVec2 a(org.x + x, org.y + top);
-            const ImVec2 b(a.x + block, a.y + block);
-            dl->AddRectFilled(a, b, off, 3.0f);
-            dl->AddRect(a, b, clicked ? on : edge, 3.0f, 0, clicked ? 1.5f : 1.0f);
-            const float vx = ps2x_pad::axis(slot, axisX);
-            const float vy = ps2x_pad::axis(slot, axisY);
-            dl->AddCircleFilled(ImVec2((a.x + b.x) * 0.5f + vx * (b.x - a.x) * 0.40f,
-                                       (a.y + b.y) * 0.5f + vy * (b.y - a.y) * 0.40f),
-                                  f2 * 0.30f, on);
-            dl->AddText(ImGui::GetFont(), f2 * 0.8f, ImVec2(a.x, org.y + capY), dim, name);
-            char buf[48];
-            std::snprintf(buf, sizeof(buf), "%.2f / %.2f", vx, vy);
-            dl->AddText(ImGui::GetFont(), f2 * 0.8f, ImVec2(a.x, org.y + capY + f2 * 0.95f),
-                        ImGui::GetColorU32(fe::dbz(0.45f, 0.50f, 0.53f)), buf);
-        };
-        analog(m + inner * 0.50f, GAMEPAD_AXIS_LEFT_X, GAMEPAD_AXIS_LEFT_Y,
-               ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_LEFT_THUMB), "LEFT STICK (L3)");
-        analog(m + inner * 0.80f, GAMEPAD_AXIS_RIGHT_X, GAMEPAD_AXIS_RIGHT_Y,
-               ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_THUMB), "RIGHT STICK (R3)");
-
-        // Shoulder row: L1/L2 hard left, SEL/PS/STA centred, R2/R1 hard right.
-        const float bw = u * 1.6f;
-        const float bh = f2 * 0.9f;
-        const float step = bw + f2 * 0.5f;
-        pad(m, row2Y, bw, bh, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_LEFT_TRIGGER_1), "L1");
-        pad(m + step, row2Y, bw, bh, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_LEFT_TRIGGER_2), "L2");
-
-        const float cgap = bw * 0.25f;
-        const float clusterW = bw * 3.0f + cgap * 2.0f;
-        const float cx = m + (inner - clusterW) * 0.5f;
-        pad(cx, row2Y, bw, bh, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_MIDDLE_LEFT), "SEL");
-        pad(cx + bw + cgap, row2Y, bw, bh, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_MIDDLE), "PS");
-        pad(cx + (bw + cgap) * 2.0f, row2Y, bw, bh, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_MIDDLE_RIGHT), "STA");
-
-        pad(m + inner - bw * 2.0f - step, row2Y, bw, bh, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_TRIGGER_2), "R2");
-        pad(m + inner - bw, row2Y, bw, bh, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_TRIGGER_1), "R1");
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            const float stickR = 28.0f, gap = 14.0f, stickBox = stickR * 2.0f;
+            const float trH = 42.0f, trW = 16.0f, colGap = 28.0f;
+            const ImU32 dotFill = ImGui::GetColorU32(fe::accent()), dotEdge = ImGui::GetColorU32(fe::gold());
+            auto drawStick = [&](int axX, int axY) {
+                const float sx = ps2x_pad::axis(slot, axX), sy = ps2x_pad::axis(slot, axY);
+                ImGui::Dummy(ImVec2(stickBox, stickBox));
+                const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+                const ImVec2 c((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
+                dl->AddCircleFilled(c, stickR, IM_COL32(24, 24, 38, 255), 48);
+                dl->AddCircle(c, stickR, IM_COL32(255, 255, 255, 50), 48, 1.5f);
+                dl->AddLine(ImVec2(c.x - stickR, c.y), ImVec2(c.x + stickR, c.y), IM_COL32(255, 255, 255, 40), 1.0f);
+                dl->AddLine(ImVec2(c.x, c.y - stickR), ImVec2(c.x, c.y + stickR), IM_COL32(255, 255, 255, 40), 1.0f);
+                const float mag = std::sqrt(sx * sx + sy * sy);
+                float dx = sx, dy = sy;
+                if (mag > 1.0f) { dx /= mag; dy /= mag; }
+                const ImVec2 pos(c.x + dx * stickR * 0.85f, c.y + dy * stickR * 0.85f);
+                dl->AddCircleFilled(pos, 7.0f, dotFill, 24);
+                dl->AddCircle(pos, 7.0f, dotEdge, 24, 1.5f);
+            };
+            auto drawTrigger = [&](int ax) {
+                const float v = ps2x_pad::axis(slot, ax);
+                ImGui::Dummy(ImVec2(trW, trH));
+                const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+                dl->AddRectFilled(mn, mx, IM_COL32(30, 30, 45, 255), 4.0f);
+                const float fillH = trH * std::min(1.0f, std::fabs(v));
+                if (fillH > 1.0f)
+                    dl->AddRectFilled(ImVec2(mn.x, mx.y - fillH), mx, ImGui::GetColorU32(fe::accent(0.6f + 0.4f * std::fabs(v))), 4.0f);
+            };
+            auto centredLabel = [&](float groupW, const char *lbl) {
+                // a fixed-width item with the text centred inside: the readout's width must not move the row
+                const ImVec2 ts = ImGui::CalcTextSize(lbl);
+                ImGui::Dummy(ImVec2(groupW, ts.y));
+                const ImVec2 mn = ImGui::GetItemRectMin();
+                dl->AddText(ImVec2(mn.x + (groupW - ts.x) * 0.5f, mn.y), ImGui::GetColorU32(fe::gold(0.9f)), lbl);
+            };
+            char lbl[64];
+            const float stickGroupW = std::max(stickBox, ImGui::CalcTextSize("L +0.00 +0.00").x + 4.0f);
+            const float trigBarsW = trW * 2.0f + gap;
+            const float trigGroupW = std::max(trigBarsW, ImGui::CalcTextSize("LT 0.00 RT 0.00").x + 4.0f);
+            const float rowW = stickGroupW * 2.0f + trigGroupW + colGap * 2.0f;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - rowW) * 0.5f));
+            auto stickGroup = [&](int axX, int axY, const char *tag) {
+                ImGui::BeginGroup();
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (stickGroupW - stickBox) * 0.5f);
+                drawStick(axX, axY);
+                std::snprintf(lbl, sizeof lbl, "%s %+0.2f %+0.2f", tag, ps2x_pad::axis(slot, axX), ps2x_pad::axis(slot, axY));
+                centredLabel(stickGroupW, lbl);
+                ImGui::EndGroup();
+            };
+            stickGroup(GAMEPAD_AXIS_LEFT_X, GAMEPAD_AXIS_LEFT_Y, "L");
+            ImGui::SameLine(0.0f, colGap);
+            stickGroup(GAMEPAD_AXIS_RIGHT_X, GAMEPAD_AXIS_RIGHT_Y, "R");
+            ImGui::SameLine(0.0f, colGap);
+            ImGui::BeginGroup();
+            ImGui::Dummy(ImVec2(trigGroupW, (stickBox - trH) * 0.5f));
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (trigGroupW - trigBarsW) * 0.5f);
+            drawTrigger(GAMEPAD_AXIS_LEFT_TRIGGER);
+            ImGui::SameLine(0.0f, gap);
+            drawTrigger(GAMEPAD_AXIS_RIGHT_TRIGGER);
+            std::snprintf(lbl, sizeof lbl, "LT %.2f RT %.2f", ps2x_pad::axis(slot, GAMEPAD_AXIS_LEFT_TRIGGER), ps2x_pad::axis(slot, GAMEPAD_AXIS_RIGHT_TRIGGER));
+            centredLabel(trigGroupW, lbl);
+            ImGui::EndGroup();
+            ImGui::Spacing();
+        }
+        ImGui::EndChild();
     }
 
     void drawInputPage(PageContext &ctx)
