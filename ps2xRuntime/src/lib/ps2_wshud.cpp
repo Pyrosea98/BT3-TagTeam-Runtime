@@ -175,7 +175,8 @@ static void wsHudKickLocked(WsHudState &s, uint8_t *data, float inv)
         // box downscale (16 full-frame sprites reading the 128-px CT32 buffer at 0x2e00 into fbp 0/112 with ALPHA
         // (0,1,0,1), vertex alpha 0x80) before the characters are drawn. Vertex alpha := 0 makes the blend a no-op
         // (Cv = Cd); the sprites still run, nothing else changes. The native renderer skips the same draws.
-        static const bool s_noDash = [](){ const char *v = std::getenv("PS2X_NODASHBLUR"); return v && v[0] && v[0] != '0'; }();
+        // DEFAULT OFF (2026-09-29, user): the blur is neutralised unless PS2X_NODASHBLUR=0 asks for the game's effect back.
+        static const bool s_noDash = [](){ const char *v = std::getenv("PS2X_NODASHBLUR"); return !(v && v[0] == '0'); }();
         const bool tmeD = ((attr >> 4) & 1u) != 0;
         if (s_noDash && isSprite && tmeD && (c.fbp == 0u || c.fbp == 112u) && (c.fpsm == 0u || c.fpsm == 1u)
             && uint32_t(c.tex0 & 0x3FFFu) == 0x2e00u && uint32_t((c.tex0 >> 20) & 0x3Fu) == 0u && uint32_t((c.tex0 >> 26) & 0xFu) == 7u)

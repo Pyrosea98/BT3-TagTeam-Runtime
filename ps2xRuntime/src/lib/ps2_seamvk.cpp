@@ -1624,7 +1624,7 @@ namespace seamvk
                 // Under the native renderer those buffers are at GS resolution, so the composites smear the whole picture.
                 // PS2X_NODASHBLUR=1 = level 1 here and the same neutralisation in paraLLEl-GS's packet walk (ps2_gs_pgs.cpp).
                 static const int s_noBlurComp = [](){ const char *v = std::getenv("PS2X_SEAMVK_NOBLURCOMP"); if (v && v[0]) return std::atoi(v);
-                                                      const char *d = std::getenv("PS2X_NODASHBLUR"); return (d && d[0] && d[0] != '0') ? 1 : 0; }();
+                                                      const char *d = std::getenv("PS2X_NODASHBLUR"); return (d && d[0] == '0') ? 0 : 1; }();   // DEFAULT 1 (dash blur off) unless PS2X_NODASHBLUR=0
                 if (s_noBlurComp && d.kind == 0 && t.tme && (t.fbp == 0u || t.fbp == 0xe00u))   // fbp in blocks (0xe00 = the second scene buffer)
                 {
                     const uint32_t tbp = t.tex0lo & 0x3FFFu, tpsm = (t.tex0lo >> 20) & 0x3Fu, tw = (t.tex0lo >> 26) & 0xFu;
