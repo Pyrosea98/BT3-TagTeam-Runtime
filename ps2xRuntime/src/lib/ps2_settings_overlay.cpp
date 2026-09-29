@@ -2732,16 +2732,31 @@ void PS2SettingsOverlay::drawVideoTab()
 #endif
         };
         const int nRenderers = (int)(sizeof(kValues) / sizeof(kValues[0]));
+        // [renderershown] The combo is the file's choice, which is what the NEXT boot uses. When the environment
+        // picked a different renderer for THIS session (PS2X_SEAMVK=1 / PS2X_PGS=1 over the file, how the dev
+        // scripts run), showing the file's value under a status line that says "Native Vulkan" reads as a bug.
+        // So the combo shows what is running and is locked, with the reason, until the session ends.
+        const int live = liveRenderer();
+        const bool envWins = live != m_settings.renderer && (envUserSet("PS2X_SEAMVK") || envUserSet("PS2X_PGS"));
+        const int shown = envWins ? live : m_settings.renderer;
         int cur = 0;
-        for (int i = 0; i < nRenderers; ++i) if (kValues[i] == m_settings.renderer) { cur = i; break; }
+        for (int i = 0; i < nRenderers; ++i) if (kValues[i] == shown) { cur = i; break; }
         ImGui::TextUnformatted("Renderer");
         ImGui::SameLine(180.0f);
         ImGui::SetNextItemWidth(260.0f);
-        if (ImGui::Combo("##renderer", &cur, kLabels, nRenderers))
+        if (envWins) ImGui::BeginDisabled();
+        if (ImGui::Combo("##renderer", &cur, kLabels, nRenderers) && !envWins)
         {
             m_settings.renderer = kValues[cur];
             m_settings.gpuRenderer = (m_settings.renderer != Settings::kRendererSoftware);
             m_dirty = true;
+        }
+        if (envWins)
+        {
+            ImGui::EndDisabled();
+            int fileIdx = 0;
+            for (int i = 0; i < nRenderers; ++i) if (kValues[i] == m_settings.renderer) { fileIdx = i; break; }
+            ImGui::TextDisabled("Set by the environment for this session (PS2X_SEAMVK / PS2X_PGS); the settings file says \"%s\".", kLabels[fileIdx]);
         }
     }
     ImGui::TextDisabled("Takes full effect after restart.");
