@@ -48,7 +48,7 @@ namespace frontend
         // One dropdown of jump targets. Returns the index picked this frame, or -1. A dropdown and
         // not a row of buttons: a machine can have a dozen mounts and a row of them runs off the
         // edge of the modal, while the dropdown costs a fixed width no matter how many there are.
-        int placeCombo(const char *label, const std::vector<Place> &items);
+        int placeCombo(const char *label, const std::vector<Place> &items, float width);
 
         bool m_open = false;
         bool m_accepted = false;

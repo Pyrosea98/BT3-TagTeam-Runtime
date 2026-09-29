@@ -71,7 +71,7 @@ namespace
             if (type == DRIVE_CDROM)
                 label = label.empty() ? "CD/DVD" : label;
             else if (label.empty())
-                label = type == DRIVE_REMOVABLE ? "Removible" : "Unidad";
+                label = type == DRIVE_REMOVABLE ? "Removable" : "Drive";
             out.push_back({root + "  " + label, std::filesystem::path(root)});
         }
     }
@@ -103,7 +103,7 @@ namespace
     {
         // "/" first: it is in the mount table too, but it is the one entry that must never be
         // missing, and a trimmed /proc/mounts still beats an empty bar.
-        out.push_back({"/  raiz", std::filesystem::path("/")});
+        out.push_back({"/  root", std::filesystem::path("/")});
 
         std::ifstream mounts("/proc/mounts");
         if (!mounts)
@@ -228,7 +228,7 @@ namespace frontend
         if (home.empty())
             home = std::filesystem::current_path(ec);
         struct { const char *label; const char *sub; } shortcuts[] = {
-            {"Descargas", "Downloads"}, {"Escritorio", "Desktop"}, {"Documentos", "Documents"},
+            {"Downloads", "Downloads"}, {"Desktop", "Desktop"}, {"Documents", "Documents"},
             {"Videos", "Videos"},
         };
         for (const auto &s : shortcuts)
@@ -239,7 +239,7 @@ namespace frontend
         }
     }
 
-    int FilePicker::placeCombo(const char *label, const std::vector<Place> &items)
+    int FilePicker::placeCombo(const char *label, const std::vector<Place> &items, float width)
     {
         // The preview is where we actually are when that is one of the entries, and a hint
         // otherwise: showing a fixed "pick one" while sitting inside /mnt/Datos is a worse answer
@@ -255,10 +255,17 @@ namespace frontend
             }
         }
         const std::string preview =
-            current >= 0 ? shortPath(items[current].path) : std::string("(elegir)");
+            current >= 0 ? shortPath(items[current].path) : std::string("(choose)");
 
-        ImGui::SetNextItemWidth(300.0f);
-        if (!ImGui::BeginCombo(label, preview.c_str()))
+        // label on the LEFT (ImGui's own label goes to the right of the box, which read as the next box's caption)
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(width);
+        ImGui::PushID(label);
+        const bool open = ImGui::BeginCombo("##place", preview.c_str());
+        ImGui::PopID();
+        if (!open)
             return -1;
         int picked = -1;
         for (std::size_t i = 0; i < items.size(); ++i)
@@ -277,7 +284,8 @@ namespace frontend
     void FilePicker::goTo(const std::filesystem::path &p)
     {
         std::error_code ec;
-        std::filesystem::path target = p;
+        std::filesystem::path target = std::filesystem::absolute(p, ec).lexically_normal();   // "." would show as "." in the path row
+        if (ec) target = p;
         if (isDir(target))
         {
             m_dir = target;
@@ -371,8 +379,18 @@ namespace frontend
         }
 
         bool result = false;
+        // [pickerlayout] Centred on the window and sized to it: the box is as wide as the window allows (up to
+        // 860 px) and the list takes the height left over, instead of a fixed 620x300 list in a box that
+        // appeared wherever the last one was and ran off the right edge.
+        const ImGuiViewport *vp = ImGui::GetMainViewport();
+        const float boxW = std::max(520.0f, std::min(vp->WorkSize.x - 40.0f, 860.0f));
+        const float listH = std::max(160.0f, std::min(vp->WorkSize.y - 250.0f, 440.0f));
+        ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f),
+                                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14.0f, 12.0f));
         const bool visible = ImGui::BeginPopupModal("##fe_picker", nullptr,
-                                                    ImGuiWindowFlags_AlwaysAutoResize);
+                                                    ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar);
+        ImGui::PopStyleVar();
         if (visible)
         {
             ImGui::TextColored(fe::gold(), "%s", m_title.c_str());
@@ -381,22 +399,24 @@ namespace frontend
             // Where to jump: every mounted volume, then the user folders. Two dropdowns rather
             // than one row of buttons, because the number of mounts is whatever the machine
             // happens to have and a row of them runs off the edge of the modal.
+            const float half = (boxW - ImGui::CalcTextSize("Drive").x - ImGui::CalcTextSize("Folder").x - 40.0f) * 0.5f;
             if (!m_places.empty())
             {
-                const int vol = placeCombo("Discos:", m_places);
+                const int vol = placeCombo("Drive", m_places, half);
                 if (vol >= 0)
                     goTo(m_places[vol].path);
             }
             if (!m_shortcuts.empty())
             {
-                ImGui::SameLine();
-                const int sc = placeCombo("Carpetas:", m_shortcuts);
+                if (!m_places.empty()) ImGui::SameLine(0.0f, 16.0f);
+                const int sc = placeCombo("Folder", m_shortcuts, half);
                 if (sc >= 0)
                     goTo(m_shortcuts[sc].path);
             }
-            ImGui::Separator();
+            ImGui::Spacing();
 
-            ImGui::SetNextItemWidth(560.0f);
+            const float btnW = 60.0f;
+            ImGui::SetNextItemWidth(boxW - 2.0f * btnW - 16.0f);
             if (ImGui::InputText("##path", m_pathBuffer, sizeof m_pathBuffer))
             {
                 const std::filesystem::path typed(m_pathBuffer);
@@ -404,20 +424,16 @@ namespace frontend
                     goTo(typed);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Ir"))
+            if (ImGui::Button("Go", ImVec2(btnW, 0.0f)))
                 goTo(std::filesystem::path(m_pathBuffer));
             ImGui::SameLine();
-            if (ImGui::Button("Subir"))
+            if (ImGui::Button("Up", ImVec2(btnW, 0.0f)))
             {
                 const std::filesystem::path parent = m_dir.parent_path();
                 if (!parent.empty())
                     goTo(parent);
             }
-            ImGui::SameLine();
-            ImGui::TextDisabled("  %s", shortPath(m_dir).c_str());
-
-            ImGui::Separator();
-            ImGui::BeginChild("##fe_picker_list", ImVec2(620.0f, 300.0f), ImGuiChildFlags_Borders);
+            ImGui::BeginChild("##fe_picker_list", ImVec2(boxW, listH), ImGuiChildFlags_Borders);
             {
                 ImDrawList *dl = ImGui::GetWindowDrawList();
                 const ImU32 dirCol = ImGui::GetColorU32(fe::gold());
@@ -499,21 +515,21 @@ namespace frontend
             }
             ImGui::EndChild();
 
-            ImGui::Separator();
+            ImGui::Spacing();
             if (m_selected.empty())
-                ImGui::TextDisabled("Double-click a file to choose it.");
+                ImGui::TextDisabled("Click a file to select it, double-click to choose it.");
             else
                 ImGui::TextWrapped("%s", m_selected.string().c_str());
             ImGui::TextDisabled("%zu entries%s", m_entries.size(),
                                 m_exts.empty() ? "" : " (filtered)");
 
-            ImGui::BeginDisabled(m_selected.empty());
-            if (ImGui::Button("Seleccionar"))
-                acceptCurrent();
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel"))
+            // buttons on the right, the primary one last
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + boxW - 90.0f - 120.0f - 8.0f);
+            if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f)))
                 m_open = false;
+            ImGui::SameLine(0.0f, 8.0f);
+            if (fe::primaryButton("SELECT", ImVec2(120.0f, 0.0f), !m_selected.empty()))
+                acceptCurrent();
             // Inside the if, like comboRowStr: a Begin* that returns false opened no window.
             // BeginPopupModal even ends the popup itself when its own Begin fails, so ending it
             // here too was a double-end.

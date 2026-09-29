@@ -759,7 +759,7 @@ void InstallWizard::draw()
             char line[256];
             std::snprintf(line, sizeof line, "%s  -  %dx render  -  pack %s  -  %d fps",
                           m_rec.tierName.c_str(), m_rec.renderScale,
-                          m_rec.texPackFull ? "completo" : "leve", m_rec.fps60 ? 60 : 30);
+                          m_rec.texPackFull ? "full" : "light", m_rec.fps60 ? 60 : 30);
             ImGui::TextWrapped("%s", line);
         }
         ImGui::Spacing();

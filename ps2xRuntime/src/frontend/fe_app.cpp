@@ -586,7 +586,15 @@ namespace frontend
                     if (showWizard && wizard)
                     {
                         if (ImGui::BeginChild("##fe_wizard", ImVec2(0.0f, avail.y), ImGuiChildFlags_Borders))
-                            wizard->draw();
+                        {   // [wizardcard] the pages sit in a centred card with padding, not flush against the left edge
+                            const float cardW = std::min(ImGui::GetContentRegionAvail().x, 780.0f);
+                            ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - cardW) * 0.5f);
+                            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 14.0f));
+                            if (ImGui::BeginChild("##fe_wizcard", ImVec2(cardW, 0.0f), ImGuiChildFlags_None))
+                                wizard->draw();
+                            ImGui::EndChild();
+                            ImGui::PopStyleVar();
+                        }
                         ImGui::EndChild();
 
                         if (wizard->wantedPick() != InstallWizard::PickKind::None && !picker.isOpen())
