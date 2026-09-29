@@ -598,7 +598,7 @@ namespace frontend
         if (player < 0 || (size_t)player >= ps2_stubs::PadConfig::kPlayerCount)
             player = 0;
 
-        fe::sectionHeader("PAD");
+        fe::sectionHeader("CONTROLLER");
         {
             // The runtime has always had two per-player profiles (savedata/pad_p1.conf and
             // pad_p2.conf); the front-end only exposed P1. Editing them here goes through the
@@ -672,7 +672,7 @@ namespace frontend
             }
         }
 
-        fe::sectionHeader("TEST PAD");
+        fe::sectionHeader("GAMEPAD TEST");
         drawPadTester(player, pads);
 
         ctx.footerHint = "ASSIGN CONTROLS: edited from the game overlay (Shift+Tab).";

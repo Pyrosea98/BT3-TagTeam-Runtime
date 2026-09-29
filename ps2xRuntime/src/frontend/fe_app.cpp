@@ -376,7 +376,7 @@ namespace frontend
             io.Fonts->AddFontDefault();
 
         static const char *const kPages[] = {
-            "Status", "Video", "Audio", "Pads", "Logging", "Misc", "About"
+            "Status", "Video", "Audio", "Controllers", "Logging", "Misc", "About"
         };
         // The first screen is just the artwork with PLAY and SETTINGS; the tabbed window is
         // what SETTINGS opens. PS2X_FE_PAGE jumps straight into it for the headless checks.
