@@ -2248,6 +2248,10 @@ namespace
     {
         if (!runtime)
             return;
+        {   // PS2X_SEMUTEBANK=<bank id>: drop every effect of that bank (diagnostic: which path a doubled sound comes from)
+            static const int s_mute = [](){ const char *v = std::getenv("PS2X_SEMUTEBANK"); return v && v[0] ? std::atoi(v) : -1; }();
+            if (s_mute >= 0 && (int)bank == s_mute) { std::fprintf(stderr, "[se] muted bank%u id%u (PS2X_SEMUTEBANK)\n", bank, idx); return; }
+        }
         // Header <-> snapshot pairing follows UPLOAD ORDER: bank A's header (8 samples) arrives
         // with the first blob, bank B's (79) with the second. Bank A is the small system set --
         // menu cursor/confirm/cancel -- so try it first.
@@ -2426,6 +2430,14 @@ namespace
             // Hand it to a voice; seServiceVoices() mixes the active voices incrementally so
             // a later stop-by-serial can cut the tail. Overlap still works -- voices sum.
             const size_t pcmN = pcm.size();
+            {   // PS2X_SEDUMP=<dir>: every decoded effect as raw s16 mono at kSeMixRate (se_<serial>_bank<b>_id<i>.raw)
+                static const char *s_dir = std::getenv("PS2X_SEDUMP");
+                if (s_dir && s_dir[0])
+                {
+                    char path[512]; std::snprintf(path, sizeof path, "%s/se_%u_bank%u_id%u.raw", s_dir, serial, bank, idx);
+                    if (FILE *f = std::fopen(path, "wb")) { std::fwrite(pcm.data(), sizeof(int16_t), pcm.size(), f); std::fclose(f); }
+                }
+            }
             seAddVoice(serial, std::move(pcm), loopStart, loops);
             seServiceVoices(runtime);
             static std::atomic<uint32_t> n{0};

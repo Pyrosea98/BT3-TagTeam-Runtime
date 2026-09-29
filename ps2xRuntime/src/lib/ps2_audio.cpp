@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <set>
 #include <vector>
 
 float PS2AudioBackend::s_masterVolume = 1.0f;
@@ -314,6 +315,16 @@ void PS2AudioBackend::onStreamPcm(uint32_t streamId, const int16_t *samples, uin
     StreamState &st = m_streams[streamId];
     if (sampleRate)
         st.sampleRate = sampleRate;
+    if (st.ring.empty())
+        st.burstStart = std::chrono::steady_clock::now();   // [sepair]
+    {   // PS2X_SNDDUMP=<dir>: every stream's incoming PCM appended raw (s16) to <dir>/stream_<id>.raw, to compare streams offline
+        static const char *s_dir = std::getenv("PS2X_SNDDUMP");
+        if (s_dir && s_dir[0])
+        {
+            char path[512]; std::snprintf(path, sizeof path, "%s/stream_%u.raw", s_dir, streamId);
+            if (FILE *f = std::fopen(path, "ab")) { std::fwrite(samples, sizeof(int16_t), sampleCount, f); std::fclose(f); }
+        }
+    }
 
     {
         static std::atomic<uint32_t> n{0};
@@ -735,10 +746,108 @@ void PS2AudioBackend::serviceStreams()
         }
     }
 
+    // ---- [sepair] A STEREO BUS ON TWO SINK RINGS ---------------------------------------------------
+    // On the story surrender screen the game's mixer goes stereo: the bus that was ring 4 alone all fight (mono,
+    // continuous) gets a partner, ring 5, carrying the other channel of the same jingle (dumped and compared:
+    // correlated 0.78, no identical samples = L and R, not two copies). Played as two centred mono streams with
+    // their own clocks and start cushions, both halves land in each ear some tens of ms apart and the jingle is
+    // heard twice over itself -- the music defect the 0/1 pair above fixed, on another pair of rings. So: when
+    // ring 5 begins a burst while ring 4 is live at the same rate, play 4+5 as one interleaved stereo stream.
+    // Alignment: ring 4 already holds a backlog that will play before anything queued now, and ring 5's first
+    // chunk was rendered in the same tick as ring 4's NEWEST chunk, so ring 5 is padded in front with silence
+    // equal to ring 4's backlog and the two then advance in lockstep. Ring 4's own mono device stream keeps
+    // whatever it already holds and is left idle (not closed) while the pair lasts; the pair dissolves once
+    // both rings have drained and gone quiet, and the rings go back to being served on their own.
+    // Only 4+5 for now (the pair observed); PS2X_SNDNOPAIR=1 disables this together with the music pair.
+    static ps2x_audio::Stream s_sePairStream = {};
+    static bool s_sePaired = false;
+    static std::set<uint32_t> s_sePairIds;
+    if (!s_noPair)
+    {
+        constexpr uint32_t kA = 4u, kB = 5u;
+        const size_t chunkFrames = monoChunkFrames();
+        auto itA = m_streams.find(kA), itB = m_streams.find(kB);
+        if (itA != m_streams.end() && itB != m_streams.end())
+        {
+            StreamState &A = itA->second; StreamState &B = itB->second;
+            if (!s_sePaired)
+            {
+                const double sinceB = std::chrono::duration<double>(std::chrono::steady_clock::now() - B.burstStart).count();
+                const bool bFresh = !B.ring.empty() && B.fed == 0 && sinceB < 0.25 && !B.started;   // ring 5 has just begun a burst on a stream that has never played
+                const bool aLive = A.sampleRate == B.sampleRate && (!A.ring.empty() || A.started);
+                if (bFresh && aLive)
+                {
+                    const size_t lead = A.ring.size();   // ring 4 audio that plays before ring 5's first chunk
+                    B.ring.insert(B.ring.begin(), lead, 0);
+                    s_sePairStream = ps2x_audio::openStream(A.sampleRate, 2, static_cast<uint32_t>(chunkFrames), monoDepth());
+                    s_sePaired = true; s_sePairIds = {kA, kB};
+                    m_impl->deviceProgress[kB] = {}; m_impl->deviceProgress[kB].primingSlots = monoDepth();
+                    A.started = false; B.started = false;
+                    std::fprintf(stderr, "[sepair] t=%.1fs rings %u+%u -> one STEREO stream (rate=%u, ring %u lead %zu samples)\n", tNow, kA, kB, A.sampleRate, kA, lead);
+                }
+            }
+            if (s_sePaired)
+            {
+                // keep ring 4's idle mono device stream's accounting moving, so the guest's credit for what it
+                // already holds still arrives (its feed loop is skipped while the pair lasts)
+                if (auto ms = m_impl->streams.find(kA); ms != m_impl->streams.end())
+                {
+                    auto &da = m_impl->deviceProgress[kA];
+                    while (da.queued >= chunkFrames && ps2x_audio::streamProcessed(ms->second)) { da.queued -= chunkFrames; da.played += chunkFrames; }
+                }
+                const long idleA = ps2xStreamIdleMs(kA), idleB = ps2xStreamIdleMs(kB);
+                const bool quiet = idleA >= 100 && idleB >= 100;
+                if (quiet)
+                {   // one-shot completion, as the mono path does it: gone quiet = the sound is whole; pad to a chunk
+                    const size_t hi = std::max(A.ring.size(), B.ring.size());
+                    const size_t padded = ((hi + chunkFrames - 1u) / chunkFrames) * chunkFrames;
+                    if (A.ring.size() < padded) A.ring.resize(padded, 0);
+                    if (B.ring.size() < padded) B.ring.resize(padded, 0);
+                }
+                const size_t have = std::min(A.ring.size(), B.ring.size());
+                if (!A.started && have >= (quiet ? chunkFrames : chunkFrames * 2u))
+                {
+                    ps2x_audio::playStream(s_sePairStream); A.started = B.started = true;
+                }
+                if (A.started)
+                {
+                    const float sfxVol = s_masterVolume * s_sfxVolume * s_curtainMute;
+                    std::vector<int16_t> inter(chunkFrames * 2u);
+                    auto &db = m_impl->deviceProgress[kB];
+                    while (ps2x_audio::streamProcessed(s_sePairStream) && std::min(A.ring.size(), B.ring.size()) >= chunkFrames)
+                    {
+                        if (db.primingSlots != 0u) --db.primingSlots;
+                        else if (db.queued >= chunkFrames) { db.queued -= chunkFrames; db.played += chunkFrames; }
+                        for (size_t i = 0; i < chunkFrames; ++i)
+                        {
+                            inter[i * 2u]      = static_cast<int16_t>(A.ring[i] * sfxVol);
+                            inter[i * 2u + 1u] = static_cast<int16_t>(B.ring[i] * sfxVol);
+                        }
+                        ps2x_audio::updateStream(s_sePairStream, inter.data(), static_cast<uint32_t>(chunkFrames));
+                        A.ring.erase(A.ring.begin(), A.ring.begin() + static_cast<long>(chunkFrames));
+                        B.ring.erase(B.ring.begin(), B.ring.begin() + static_cast<long>(chunkFrames));
+                        A.fed += chunkFrames; B.fed += chunkFrames;
+                        m_impl->deviceProgress[kA].played += chunkFrames;   // ring 4's credit now comes through the pair
+                        db.queued += chunkFrames;
+                    }
+                }
+                if (A.ring.empty() && B.ring.empty() && idleA >= 500 && idleB >= 500)
+                {
+                    ps2x_audio::closeStream(s_sePairStream);
+                    s_sePaired = false; s_sePairIds.clear();
+                    A.started = m_impl->streams.find(kA) != m_impl->streams.end();   // its mono device stream is still open and running
+                    B.started = false; B.fed = 0;
+                    std::fprintf(stderr, "[sepair] t=%.1fs rings %u+%u pair closed\n", tNow, kA, kB);
+                }
+            }
+        }
+    }
+
     for (auto &entry : m_streams)
     {
         const uint32_t id = entry.first;
         StreamState &st = entry.second;
+        if (s_sePairIds.count(id)) continue;   // [sepair] being played as half of a stereo effect
         // Reserve the BGM pair for the pair path UNCONDITIONALLY, not just once both sides have
         // arrived. Their first DMAs land microseconds apart, so a serviceStreams call landing
         // between them would otherwise open the left channel as a lone MONO stream -- after

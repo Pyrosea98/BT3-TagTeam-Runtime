@@ -131,6 +131,9 @@ private:
         // still growing; if it has stopped below the cushion, the guest is waiting on us.
         size_t stallFrames = 0;
         std::chrono::steady_clock::time_point stallSince{};
+        // [sepair] when this ring's current burst began (data arrived into an empty ring): two sink rings that
+        // start a burst together at one rate are the two halves of a stereo effect and are played as one pair
+        std::chrono::steady_clock::time_point burstStart{};
     };
     std::unordered_map<uint32_t, StreamState> m_streams;
     // base -> {size, streamId}, ordered so an address lookup is one upper_bound.
