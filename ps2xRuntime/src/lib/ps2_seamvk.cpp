@@ -1220,7 +1220,56 @@ namespace seamvk
     // ---- [standalone] own device + stream-ordered display block ---------------------------------------------------
     namespace
     {
-        struct OwnDevice { Vulkan::Context ctx; Vulkan::Device dev; bool inited = false, failed = false; };
+        // [seamfeat] What the seam's shaders need beyond what stock Granite enables: VK_EXT_shader_stencil_export (gs/outline/
+        // ztop/depthmask/clutpass/alias16 write the stencil from the fragment shader: GS DATE without barriers), dualSrcBlend
+        // (the As/Ad blend factors come through a second fragment output, VK_BLEND_FACTOR_SRC1_ALPHA) and shaderClipDistance
+        // (seam.vert cuts the VU1 clip volume with gl_ClipDistance). The dev tree's Granite copy had these hand-edited into
+        // context.cpp; the submodule every setup.py build compiles does not, and a device without them runs the same
+        // pipelines with UNDEFINED behaviour -- on the Windows build that showed as clip-less aura ribbons: two thin blue
+        // lines across the arena during a ki charge. Granite's DeviceFactory hook lets us add them at vkCreateDevice without
+        // patching Granite. PS2X_SEAMVK_NOFEAT=1 skips the additions (reproduces the stock-Granite picture).
+        struct SeamDeviceFactory final : Vulkan::DeviceFactory
+        {
+            std::vector<const char *> exts;
+            VkDevice create_device(VkPhysicalDevice gpu, const VkDeviceCreateInfo *info) override
+            {
+                static const bool s_skip = [](){ const char *v = std::getenv("PS2X_SEAMVK_NOFEAT"); return v && v[0] && v[0] != '0'; }();
+                VkDeviceCreateInfo ci = *info;
+                if (!s_skip)
+                {
+                    uint32_t n = 0; vkEnumerateDeviceExtensionProperties(gpu, nullptr, &n, nullptr);
+                    std::vector<VkExtensionProperties> props(n); if (n) vkEnumerateDeviceExtensionProperties(gpu, nullptr, &n, props.data());
+                    bool haveStencil = false; for (const auto &e : props) if (!std::strcmp(e.extensionName, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME)) haveStencil = true;
+                    if (std::getenv("PS2X_SEAMVK_FEATLOG")) { std::fprintf(stderr, "[seamfeat] %u device extensions:", n); for (const auto &e : props) std::fprintf(stderr, " %s", e.extensionName); std::fprintf(stderr, "\n"); }
+                    exts.assign(info->ppEnabledExtensionNames, info->ppEnabledExtensionNames + info->enabledExtensionCount);
+                    bool listed = false; for (const char *e : exts) if (!std::strcmp(e, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME)) listed = true;
+                    if (haveStencil && !listed) exts.push_back(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
+                    ci.enabledExtensionCount = (uint32_t)exts.size(); ci.ppEnabledExtensionNames = exts.data();
+                    VkPhysicalDeviceFeatures sup = {}; vkGetPhysicalDeviceFeatures(gpu, &sup);
+                    // Granite chains its VkPhysicalDeviceFeatures2 (a member of the Context) into pNext; the two VkBool32s are
+                    // set in place. pEnabledFeatures is the legacy path (a DeviceFactory with its own create info).
+                    VkPhysicalDeviceFeatures *feat = nullptr;
+                    for (auto *q = (VkBaseOutStructure *)ci.pNext; q; q = q->pNext)
+                        if (q->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) { feat = &((VkPhysicalDeviceFeatures2 *)q)->features; break; }
+                    if (!feat && ci.pEnabledFeatures) feat = const_cast<VkPhysicalDeviceFeatures *>(ci.pEnabledFeatures);
+                    bool dual = false, clip = false;
+                    if (feat)
+                    {
+                        if (sup.dualSrcBlend) { feat->dualSrcBlend = VK_TRUE; dual = true; }
+                        if (sup.shaderClipDistance) { feat->shaderClipDistance = VK_TRUE; clip = true; }
+                    }
+                    // (NVIDIA's 2026 drivers no longer advertise VK_EXT_shader_stencil_export yet run the SPIR-V capability; the
+                    // seam's stencil shaders have always worked there, so its absence is reported, not treated as fatal.)
+                    std::fprintf(stderr, "[seamvk] device features: dual-source blend %s, clip distance %s, stencil export %s%s\n",
+                                 dual ? "on" : "MISSING", clip ? "on" : "MISSING", haveStencil ? "on" : "not advertised",
+                                 (dual && clip) ? "" : " -- the native renderer will misdraw (As blends, VU1 clipping)");
+                }
+                VkDevice dev = VK_NULL_HANDLE;
+                if (vkCreateDevice(gpu, &ci, nullptr, &dev) != VK_SUCCESS) return VK_NULL_HANDLE;
+                return dev;
+            }
+        };
+        struct OwnDevice { Vulkan::Context ctx; Vulkan::Device dev; SeamDeviceFactory factory; bool inited = false, failed = false; };
         OwnDevice *g_own = nullptr;   // heap, never freed: threads that touch the device (the readback consumer) outlive static destruction at exit
         std::mutex g_privMtx;
         const GSRegisters *g_liveRegs = nullptr;
@@ -1239,6 +1288,7 @@ namespace seamvk
             auto fail = [](const char *why) { std::fprintf(stderr, "[seamvk] %s -- native renderer unavailable\n", why); return false; };
             if (!Vulkan::Context::init_loader(nullptr)) return fail("Vulkan loader init failed");
             g_own->ctx.set_num_thread_indices(1);
+            g_own->ctx.set_device_factory(&g_own->factory);   // [seamfeat]
             if (!g_own->ctx.init_instance_and_device(nullptr, 0, nullptr, 0,
                                                      Vulkan::CONTEXT_CREATION_ENABLE_PUSH_DESCRIPTOR_BIT |
                                                      Vulkan::CONTEXT_CREATION_ENABLE_DESCRIPTOR_HEAP_BIT |
