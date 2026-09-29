@@ -30,7 +30,7 @@ namespace
     constexpr int kResolutionW[] = {1024, 1280, 1360, 1366, 1440, 1600, 1920, 2560, 3440, 3840};
     constexpr int kResolutionH[] = {768, 720, 768, 768, 900, 900, 1080, 1440, 1440, 2160};
     constexpr int kResolutionCount = 10;
-    const char *const kCustomResolution = "Personalizado";
+    const char *const kCustomResolution = "Custom";
 
     // SLUS_216.78 (US) -- must stay in sync with games/bt3/setup.py.
     // The expected boot-ELF digest lives in fe_iso9660.h next to the code that verifies the
@@ -224,6 +224,7 @@ namespace frontend
         const std::filesystem::path dataDir = ctx.exeDir / "data";
 
         // --- fixed, always visible ---
+        fe::sectionHeader("DISPLAY");
         {
             // [nativeopt] the entries are what this build can do; the value is the settings' renderer id, not the row
             static const char *const items[] = {"OpenGL (New)", "Software",
@@ -345,7 +346,7 @@ namespace frontend
             }
             char path[512];
             std::snprintf(path, sizeof path, "%s", (dataDir / "Textures").string().c_str());
-            fe::kv("Folder", path);
+            fe::pathRow("Folder", path);
 
             fe::toggleSwitch("Enable texture replacement", &s.texPack);
             fe::rowLabel("Install");
@@ -395,8 +396,7 @@ namespace frontend
             }
         }
 
-        ctx.footerHint = "Half texel, skip post, stale VRAM, widescreen, 60 fps and the HUD "
-                         "change live from the game overlay (Shift+Tab).";
+        ctx.footerHint = "More toggles (half texel, skip post, widescreen, 60 fps, HUD) live in the game overlay: Shift+Tab.";
     }
 
     void drawAudioPage(PageContext &ctx)
@@ -636,7 +636,7 @@ namespace frontend
                 pads.setDevice((size_t)player, dev);
                 pads.save();
             }
-            fe::kv("Profile", pads.playerConfigPath((size_t)player).c_str());
+            fe::pathRow("Profile", pads.playerConfigPath((size_t)player).c_str());
             fe::sliderRow("Stick deadzone", &s.deadzone, 0.0f, 0.5f, "%.2f");
         }
 
@@ -664,7 +664,7 @@ namespace frontend
             "Logs go to logs/bt3.log next to the executable. The level matches the in-game overlay "
             "(Shift+Tab).";
 
-        if (fe::beginSection("NIVEL", true, kLogNote))
+        if (fe::beginSection("LEVEL", true, kLogNote))
         {
             bool enabled = s.logLevel > 0;
             if (fe::toggleSwitch("Enable logging", &enabled))
@@ -721,7 +721,7 @@ namespace frontend
 
             char path[512];
             std::snprintf(path, sizeof path, "%s", dataDir.string().c_str());
-            fe::kv("Folder", path);
+            fe::pathRow("Folder", path);
 
             fe::toggleSwitch("Reinstall mode", &ctx.reinstallMode);
             if (ctx.reinstallMode)
@@ -855,7 +855,7 @@ namespace frontend
 
         fe::sectionHeader("COMPONENTS");
         fe::kv("Interface", "ImGui + SDL2 (inside the runtime)");
-        fe::kv("Graphics", "OpenGL 3.3 / paraLLEl-GS (Vulkan)");
+        fe::kv("Graphics", "OpenGL 3.3 / Native Vulkan (engine seam) / paraLLEl-GS");
         fe::kv("Video", "FFmpeg");
         fe::kv("Audio", "the game's own SE/ADX engine");
         fe::kv("Pad", "SDL2 gamecontroller");

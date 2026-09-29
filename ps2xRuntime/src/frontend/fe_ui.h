@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <functional>
 #include <map>
+#include <string>
 
 namespace fe
 {
@@ -31,15 +32,49 @@ namespace fe
         ImGui::SameLine(labelW());
     }
 
+    // Fixed (non-collapsible) section header: the same band as beginSection's header -- same height, the label at
+    // the same x, a full-width rule under it -- without the disclosure triangle, so pages that fold nothing (Pads,
+    // About, Status) line up with the pages that do. (It used to be a bare label with a short rule floating at the
+    // right end of the line, which read as a stray mark next to the folding pages' headers.)
     inline void sectionHeader(const char *label)
     {
-        ImGui::PushStyleColor(ImGuiCol_Text, accent());
-        ImGui::TextUnformatted(label);
-        ImGui::PopStyleColor();
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - unit() * 6.0f);
-        ImGui::PushStyleColor(ImGuiCol_Separator, accent(0.35f));
-        ImGui::Separator();
-        ImGui::PopStyleColor();
+        const float f = unit();
+        const float h = f * 1.55f;
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImGui::PushID(label);
+        ImGui::Dummy(ImVec2(avail.x - f * 0.5f, h));
+        const ImVec2 a = ImGui::GetItemRectMin();
+        const ImVec2 b = ImGui::GetItemRectMax();
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        dl->AddLine(ImVec2(a.x, b.y - 0.5f), ImVec2(b.x, b.y - 0.5f), ImGui::GetColorU32(accent(0.45f)), 1.0f);
+        dl->AddText(ImGui::GetFont(), f, ImVec2(a.x + f * 0.55f + f * 0.85f, (a.y + b.y) * 0.5f - f * 0.5f),
+                    ImGui::GetColorU32(accent()), label);
+        ImGui::PopID();
+    }
+
+    // A file path in the value column, elided in the middle ("/home/.../savedata/pad_p1.conf") when it is wider than
+    // the space left on the row; the full path is the tooltip. Long paths used to run off the right edge of the window.
+    inline void pathRow(const char *label, const char *path)
+    {
+        rowLabel(label);
+        const float avail = ImGui::GetContentRegionAvail().x;
+        std::string shown = path ? path : "";
+        if (ImGui::CalcTextSize(shown.c_str()).x > avail && shown.size() > 8)
+        {
+            const std::string full = shown;
+            size_t keep = full.size();
+            while (keep > 8)
+            {
+                keep -= 2;
+                const size_t head = keep / 3, tail = keep - head;
+                shown = full.substr(0, head) + "..." + full.substr(full.size() - tail);
+                if (ImGui::CalcTextSize(shown.c_str()).x <= avail)
+                    break;
+            }
+        }
+        ImGui::TextDisabled("%s", shown.c_str());
+        if (path && shown != path && ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", path);
     }
 
     // Collapsible section. The open/closed state is remembered per label across visits, so a

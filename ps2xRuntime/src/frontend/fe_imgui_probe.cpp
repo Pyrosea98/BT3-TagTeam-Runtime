@@ -120,7 +120,7 @@ int main()
                     {
                         fe::comboRow("Motor", &renderer, kRenders, 3);
                         fe::comboRowStr("GPU", &renderer, kRenders, 3, kRenders[renderer]);
-                        fe::comboRow("Nivel", &level, kLevels, 4);
+                        fe::comboRow("Level", &level, kLevels, 4);
                     }
                 }
             }

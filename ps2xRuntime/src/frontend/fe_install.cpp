@@ -709,7 +709,7 @@ void InstallWizard::draw()
         if (phase == Phase::Failed)
         {
             ImGui::TextColored(fe::badCol(), "%s", err.c_str());
-            if (ImGui::Button("Reintentar"))
+            if (ImGui::Button("Retry"))
             {
                 {
                     std::lock_guard<std::mutex> lock(m_mutex);
@@ -763,7 +763,7 @@ void InstallWizard::draw()
             ImGui::TextWrapped("%s", line);
         }
         ImGui::Spacing();
-        if (fe::primaryButton("LISTO", ImVec2(160.0f, 30.0f)))
+        if (fe::primaryButton("DONE", ImVec2(160.0f, 30.0f)))
             requestClose();
         break;
     }

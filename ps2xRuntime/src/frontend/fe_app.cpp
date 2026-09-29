@@ -634,13 +634,12 @@ namespace frontend
                         // on the pages that never use one (bar floating mid-window).
                         static bool hintShownLastFrame = false;
                         const float ff = ImGui::GetFontSize();
-                        const float footerH = ff * (hintShownLastFrame ? 1.45f : 0.0f) + ff * 2.35f;
+                        const float footerH = ff * 1.45f + ff * 2.35f;   // the hint line is always reserved: the bar sits at the same height on every page
                         if (ImGui::BeginChild("##fe_scroll", ImVec2(0.0f, -footerH), ImGuiChildFlags_None))
                         {
                         if (page == 0)
                         {
-                            ImGui::TextColored(gold(), "STATUS");
-                            ImGui::Separator();
+                            fe::sectionHeader("STATUS");
                             statusRow("Game data (data/)", scan.dataDir,
                                       "present", "MISSING: install the game data");
                             // [afs] The install wizard CONVERTS the .afs files into folders, so
@@ -660,8 +659,7 @@ namespace frontend
                             statusRow("Boot ELF", canPlay, "found", "MISSING: the ELF was not found");
                             if (canPlay)
                                 ImGui::TextWrapped("%s", scan.elf.c_str());
-                            ImGui::Separator();
-                            ImGui::TextColored(gold(), "YOUR HARDWARE");
+                            fe::sectionHeader("YOUR HARDWARE");
                             // Probed once: this walks the registry and DXGI, which has no business
                             // running 60 times a second.
                             {
@@ -671,8 +669,7 @@ namespace frontend
                                 else
                                     ImGui::TextWrapped("%s", hwLine.c_str());
                             }
-                            ImGui::Separator();
-                            ImGui::Separator();
+                            ImGui::Spacing();
                             if (!scan.dataDir || scan.afsCount == 0)
                             {
                                 if (fe::primaryButton("INSTALL GAME DATA", ImVec2(240.0f, 30.0f)))
@@ -723,10 +720,10 @@ namespace frontend
                         {
                             const float f = ImGui::GetFontSize();
                             const char *hint = pageCtx.footerHint;
+                            const float hintH = f * 1.35f;
+                            ImGui::Dummy(ImVec2(0.0f, hintH));
                             if (hint)
                             {
-                                const float hintH = f * 1.35f;
-                                ImGui::Dummy(ImVec2(0.0f, hintH));
                                 const ImVec2 hp = ImGui::GetCursorScreenPos();
                                 ImDrawList *hdl = ImGui::GetWindowDrawList();
                                 hdl->AddText(ImGui::GetFont(), f * 0.85f,
@@ -843,7 +840,7 @@ namespace frontend
                 ImGui::End();
                 ImGui::PopStyleVar();
             }
-                // Esc walks back one level: Ajustes -> menu, menu -> quit.
+                // Esc walks back one level: Settings -> menu, menu -> quit.
                 if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) &&
                     transition == Transition::None)
                 {

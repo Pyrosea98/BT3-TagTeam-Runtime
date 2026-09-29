@@ -1849,7 +1849,7 @@ void PS2SettingsOverlay::drawPerfHud()
     const ImGuiViewport *vp = ImGui::GetMainViewport();
     const float margin = ImGui::GetFontSize() * 0.75f;
     // Pivote (1,0): la BORDE derecho de la ventana cae en el del viewport, asi el ancho variable de
-    // AlwaysAutoResize nunca la empuja fuera de la pantalla.
+    // AlwaysAutoResize never pushes it off the screen.
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - margin, vp->Pos.y + margin),
                             ImGuiCond_Always, ImVec2(1.0f, 0.0f));
 
