@@ -2433,7 +2433,12 @@ void PS2SettingsOverlay::drawVideoTab()
                 for (int i = 0; i < 5; ++i) sB[i] = *kAdvB[i];
                 sAdvOpen = true;
             }
-            for (int i = 0; i < 5; ++i) ImGui::Checkbox(kAdvN[i], kAdvB[i]);
+            auto applyLive = [&]() { ps2x_pgs::setForceBilinear(m_settings.forceBilinear); };
+            {   // [applyonchange] every switch in this window applies as it is flipped; no Apply/Save step
+                bool ch = false;
+                for (int i = 0; i < 5; ++i) ch |= toggleSwitch(kAdvN[i], kAdvB[i]);   // the same switch style as the rest of the window
+                if (ch) { applyLive(); m_dirty = true; }
+            }
         if (toggleSwitch("Cel Outline", &m_settings.outline))
             m_dirty = true;
         if (m_settings.outline)
@@ -2525,14 +2530,12 @@ void PS2SettingsOverlay::drawVideoTab()
             else if (was) ImGui::TextDisabled("Character/attack bloom. Off = the pre-fix look.");
         }
     
-            auto applyLive = [&]() { ps2x_pgs::setForceBilinear(m_settings.forceBilinear); };
-            if (ImGui::Button("Reset")) { for (int i = 0; i < 5; ++i) *kAdvB[i] = sB[i]; applyLive(); }
+            ImGui::Spacing();
+            if (ImGui::Button("Reset", ImVec2(120.0f, 0.0f))) { for (int i = 0; i < 5; ++i) *kAdvB[i] = sB[i]; applyLive(); m_dirty = true; }
             ImGui::SameLine();
-            if (ImGui::Button("Close")) { sAdvOpen = false; ImGui::CloseCurrentPopup(); }
-            ImGui::SameLine(0.0f, 24.0f);
-            if (ImGui::Button("Apply")) { applyLive(); m_dirty = true; }
-            ImGui::SameLine();
-            if (ImGui::Button("Save")) { applyLive(); m_dirty = true; sAdvOpen = false; ImGui::CloseCurrentPopup(); }
+            if (ImGui::Button("Close", ImVec2(120.0f, 0.0f))) { sAdvOpen = false; ImGui::CloseCurrentPopup(); }
+            ImGui::SameLine(0.0f, 16.0f);
+            ImGui::TextDisabled("changes apply as you make them");
             ImGui::EndPopup();
         }
 
@@ -2781,22 +2784,6 @@ void PS2SettingsOverlay::drawControllersTab()
                 pPlayer = m_editPlayer; pDev = m_selectedDevice; pDz = m_settings.deadzone;
                 pInit = true;
             }
-            ImGui::TextUnformatted("Player");
-            ImGui::RadioButton("P1", &pPlayer, 0); ImGui::SameLine();
-            ImGui::RadioButton("P2", &pPlayer, 1);
-            ImGui::TextUnformatted("Device");
-            ImGui::SetNextItemWidth(360.0f);
-            std::vector<const char *> labels;
-            labels.reserve(m_deviceList.size());
-            for (auto &d : m_deviceList) labels.push_back(d.name.c_str());
-            if (labels.empty()) ImGui::TextDisabled("No devices detected.");
-            else ImGui::Combo("##pdev", &pDev, labels.data(), (int)labels.size());
-            ImGui::TextUnformatted("Deadzone");
-            ImGui::SetNextItemWidth(260.0f);
-            ImGui::SliderFloat("##pdz", &pDz, 0.0f, 0.5f, "%.2f");
-            ImGui::SameLine();
-            ImGui::TextDisabled("(%.0f%%)", pDz * 100.0f);
-            ImGui::TextDisabled("Auto uses the first gamepad, or the keyboard if none is plugged in.");
             auto applyLive = [&]()
             {
                 m_editPlayer = pPlayer;
@@ -2804,14 +2791,32 @@ void PS2SettingsOverlay::drawControllersTab()
                 if (pDev >= 0 && pDev < (int)m_deviceList.size()) applyDeviceToPlayer(pPlayer, pDev);
                 m_settings.deadzone = pDz;
                 applyDeadzone();
+                m_dirty = true;   // persisted when the overlay closes
             };
-            if (ImGui::Button("Reset")) pInit = false;
+            bool ch = false;   // [applyonchange] every control applies as it is changed; no Apply/Save step
+            ImGui::TextUnformatted("Player");
+            ch |= ImGui::RadioButton("P1", &pPlayer, 0); ImGui::SameLine();
+            ch |= ImGui::RadioButton("P2", &pPlayer, 1);
+            ImGui::TextUnformatted("Device");
+            ImGui::SetNextItemWidth(360.0f);
+            std::vector<const char *> labels;
+            labels.reserve(m_deviceList.size());
+            for (auto &d : m_deviceList) labels.push_back(d.name.c_str());
+            if (labels.empty()) ImGui::TextDisabled("No devices detected.");
+            else ch |= ImGui::Combo("##pdev", &pDev, labels.data(), (int)labels.size());
+            ImGui::TextUnformatted("Deadzone");
+            ImGui::SetNextItemWidth(260.0f);
+            ch |= ImGui::SliderFloat("##pdz", &pDz, 0.0f, 0.5f, "%.2f");
             ImGui::SameLine();
-            if (ImGui::Button("Close")) { pInit = false; ImGui::CloseCurrentPopup(); }
-            ImGui::SameLine(0.0f, 24.0f);
-            if (ImGui::Button("Apply")) { applyLive(); m_dirty = true; }
+            ImGui::TextDisabled("(%.0f%%)", pDz * 100.0f);
+            ImGui::TextDisabled("Auto uses the first gamepad, or the keyboard if none is plugged in.");
+            if (ch) applyLive();
+            ImGui::Spacing();
+            if (ImGui::Button("Reset", ImVec2(120.0f, 0.0f))) { pInit = false; }
             ImGui::SameLine();
-            if (ImGui::Button("Save")) { applyLive(); saveSettings(); m_dirty = true; pInit = false; ImGui::CloseCurrentPopup(); }
+            if (ImGui::Button("Close", ImVec2(120.0f, 0.0f))) { pInit = false; ImGui::CloseCurrentPopup(); }
+            ImGui::SameLine(0.0f, 16.0f);
+            ImGui::TextDisabled("changes apply as you make them");
             ImGui::EndPopup();
         }
     }
@@ -2948,13 +2953,12 @@ void PS2SettingsOverlay::drawControllersTab()
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x / 2.0f - 50.0f);
-    ImGui::PushStyleColor(ImGuiCol_Button, dbz(0.30f, 0.30f, 0.36f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, dbz(0.40f, 0.40f, 0.46f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, dbz(0.35f, 0.35f, 0.40f));
-    if (ImGui::Button("Reload devices", ImVec2(100, 30)))
+    // [applyonchange] same shape and colours as "Player & Device..." above, left-aligned with the rest; it re-scans
+    // the connected devices and resets the binding capture, so that is what it is called
+    if (ImGui::Button("Rescan devices", ImVec2(200.0f, 0.0f)))
         resetCaptureState();
-    ImGui::PopStyleColor(3);
+    ImGui::SameLine();
+    ImGui::TextDisabled("pick up a pad plugged in after the game started");
 
     ImGui::Spacing();
     ImGui::Separator();
