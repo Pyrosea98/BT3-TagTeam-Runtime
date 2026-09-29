@@ -98,8 +98,10 @@ namespace frontend
             drawW = std::min(drawW, (int)(mode.w * 0.90f));
             drawH = std::min(drawH, (int)(mode.h * 0.90f));
         }
+        // [bgaspect] floor 800x360: the 1024x408 default (the menu art's own 3.1:1 above the button bar) sits
+        // under the old 520 floor, which forced every window taller than its art and cropped the picture
         if (drawW < 800) drawW = 800;
-        if (drawH < 520) drawH = 520;
+        if (drawH < 360) drawH = 360;
 
         m_window = SDL_CreateWindow(title.c_str(),
                                     SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -110,7 +112,7 @@ namespace frontend
             std::fprintf(stderr, "[fe] SDL_CreateWindow failed: %s\n", SDL_GetError());
             return false;
         }
-        SDL_SetWindowMinimumSize(m_window, 800, 520);
+        SDL_SetWindowMinimumSize(m_window, 800, 360);
 
         m_gl = SDL_GL_CreateContext(m_window);
         if (!m_gl)

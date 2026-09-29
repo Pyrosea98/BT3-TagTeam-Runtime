@@ -174,7 +174,7 @@ namespace
         s.widescreen = doc.getB("video.widescreen", s.widescreen);
         s.windowW = doc.getI("video.window_w", s.windowW);
     s.feWidth = clampi(doc.getI("frontend.width", s.feWidth), 640, 7680);
-    s.feHeight = clampi(doc.getI("frontend.height", s.feHeight), 480, 4320);
+    s.feHeight = clampi(doc.getI("frontend.height", s.feHeight), 360, 4320);   // [bgaspect] the 1024x408 default sits under the old 480 floor
     s.musicMuted = doc.getB("frontend.music_muted", s.musicMuted);
         s.windowH = doc.getI("video.window_h", s.windowH);
         s.forceBilinear = doc.getB("video.force_bilinear", s.forceBilinear);

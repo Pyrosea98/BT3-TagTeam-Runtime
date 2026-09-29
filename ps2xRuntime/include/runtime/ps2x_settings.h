@@ -64,9 +64,11 @@ namespace ps2x_settings
         // the size the user left it, and it is NOT what the game window uses: the game applies
         // windowW/windowH on PLAY. Deliberately left out of operator== (see ps2x_settings.cpp)
         // so resizing the window never marks the game settings as unsaved.
-        int feWidth = 800;
-        int feHeight = 480;   // was 600: the shell pages are all scrollable and the taller
-                              // window just left empty space under the last row.
+        // [bgaspect] 1024x408: the menu art (1920x620, 3.1:1) fills the 1024x332 area above the 76 px button bar
+        // exactly, so nothing is cropped or stretched at the default size. (800x480 before; 600 before that: the
+        // shell pages are all scrollable and a taller window just left empty space under the last row.)
+        int feWidth = 1024;
+        int feHeight = 408;
         // Menu-theme mute, also shell-only and also outside operator== for the same reason: the
         // toggle applies the moment it is pressed, so it must not read as an unsaved change.
         bool musicMuted = false;
