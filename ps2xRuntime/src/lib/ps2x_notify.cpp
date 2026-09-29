@@ -22,7 +22,19 @@ namespace {
 constexpr int kMaxQueued = 8;
 
 std::mutex  s_mutex;
-std::deque<NotifyEvent> s_queue;
+// [notifyown] The queue OWNS its text. NotifyEvent carries const char* for the producers' convenience,
+// but a producer's strings only live as long as its own scope (the drop box parses into locals and
+// pushes inside the loop), and the overlay drains on a later frame: a queue of raw pointers handed the
+// cards freed memory, which drew as "]???" on the title line. The bytes are copied on push and handed
+// back from storage that lives until the next drain.
+struct Stored
+{
+    NotifyKind kind = NotifyKind::Netplay;
+    NotifyTone tone = NotifyTone::None;
+    std::string title, body;
+};
+std::deque<Stored> s_queue;
+std::vector<Stored> s_drained;   // what the last drain handed out; valid until the next drain
 bool s_soundEnabled = true;
 
 }   // namespace
@@ -32,7 +44,7 @@ void ps2xNotifyPush(const NotifyEvent &ev)
     {
         std::lock_guard<std::mutex> lock(s_mutex);
         // Queued whether or not sound is on: muting the sound must not also silence the popup.
-        s_queue.push_back(ev);
+        s_queue.push_back(Stored{ev.kind, ev.tone, ev.title ? ev.title : "", ev.body ? ev.body : ""});
         while (static_cast<int>(s_queue.size()) > kMaxQueued)
             s_queue.pop_front();
     }
@@ -59,12 +71,15 @@ int ps2xNotifyDrain(NotifyEvent *out, int max)
     if (!out || max <= 0)
         return 0;
     std::lock_guard<std::mutex> lock(s_mutex);
-    int n = 0;
-    while (n < max && !s_queue.empty())
+    s_drained.clear();
+    while (static_cast<int>(s_drained.size()) < max && !s_queue.empty())
     {
-        out[n++] = s_queue.front();
+        s_drained.push_back(std::move(s_queue.front()));
         s_queue.pop_front();
     }
+    int n = 0;
+    for (const Stored &st : s_drained)   // pointers into s_drained: the caller copies them this frame
+        out[n++] = NotifyEvent{st.kind, st.tone, st.title.c_str(), st.body.c_str()};
     return n;
 }
 

@@ -3586,7 +3586,16 @@ void PS2SettingsOverlay::drawNotifyStack()
     const float rowLabel = ImGui::GetFontSize() * 0.82f;
     const float rowTitle = ImGui::GetFontSize() * 1.00f;
     const float rowBody = ImGui::GetFontSize() * 0.88f;
-    const float rowH = kPadY * 2.0f + rowLabel + rowTitle + rowBody + 6.0f;
+    // [notifywrap] The title and the body wrap at the card's text width (the glyph on the right keeps its
+    // column), and the card is as tall as the wrapped text. The height is computed ONCE, when the card is
+    // made, so the stack never reflows while it animates -- the concern the old one-line rule guarded against.
+    constexpr float kGlyphW = 40.0f;
+    const float wrapW = kW - kEdge - kPadX - kGlyphW;
+    ImFont *font = ImGui::GetFont();
+    const auto textH = [&](float size, const std::string &t) {
+        return t.empty() ? 0.0f : font->CalcTextSizeA(size, FLT_MAX, wrapW, t.c_str()).y; };
+    const auto cardH = [&](const Card &c) {
+        return kPadY * 2.0f + rowLabel + std::max(rowTitle, textH(rowTitle, c.title)) + textH(rowBody, c.body) + 6.0f; };
 
     // Newest on top, so the thing that just happened is the thing you see. The queue is drained in
     // order and prepended, which is why the drain is a ring and not an index into a sorted list.
@@ -3601,17 +3610,20 @@ void PS2SettingsOverlay::drawNotifyStack()
         c.age = 0.0f;
         c.hold = (incoming[i].kind == NotifyKind::Achievement) ? kHoldAch : kHoldNet;
         c.y = 0.0f;   // starts at the target and is pulled out by the slide
+        c.h = cardH(c);
         m_cards.insert(m_cards.begin(), c);
     }
     while (static_cast<int>(m_cards.size()) > kMaxLive)
         m_cards.pop_back();
 
+    float slotY = 0.0f;   // [notifywrap] slots stack by each card's own height
     for (size_t i = 0; i < m_cards.size(); ++i)
     {
         Card &c = m_cards[i];
+        if (c.h <= 0.0f) c.h = cardH(c);
         c.age += ImGui::GetIO().DeltaTime;
-        c.y += ((static_cast<float>(i) * (rowH + kGap)) - c.y) *
-               (1.0f - std::exp(-ImGui::GetIO().DeltaTime / 0.09f));
+        c.y += (slotY - c.y) * (1.0f - std::exp(-ImGui::GetIO().DeltaTime / 0.09f));
+        slotY += c.h + kGap;
     }
     // Retire from the back: the tail is the oldest, and retiring the front would make the cards
     // below it jump a slot as they take the index of a card that is still on screen.
@@ -3655,7 +3667,7 @@ void PS2SettingsOverlay::drawNotifyStack()
 
         const float x = kMarginL - slide * (kW * 0.35f);
         const float y = kMarginT + c.y;
-        const ImVec2 a(x, y), b(x + kW, y + rowH);
+        const ImVec2 a(x, y), b(x + kW, y + c.h);
 
         // The panel colour is the overlay's own background, not a new one: the card has to belong
         // to this UI, and #001B39 is what the settings panel and the netplay popup already are.
@@ -3676,7 +3688,8 @@ void PS2SettingsOverlay::drawNotifyStack()
         // rowH was summed from, which is why the card is exactly as tall as what is on it.
         const float yLabel = textL.y;
         const float yTitle = yLabel + rowLabel;
-        const float yBody = yTitle + rowTitle;
+        const float yBody = yTitle + std::max(rowTitle, textH(rowTitle, c.title));
+        dl->PushClipRect(a, b, true);   // [notifywrap] nothing leaves the card, whatever the string
 
         // Source label, in the accent, small. The card's title is the loudest thing on it; this is
         // the quietest, because it is the part you already know.
@@ -3690,15 +3703,12 @@ void PS2SettingsOverlay::drawNotifyStack()
             dl->AddText(ImGui::GetFont(), rowLabel, ImVec2(textL.x, yLabel),
                         col(accent4.x, accent4.y, accent4.z, 0.92f), src);
         }
-        dl->AddText(ImGui::GetFont(), rowTitle, ImVec2(textL.x, yTitle),
-                    col(0.93f, 0.95f, 0.98f, 1.0f), c.title.c_str());
-        // Body, one line. Deliberately not wrapped: a card whose height depends on its text would
-        // make the whole stack reflow as it animates. The strings in the tree fit; a longer one from
-        // the drop box gets clipped at the card's edge, which is the right failure -- the card does
-        // not grow and shove the stack down.
+        dl->AddText(font, rowTitle, ImVec2(textL.x, yTitle),
+                    col(0.93f, 0.95f, 0.98f, 1.0f), c.title.c_str(), nullptr, wrapW);
+        // [notifywrap] Body wrapped at the text width; the card was sized for it when it was created.
         if (!c.body.empty())
-            dl->AddText(ImGui::GetFont(), rowBody, ImVec2(textL.x, yBody),
-                        col(0.62f, 0.66f, 0.72f, 1.0f), c.body.c_str());
+            dl->AddText(font, rowBody, ImVec2(textL.x, yBody),
+                        col(0.62f, 0.66f, 0.72f, 1.0f), c.body.c_str(), nullptr, wrapW);
 
         // The glyph, right-aligned: a filled diamond for netplay (its own shape language, matching
         // the planet art), a five-point star for an achievement. Drawn rather than loaded, because
@@ -3724,6 +3734,7 @@ void PS2SettingsOverlay::drawNotifyStack()
                                  ImVec2(g.x, g.y + 11.0f), ImVec2(g.x - 9.0f, g.y)};
             dl->AddConvexPolyFilled(d, 4, col(accent4.x, accent4.y, accent4.z, 0.92f));
         }
+        dl->PopClipRect();
     }
 }
 

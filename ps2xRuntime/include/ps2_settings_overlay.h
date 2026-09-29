@@ -208,6 +208,7 @@ private:
         float age = 0.0f;    // seconds on screen, drives slide and fade
         float hold = 3.0f;   // how long it stays fully opaque
         float y = 0.0f;      // eased toward its slot, so a new card pushes the stack smoothly
+        float h = 0.0f;      // [notifywrap] the card's height, fixed at creation from its wrapped text
     };
     std::vector<Card> m_cards;   // newest first
 
