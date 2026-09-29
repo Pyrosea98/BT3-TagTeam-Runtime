@@ -5657,7 +5657,7 @@ namespace
                 {
                     s_last = fr; std::vector<uint32_t> hits; const size_t n = 32u * 1024u * 1024u;
                     for (const uint8_t *q = rdram, *end = rdram + n; hits.size() < 48u; )
-                    { q = (const uint8_t *)memmem(q, end - q, s_pat.data(), s_pat.size()); if (!q) break; hits.push_back((uint32_t)(q - rdram)); ++q; }
+                    { q = std::search(q, end, s_pat.begin(), s_pat.end()); if (q == end) break; hits.push_back((uint32_t)(q - rdram)); ++q; }   // std::search, not memmem: no memmem on Windows
                     static std::vector<uint32_t> s_prevHits;
                     if (hits != s_prevHits) { s_prevHits = hits; std::fprintf(stderr, "[ramscan] frame %llu:", (unsigned long long)fr); for (uint32_t a : hits) std::fprintf(stderr, " 0x%x", a); std::fprintf(stderr, "%s\n", hits.empty() ? " (none)" : ""); }
                 }
