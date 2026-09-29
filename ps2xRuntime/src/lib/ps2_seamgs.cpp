@@ -35,6 +35,7 @@ extern std::atomic<uint64_t> g_bt3FrameCount;   // [xferlog] the game frame
 extern std::atomic<int> g_wsHudLayout;                          // [nativehud] overlay: 0 centered, 1 edge-pinned, 2 custom (-1 = unset)
 extern std::atomic<int> g_wsHudOffLQ, g_wsHudOffCQ, g_wsHudOffRQ;   // custom offsets x16
 bool ps2FightUpdateRecent();                                    // ps2_stepcensus.cpp: the fight update ran within the last 2 render frames (menus: never)
+#if !defined(_WIN32)
 #include <csignal>
 #include <execinfo.h>
 #include <unistd.h>
@@ -50,6 +51,7 @@ namespace
     }
     const bool g_crashBtInstalled = [](){ const char *v = std::getenv("PS2X_CRASHBT"); if (!(v && v[0] && v[0] != '0')) return false; signal(SIGSEGV, crashBt); signal(SIGABRT, crashBt); signal(SIGBUS, crashBt); return true; }();
 }
+#endif   // [crashbt] glibc only (Windows: no execinfo.h)
 namespace seamgs
 {
     namespace
