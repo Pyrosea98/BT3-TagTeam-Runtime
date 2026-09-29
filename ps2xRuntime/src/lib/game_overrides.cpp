@@ -2458,6 +2458,36 @@ namespace
             std::fprintf(stderr, "[se] bank%u sample%u NOT FOUND (slot %u)\n", bank, idx, slot);
     }
 
+    // [cliprectlog] PS2X_CLIPRECTLOG=1: every call of the UI clip-rect setter (0x224be8: sh a1/a2/a3/t0 -> +0x10..+0x16
+    // of the widget) with its arguments, caller and frame -- to find who hands the Evolution Z panel a 256-wide rect.
+    PS2Runtime::RecompiledFunction g_orig224be8 = nullptr;
+    void bt3ClipRectLog(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static std::atomic<uint32_t> n{0};
+        if (n.fetch_add(1) < 4000u)
+            std::fprintf(stderr, "[cliprect] fr=%llu widget=0x%x rect=(%d,%d,%d,%d) ra=0x%x\n",
+                         (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed), getRegU32(ctx, 4),
+                         (int16_t)getRegU32(ctx, 5), (int16_t)getRegU32(ctx, 6), (int16_t)getRegU32(ctx, 7), (int16_t)getRegU32(ctx, 8), getRegU32(ctx, 31));
+        if (g_orig224be8) g_orig224be8(rdram, ctx, runtime);
+    }
+    // [cliprectlog] =2: the GS packet emitter 0x101400 (called through a function pointer from the flush at
+    // 0x10c4c4/0x10c4fc with a0 = the register shadow it copies out): print its arguments and the shadow's words
+    PS2Runtime::RecompiledFunction g_orig101400 = nullptr;
+    void bt3EmitLog(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t ra = getRegU32(ctx, 31);
+        if ((ra == 0x10c4ccu || ra == 0x10c504u) && n.fetch_add(1) < 600u)
+        {
+            const uint32_t a0 = getRegU32(ctx, 4) & 0x1FFFFFFFu; uint32_t w[8] = {};
+            if (a0 + 32u < 32u * 1024u * 1024u) std::memcpy(w, rdram + a0, 32);
+            std::fprintf(stderr, "[emit] fr=%llu a0=0x%x a1=0x%x a2=0x%x a3=0x%x ra=0x%x | %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                         (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed), a0, getRegU32(ctx, 5), getRegU32(ctx, 6), getRegU32(ctx, 7), ra,
+                         w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+        }
+        if (g_orig101400) g_orig101400(rdram, ctx, runtime);
+    }
+
     // Hook on sceSifCallRpc: service the SE command the IOP would have handled.
     PS2Runtime::RecompiledFunction g_orig2b48f0 = nullptr;
     void bt3SeRpcSend(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // 0x2b48f0
@@ -5584,6 +5614,23 @@ namespace
                              const char *c = std::strchr(q, ','); if (!c) break; q = c + 1; } }
             if (!v.empty()) { std::fprintf(stderr, "[memwatch] watching %zu slot(s)\n", v.size()); }
             return v; }();
+        {   // [ramscan] PS2X_RAMSCAN=<hex bytes>: every 20 frames, list where that byte pattern sits in EE RAM (first 8 hits,
+            // printed when the set changes) -- finds the struct that holds a value seen in a GS packet
+            static std::vector<uint8_t> s_pat = [](){ std::vector<uint8_t> v; const char *e = std::getenv("PS2X_RAMSCAN");
+                if (e) for (size_t i = 0; e[i] && e[i + 1]; i += 2) v.push_back((uint8_t)std::strtoul(std::string(e + i, 2).c_str(), nullptr, 16)); return v; }();
+            if (!s_pat.empty() && rdram)
+            {
+                static uint64_t s_last = 0; const uint64_t fr = g_bt3FrameCount.load(std::memory_order_relaxed);
+                if (fr >= s_last + 20u)
+                {
+                    s_last = fr; std::vector<uint32_t> hits; const size_t n = 32u * 1024u * 1024u;
+                    for (const uint8_t *q = rdram, *end = rdram + n; hits.size() < 48u; )
+                    { q = (const uint8_t *)memmem(q, end - q, s_pat.data(), s_pat.size()); if (!q) break; hits.push_back((uint32_t)(q - rdram)); ++q; }
+                    static std::vector<uint32_t> s_prevHits;
+                    if (hits != s_prevHits) { s_prevHits = hits; std::fprintf(stderr, "[ramscan] frame %llu:", (unsigned long long)fr); for (uint32_t a : hits) std::fprintf(stderr, " 0x%x", a); std::fprintf(stderr, "%s\n", hits.empty() ? " (none)" : ""); }
+                }
+            }
+        }
         if (s_addrs.empty() || !rdram) return;
         static std::vector<uint32_t> s_prev(s_addrs.size(), 0xdeadbeefu);
         bool changed = false;
@@ -7814,6 +7861,18 @@ namespace
         }();
         if (sePlayOn)
         {
+            if (const char *v = std::getenv("PS2X_CLIPRECTLOG"); v && v[0] && v[0] != '0')
+            {   // [cliprectlog]
+                g_orig224be8 = runtime.lookupFunction(0x00224be8u);
+                if (g_orig224be8) runtime.replaceFunction(0x00224be8u, &bt3ClipRectLog);
+                std::fprintf(stderr, "[cliprect] hook %s\n", g_orig224be8 ? "ARMED" : "FAILED");
+                if (v[0] == '2')
+                {
+                    g_orig101400 = runtime.lookupFunction(0x00101400u);
+                    if (g_orig101400) runtime.replaceFunction(0x00101400u, &bt3EmitLog);
+                    std::fprintf(stderr, "[emit] hook %s\n", g_orig101400 ? "ARMED" : "FAILED");
+                }
+            }
             g_orig2b48f0 = runtime.lookupFunction(0x002b48f0u);
             if (g_orig2b48f0) runtime.replaceFunction(0x002b48f0u, &bt3SeRpcSend);
             std::fprintf(stderr, "[se] system-SE playback %s\n",

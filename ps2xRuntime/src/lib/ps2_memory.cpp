@@ -63,8 +63,10 @@ static inline void ps2xWatchStore(uint32_t address, const void *bytes, uint32_t 
     static const uint32_t s_hi = [](){ const char *v = std::getenv("PS2X_WATCH_HI"); return v ? (uint32_t)std::strtoul(v, nullptr, 16) : 0x007c1a00u; }();
     static const bool s_custom = std::getenv("PS2X_WATCH_LO") != nullptr;
     bool hit = (va >= s_lo && va < s_hi);
-    if (!hit && !s_custom) { const uint32_t *w = reinterpret_cast<const uint32_t *>(bytes);
-        for (uint32_t i = 0; i < n / 4u; ++i) if (w[i] == 0x44db523du) { hit = true; break; } }
+    // PS2X_WATCH_VAL=<hex32>: trigger on any store carrying that 32-bit word (default: the legacy projection constant)
+    static const uint32_t s_val = [](){ const char *v = std::getenv("PS2X_WATCH_VAL"); return v ? (uint32_t)std::strtoul(v, nullptr, 16) : 0x44db523du; }();
+    if (!hit && (!s_custom || std::getenv("PS2X_WATCH_VAL"))) { const uint32_t *w = reinterpret_cast<const uint32_t *>(bytes);
+        for (uint32_t i = 0; i < n / 4u; ++i) if (w[i] == s_val) { hit = true; break; } }
     if (!hit) return;
     static const uint32_t s_frMin = [](){ const char *v = std::getenv("PS2X_WATCH_FRMIN"); return v ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u; }();
     if (s_frMin) { extern std::atomic<uint64_t> g_bt3FrameCount; if (g_bt3FrameCount.load(std::memory_order_relaxed) < s_frMin) return; }
