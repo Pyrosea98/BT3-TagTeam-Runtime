@@ -3978,7 +3978,9 @@ void PS2SettingsOverlay::drawGamepadTestArea(const std::array<uint8_t, 32> &btnD
         return;
     }
 
-    if (ImGui::BeginChild("##gpad_test", ImVec2(-1, 0), ImGuiChildFlags_Borders))
+    // [gpadbox] AutoResizeY: the box is as tall as the buttons and the axes, not "whatever is left of the tab"
+    // (height 0 meant fill-to-bottom, which drew a mostly empty frame and pushed Rescan devices under a scroll)
+    if (ImGui::BeginChild("##gpad_test", ImVec2(-1, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY))
     {
         ImGui::Spacing();
 
@@ -4053,65 +4055,51 @@ void PS2SettingsOverlay::drawGamepadTestArea(const std::array<uint8_t, 32> &btnD
             dl->AddCircle(pos, 7.0f, IM_COL32(255, 220, 120, 255), 24, 1.5f);
         };
 
-        // Stick row (centered)
-        const float rowW = stickBox * 2 + gap;
-        const float rowOff = (ImGui::GetContentRegionAvail().x - rowW) / 2.0f;
-        ImGui::Dummy(ImVec2(rowOff, 0));
-        ImGui::SameLine();
-        drawStick(0, 1);   // LX, LY
-        ImGui::SameLine();
-        drawStick(2, 3);   // RX, RY
-
-        // Stick labels row (normal flow, centered)
-        ImGui::Spacing();
-        {
-            char lbl[64];
-            snprintf(lbl, sizeof lbl, "LX %+0.2f   RX %+0.2f", axis[0], axis[2]);
-            float tw = ImGui::CalcTextSize(lbl).x;
-            ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - tw) / 2.0f);
-            ImGui::TextColored(gold(0.9f), "%s", lbl);
-            snprintf(lbl, sizeof lbl, "LY %+0.2f   RY %+0.2f", axis[1], axis[3]);
-            tw = ImGui::CalcTextSize(lbl).x;
-            ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - tw) / 2.0f);
-            ImGui::TextColored(gold(0.9f), "%s", lbl);
-        }
-        ImGui::Spacing();
-
-        // --- Triggers: vertical bars, each with a Dummy for its box, labels normal. ---
+        // [gpadbox] One row: left stick, right stick, the two triggers, each with its readout underneath, centred.
+        // It used to stack sticks, their labels, the triggers and their labels one under the other in the middle of a
+        // full-width box, which was mostly empty space.
         const float trH = 42.0f, trW = 16.0f;
-        const float trigRowW = trW * 2 + gap;
-        const float trigOff = (ImGui::GetContentRegionAvail().x - trigRowW) / 2.0f;
-        ImGui::Dummy(ImVec2(trigOff, 0));
-        ImGui::SameLine();
-
+        const float colGap = 28.0f;
         auto drawTrigger = [&](int t) {
             const float v = axis[4 + t];
             ImGui::Dummy(ImVec2(trW, trH));
             const ImVec2 boxMin = ImGui::GetItemRectMin();
             const ImVec2 boxMax = ImGui::GetItemRectMax();
-
-            // Track (bottom-up fill)
-            dl->AddRectFilled(boxMin, boxMax, IM_COL32(30, 30, 45, 255), 4.0f);
+            dl->AddRectFilled(boxMin, boxMax, IM_COL32(30, 30, 45, 255), 4.0f);   // track, bottom-up fill
             const float fillH = trH * std::min(1.0f, std::fabs(v));
             if (fillH > 1.0f)
-                dl->AddRectFilled(ImVec2(boxMin.x, boxMax.y - fillH),
-                                  boxMax,
+                dl->AddRectFilled(ImVec2(boxMin.x, boxMax.y - fillH), boxMax,
                                   ImGui::ColorConvertFloat4ToU32(accent(0.6f + 0.4f * std::fabs(v))), 4.0f);
         };
-
-        drawTrigger(0);   // LT
-        ImGui::SameLine();
-        drawTrigger(1);   // RT
-
-        // Trigger labels (normal flow, centered)
-        ImGui::Spacing();
-        {
-            char lbl[32];
-            snprintf(lbl, sizeof lbl, "LT %.2f    RT %.2f", axis[4], axis[5]);
-            float tw = ImGui::CalcTextSize(lbl).x;
-            ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - tw) / 2.0f);
+        auto centredLabel = [&](float groupW, const char *lbl) {
+            const float tw = ImGui::CalcTextSize(lbl).x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (groupW - tw) * 0.5f));
             ImGui::TextColored(gold(0.9f), "%s", lbl);
-        }
+        };
+        char lbl[64];
+        const float trigGroupW = trW * 2.0f + gap;
+        const float rowW = stickBox * 2.0f + trigGroupW + colGap * 2.0f;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - rowW) * 0.5f));
+        ImGui::BeginGroup();
+        drawStick(0, 1);   // LX, LY
+        snprintf(lbl, sizeof lbl, "L %+0.2f %+0.2f", axis[0], axis[1]);
+        centredLabel(stickBox, lbl);
+        ImGui::EndGroup();
+        ImGui::SameLine(0.0f, colGap);
+        ImGui::BeginGroup();
+        drawStick(2, 3);   // RX, RY
+        snprintf(lbl, sizeof lbl, "R %+0.2f %+0.2f", axis[2], axis[3]);
+        centredLabel(stickBox, lbl);
+        ImGui::EndGroup();
+        ImGui::SameLine(0.0f, colGap);
+        ImGui::BeginGroup();
+        ImGui::Dummy(ImVec2(trigGroupW, (stickBox - trH) * 0.5f));   // bars sit level with the sticks' middle
+        drawTrigger(0);   // LT
+        ImGui::SameLine(0.0f, gap);
+        drawTrigger(1);   // RT
+        snprintf(lbl, sizeof lbl, "LT %.2f RT %.2f", axis[4], axis[5]);
+        centredLabel(trigGroupW, lbl);
+        ImGui::EndGroup();
 
         ImGui::Spacing();
         ImGui::Spacing();
