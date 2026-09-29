@@ -3419,9 +3419,11 @@ void PS2SettingsOverlay::drawAchTab()
         ps2xSetAchEnabled(m_settings.achievements);
         m_dirty = true;
     }
+    ImGui::PushTextWrapPos(0.0f);   // wrap at the window edge instead of running off it
     ImGui::TextDisabled("Tracked locally: the definitions are a file in assets/, your progress is "
                         "a file in savedata/achievements.progress. No account, no network. "
                         "Default: ACHIEVEMENTS.");
+    ImGui::PopTextWrapPos();
 
     // [ach] Attribution, and it is not decoration. The 154 achievements and their names, points and
     // conditions are RetroAchievements' work, not ours; the badges are their images too. This build
@@ -3763,13 +3765,13 @@ void PS2SettingsOverlay::drawLoggingTab()
     sectionHeader("SETTINGS DUMP LOG");
 
     ImGui::TextWrapped(
-        "When a setting changes (Apply / Save), the current state of the enabled areas "
-        "below is written to \"%s\" in the savedata folder. Enable the areas you want "
-        "captured, then hit Save — from the next run everything is captured automatically.",
+        "Whenever a setting changes, the current state of the areas enabled below is written to "
+        "\"%s\" in the savedata folder. Tick the areas you want captured; from then on every "
+        "change is captured automatically.",
         kDumpFileName);
     ImGui::Spacing();
 
-    if (ImGui::BeginChild("##logging", ImVec2(-1, 0), ImGuiChildFlags_Borders))
+    if (ImGui::BeginChild("##logging", ImVec2(-1, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY))   // [gpadbox] content-sized, not fill-to-bottom
     {
         ImGui::Spacing();
         if (ImGui::Checkbox("Audio", &m_dumpAudio))
@@ -3814,15 +3816,15 @@ void PS2SettingsOverlay::drawAboutTab()
     sectionHeader("CREDITS");
     ImGui::TextWrapped("z3xox - owner / lead developer");
     ImGui::TextDisabled("  recompiler, runtime (EE/GS/VU1/scheduler), renderer, game overrides, generators");
-    ImGui::TextWrapped("RexxColder - supporter / colaborador");
-    ImGui::TextDisabled("  optimizacion (perf/async), front-end + install wizard, input & gamepads, "
+    ImGui::TextWrapped("RexxColder - supporter / collaborator");
+    ImGui::TextDisabled("  optimisation (perf/async), front-end + install wizard, input & gamepads, "
                         "build/release, deploy, game-data (AFS/AFL), docs");
-    ImGui::TextWrapped("valenvivaldi - colaborador");
+    ImGui::TextWrapped("valenvivaldi - collaborator");
     ImGui::TextDisabled("  port macOS arm64, packaging, audio");
     ImGui::Spacing();
 
     sectionHeader("THIRD-PARTY");
-    if (ImGui::BeginChild("##about_third", ImVec2(-1, 0), ImGuiChildFlags_Borders))
+    if (ImGui::BeginChild("##about_third", ImVec2(-1, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY))   // [gpadbox] content-sized
     {
         ImGui::TextWrapped("ran-j/PS2Recomp - static recompiler (upstream, GPL-3.0)");
         ImGui::TextWrapped("ViveTheModder - NTSC-U AFS file lists (Apache-2.0)");
