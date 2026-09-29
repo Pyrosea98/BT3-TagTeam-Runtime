@@ -916,6 +916,88 @@ extern "C" int ps2xNetServeSwapRead(unsigned long long slotId, unsigned long lon
         ctx->pc = getRegU32(ctx, 31);
     }
 
+    // [rumble] FUN_00122f10(player): the game's per-frame pad SEND. The fight code accumulates the big motor's
+    // strength as a float at rec+0x160 (FUN_00122e88 adds each hit's pulse, clamped to 1.0) and the small motor's
+    // on/off at rec+0x164 (rec = 0x333800 + player*0x1C0); this function folds them into (big*127)<<1 | small,
+    // hands the byte pair to libdbc's per-socket "send data" (code 0x0103400b) for the IOP's DualShock poll, and
+    // zeroes both. The IOP side goes nowhere here (no SIO2), so the motors never moved. Replaced whole: the same
+    // fields go to the host pad's motors instead and the RPC is skipped (it was two IOP calls per frame doing
+    // nothing). The game's own Vibration option still gates it: sub_001C02C8 sets fighter+0x15D0 from the options
+    // word bit (player+1), and sub_001DC5E0 only calls the accumulator when that flag is set.
+    //   PS2X_RUMBLE=0 disables, PS2X_RUMBLE_SCALE=<f> scales both motors (default 1), PS2X_RUMBLE_LOG=1 prints requests.
+    // [rumble] PS2X_RUMBLE_FORCE=1 (test knob): sub_001DC5E0(fighter) is the per-fighter vibration driver; it bails
+    // unless fighter+0x15D0 (set at fighter init from the game's Vibration option bits) is nonzero. Forcing the flag
+    // on entry exercises the whole chain on a rig that has no memory card with the option turned on.
+    PS2Runtime::RecompiledFunction g_orig1dc520 = nullptr, g_orig1dc578 = nullptr;
+    void bt3VibStartBigTrace(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // sub_001DC520(fighter, f12 strength, f13 seconds)
+    {
+        static std::atomic<uint32_t> s_n{0}; const uint32_t n = s_n.fetch_add(1u);
+        if (n < 40u) std::fprintf(stderr, "[rumble-start] big fighter 0x%x strength %.2f seconds %.2f\n", getRegU32(ctx, 4), ctx->f[12], ctx->f[13]);
+        if (g_orig1dc520) g_orig1dc520(rdram, ctx, runtime); else ctx->pc = getRegU32(ctx, 31);
+    }
+    void bt3VibStartSmallTrace(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // FUN_001dc578(fighter, f12 seconds)
+    {
+        static std::atomic<uint32_t> s_n{0}; const uint32_t n = s_n.fetch_add(1u);
+        if (n < 40u) std::fprintf(stderr, "[rumble-start] small fighter 0x%x seconds %.2f\n", getRegU32(ctx, 4), ctx->f[12]);
+        if (g_orig1dc578) g_orig1dc578(rdram, ctx, runtime); else ctx->pc = getRegU32(ctx, 31);
+    }
+    PS2Runtime::RecompiledFunction g_orig1dc5e0 = nullptr;
+    void bt3VibrationDriverForced(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // sub_001DC5E0
+    {
+        if (uint8_t *p = getMemPtr(rdram, getRegU32(ctx, 4) + 0x15D0u)) { const uint32_t one = 1u; std::memcpy(p, &one, 4); }
+        {   // trace: the other gates of the driver, every 120th call per fighter
+            static std::atomic<uint32_t> s_n{0}; const uint32_t n = s_n.fetch_add(1u);
+            if ((n % 120u) == 0u)
+            {
+                const uint32_t f = getRegU32(ctx, 4);
+                auto r32 = [&](uint32_t a) -> uint32_t { const uint8_t *p = getMemPtr(rdram, a); uint32_t v = 0; if (p) std::memcpy(&v, p, 4); return v; };
+                std::fprintf(stderr, "[rumble-drv] call %u fighter 0x%x player %u +1278=%u timers big %u small %u base %08x pauseflag[0x31be04]=%u\n", n, f, r32(f + 4u), r32(f + 0x1278u), r32(f + 0x15D8u), r32(f + 0x15DCu), r32(f + 0x15D4u), r32(0x31be04u));
+            }
+        }
+        if (g_orig1dc5e0) g_orig1dc5e0(rdram, ctx, runtime);
+        else ctx->pc = getRegU32(ctx, 31);
+    }
+    void bt3PadSendRumble(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // FUN_00122f10
+    {
+        (void)runtime;
+        static const bool s_on = [](){ const char *v = std::getenv("PS2X_RUMBLE"); return !(v && v[0] == '0'); }();
+        static const float s_scale = [](){ const char *v = std::getenv("PS2X_RUMBLE_SCALE"); const float f = v && v[0] ? (float)std::atof(v) : 1.0f; return f < 0.0f ? 0.0f : f > 4.0f ? 4.0f : f; }();
+        static const bool s_log = [](){ const char *v = std::getenv("PS2X_RUMBLE_LOG"); return v && v[0] == '1'; }();
+        const uint32_t player = getRegU32(ctx, 4) & 3u;
+        const uint32_t rec = 0x333800u + player * 0x1C0u;
+        float big = 0.0f; uint32_t small = 0u;
+        if (const uint8_t *p = getMemPtr(rdram, rec + 0x160u)) std::memcpy(&big, p, 4);
+        if (const uint8_t *p = getMemPtr(rdram, rec + 0x164u)) std::memcpy(&small, p, 4);
+        if (!(big >= 0.0f)) big = 0.0f;   // NaN guard
+        if (big > 1.0f) big = 1.0f;
+        static uint16_t s_lastLow[4] = {}, s_lastHigh[4] = {};
+        // The game drives the small motor the DualShock way: on one frame, off the next, for the pulse's duration
+        // (sub_001DC5E0 toggles it from a frame counter). A DualShock's small motor cannot stop in 16 ms so that
+        // reads as "on"; a modern pad's high-frequency motor can, and it would buzz at 30 Hz. Hold it on for 100 ms
+        // past the last "on" frame instead.
+        static std::chrono::steady_clock::time_point s_smallUntil[4] = {};
+        const auto now = std::chrono::steady_clock::now();
+        if (small) s_smallUntil[player] = now + std::chrono::milliseconds(100);
+        const bool smallOn = now < s_smallUntil[player];
+        const float sb = big * s_scale, ss = (smallOn ? 1.0f : 0.0f) * s_scale;
+        const uint16_t low = (uint16_t)(sb >= 1.0f ? 65535u : (uint32_t)(sb * 65535.0f));
+        const uint16_t high = (uint16_t)(ss >= 1.0f ? 65535u : (uint32_t)(ss * 65535.0f));
+        if (s_on && (low || high || s_lastLow[player] || s_lastHigh[player]))
+        {   // refreshed every frame while active; 60 ms outlives a dropped frame and stops on its own if the game stops
+            ps2_stubs::padRumblePlayer((int)player, low, high, (low || high) ? 60u : 0u);
+            if (s_log && (low != s_lastLow[player] || high != s_lastHigh[player]))
+                std::fprintf(stderr, "[rumble] player %u big %.2f small %u -> low %u high %u\n", player, big, small, low, high);
+        }
+        s_lastLow[player] = low; s_lastHigh[player] = high;
+        // what the original did with the fields: fold into the halfword and clear
+        uint32_t v = (uint32_t)(big * 127.0f); if (v > 127u) v = 127u;
+        const uint16_t half = (uint16_t)((v << 1) | (small ? 1u : 0u));
+        if (uint8_t *p = getMemPtr(rdram, rec + 0x12Cu)) std::memcpy(p, &half, 2);
+        if (uint8_t *p = getMemPtr(rdram, rec + 0x160u)) std::memset(p, 0, 4);
+        if (uint8_t *p = getMemPtr(rdram, rec + 0x164u)) std::memset(p, 0, 4);
+        ctx->pc = getRegU32(ctx, 31);
+    }
+
     // BT3 CD read-completion, done reliably. The game's disc-read state machine
     // spins polling a read-state byte (via FUN_00270dd0 = *(handle+1)) that a CD
     // completion interrupt would advance on hardware. With no IOP, nothing drives
@@ -8045,6 +8127,14 @@ namespace
         runtime.replaceFunction(0x00296090u, &bt3PadRead);
         runtime.replaceFunction(0x00295fb8u, &bt3PadGetState);
         runtime.replaceFunction(0x00295e58u, &bt3PadCreateSocket);
+        runtime.replaceFunction(0x00122f10u, &bt3PadSendRumble);   // [rumble]
+        if (const char *rf = std::getenv("PS2X_RUMBLE_FORCE"); rf && rf[0] == '1')
+        {   // [rumble] test knob, see bt3VibrationDriverForced
+            g_orig1dc5e0 = runtime.lookupFunction(0x001dc5e0u);
+            runtime.replaceFunction(0x001dc5e0u, &bt3VibrationDriverForced);
+            g_orig1dc520 = runtime.lookupFunction(0x001dc520u); runtime.replaceFunction(0x001dc520u, &bt3VibStartBigTrace);
+            g_orig1dc578 = runtime.lookupFunction(0x001dc578u); runtime.replaceFunction(0x001dc578u, &bt3VibStartSmallTrace);
+        }
     }
 
     // Dragon Ball Z: Budokai Tenkaichi 3 (SLUS_216.78): the PS2RNA sound engine

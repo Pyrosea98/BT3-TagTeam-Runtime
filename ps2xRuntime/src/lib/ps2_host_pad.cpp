@@ -466,6 +466,22 @@ namespace ps2x_pad
         return GetGamepadAxisMovement(slot, ax);
     }
 
+    bool rumble(int slot, uint16_t low, uint16_t high, uint32_t ms)
+    {   // [rumble] SDL takes the joystick lock itself, so this is safe from the guest thread
+        if (slot < 0 || slot >= kMaxSlots) return false;
+#if defined(PS2X_HAVE_SDL2)
+        if (s_backend == Backend::Sdl2)
+        {
+            const auto *s = sdl::slot(slot);
+            if (!s) return false;
+            if (s->gc) return SDL_GameControllerRumble(s->gc, low, high, ms) == 0;
+            if (s->js) return SDL_JoystickRumble(s->js, low, high, ms) == 0;
+        }
+#endif
+        (void)low; (void)high; (void)ms;
+        return false;   // the raylib/GLFW backend has no rumble
+    }
+
     void addMappings(const char *text)
     {
         if (!text) return;

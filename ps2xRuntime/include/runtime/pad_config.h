@@ -149,6 +149,9 @@ namespace ps2_stubs
 
     // Poll a player (clamped to [0,3]).
     PadPacket padPollPlayer(size_t player);
+    // [rumble] Drive the motors of the device that feeds `player` (the same resolution poll() uses):
+    // low = big motor, high = small motor, 0..65535, for ms milliseconds.
+    void padRumblePlayer(int player, uint16_t low, uint16_t high, uint32_t ms);
 
     // Legacy helper used by game pad hooks (e.g. BT3 sceDbc): builds the packet
     // for `player` and returns the active-low button word.

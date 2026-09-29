@@ -108,6 +108,12 @@ namespace ps2_iop_dbcman
                 for (int i=0;i<6;i++){ const uint8_t*p=getMemPtr(rdram, sendBufAddr+i*4u); if(p) std::memcpy(&w[i],p,4); }
                 uint64_t key = ((uint64_t)w[1]<<32) | w[0]; // w[0]=socket, w[1]=command
                 uint32_t &c = s_cmds[key]; c++;
+                if (c <= 3u)
+                {   // [rumble] the first occurrences of each (socket, command) with the whole send buffer
+                    std::cerr << "[dbc-cmd] first sock=" << w[0] << " cmd=0x" << std::hex << w[1] << " sendSize=0x" << sendSize << " words:";
+                    for (uint32_t i = 0; i < 12u && i * 4u < sendSize; ++i) { uint32_t x = 0; if (const uint8_t *p = getMemPtr(rdram, sendBufAddr + i * 4u)) std::memcpy(&x, p, 4); std::cerr << " " << x; }
+                    std::cerr << std::dec << std::endl;
+                }
                 static std::atomic<uint32_t> s_n{0};
                 if ((s_n.fetch_add(1)%4000u)==1u){
                     std::cerr<<"[dbc-cmd] sendSize=0x"<<std::hex<<sendSize<<" recvSize=0x"<<recvSize<<" (sock:cmd=count):";

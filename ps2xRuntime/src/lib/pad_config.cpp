@@ -620,6 +620,22 @@ namespace ps2_stubs
         return PadConfig::instance().poll(player);
     }
 
+    void padRumblePlayer(int player, uint16_t low, uint16_t high, uint32_t ms)
+    {   // [rumble] the device that feeds this player: an explicit "Gamepad N" from pad_pN.conf, else the automatic
+        // assignment poll() makes (the N-th controller, or the first one for player 0)
+        if (player < 0 || player >= (int)PadConfig::kPlayerCount) return;
+        const PadPlayerConfig cfg = PadConfig::instance().snapshot((size_t)player);
+        int slot = -1;
+        if (cfg.device.kind == PadDeviceKind::Gamepad)
+            slot = padGamepadSlot(cfg.device.gamepad);
+        else
+        {
+            const std::vector<int> all = availableGamepads();
+            if (!all.empty() && (player == 0 || all.size() >= 2)) slot = all[(size_t)player < all.size() ? (size_t)player : 0];
+        }
+        if (slot >= 0) ps2x_pad::rumble(slot, low, high, ms);
+    }
+
     uint16_t ps2xLivePadButtons(int player, uint8_t &lx, uint8_t &ly, uint8_t &rx, uint8_t &ry)
     {
         const PadPacket pkt = PadConfig::instance().poll(static_cast<size_t>(player));

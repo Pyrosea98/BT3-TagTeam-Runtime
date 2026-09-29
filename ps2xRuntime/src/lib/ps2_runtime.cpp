@@ -3116,6 +3116,48 @@ bool ps2xInvokeIopRpc(PS2Runtime *rt, uint32_t sid, uint32_t command,
         std::fprintf(stderr, "[iop-xrpc-probe] sid=0x%08x cmd=0x%x send=%u recv=%u servers=%zu found=%d\n",
                      sid, command, sendSize, recvSize, sifRpcServers().size(),
                      (int)sifRpcServers().count(sid));
+        // [rumble] PS2X_PADRPC_PROBE=1: the pad transaction's send buffer whenever it changes, per sid (the
+        // actuator bytes live somewhere in these 144 bytes; a hit in a fight is what makes them move)
+        static const bool s_padProbe = [](){ const char *v = std::getenv("PS2X_PADRPC_PROBE"); return v && v[0] == '1'; }();
+        if (s_padProbe && eeRam && sendSize >= 16u)
+        {
+            static std::map<uint32_t, std::vector<uint32_t>> s_last; static uint32_t s_prints = 0;
+            std::vector<uint32_t> w((sendSize + 3u) / 4u);
+            for (size_t i = 0; i < w.size(); ++i) { const uint8_t *p = getMemPtr(eeRam, sendAddr + uint32_t(i * 4u)); w[i] = 0; if (p) std::memcpy(&w[i], p, 4); }
+            {   // [rumble] PS2X_PADSOCK_PROBE=1: the libdbc per-socket record (0x334 bytes at 0x323e88 + socket*0x334, from the
+                // library's own disassembly) diffed at every transaction: the actuator bytes the game sets must live in it
+                static const bool s_sockProbe = [](){ const char *v = std::getenv("PS2X_PADSOCK_PROBE"); return v && v[0] == '1'; }();
+                static const uint64_t s_sockFrMin = [](){ const char *v = std::getenv("PS2X_PADRPC_FRMIN"); return v && v[0] ? std::strtoull(v, nullptr, 10) : 0ull; }();
+                if (s_sockProbe && g_bt3FrameCount.load(std::memory_order_relaxed) >= s_sockFrMin && w[0] < 4u)
+                {
+                    static std::map<uint32_t, std::vector<uint32_t>> s_sockLast; static uint32_t s_sockPrints = 0;
+                    const uint32_t base = 0x333800u + w[0] * 0x1c0u; std::vector<uint32_t> sw(0x1c0u / 4u);   // the GAME's per-player pad record (FUN_00122a38), not libdbc's table
+                    for (size_t i = 0; i < sw.size(); ++i) { const uint8_t *p = getMemPtr(eeRam, base + uint32_t(i * 4u)); sw[i] = 0; if (p) std::memcpy(&sw[i], p, 4); }
+                    auto &sl = s_sockLast[w[0]];
+                    if (sl != sw && s_sockPrints < 600u)
+                    {
+                        ++s_sockPrints;
+                        std::fprintf(stderr, "[padsock] gframe %llu sock %u changed:", (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed), w[0]);
+                        int shown = 0;
+                        for (size_t i = 0; i < sw.size(); ++i) if (i >= sl.size() || sl[i] != sw[i]) { if (shown++ < 24) std::fprintf(stderr, " +%03zx=%08x", i * 4u, sw[i]); }
+                        std::fprintf(stderr, "%s\n", shown > 24 ? " ..." : "");
+                        sl = sw;
+                    }
+                }
+            }
+            auto &last = s_last[sid];
+            static const uint64_t s_frMin = [](){ const char *v = std::getenv("PS2X_PADRPC_FRMIN"); return v && v[0] ? std::strtoull(v, nullptr, 10) : 0ull; }();
+            std::vector<uint32_t> cmpNew = w, cmpOld = last;   // words 7, 9, 11 are counters/pointers that move every call: not what we are after
+            for (size_t i : {7u, 9u, 11u}) { if (i < cmpNew.size()) cmpNew[i] = 0; if (i < cmpOld.size()) cmpOld[i] = 0; }
+            if (cmpNew != cmpOld && s_prints < 400u && g_bt3FrameCount.load(std::memory_order_relaxed) >= s_frMin)
+            {
+                ++s_prints;
+                std::fprintf(stderr, "[padrpc] gframe %llu sid=0x%08x cmd=0x%x:", (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed), sid, command);
+                for (size_t i = 0; i < w.size(); ++i) { if (i < last.size() && last[i] != w[i]) std::fprintf(stderr, " *%08x", w[i]); else std::fprintf(stderr, " %08x", w[i]); }
+                std::fprintf(stderr, "\n");
+                last = w;
+            }
+        }
     }
     IopSifRpc svc;
     {

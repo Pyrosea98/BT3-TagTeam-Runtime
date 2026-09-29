@@ -34,6 +34,9 @@ namespace ps2x_pad
     int buttonCount(int slot);
     bool buttonDown(int slot, int button);
     float axis(int slot, int axis);
+    // [rumble] Drive the pad's motors: low = the big (low-frequency) motor, high = the small one, 0..65535,
+    // for ms milliseconds. False when the slot has no device or the device cannot rumble.
+    bool rumble(int slot, uint16_t low, uint16_t high, uint32_t ms);
 
     // SDL mapping-format text, one mapping per line (PS2X_PAD_MAPPINGS file). Render thread.
     void addMappings(const char *text);
