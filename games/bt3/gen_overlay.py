@@ -175,6 +175,14 @@ def containing_function(lines: list, addr: int) -> str:
     raise RuntimeError(f"no containing function for 0x{addr:x}")
 
 
+# A gap block is ONE generated function with no resume switch, and every slot of its range
+# is registered to it, so any entry into the block runs from the block's first instruction.
+# A block that holds several independent entry points (e.g. a row of tail-jump stubs, each
+# `addiu sp / set args / ld ra / j callee`) therefore has to be split into one CSV row per
+# stub. 0x39f00c-0x39f088 is three such stubs (the Evolution Z scissor callbacks: the two
+# menu halves 0..256 / 384..512 and the full-screen reset); as one block every callback ran
+# the first stub, the display list scissored everything to the left half, and Krillin plus
+# the right ends of the buttons were cut off.
 def range_registrar(struct_name: str, csv_path: Path, comment: str) -> str:
     rows = []
     with open(csv_path) as f:

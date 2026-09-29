@@ -2488,6 +2488,38 @@ namespace
         if (g_orig101400) g_orig101400(rdram, ctx, runtime);
     }
 
+    // [cliprectlog] =3: the scissor callback FUN_00100648 (rect = [a0+0x200..0x20C] as u32 x0,x1,y0,y1, tail-jumps into
+    // the emitter): print the context pointer and the rect so its writer can be range-watched
+    PS2Runtime::RecompiledFunction g_orig100648 = nullptr;
+    void bt3ScissorCbLog(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static std::atomic<uint32_t> n{0};
+        if (n.fetch_add(1) < 600u)
+        {
+            const uint32_t a0 = getRegU32(ctx, 4) & 0x1FFFFFFFu; uint32_t w[4] = {};
+            if (a0 + 0x210u < 32u * 1024u * 1024u) std::memcpy(w, rdram + a0 + 0x200u, 16);
+            std::fprintf(stderr, "[sciscb] fr=%llu ctx=0x%x rect x%u..%u y%u..%u ra=0x%x\n",
+                         (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed), a0, w[0], w[1], w[2], w[3], getRegU32(ctx, 31));
+        }
+        if (g_orig100648) g_orig100648(rdram, ctx, runtime);
+    }
+
+    // [cliprectlog] =4: FUN_00126b10 (x0,x1,y0,y1 in, clamps through func_126620, tail-jumps into the emitter)
+    PS2Runtime::RecompiledFunction g_orig126b10 = nullptr;
+    void bt3ScissorWrapLog(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static std::atomic<uint32_t> n{0};
+        if (n.fetch_add(1) < 600u)
+        {
+            const uint32_t s0 = getRegU32(ctx, 16) & 0x1FFFFFFFu; uint32_t f[8] = {};   // the flush's context object (callee-saved, still live)
+            if (s0 + 0x100u < 32u * 1024u * 1024u) { std::memcpy(&f[0], rdram + s0 + 0x88u, 4); std::memcpy(&f[1], rdram + s0 + 0x90u, 4); std::memcpy(&f[2], rdram + s0 + 0x98u, 4); std::memcpy(&f[3], rdram + s0 + 0xB4u, 4); std::memcpy(&f[4], rdram + s0 + 0xB8u, 4); std::memcpy(&f[5], rdram + s0 + 0xBCu, 4); std::memcpy(&f[6], rdram + s0 + 0xC0u, 4); std::memcpy(&f[7], rdram + s0 + 0x48u, 4); }
+            std::fprintf(stderr, "[sciswrap] fr=%llu a0=%d a1=%d a2=%d a3=%d ra=0x%x s0=0x%x [+88]=%u [+90]=%u [+98]=%u [+b4]=0x%x [+b8]=0x%x [+bc]=%u [+c0]=%u [+48]=0x%x\n",
+                         (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed), (int)getRegU32(ctx, 4), (int)getRegU32(ctx, 5), (int)getRegU32(ctx, 6), (int)getRegU32(ctx, 7), getRegU32(ctx, 31),
+                         s0, f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
+        }
+        if (g_orig126b10) g_orig126b10(rdram, ctx, runtime);
+    }
+
     // Hook on sceSifCallRpc: service the SE command the IOP would have handled.
     PS2Runtime::RecompiledFunction g_orig2b48f0 = nullptr;
     void bt3SeRpcSend(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // 0x2b48f0
@@ -5638,7 +5670,7 @@ namespace
             {
                 s_done = true; const char *e = std::getenv("PS2X_RAMDUMP"); const char *c = std::strchr(e, ',');
                 const char *path = c ? c + 1 : "ramdump.bin";
-                if (FILE *f = std::fopen(path, "wb")) { std::fwrite(rdram, 1, 32u * 1024u * 1024u, f); std::fclose(f); std::fprintf(stderr, "[ramdump] frame %llu -> %s\n", (unsigned long long)g_bt3FrameCount.load(), path); }
+                if (FILE *f = std::fopen(path, "wb")) { std::fwrite(rdram, 1, 32u * 1024u * 1024u, f); if (const uint8_t *spr = ps2GetScratchpadHostPtr()) std::fwrite(spr, 1, 16384, f); std::fclose(f); std::fprintf(stderr, "[ramdump] frame %llu -> %s (+16 KB scratchpad)\n", (unsigned long long)g_bt3FrameCount.load(), path); }
             }
         }
         if (s_addrs.empty() || !rdram) return;
@@ -7876,6 +7908,18 @@ namespace
                 g_orig224be8 = runtime.lookupFunction(0x00224be8u);
                 if (g_orig224be8) runtime.replaceFunction(0x00224be8u, &bt3ClipRectLog);
                 std::fprintf(stderr, "[cliprect] hook %s\n", g_orig224be8 ? "ARMED" : "FAILED");
+                if (v[0] == '4')
+                {
+                    g_orig126b10 = runtime.lookupFunction(0x00126b10u);
+                    if (g_orig126b10) runtime.replaceFunction(0x00126b10u, &bt3ScissorWrapLog);
+                    std::fprintf(stderr, "[sciswrap] hook %s\n", g_orig126b10 ? "ARMED" : "FAILED");
+                }
+                if (v[0] == '3')
+                {
+                    g_orig100648 = runtime.lookupFunction(0x00100648u);
+                    if (g_orig100648) runtime.replaceFunction(0x00100648u, &bt3ScissorCbLog);
+                    std::fprintf(stderr, "[sciscb] hook %s\n", g_orig100648 ? "ARMED" : "FAILED");
+                }
                 if (v[0] == '2')
                 {
                     g_orig101400 = runtime.lookupFunction(0x00101400u);
