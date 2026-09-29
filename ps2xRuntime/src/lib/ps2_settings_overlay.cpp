@@ -6,6 +6,16 @@
 #include "runtime/ps2_netplay.h"   // [netplay]
 #include "runtime/ps2x_achieve.h"  // [ach]
 #include "runtime/ps2_gs_pgs.h"   // [pgsink] backend ink width
+
+// [rendererfx] The renderer that is drawing NOW (4 native, 2 paraLLEl-GS, 0 OpenGL), for hiding the switches a
+// renderer does not read. The settings' renderer is what the NEXT boot uses and can differ (PS2X_SEAMVK=1 over a
+// parallel-gs file is how the dev script runs the seam).
+static int liveRenderer()
+{
+    if (seamvk::on()) return 4;
+    if (ps2x_pgs::enabled()) return 2;
+    return 0;
+}
 #include "runtime/ps2_gs_gpu_renderer.h"
 #include "runtime/ps2_render_scale.h"
 #include "runtime/ps2_audio.h"
@@ -2435,8 +2445,16 @@ void PS2SettingsOverlay::drawVideoTab()
             }
             auto applyLive = [&]() { ps2x_pgs::setForceBilinear(m_settings.forceBilinear); };
             {   // [applyonchange] every switch in this window applies as it is flipped; no Apply/Save step
+                // [rendererfx] only what the selected renderer reads: bilinear / half-texel / skip post / skip stale
+                // VRAM are the OpenGL renderer's (ps2_gs_gpu_renderer.cpp is their only consumer), force filtering is
+                // OpenGL's and paraLLEl-GS's; the native renderer reads none of them.
                 bool ch = false;
-                for (int i = 0; i < 5; ++i) ch |= toggleSwitch(kAdvN[i], kAdvB[i]);   // the same switch style as the rest of the window
+                for (int i = 0; i < 5; ++i)
+                {
+                    const int lr = liveRenderer();
+                    const bool shown = lr == 0 || (lr == 2 && i == 1);
+                    if (shown) ch |= toggleSwitch(kAdvN[i], kAdvB[i]);   // the same switch style as the rest of the window
+                }
                 if (ch) { applyLive(); m_dirty = true; }
             }
         if (toggleSwitch("Cel Outline", &m_settings.outline))
@@ -2457,8 +2475,9 @@ void PS2SettingsOverlay::drawVideoTab()
                 m_dirty = true;
             }
             ImGui::TextDisabled("199%% matches the console line. Higher = darker ink.");
-            if (m_settings.renderer == 2 || m_settings.renderer == 4)
+            if (liveRenderer() == 2)
             {   // [pgsink] paraLLEl-GS: the stroke width is the outline chain's edge-detect shift, rewritten in the stream
+                // ([rendererfx] the native renderer draws the ink itself at the console's width: no width control there)
                 ImGui::Text("Ink Width");
                 ImGui::SameLine(120);
                 ImGui::SetNextItemWidth(220);
@@ -2468,6 +2487,9 @@ void PS2SettingsOverlay::drawVideoTab()
                     m_dirty = true;
                 }
                 ImGui::TextDisabled("100%% = the console's one-pixel stroke; lower = thinner (paraLLEl-GS only).");
+            }
+            if (liveRenderer() != 0)
+            {   // [rendererfx] the ink colour is read by paraLLEl-GS and by the native renderer (seamgs), not by OpenGL
                 {   // [pgsink] the darkener subtracts its colour from the scene, so the picker sets the complement it keeps
                     float rgb[3] = { ((m_settings.inkColor >> 16) & 0xFFu) / 255.0f, ((m_settings.inkColor >> 8) & 0xFFu) / 255.0f, (m_settings.inkColor & 0xFFu) / 255.0f };
                     ImGui::Text("Ink Color");
@@ -2482,7 +2504,7 @@ void PS2SettingsOverlay::drawVideoTab()
                     }
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Black")) { m_settings.inkColor = 0; ps2x_wshud::setInkColor(0); m_dirty = true; }
-                    ImGui::TextDisabled("Exact on light backgrounds; darker scenes tint toward it (paraLLEl-GS only).");
+                    ImGui::TextDisabled("Exact on light backgrounds; darker scenes tint toward it.");
                 }
             }
             ImGui::Unindent(12.0f);
@@ -2521,7 +2543,9 @@ void PS2SettingsOverlay::drawVideoTab()
         // (Glow / Skip Post / Half-Texel / Skip Stale VRAM toggles removed: replay A/B
         //  measured them at 0.000 frame diff in fights -- their draw classes are
         //  superseded by the current serving pipeline. Env vars still work for devs.)
-        {   // [glowfix] BT3's bloom/glow chain -- the Kaioken aura and every attack glow.
+        if (liveRenderer() == 0)
+        {   // [glowfix] BT3's bloom/glow chain -- the Kaioken aura and every attack glow. OpenGL renderer only
+            // ([rendererfx]: paraLLEl-GS and the native renderer run the game's own glow pass unchanged)
             const bool was = m_settings.glowFix;
             if (toggleSwitch("Glow (Kaioken aura)", &m_settings.glowFix))
                 m_dirty = true;

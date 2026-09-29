@@ -310,8 +310,7 @@ namespace frontend
 
         if (fe::beginSection("EFFECTS AND FILTERING", false,
                              "The cel outline at 199% replicates the console's line; lower means "
-                             "thinner ink. DoF and the glow (Kaioken aura) are enabled "
-                             "here too."))
+                             "thinner ink. Only the switches the chosen renderer reads are shown."))
         {
             fe::toggleSwitch("Cel outline", &s.outline);
             if (s.outline)
@@ -320,9 +319,16 @@ namespace frontend
             fe::toggleSwitch("Depth of field (DoF)", &s.dofBlur);
             if (s.dofBlur)
                 fe::intSliderRow("DoF range", &s.dofZFar, 20000, 800000, "%d k");
-            fe::toggleSwitch("Glow (Kaioken aura)", &s.glow);
-            fe::toggleSwitch("Bilinear filter", &s.bilinear);
-            fe::toggleSwitch("Force filtering (soft terrain)", &s.forceBilinear);
+            // [rendererfx] only what the chosen renderer reads: the glow and bilinear switches are the OpenGL
+            // renderer's (ps2_gs_gpu_renderer.cpp is their only consumer), force filtering is OpenGL's and
+            // paraLLEl-GS's; the native renderer reads none of them.
+            if (s.renderer == ps2x_settings::kRendererOpenGL)
+            {
+                fe::toggleSwitch("Glow (Kaioken aura)", &s.glow);
+                fe::toggleSwitch("Bilinear filter", &s.bilinear);
+            }
+            if (s.renderer == ps2x_settings::kRendererOpenGL || s.renderer == ps2x_settings::kRendererParallelGS)
+                fe::toggleSwitch("Force filtering (soft terrain)", &s.forceBilinear);
         }
 
         if (fe::beginSection("PACK AND OPTIONS", false,
@@ -396,7 +402,7 @@ namespace frontend
             }
         }
 
-        ctx.footerHint = "More toggles (half texel, skip post, widescreen, 60 fps, HUD) live in the game overlay: Shift+Tab.";
+        ctx.footerHint = "More toggles (widescreen, 60 fps, HUD layout) live in the game overlay: Shift+Tab.";
     }
 
     void drawAudioPage(PageContext &ctx)
