@@ -725,6 +725,7 @@ src/lib/ui_sdl.cpp          # [C] ImGui platform glue on SDL2 (replaces rlImGui)
     src/lib/ps2x_notify.cpp      # [notify] the popup bus
     src/lib/ps2x_notify_sound.cpp # [notify] the synthesised UI sounds (audio backend dependent)
     src/lib/ps2x_perf.cpp        # [perf] present rate, frame-time percentiles, GPU busy + its source
+    src/lib/ps2x_memstat.cpp     # [memstat] resident size for the [fps] line
     src/lib/ps2_iop.cpp
     src/lib/ps2_iop_audio.cpp
     src/lib/ps2_iop_dbcman.cpp

@@ -42,6 +42,7 @@ extern "C" int ps2xSchedTraceOn();               // PS2X_SCHEDTRACE window (defi
 #include <execinfo.h> // glibc backtrace for the bad-jump diagnostic
 #endif
 #include "ps2_runtime.h"
+#include "runtime/ps2x_memstat.h"
 #include "ps2_log.h"
 #include "ps2_stubs.h"
 #include "ps2_syscalls.h"
@@ -9276,6 +9277,11 @@ void PS2Runtime::run()
                       << " guest_ms=" << guestMs
                       << " wall_ms=" << wallMs
                       << " host=" << (uint32_t)(s_fpsFrames / dt)
+                      << " rss_mb=" << ps2xRssMB()   // [memstat] resident size: a leak shows as a line that only climbs
+                      << " gl_free_mb=" << [&]{   // [memstat] GPU free memory as GL sees it (NVIDIA only: GL_NVX_gpu_memory_info; 0 elsewhere)
+                             ps2xgl::GLint kb = 0; ps2xgl::glGetIntegerv(0x9049 /* GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX */, &kb);
+                             while (ps2xgl::glGetError() != ps2xgl::GL_NO_ERROR) {}   // clear the INVALID_ENUM on other vendors
+                             return kb > 0 ? (unsigned)(kb / 1024) : 0u; }()
                       << " prims/sec=" << (uint64_t)((prims - s_lastPrims) / dt)
                       << " glhoist/sec=" << [&]{ extern std::atomic<unsigned long> g_glHoistCmds, g_glHoistTris;   // [glhoist]
                              static unsigned long s_lc = 0, s_lt = 0;

@@ -2024,6 +2024,23 @@ namespace seamvk
             const double rtDecPer = double(g_gpu.rtDecodes) / 300.0;
             g_gpu.draws = g_gpu.verts = g_gpu.passes = g_gpu.texUploads = g_gpu.dateDraws = g_gpu.skippedDrawn = g_gpu.texMissing = g_gpu.texMismatch = g_gpu.dateHost = 0; g_gpu.rtDecodes = g_gpu.rtDecodesStale = g_gpu.aliasedDraws = g_gpu.aliasDraws = g_gpu.nativeSteps = g_gpu.vramPagesUp = g_gpu.batches = g_gpu.chunksBatched = g_gpu.decHoisted = g_gpu.hoistSkippedFrames = 0;
             std::fprintf(stderr, "[seamvk] per frame: take %.2f ms, record %.2f ms, submit %.2f ms, wait %.2f ms\n", g_gpu.msTake / 300.0, g_gpu.msRecord / 300.0, g_gpu.msSubmit / 300.0, g_gpu.msWait / 300.0);
+            {   // [memstat] the device's view of this process's GPU memory next to what Granite tracks: a gap that
+                // grows is an allocation outside Granite (GL textures, driver-side ghosting), a tracked figure
+                // that grows is ours
+                Vulkan::HeapBudget hb[VK_MAX_MEMORY_HEAPS] = {};
+                dev.get_memory_budget(hb);
+                std::string line;
+                for (uint32_t i = 0; i < VK_MAX_MEMORY_HEAPS; ++i)
+                {
+                    if (!hb[i].max_size) continue;
+                    char b[160];
+                    std::snprintf(b, sizeof(b), " heap%u: device %llu / budget %llu MB (tracked %llu, max %llu)", i,
+                                  (unsigned long long)(hb[i].device_usage >> 20), (unsigned long long)(hb[i].budget_size >> 20),
+                                  (unsigned long long)(hb[i].tracked_usage >> 20), (unsigned long long)(hb[i].max_size >> 20));
+                    line += b;
+                }
+                std::fprintf(stderr, "[seamvk] vk memory:%s\n", line.c_str());
+            }
             if (gpuTime() && !g_gpu.gpuFrames) std::fprintf(stderr, "[seamvk] gputime: no resolved frames; pending %zu, front marks %zu, back q %s signalled %d\n", g_gpu.tsPending.size(), g_gpu.tsPending.empty() ? 0u : g_gpu.tsPending.front().size(), (!g_gpu.tsPending.empty() && g_gpu.tsPending.front().back().q) ? "set" : "null", (!g_gpu.tsPending.empty() && g_gpu.tsPending.front().back().q) ? int(g_gpu.tsPending.front().back().q->is_signalled()) : -1);
             if (g_gpu.gpuFrames)
             {
