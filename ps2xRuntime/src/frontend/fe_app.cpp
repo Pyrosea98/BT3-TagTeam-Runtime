@@ -442,6 +442,7 @@ namespace frontend
             wizard = std::make_unique<InstallWizard>(exeDir);
             wizard->begin(false);
             showWizard = true;
+            screen = Screen::Settings;   // [wizardfirst] the wizard lives on the settings screen; the menu would hide it
         }
         else
         {
@@ -476,6 +477,9 @@ namespace frontend
                 wizard->begin(false);
                 wizard->startAtLocatePage();
                 showWizard = true;
+                // [wizardfirst] A first launch lands in the installer, not on a menu whose PLAY does nothing: the
+                // wizard is drawn on the settings screen, so start there (the menu is one BACK away once it is done).
+                screen = Screen::Settings;
             }
         }
         }
