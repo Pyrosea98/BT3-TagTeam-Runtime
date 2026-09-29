@@ -1083,6 +1083,7 @@ if (EXISTS "${PS2X_PGS_DIR}/CMakeLists.txt" AND NOT PS2X_DISABLE_PGS)
     target_sources(ps2_runtime PRIVATE src/lib/ps2_gs_pgs.cpp)
     target_link_libraries(ps2_runtime PUBLIC parallel-gs)
     target_compile_definitions(ps2_runtime PUBLIC PS2X_HAVE_PGS=1)
+    target_compile_definitions(ps2x_settings PRIVATE PS2X_HAVE_PGS=1)   # [fesettings] the settings library's own loader maps a saved renderer this build cannot do back to OpenGL: it must know what the build can do
     message(STATUS "[pgs] paraLLEl-GS backend enabled from ${PS2X_PGS_DIR}")
 else()
     # Say WHICH of the three reasons applies: the old message always blamed a
@@ -1141,6 +1142,7 @@ if (_seamvk)
     target_sources(ps2_runtime PRIVATE src/lib/ps2_seamvk.cpp src/lib/ps2_seamgs.cpp src/lib/ps2_wshud.cpp src/lib/ps2_bcdecode.cpp)   # [seamvk] native Vulkan renderer at the engine seam
     target_link_libraries(ps2_runtime PUBLIC granite-vulkan granite-math)
     target_compile_definitions(ps2_runtime PUBLIC PS2X_HAVE_SEAMVK=1)
+    target_compile_definitions(ps2x_settings PRIVATE PS2X_HAVE_SEAMVK=1)   # [fesettings] same: without it the front end showed (and would save) OpenGL for a saved "native"
     message(STATUS "[seamvk] native Vulkan renderer enabled")
 else()
     message(STATUS "[seamvk] native Vulkan renderer not built (no Granite at ${PS2X_GRANITE_DIR}, or PS2X_DISABLE_SEAMVK)")
