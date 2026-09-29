@@ -5631,6 +5631,16 @@ namespace
                 }
             }
         }
+        {   // [ramdump] PS2X_RAMDUMP=<frame>[,<path>]: write the 32 MB of EE RAM once at that game frame (default work/ramdump.bin)
+            static const uint64_t s_at = [](){ const char *e = std::getenv("PS2X_RAMDUMP"); return e && e[0] ? (uint64_t)std::strtoull(e, nullptr, 0) : 0ull; }();
+            static bool s_done = false;
+            if (s_at && !s_done && rdram && g_bt3FrameCount.load(std::memory_order_relaxed) >= s_at)
+            {
+                s_done = true; const char *e = std::getenv("PS2X_RAMDUMP"); const char *c = std::strchr(e, ',');
+                const char *path = c ? c + 1 : "ramdump.bin";
+                if (FILE *f = std::fopen(path, "wb")) { std::fwrite(rdram, 1, 32u * 1024u * 1024u, f); std::fclose(f); std::fprintf(stderr, "[ramdump] frame %llu -> %s\n", (unsigned long long)g_bt3FrameCount.load(), path); }
+            }
+        }
         if (s_addrs.empty() || !rdram) return;
         static std::vector<uint32_t> s_prev(s_addrs.size(), 0xdeadbeefu);
         bool changed = false;

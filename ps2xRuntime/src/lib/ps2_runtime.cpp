@@ -492,6 +492,8 @@ void ps2ValueWatchReport(uint32_t guestAddr, uint32_t size, uint64_t valueLo,
 {
     {   // [vwfr] frame stamp for every value-watch hit (pairs with the [vwatch] line that follows)
         extern std::atomic<uint64_t> g_bt3FrameCount;
+        static const uint64_t s_frMin0 = [](){ const char *v = std::getenv("PS2X_VWATCH_FRMIN"); return v ? (uint64_t)std::strtoull(v, nullptr, 0) : 0ull; }();
+        if (s_frMin0 && g_bt3FrameCount.load(std::memory_order_relaxed) < s_frMin0) return;
         std::fprintf(stderr, "[vwfr] fr=%llu\n", (unsigned long long)g_bt3FrameCount.load(std::memory_order_relaxed));
     }
     {   // [vwdump] one-shot hexdump around value-watch hits landing in the frame-DL region
@@ -516,6 +518,11 @@ void ps2ValueWatchReport(uint32_t guestAddr, uint32_t size, uint64_t valueLo,
                 std::fprintf(stderr, "[clobcatch] armed 0x%08x..+0x10\n", (a_ - 4u) & ~0xFu);
             }
         }
+    }
+    {   // PS2X_VWATCH_FRMIN=<frame>: ignore hits before that game frame (a common value exhausts the cap at boot)
+        static const uint64_t s_frMin = [](){ const char *v = std::getenv("PS2X_VWATCH_FRMIN"); return v ? (uint64_t)std::strtoull(v, nullptr, 0) : 0ull; }();
+        extern std::atomic<uint64_t> g_bt3FrameCount;
+        if (s_frMin && g_bt3FrameCount.load(std::memory_order_relaxed) < s_frMin) return;
     }
     static std::atomic<uint32_t> s_n{0};
     const uint32_t n = s_n.fetch_add(1);
