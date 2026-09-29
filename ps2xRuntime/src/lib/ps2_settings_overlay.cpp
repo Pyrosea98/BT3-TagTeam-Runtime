@@ -3462,11 +3462,13 @@ void PS2SettingsOverlay::drawAchTab()
     ImGui::TextUnformatted(head);
     if (verified < total)
     {
+        ImGui::PushTextWrapPos(0.0f);   // TextColored does not wrap on its own: this ran off the window's right edge
         ImGui::TextColored(dbz(0.78f, 0.62f, 0.28f, 1.0f),
                            "%d of them still read the address RetroAchievements wrote, which points "
                            "at unrelated memory here, so they cannot be earned by playing yet. An "
                            "unlock on one of those rows is not something you did.",
                            total - verified);
+        ImGui::PopTextWrapPos();
     }
     ImGui::Spacing();
 
