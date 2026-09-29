@@ -124,35 +124,45 @@ def apply(runtime_dir: Path) -> int:
     failures = 0
     overlay_dir = runtime_dir / "src" / "runner_overlay"
     for patch in PATCHES:
-        path = overlay_dir / patch["file"]
-        if not path.is_file():
-            print(f"ERROR: {path} not found", file=sys.stderr)
+        # [buildtime] gen_overlay.py installs the module as overlay_functions.cpp plus
+        # overlay_functions_NN.cpp chunks; a function anchor lives in exactly one of them, a
+        # preamble anchor (the includes) in all of them, so every chunk that has the anchor is patched.
+        stem = Path(patch["file"]).stem
+        candidates = [overlay_dir / patch["file"]] + sorted(overlay_dir.glob(f"{stem}_[0-9][0-9].cpp"))
+        candidates = [c for c in candidates if c.is_file()]
+        if not candidates:
+            print(f"ERROR: {overlay_dir / patch['file']} not found", file=sys.stderr)
             failures += 1
             continue
-        text = path.read_text()
-        if patch["marker"] in text:
-            print(f"skip (already patched): {patch['file']} ({patch['marker'].strip()!r})")
-            continue
-        anchor = patch["anchor"]
-        idx = text.find(anchor)
-        if idx < 0:
-            # [pcstores] the generator emits `ctx->pc = <addr>;` before an instruction only where the runtime
-            # can observe it (pc_stores_all = false). Retry the anchor without the per-instruction stores
-            # (4-space indent), then without any pc store, so one patch table serves both generator modes.
-            for pat in (r"^    ctx->pc = 0x[0-9a-fA-F]+u;\n", r"^ *ctx->pc = 0x[0-9a-fA-F]+u;\n"):
-                lean = re.sub(pat, "", anchor, flags=re.M)
-                if lean != anchor:
-                    idx = text.find(lean)
-                    if idx >= 0:
-                        anchor = lean
-                        break
-        if idx < 0:
-            print(f"ERROR: anchor not found for patch {patch['marker']!r} in {patch['file']}", file=sys.stderr)
+        hits = 0
+        for path in candidates:
+            text = path.read_text()
+            if patch["marker"] in text:
+                hits += 1
+                print(f"skip (already patched): {path.name} ({patch['marker'].strip()!r})")
+                continue
+            anchor = patch["anchor"]
+            idx = text.find(anchor)
+            if idx < 0:
+                # [pcstores] the generator emits `ctx->pc = <addr>;` before an instruction only where the runtime
+                # can observe it (pc_stores_all = false). Retry the anchor without the per-instruction stores
+                # (4-space indent), then without any pc store, so one patch table serves both generator modes.
+                for pat in (r"^    ctx->pc = 0x[0-9a-fA-F]+u;\n", r"^ *ctx->pc = 0x[0-9a-fA-F]+u;\n"):
+                    lean = re.sub(pat, "", anchor, flags=re.M)
+                    if lean != anchor:
+                        idx = text.find(lean)
+                        if idx >= 0:
+                            anchor = lean
+                            break
+            if idx < 0:
+                continue
+            text = text[:idx] + patch["replacement"] + text[idx + len(anchor):]
+            path.write_text(text)
+            hits += 1
+            print(f"patched: {path.name} ({patch['marker'].strip()})")
+        if hits == 0:
+            print(f"ERROR: anchor not found for patch {patch['marker']!r} in {patch['file']} (+chunks)", file=sys.stderr)
             failures += 1
-            continue
-        text = text[:idx] + patch["replacement"] + text[idx + len(anchor):]
-        path.write_text(text)
-        print(f"patched: {patch['file']} ({patch['marker'].strip()})")
     return failures
 
 

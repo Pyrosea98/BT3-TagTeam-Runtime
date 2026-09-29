@@ -268,6 +268,39 @@ def register_mid_function_entries(lines: list, reg: str, addrs) -> tuple:
     return lines, reg
 
 
+# [buildtime] One 360k-line overlay TU took 5 minutes of a single core at -O3 and was the last thing
+# the build waited on. The functions are independent, so the module is installed as this many
+# files of roughly equal size: overlay_functions.cpp and overlay_functions_01.cpp .. _NN.cpp
+# (the CMake glob picks them all up, each stays out of the unity batches). The preamble
+# (includes) is repeated in each; apply_overlay_patches.py looks for its anchors in every chunk.
+OVERLAY_CHUNKS = 16
+
+
+def install_overlay_chunks(dst: Path, lines: list, install) -> None:
+    starts = [i for i, l in enumerate(lines) if l.startswith("// Function:")]
+    if not starts:
+        install(dst / "overlay_functions.cpp", "".join(lines))
+        return
+    preamble = "".join(lines[:starts[0]])
+    bodies = ["".join(lines[a:b]) for a, b in zip(starts, starts[1:] + [len(lines)])]
+    total = sum(b.count("\n") for b in bodies)
+    n = max(1, min(OVERLAY_CHUNKS, len(bodies)))
+    chunks, cur, acc = [], [], 0
+    for b in bodies:
+        cur.append(b); acc += b.count("\n")
+        if acc >= total / n and len(chunks) < n - 1:
+            chunks.append("".join(cur)); cur, acc = [], 0
+    if cur:
+        chunks.append("".join(cur))
+    names = ["overlay_functions.cpp"] + [f"overlay_functions_{k:02d}.cpp" for k in range(1, len(chunks))]
+    for stale in dst.glob("overlay_functions_*.cpp"):
+        if stale.name not in names:
+            stale.unlink()
+    for name, chunk in zip(names, chunks):
+        install(dst / name, preamble + chunk)
+    print(f"overlay module installed as {len(chunks)} files ({total} lines of functions)")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--recomp", required=True, type=Path)
@@ -332,7 +365,7 @@ def main() -> None:
 
     dst = args.runtime / "src" / "runner_overlay"
     dst.mkdir(parents=True, exist_ok=True)
-    install(dst / "overlay_functions.cpp", "".join(lines))
+    install_overlay_chunks(dst, lines, install)
     install(dst / "overlay_register.cpp", reg)
     install(dst / "f_gaps_extra.cpp", gaps_cpp)
     install(dst / "f_3376b8_extra.cpp", missing_cpp)

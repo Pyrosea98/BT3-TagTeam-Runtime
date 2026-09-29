@@ -1311,3 +1311,75 @@ add_custom_command(TARGET ps2EntryRunner POST_BUILD
     COMMENT "Staging fps60_sites.txt next to ps2EntryRunner")
 
 
+
+# ---------------------------------------------------------------------------------------------
+# [buildtime] Two measured costs of the generated code, and what removes them (from-scratch
+# ninja log, Linux, gcc -O3; the same shape on clang-cl):
+#
+#  1. register_functions.cpp is one constructor with ~92,000 table assignments. -O3 spent 338 s
+#     on that single function; -O0 takes 2 s and the code runs once at startup, so it is compiled
+#     unoptimised. Same for the overlay's and the IOP modules' register files.
+#  2. Every generated TU starts by parsing the same ~200,000 preprocessed lines of runtime
+#     headers: 0.8 s per TU against ~0.1 s of actual code, 7,808 TUs. A precompiled header cuts
+#     that to 0.12 s. It is scoped to the generated sources (src/runner, src/runner_overlay):
+#     main.cpp, the front end and the IOP modules keep their own includes.
+#  The overlay module itself is installed as 16 files by gen_overlay.py, so its 5 minutes of
+#  single-core -O3 spread over the cores instead of being the last thing the build waits on.
+# ---------------------------------------------------------------------------------------------
+option(PS2X_RUNNER_PCH "Generated runner sources: precompiled runtime headers + unoptimised table registrations (OFF = the old, slower build)" ON)
+
+if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set(_ps2x_noopt "/Od")
+elseif(MSVC)
+    set(_ps2x_noopt "/clang:-O0")
+else()
+    set(_ps2x_noopt "-O0")
+endif()
+file(GLOB _ps2x_register_srcs CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/runner/register_functions.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/runner_overlay/overlay_register.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/iop_native/*/register_functions.cpp")
+foreach(_f ${_ps2x_register_srcs})
+    if(NOT PS2X_RUNNER_PCH)
+        break()
+    endif()
+    set_source_files_properties("${_f}" PROPERTIES
+        COMPILE_OPTIONS "${_ps2x_noopt}"
+        SKIP_UNITY_BUILD_INCLUSION ON
+        SKIP_PRECOMPILE_HEADERS ON)   # MSVC will not reuse a PCH built at another optimisation level
+endforeach()
+
+if(PS2X_RUNNER_PCH)
+    target_precompile_headers(ps2EntryRunner PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_runtime.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_recompiled_functions.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_stubs.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_recompiled_stubs.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/ps2_syscalls.h")
+    get_target_property(_ps2x_runner_all_srcs ps2EntryRunner SOURCES)
+    foreach(_f ${_ps2x_runner_all_srcs})
+        get_filename_component(_abs "${_f}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        string(FIND "${_abs}" "/src/runner/" _in_runner)
+        string(FIND "${_abs}" "/src/runner_overlay/" _in_overlay)
+        get_filename_component(_name "${_abs}" NAME)
+        if((_in_runner EQUAL -1 AND _in_overlay EQUAL -1) OR _name STREQUAL "main.cpp")
+            set_source_files_properties("${_abs}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+        endif()
+    endforeach()
+endif()
+
+# [buildtime] Optimisation level for the generated runner code alone (the runtime library keeps
+# its own -O2). The generated code is straight-line register traffic where -O1 already does the
+# register allocation that matters: on the fight replay the guest frame time was 3.76 ms at -O1
+# against 4.14 ms at -O3 (docs/BUILD-TIME.md), and the from-scratch build went from 7.1 to 3.3
+# minutes. Empty = the build type's level (-O3), which is how it was before 2026-09-30.
+set(PS2X_RUNNER_OPT "-O1" CACHE STRING "Optimisation flag for the generated runner sources only (empty = build type default, i.e. -O3)")
+if(PS2X_RUNNER_OPT)
+    if(MSVC AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(STATUS "[buildtime] PS2X_RUNNER_OPT ignored for MSVC cl (the runner is /Od there)")
+    elseif(MSVC)
+        target_compile_options(ps2EntryRunner PRIVATE "/clang:${PS2X_RUNNER_OPT}")
+    else()
+        target_compile_options(ps2EntryRunner PRIVATE "${PS2X_RUNNER_OPT}")
+    endif()
+endif()
