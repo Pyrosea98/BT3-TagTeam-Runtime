@@ -545,6 +545,7 @@ static bool ps2xStderrIsTerminal() { return _isatty(_fileno(stderr)) != 0; }
 #else
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 static bool ps2xStderrIsTerminal() { return isatty(fileno(stderr)) != 0; }
 #endif
 extern "C" const char *ps2xExeDirC()
@@ -724,8 +725,12 @@ int main(int argc, char *argv[])
                                    && ::GetFileType(h) == FILE_TYPE_DISK
                                    && ::GetConsoleMode(h, &mode) == 0);
 #else
-                alreadyCaptured = !ps2xStderrIsTerminal() && ::fcntl(::fileno(stderr), F_GETFD) != -1
-                                  && ::isatty(::fileno(stderr)) == 0 && ::fileno(stderr) > 2;
+                {   // stderr IS fd 2, so "fileno(stderr) > 2" never held and every shell redirect ("> log 2>&1",
+                    // "| tee") still went to logs/bt3.log; a redirect is a regular file or a pipe on fd 2
+                    struct stat st {};
+                    alreadyCaptured = !ps2xStderrIsTerminal() && ::fstat(::fileno(stderr), &st) == 0
+                                      && (S_ISREG(st.st_mode) || S_ISFIFO(st.st_mode));
+                }
 #endif
                 if (!alreadyCaptured)
                 {
