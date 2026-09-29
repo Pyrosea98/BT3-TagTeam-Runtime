@@ -4072,28 +4072,36 @@ void PS2SettingsOverlay::drawGamepadTestArea(const std::array<uint8_t, 32> &btnD
                                   ImGui::ColorConvertFloat4ToU32(accent(0.6f + 0.4f * std::fabs(v))), 4.0f);
         };
         auto centredLabel = [&](float groupW, const char *lbl) {
-            const float tw = ImGui::CalcTextSize(lbl).x;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (groupW - tw) * 0.5f));
-            ImGui::TextColored(gold(0.9f), "%s", lbl);
+            // A fixed-width item with the text drawn centred inside it. Laying the text out as an ImGui item made
+            // the group as wide as the readout, and the readout's width moves with the digits and signs in a
+            // proportional font, so the triggers next to it shifted a few pixels whenever the right stick moved.
+            const ImVec2 ts = ImGui::CalcTextSize(lbl);
+            ImGui::Dummy(ImVec2(groupW, ts.y));
+            const ImVec2 mn = ImGui::GetItemRectMin();
+            dl->AddText(ImVec2(mn.x + (groupW - ts.x) * 0.5f, mn.y), ImGui::ColorConvertFloat4ToU32(gold(0.9f)), lbl);
         };
         char lbl[64];
-        const float trigGroupW = trW * 2.0f + gap;
-        const float rowW = stickBox * 2.0f + trigGroupW + colGap * 2.0f;
+        // Group widths from TEMPLATE strings, so a live readout never changes the row's layout.
+        const float stickGroupW = std::max(stickBox, ImGui::CalcTextSize("L +0.00 +0.00").x + 4.0f);
+        const float trigBarsW = trW * 2.0f + gap;
+        const float trigGroupW = std::max(trigBarsW, ImGui::CalcTextSize("LT 0.00 RT 0.00").x + 4.0f);
+        const float rowW = stickGroupW * 2.0f + trigGroupW + colGap * 2.0f;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (ImGui::GetContentRegionAvail().x - rowW) * 0.5f));
-        ImGui::BeginGroup();
-        drawStick(0, 1);   // LX, LY
-        snprintf(lbl, sizeof lbl, "L %+0.2f %+0.2f", axis[0], axis[1]);
-        centredLabel(stickBox, lbl);
-        ImGui::EndGroup();
+        auto stickGroup = [&](int axX, int axY, const char *tag) {
+            ImGui::BeginGroup();
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (stickGroupW - stickBox) * 0.5f);   // circle centred in the group
+            drawStick(axX, axY);
+            snprintf(lbl, sizeof lbl, "%s %+0.2f %+0.2f", tag, axis[axX], axis[axY]);
+            centredLabel(stickGroupW, lbl);
+            ImGui::EndGroup();
+        };
+        stickGroup(0, 1, "L");
         ImGui::SameLine(0.0f, colGap);
-        ImGui::BeginGroup();
-        drawStick(2, 3);   // RX, RY
-        snprintf(lbl, sizeof lbl, "R %+0.2f %+0.2f", axis[2], axis[3]);
-        centredLabel(stickBox, lbl);
-        ImGui::EndGroup();
+        stickGroup(2, 3, "R");
         ImGui::SameLine(0.0f, colGap);
         ImGui::BeginGroup();
         ImGui::Dummy(ImVec2(trigGroupW, (stickBox - trH) * 0.5f));   // bars sit level with the sticks' middle
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (trigGroupW - trigBarsW) * 0.5f);   // bars centred in the group
         drawTrigger(0);   // LT
         ImGui::SameLine(0.0f, gap);
         drawTrigger(1);   // RT
