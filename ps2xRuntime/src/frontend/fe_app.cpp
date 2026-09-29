@@ -331,14 +331,20 @@ namespace frontend
         }
         std::fprintf(stderr, "[fe] front-end window %dx%d\n", settings.feWidth, settings.feHeight);
 
-        ScanResult scan = scanDeploy(exeDir);
-        if (scan.elf.empty() && !cfg.defaultElf.empty())
-        {
-            const std::filesystem::path p(cfg.defaultElf);
-            std::error_code ec;
-            if (std::filesystem::is_regular_file(p, ec))
-                scan.elf = std::filesystem::absolute(p, ec).string();
-        }
+        // [rescan] the scan is redone when the install wizard closes after installing: it used to run
+        // once here, so PLAY stayed greyed after an install until the launcher was reopened
+        ScanResult scan;
+        const auto rescan = [&]() {
+            scan = scanDeploy(exeDir);
+            if (scan.elf.empty() && !cfg.defaultElf.empty())
+            {
+                const std::filesystem::path p(cfg.defaultElf);
+                std::error_code ec;
+                if (std::filesystem::is_regular_file(p, ec))
+                    scan.elf = std::filesystem::absolute(p, ec).string();
+            }
+        };
+        rescan();
 
         applyStyle();
         if (win.dpiScale() > 1.0f)
@@ -619,8 +625,22 @@ namespace frontend
                         }
                         if (wizard->closing())
                         {
+                            const bool installed = wizard->installed();
+                            const bool packOnly = wizard->packMode();
                             wizard.reset();
                             showWizard = false;
+                            if (installed)
+                            {   // [rescan] pick up what the wizard just wrote, so PLAY and the Status page are live
+                                rescan();
+                                pageCtx.bootElf = scan.elf;
+                                std::fprintf(stderr, "[fe] rescanned after install: elf=%s afs=%u\n",
+                                             scan.elf.empty() ? "(none)" : scan.elf.c_str(), scan.afsCount);
+                                // A game install lands on the menu, where PLAY is; a texture-pack install stays on
+                                // the page it was started from.
+                                if (!packOnly && !scan.elf.empty() && screen != Screen::Menu &&
+                                    transition == Transition::None && fader.start(1.0f, 0.16f, 0.20f))
+                                    transition = Transition::BackToMenu;   // the swap runs at full darkness, like BACK
+                            }
                         }
                     }
                     else
