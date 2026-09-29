@@ -144,7 +144,7 @@ namespace seamvk
             bool dumpRt = false;                      // this frame: read decoded textures back and write them as PPM
             std::vector<std::pair<Vulkan::ImageHandle, seamgs::RtDecode>> rtDumps;
             std::vector<Vulkan::ImageHandle> tex;
-            uint32_t w = 0, h = 0, scale = 1;
+            uint32_t w = 0, h = 0, scale = 1, oscale = 1;   // output image size, render scale, output scale (the image is CRTC size x oscale)
             bool failed = false;
             double msUpload = 0, msLoop = 0;
             uint64_t packBcUploads = 0;   // [packbc]
@@ -341,7 +341,7 @@ namespace seamvk
                 bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
                 bi.domain = Vulkan::BufferDomain::CachedHost;
                 g_gpu.readback = dev.create_buffer(bi);
-                g_gpu.w = w; g_gpu.h = h; g_gpu.scale = sc;
+                g_gpu.w = w; g_gpu.h = h; g_gpu.scale = sc; g_gpu.oscale = osc ? osc : 1u;
                 std::fprintf(stderr, "[seamvk] native output %ux%u (scale %u, output scale %u), targets %ux%u\n", w, h, sc, osc, kLogicalW * sc, kLogicalH * sc);
             }
             return g_gpu.out && g_gpu.readback && g_gpu.white;
@@ -1289,7 +1289,7 @@ namespace seamvk
         if (!on()) return;
         if (!ensureOwnDevice()) return;
         const PrivRegs pr = composePriv();
-        ps2x_wshud::noteSwap(g_gpu.scale ? g_gpu.h / g_gpu.scale : 448u);   // [wshud] the walker's per-frame reset (scanout height, 1x domain)
+        ps2x_wshud::noteSwap(g_gpu.h ? g_gpu.h / g_gpu.oscale : 448u);   // [wshud] the walker's per-frame reset (scanout height in the 1x domain: the output image is CRTC size x OUTPUT scale, not render scale -- dividing by the render scale gave 298 at scale 3 and switched the HUD squeeze off)
         renderFrame(g_own->dev, pr);
         g_own->dev.next_frame_context();   // fences and command buffers recycle per context
     }

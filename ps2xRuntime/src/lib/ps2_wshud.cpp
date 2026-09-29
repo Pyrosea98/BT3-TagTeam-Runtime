@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <mutex>
 #include <vector>
 
@@ -1165,6 +1166,11 @@ float rawInv(uint32_t fbw)
     const uint32_t dw = g_presentW.load(std::memory_order_relaxed), dh = g_presentH.load(std::memory_order_relaxed);
     const float fw = (fbw * 64u >= 320u && fbw * 64u <= 1024u) ? float(fbw * 64u) : 512.0f;
     const float fh = s.baseH ? float(s.baseH) : 448.0f;
+    {   // PS2X_WSHUD_LOG=1: the squeeze inputs, once a second
+        static const bool s_log = [](){ const char *v = std::getenv("PS2X_WSHUD_LOG"); return v && v[0] == '1'; }();
+        static double s_t = 0; const double now = (double)clock() / CLOCKS_PER_SEC;
+        if (s_log && now - s_t > 1.0) { s_t = now; std::fprintf(stderr, "[wshud] rawInv: presentInv %.3f present %ux%u baseH %u fbw %u\n", g_ps2xWsHudInv, dw, dh, s.baseH, fbw); }
+    }
     if (!(g_ps2xWsHudInv < 0.999f && dw && dh)) return 1.0f;
     float raw = (float(dh) / fh * s_pixk) / (float(dw) / fw);
     if (raw < 0.4f) raw = 0.4f; if (raw > 1.0f) raw = 1.0f;
