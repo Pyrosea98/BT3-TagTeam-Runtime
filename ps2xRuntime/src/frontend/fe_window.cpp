@@ -3,6 +3,7 @@
 #include "lib/ps2_host_sdl.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"   // [nowindowing] ImGuiContext::ConfigNavWindowing*
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_sdl2.h"
 
@@ -155,6 +156,15 @@ namespace frontend
         io.ConfigErrorRecoveryEnableDebugLog = imguiErrors;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+        // [nowindowing] ImGui's window switcher (Ctrl+Tab, or holding Square / X on a pad) dims the screen and lists
+        // the windows to pick from. This launcher has one window and it has no title, so the switcher was a white
+        // flash with "untitled" in the middle whenever a face button was held on the Pads page. Off on both inputs.
+        {
+            ImGuiContext *g = ImGui::GetCurrentContext();
+            g->ConfigNavWindowingWithGamepad = false;
+            g->ConfigNavWindowingKeyNext = 0;
+            g->ConfigNavWindowingKeyPrev = 0;
+        }
 
         if (!ImGui_ImplSDL2_InitForOpenGL(m_window, m_gl))
         {
