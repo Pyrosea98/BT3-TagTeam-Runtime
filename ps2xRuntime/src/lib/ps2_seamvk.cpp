@@ -10,6 +10,7 @@
 // read back and handed to the present thread.
 #include "runtime/ps2_seamvk.h"
 #include "runtime/ps2_gs_gpu_renderer.h"   // [dofoff] GsGpuRenderer::dofBlurEnabled
+#include "runtime/ps2x_memstat.h"   // [loglevel] ps2xLogLevel
 #include "runtime/ps2_gs_pgs.h"   // [targetdump] the backend's view of a target
 #include "runtime/ps2_wshud.h"   // [wshud]
 #include "seamvk/seamgs_internal.h"
@@ -2032,7 +2033,7 @@ namespace seamvk
         }
         freeTextures(f);
 
-        if ((++g_gpu.frames % 300u) == 0u)
+        if ((++g_gpu.frames % 300u) == 0u && ps2xLogLevel() >= 1)   // [loglevel] the periodic stats: Balanced and up
         {
             std::fprintf(stderr, "[seamvk] %llu frames: %.0f draws, %.0f verts, %.1f passes, %.1f tex uploads, %.1f DATE draws (%.1f on host meshes), %.1f feedback draws skipped, %.1f tex missing, %.1f tex size mismatch, %.1f rt decodes (%.1f stale), %.1f alias16 draws, %.1f native steps, %.1f VRAM pages up, %.1f batches of %.0f chunks, %.1f aliased-format draws skipped per frame; %.1f decodes hoisted (%llu free images, %llu MB); %zu targets %zu depths\n",
                          (unsigned long long)g_gpu.frames, double(g_gpu.draws) / 300.0, double(g_gpu.verts) / 300.0, double(g_gpu.passes) / 300.0,

@@ -664,13 +664,14 @@ namespace frontend
 
         static const char *const kLevels[] = {"OFF", "Balanced", "Detailed", "Debug"};
         static const char *const kDescriptions[4] = {
-            "All silent. No logs are written and the game runs with no extra cost.",
-            "Profile + mclog + scheduler events: stalls at boot, save storms and pacing hitches. "
-            "Recommended for playing.",
-            "Adds per-frame GPU draws, memory-card traffic, audio voice state and pad events. "
-            "For hunting a specific failure.",
-            "Everything the runtime can emit (per-opcode recompiler, VU1 JIT, walks of the game "
-            "heap and raw VRAM dumps). Very slow: failure diagnosis only."
+            "All silent. No log file, none of the runtime's lines, no extra cost.",
+            "The per-second lines (fps, renderer and memory stats), state changes, warnings, profile, "
+            "mclog and scheduler events. Recommended for playing: a few lines a second.",
+            "Adds the per-frame game state, scheduler state and sound-block lines, GPU draws, memory-card "
+            "traffic, audio voice state and pad events. For hunting a specific failure.",
+            "Everything the runtime can emit: every IOP call and RPC (about twenty lines per frame), "
+            "per-opcode recompiler, VU1 JIT, walks of the game heap and raw VRAM dumps. Very slow: "
+            "failure diagnosis only."
         };
         static const char *const kLogNote =
             "Logs go to logs/bt3.log next to the executable. The level matches the in-game overlay "

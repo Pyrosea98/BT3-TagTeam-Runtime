@@ -2547,7 +2547,7 @@ void PS2Runtime::iopImport(uint8_t *rdram, R5900Context *ctx, const char *module
                 }
                 if (callee)
                 {
-                    std::fprintf(stderr, "[iop-xcall] %s#%u -> %s 0x%08x\n",
+                    if (ps2xLogLevel() >= 3) std::fprintf(stderr, "[iop-xcall] %s#%u -> %s 0x%08x\n",
                                  mod.c_str(), ordinal, target.exportName.c_str(), fptr);
                     static const bool s_resolveOnly = std::getenv("PS2X_IOP_XCALL_RESOLVE_ONLY") != nullptr;
                     if (s_resolveOnly)
@@ -2631,7 +2631,7 @@ void PS2Runtime::iopImport(uint8_t *rdram, R5900Context *ctx, const char *module
             t.id = id; t.entry = entry; t.gp = g_iopCurGp; t.base = g_iopCurBase;
             t.moduleId = g_iopCurModule; t.priority = static_cast<int>(prio);
             iopThreads()[id] = t;
-            std::fprintf(stderr, "[iop-thread] create id=%u entry=0x%08x gp=0x%08x mod=%u\n",
+            if (ps2xLogLevel() >= 3) std::fprintf(stderr, "[iop-thread] create id=%u entry=0x%08x gp=0x%08x mod=%u\n",
                          id, entry, g_iopCurGp, g_iopCurModule);
             ret = id;
         }
@@ -2648,7 +2648,7 @@ void PS2Runtime::iopImport(uint8_t *rdram, R5900Context *ctx, const char *module
                 t.ctx.r[28] = _mm_cvtsi32_si128(t.gp);
                 t.ctx.r[4] = _mm_cvtsi32_si128(a1);
                 t.status = 1;
-                std::fprintf(stderr, "[iop-thread] start id=%u entry=0x%08x arg=0x%x\n", a0, t.entry, a1);
+                if (ps2xLogLevel() >= 3) std::fprintf(stderr, "[iop-thread] start id=%u entry=0x%08x arg=0x%x\n", a0, t.entry, a1);
             }
         }
         else if (ordinal == 8) throw IopYield{1};                   // ExitThread
@@ -3113,7 +3113,7 @@ bool ps2xInvokeIopRpc(PS2Runtime *rt, uint32_t sid, uint32_t command,
     if (sid >= 0x80001300u && sid < 0x80001400u)
     {
         std::lock_guard<std::mutex> lk(iopTableMx());
-        std::fprintf(stderr, "[iop-xrpc-probe] sid=0x%08x cmd=0x%x send=%u recv=%u servers=%zu found=%d\n",
+        if (ps2xLogLevel() >= 3) std::fprintf(stderr, "[iop-xrpc-probe] sid=0x%08x cmd=0x%x send=%u recv=%u servers=%zu found=%d\n",
                      sid, command, sendSize, recvSize, sifRpcServers().size(),
                      (int)sifRpcServers().count(sid));
         // [rumble] PS2X_PADRPC_PROBE=1: the pad transaction's send buffer whenever it changes, per sid (the
@@ -3211,7 +3211,7 @@ bool ps2xInvokeIopRpc(PS2Runtime *rt, uint32_t sid, uint32_t command,
     ctx.r[5] = _mm_cvtsi32_si128(kScratch);
     ctx.r[6] = _mm_cvtsi32_si128(n);
 
-    std::fprintf(stderr, "[iop-xrpc] sid=0x%08x cmd=0x%x -> handler 0x%08x size=%u\n",
+    if (ps2xLogLevel() >= 3) std::fprintf(stderr, "[iop-xrpc] sid=0x%08x cmd=0x%x -> handler 0x%08x size=%u\n",
                  sid, command, svc.handler, n);
     try { fn(iopBase + svc.base, &ctx, rt); }
     catch (...) { /* the handler unwound (yield/exit) */ }
@@ -7809,7 +7809,7 @@ void PS2Runtime::run()
                         std::memcpy(&f14, rd + (((p & 0x1FFFFFFFu) + 0x14u) & PS2_RAM_MASK), 4);
                         std::memcpy(&fa8, rd + (((p & 0x1FFFFFFFu) + 0xa8u) & PS2_RAM_MASK), 4);
                         std::memcpy(&fbc, rd + (((p & 0x1FFFFFFFu) + 0xbcu) & PS2_RAM_MASK), 4);
-                        std::cerr << "[popup] ctx=0x" << std::hex << p << " +0x14=0x" << f14
+                        if (ps2xLogLevel() >= 2) std::cerr << "[popup] ctx=0x" << std::hex << p << " +0x14=0x" << f14
                                   << " +0xa8=0x" << fa8 << " +0xbc=0x" << fbc << std::dec << std::endl;
                     }
                 }
@@ -7818,16 +7818,16 @@ void PS2Runtime::run()
                     // status line during loading (bt3state 0x2d) so a hung state can be diffed against a healthy one.
                     const uint8_t *rd2 = m_memory.getRDRAM();
                     auto r32 = [&](uint32_t a) -> uint32_t { uint32_t v = 0; std::memcpy(&v, rd2 + (a & PS2_RAM_MASK), 4); return v; };
-                    ps2xFixupRingDump();   // [fixupring] last 16 loader fixup calls, only when new ones arrived
+                    if (ps2xLogLevel() >= 2) ps2xFixupRingDump();   // [fixupring] last 16 loader fixup calls, only when new ones arrived
                     std::ostringstream sb; sb << "[sndblk] 0x2c9350:";
                     for (uint32_t o = 0; o < 0x40u; o += 4u) sb << ' ' << std::hex << std::setw(8) << std::setfill('0') << r32(0x2c9350u + o);
                     const uint32_t sub8 = r32(0x2c9358u), sub4 = r32(0x2c9354u);
                     if (sub8 >= 0x100000u && sub8 < 0x2000000u) { sb << " | +8@" << sub8 << ":"; for (uint32_t o = 0; o < 0x20u; o += 4u) sb << ' ' << std::setw(8) << r32(sub8 + o); }
                     if (sub4 >= 0x100000u && sub4 < 0x2000000u) { sb << " | +4@" << sub4 << ":"; for (uint32_t o = 0; o < 0x10u; o += 4u) sb << ' ' << std::setw(8) << r32(sub4 + o); }
                     { sb << " | slot3@2deb70:"; for (uint32_t o = 0; o < 0x40u; o += 4u) sb << ' ' << std::setw(8) << r32(0x2deb70u + o); }   // [sndblk] the sub-object slot the healthy init returns
-                    std::cerr << sb.str() << std::dec << std::endl;
+                    if (ps2xLogLevel() >= 2) std::cerr << sb.str() << std::dec << std::endl;
                 }
-                std::cerr << "[status] pc=0x" << std::hex << m_debugPc.load(std::memory_order_relaxed)
+                if (ps2xLogLevel() >= 2) std::cerr << "[status] pc=0x" << std::hex << m_debugPc.load(std::memory_order_relaxed)
                           << " ra=0x" << m_debugRa.load(std::memory_order_relaxed) << std::dec
                           << " dma=" << m_memory.dmaStartCount()
                           << " gif=" << m_memory.gifCopyCount()
@@ -7927,7 +7927,7 @@ void PS2Runtime::run()
                     default: break;
                     }
 
-                    std::cerr << "[hstate] phase=" << phase << " sub=" << sub
+                    if (ps2xLogLevel() >= 2) std::cerr << "[hstate] phase=" << phase << " sub=" << sub
                               << " raw=" << hex32(bt3State) << std::endl;
                 }
                 // ===================== [fightprobe] Match-type diagnostic =====================
@@ -8109,7 +8109,7 @@ void PS2Runtime::run()
                     }
                     std::cerr << std::endl;
                 }
-                if (m_schedEnabled)
+                if (m_schedEnabled && ps2xLogLevel() >= 2)   // [loglevel] per-frame scheduler state: Detailed and up
                 {
                     std::lock_guard<std::mutex> lk(m_schedMutex);
                     std::cerr << "[sched-state] current=" << m_schedCurrent << " |";
@@ -9314,6 +9314,7 @@ void PS2Runtime::run()
                 // the whole always-on perf readout, and it was reaching nobody.
                 {
                     std::ostringstream o;
+                    if (ps2xLogLevel() >= 1)   // [loglevel] OFF means silent
                     o << "[fps] GAME=" << (double)((gameFrames - s_lastGameFrames) / dt)
                       << " gframe=" << g_bt3FrameCount.load(std::memory_order_relaxed)   // [dumpkey] the game frame at this line: maps a replay's shots/dumps to the game's own counter
                       << " guest_ms=" << guestMs
@@ -9367,7 +9368,7 @@ void PS2Runtime::run()
                                                    << " mvpskip/s=" << (uint64_t)((m - s_m) / dt);
                            s_w = w; s_r = r; s_m = m; return v.str(); }();
                     const std::string line = o.str();
-                    std::fprintf(stderr, "%s\n", line.c_str());
+                    if (!line.empty()) std::fprintf(stderr, "%s\n", line.c_str());   // [loglevel] empty at OFF
                 }
                 s_lastGlCalls = glc; s_lastGlFlush = glf; s_lastTdc = tdc; s_lastUp = upc; s_lastVc = vcc; s_lastUct = uct; s_lastUcc = ucc; s_lastFlushNs = g_rlglFlushNs;
                 if (gprof::g_on)

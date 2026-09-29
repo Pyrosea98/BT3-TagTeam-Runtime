@@ -6,6 +6,7 @@
 #include "runtime/ps2_netplay.h"   // [netplay]
 #include "runtime/ps2x_achieve.h"  // [ach]
 #include "runtime/ps2_gs_pgs.h"   // [pgsink] backend ink width
+#include "runtime/ps2x_memstat.h"   // [loglevel] ps2xLogLevel
 
 // [rendererfx] The renderer that is drawing NOW (4 native, 2 paraLLEl-GS, 0 OpenGL), for hiding the switches a
 // renderer does not read. The settings' renderer is what the NEXT boot uses and can differ (PS2X_SEAMVK=1 over a
@@ -382,7 +383,8 @@ static void pushHudLayout(const PS2SettingsOverlay::Settings &st)
     g_wsHudLayout.store(st.hudLayout, std::memory_order_relaxed);
 }
 std::string PS2SettingsOverlay::s_configDir;
-int PS2SettingsOverlay::s_logLevel = 1;        // [loglevel] default: profile+mclog+sched (see header)
+int PS2SettingsOverlay::s_logLevel = 1;
+int ps2xLogLevel() { return PS2SettingsOverlay::getLogLevel(); }   // [loglevel] see runtime/ps2x_memstat.h        // [loglevel] default: profile+mclog+sched (see header)
 int PS2SettingsOverlay::s_startupLogLevel = 1; // [loglevel] captured by preloadSettings for main()
 
 void PS2SettingsOverlay::setConfigDirectory(const std::string &dir)
@@ -938,6 +940,7 @@ void PS2SettingsOverlay::syncFromRuntime()
 void PS2SettingsOverlay::applySettings()
 {
     ps2Set60Fps(m_settings.fps60, nullptr);   // [fps60]
+    s_logLevel = m_settings.logLevel;   // [loglevel] a live change follows into the runtime's print gates
     // [ach] Both switches are applied here, not only where they are drawn, so a saved value takes
     // effect at boot without the player having to open the tab first. applySettings() runs on the
     // load path, so the tracker is armed before the first frame is evaluated.
