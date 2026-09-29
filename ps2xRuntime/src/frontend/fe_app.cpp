@@ -240,7 +240,7 @@ namespace
         ImGui::PopStyleColor(4);
     }
 
-    void drawMenu(std::uint32_t bgTex, const ImVec2 &size, bool canPlay, bool &playAsked,
+    void drawMenu(std::uint32_t bgTex, int bgW, int bgH, const ImVec2 &size, bool canPlay, bool &playAsked,
                   bool &settingsAsked, bool &navFocus)
     {
         // The bar owns the bottom strip; the artwork is laid out in what is left above it, so
@@ -248,13 +248,20 @@ namespace
         const float barH = 76.0f;
         const ImVec2 artSize(size.x, size.y - barH);
 
-        if (bgTex)
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        if (bgTex && bgW > 0 && bgH > 0)
         {
-            ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
-            ImGui::Image(ImTextureRef((ImTextureID)(intptr_t)bgTex), artSize);
+            // [bgaspect] The art (1920x620) keeps its own aspect ratio: scaled to cover the area and centred, so a
+            // window narrower than 3:1 crops the sides evenly instead of squashing the logo and Goku (it used to be
+            // stretched to the area outright).
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
+            const float scale = std::max(artSize.x / (float)bgW, artSize.y / (float)bgH);
+            const ImVec2 drawn((float)bgW * scale, (float)bgH * scale);
+            const ImVec2 uv0(std::max(0.0f, (drawn.x - artSize.x) * 0.5f / drawn.x), std::max(0.0f, (drawn.y - artSize.y) * 0.5f / drawn.y));
+            const ImVec2 uv1(1.0f - uv0.x, 1.0f - uv0.y);
+            dl->AddImage(ImTextureRef((ImTextureID)(intptr_t)bgTex), origin, ImVec2(origin.x + artSize.x, origin.y + artSize.y), uv0, uv1);
         }
 
-        ImDrawList *dl = ImGui::GetWindowDrawList();
         const ImVec2 barTop(0.0f, artSize.y);
         dl->AddRectFilled(barTop, ImVec2(size.x, size.y), IM_COL32(0, 0, 0, 255));
         dl->AddLine(barTop, ImVec2(size.x, barTop.y), IM_COL32(255, 255, 255, 28), 1.0f);
@@ -542,7 +549,7 @@ namespace frontend
                 {
                     bool settingsAsked = false;
                     bool playAsked = false;
-                    drawMenu(bgTex, ImGui::GetContentRegionAvail(), canPlay, playAsked,
+                    drawMenu(bgTex, bgW, bgH, ImGui::GetContentRegionAvail(), canPlay, playAsked,
                               settingsAsked, navFocusWanted);
                     if (transition == Transition::None)
                     {
