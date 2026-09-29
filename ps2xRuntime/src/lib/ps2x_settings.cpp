@@ -87,6 +87,7 @@ namespace
         s.monitor = clampi(s.monitor, 0, 16);
         s.device = clampi(s.device, 0, 100);
         s.deadzone = clampf(s.deadzone, 0.0f, 0.5f);
+        s.rumbleStrength = clampi(s.rumbleStrength, 0, 200);
         s.logLevel = clampi(s.logLevel, 0, 3);
         s.buttonLayout = clampi(s.buttonLayout, 0, 1);
         s.hudLayout = clampi(s.hudLayout, 0, 2);
@@ -189,6 +190,8 @@ namespace
 
         s.device = doc.getI("controllers.device", s.device);
         s.deadzone = static_cast<float>(doc.getD("controllers.deadzone", s.deadzone));
+        s.rumble = doc.getB("controllers.rumble", s.rumble);
+        s.rumbleStrength = clampi(doc.getI("controllers.rumble_strength", s.rumbleStrength), 0, 200);
         s.overlayEnabled = doc.getB("controllers.overlay_enabled", s.overlayEnabled);
         loadHotkeys(s, doc);
 
@@ -291,6 +294,8 @@ namespace
             {
                 const bool b = asBool();
                 if (key == "deadzone") s.deadzone = asFloat(s.deadzone);
+                else if (key == "rumble") s.rumble = b;
+                else if (key == "rumble_strength") s.rumbleStrength = asInt(s.rumbleStrength);
                 else if (key == "device") s.device = asInt(s.device);
                 else if (key == "overlay_enabled") s.overlayEnabled = b;
                 else if (key == "overlay_pad_btns") s.overlayPadBtns = val;
@@ -337,7 +342,7 @@ namespace ps2x_settings
                a.introVideo == b.introVideo &&
                a.buttonLayout == b.buttonLayout && a.fps60 == b.fps60 && a.showPerf == b.showPerf &&
                a.hudOffL == b.hudOffL && a.hudOffC == b.hudOffC && a.hudOffR == b.hudOffR &&
-               a.device == b.device && a.deadzone == b.deadzone &&
+               a.device == b.device && a.deadzone == b.deadzone && a.rumble == b.rumble && a.rumbleStrength == b.rumbleStrength &&
                a.overlayEnabled == b.overlayEnabled && a.overlayPadBtns == b.overlayPadBtns &&
                a.overlayKeys == b.overlayKeys && a.logLevel == b.logLevel &&
                a.dumpAudio == b.dumpAudio && a.dumpVideo == b.dumpVideo &&
@@ -474,6 +479,8 @@ namespace ps2x_settings
         os << "[controllers]\n";
         os << "device = " << fmtInt(s.device) << "\n";
         os << "deadzone = " << fmtDbl(s.deadzone) << "\n";
+        os << "rumble = " << fmtBool(s.rumble) << "\n";
+        os << "rumble_strength = " << fmtInt(s.rumbleStrength) << "\n";
         os << "overlay_enabled = " << fmtBool(s.overlayEnabled) << "\n\n";
 
         os << "[controllers.hotkey]\n";
@@ -553,6 +560,8 @@ namespace ps2x_settings
         out.music = live.music;
         out.sfx = live.sfx;
         out.inkWidth = live.inkWidth;
+        out.rumble = live.rumble;
+        out.rumbleStrength = live.rumbleStrength;
         out.inkColor = live.inkColor;
             out.fullscreen = live.fullscreen;
         out.windowMode = live.windowMode;

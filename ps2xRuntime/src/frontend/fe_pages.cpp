@@ -514,14 +514,14 @@ namespace frontend
         pad(dpx, top + u, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_LEFT_FACE_LEFT), "<");
         pad(dpx + u * 2.0f, top + u, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_LEFT_FACE_RIGHT), ">");
         pad(dpx + u, top + u * 2.0f, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_LEFT_FACE_DOWN), "v");
-        dl->AddText(ImGui::GetFont(), f2 * 0.8f, ImVec2(org.x + dpx, org.y + capY), dim, "CRUCETA");
+        dl->AddText(ImGui::GetFont(), f2 * 0.8f, ImVec2(org.x + dpx, org.y + capY), dim, "D-PAD");
 
         // Face buttons in a diamond, PS2 names.
         const float fx = m + inner * 0.20f;
         pad(fx + u, top, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_FACE_UP), "TRI");
-        pad(fx, top + u, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_FACE_LEFT), "CUAD");
+        pad(fx, top + u, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_FACE_LEFT), "SQR");
         pad(fx + u * 2.0f, top + u, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT), "CIR");
-        pad(fx + u, top + u * 2.0f, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_FACE_DOWN), "CRU");
+        pad(fx + u, top + u * 2.0f, u, u, ps2x_pad::buttonDown(slot, GAMEPAD_BUTTON_RIGHT_FACE_DOWN), "CRS");
         dl->AddText(ImGui::GetFont(), f2 * 0.8f, ImVec2(org.x + fx, org.y + capY), dim, "BUTTONS");
 
         // Analogs: same 3u square, live dot, caption and value underneath.
@@ -638,6 +638,12 @@ namespace frontend
             }
             fe::pathRow("Profile", pads.playerConfigPath((size_t)player).c_str());
             fe::sliderRow("Stick deadzone", &s.deadzone, 0.0f, 0.5f, "%.2f");
+            fe::toggleSwitch("Vibration", &s.rumble);   // [rumble]
+            if (s.rumble)
+            {
+                fe::intSliderRow("Vibration strength", &s.rumbleStrength, 0, 200, "%d%%");
+                fe::hint("100% = the game's own strengths. The game's Options > Controller > Vibration must be on too.");
+            }
         }
 
         fe::sectionHeader("TEST PAD");

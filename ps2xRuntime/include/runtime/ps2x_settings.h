@@ -88,6 +88,10 @@ namespace ps2x_settings
 
         int device = 0;
         float deadzone = 0.15f;
+        // [rumble] Controller vibration: the game's own Vibration option decides WHETHER it asks, these decide
+        // whether the host pad answers and how hard (strength in %, 100 = the game's values as they are).
+        bool rumble = true;
+        int rumbleStrength = 100;
         bool overlayEnabled = true;
         std::string overlayPadBtns = "13,15";
         std::string overlayKeys = "340,258";

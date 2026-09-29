@@ -479,6 +479,7 @@ bool PS2SettingsOverlay::Settings::operator==(const Settings &o) const
            skipStaleVram == o.skipStaleVram &&
            renderScale == o.renderScale &&
            deadzone == o.deadzone &&
+           rumble == o.rumble && rumbleStrength == o.rumbleStrength &&
            fullscreen == o.fullscreen &&
            widescreen == o.widescreen &&
            outline == o.outline &&
@@ -652,6 +653,8 @@ void PS2SettingsOverlay::loadSettings()
     m_settings.hudOffR = doc.getI("video.hud.offset_right", m_settings.hudOffR);
 
     m_settings.deadzone = std::clamp((float)doc.getD("controllers.deadzone", m_settings.deadzone), 0.0f, 0.5f);
+    m_settings.rumble = doc.getB("controllers.rumble", m_settings.rumble);
+    m_settings.rumbleStrength = std::clamp(doc.getI("controllers.rumble_strength", m_settings.rumbleStrength), 0, 200);
     m_settings.overlayEnabled = doc.getB("controllers.overlay_enabled", m_settings.overlayEnabled);
     m_selectedDevice = std::clamp(doc.getI("controllers.device", m_selectedDevice), 0, 100);
     {
@@ -861,6 +864,8 @@ void PS2SettingsOverlay::saveSettings() const
     live.hudOffR = m_settings.hudOffR;
     live.device = deviceIndexForPlayer(0);   // [paddev] P1 (the front-end has one picker)
     live.deadzone = m_settings.deadzone;
+    live.rumble = m_settings.rumble;
+    live.rumbleStrength = m_settings.rumbleStrength;
     live.overlayEnabled = m_settings.overlayEnabled;
     live.overlayPadBtns = ps2x_settings::formatIntCsv(m_settings.overlayPadBtns);
     live.overlayKeys = ps2x_settings::formatIntCsv(m_settings.overlayKeys);
@@ -967,6 +972,11 @@ void PS2SettingsOverlay::applySettings()
     { extern void ps2xSetForceBilinear(bool); ps2xSetForceBilinear(m_settings.forceBilinear); }
     pushHudLayout(m_settings);
     applyDeadzone();
+    {   // [rumble] the hook in game_overrides.cpp reads these every frame
+        extern std::atomic<bool> g_ps2xRumbleOn; extern std::atomic<int> g_ps2xRumbleStrength;
+        g_ps2xRumbleOn.store(m_settings.rumble, std::memory_order_relaxed);
+        g_ps2xRumbleStrength.store(m_settings.rumbleStrength, std::memory_order_relaxed);
+    }
 
     // [paddev] The Device combo is applied per player from the Controllers tab (applyDeviceToPlayer); it used
     // to be applied to EVERY player here -- picking a pad for P2 rebound P1 as well, and each boot re-applied

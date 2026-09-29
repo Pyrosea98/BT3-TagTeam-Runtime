@@ -50,6 +50,8 @@ public:
         bool skipStaleVram = true;
         int renderScale = 1; // built-in internal resolution multiplier derived from the window size: 720p=1x, 1080p=2x, 1440p+=3x
         float deadzone = 0.15f;
+        bool rumble = true;          // [rumble] launcher Pads page: controller vibration on/off
+        int rumbleStrength = 100;    // [rumble] in %, 100 = the game's own strengths
         bool fullscreen = false;  // [defaults-sync] do not force fullscreen on first launch (rig + user surprise); one toggle away in the overlay
         bool widescreen = false;
         bool outline = false;

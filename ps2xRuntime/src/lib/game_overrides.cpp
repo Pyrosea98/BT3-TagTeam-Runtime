@@ -268,6 +268,10 @@ namespace
     }
 }
 
+// [rumble] the launcher setting as PS2SettingsOverlay::applySettings pushes it; read by bt3PadSendRumble every frame
+std::atomic<bool> g_ps2xRumbleOn{true};
+std::atomic<int> g_ps2xRumbleStrength{100};
+
 namespace ps2_game_overrides
 {
     AutoRegister::AutoRegister(const Descriptor &descriptor)
@@ -960,8 +964,12 @@ extern "C" int ps2xNetServeSwapRead(unsigned long long slotId, unsigned long lon
     void bt3PadSendRumble(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // FUN_00122f10
     {
         (void)runtime;
-        static const bool s_on = [](){ const char *v = std::getenv("PS2X_RUMBLE"); return !(v && v[0] == '0'); }();
-        static const float s_scale = [](){ const char *v = std::getenv("PS2X_RUMBLE_SCALE"); const float f = v && v[0] ? (float)std::atof(v) : 1.0f; return f < 0.0f ? 0.0f : f > 4.0f ? 4.0f : f; }();
+        // the launcher's Pads page (settings.toml [controllers] rumble / rumble_strength) unless the env says otherwise
+        static const int s_envOn = [](){ const char *v = std::getenv("PS2X_RUMBLE"); return v && v[0] ? (v[0] == '0' ? 0 : 1) : -1; }();
+        static const float s_envScale = [](){ const char *v = std::getenv("PS2X_RUMBLE_SCALE"); return v && v[0] ? (float)std::atof(v) : -1.0f; }();
+        const bool s_on = s_envOn >= 0 ? s_envOn == 1 : ::g_ps2xRumbleOn.load(std::memory_order_relaxed);
+        float s_scale = s_envScale >= 0.0f ? s_envScale : ::g_ps2xRumbleStrength.load(std::memory_order_relaxed) / 100.0f;
+        if (s_scale > 4.0f) s_scale = 4.0f;
         static const bool s_log = [](){ const char *v = std::getenv("PS2X_RUMBLE_LOG"); return v && v[0] == '1'; }();
         const uint32_t player = getRegU32(ctx, 4) & 3u;
         const uint32_t rec = 0x333800u + player * 0x1C0u;
