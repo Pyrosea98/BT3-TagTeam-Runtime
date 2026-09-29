@@ -2615,23 +2615,27 @@ void PS2SettingsOverlay::drawVideoTab()
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));   // [popupcentre] every frame: a modal keeps its first position otherwise, and a window-mode switch made from INSIDE it (Display settings -> Windowed) left it anchored at the old screen's centre, off-screen (user, 2026-09-28)
         if (ImGui::BeginPopupModal("Display settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
+            static int oMode = 0, oMon = 0, oScale = 1, oRes = 0;   // [applyonchange] the values at open, for Reset
             if (!eInit)
             {
                 eMode = m_settings.windowMode; eMon = m_settings.monitor;
                 eScale = std::clamp(m_settings.renderScale, 1, 3); eRes = 0;
                 for (int i = 0; i < 10; ++i) if (kW[i] == m_settings.windowW && kH[i] == m_settings.windowH) eRes = i;
+                oMode = eMode; oMon = eMon; oScale = eScale; oRes = eRes;
                 eInit = true;
             }
+            bool eCh = false;   // [applyonchange] every control applies as it is changed; no Apply/Save step
             ImGui::TextUnformatted("Resolution");
             ImGui::SetNextItemWidth(260.0f);
-            ImGui::Combo("##res", &eRes, kRes, 10);
+            eCh |= ImGui::Combo("##res", &eRes, kRes, 10);
             ImGui::TextUnformatted("Render scale");
             for (int s = 1; s <= 3; ++s)   // radio group: only one is valid at a time
             {
                 if (s > 1) ImGui::SameLine();
                 char lb[8]; std::snprintf(lb, sizeof lb, "x%d", s);
-                if (ImGui::RadioButton(lb, eScale == s)) eScale = s;
+                if (ImGui::RadioButton(lb, eScale == s) && eScale != s) { eScale = s; eCh = true; }
             }
+            if (seamvk::on()) { ImGui::SameLine(); ImGui::TextDisabled("(native renderer: on restart)"); }
             ImGui::TextUnformatted("Monitor");
             const int mc = std::max(1, bt3GetMonitorCount());
             char cur[192];
@@ -2646,14 +2650,14 @@ void PS2SettingsOverlay::drawVideoTab()
                     std::snprintf(lbl, sizeof lbl, "%d - %s - %dx%d @%dHz", i + 1,
                                   bt3GetMonitorName(i) ? bt3GetMonitorName(i) : "?",
                                   bt3GetMonitorWidth(i), bt3GetMonitorHeight(i), bt3GetMonitorRefreshRate(i));
-                    if (ImGui::Selectable(lbl, i == eMon)) eMon = i;
+                    if (ImGui::Selectable(lbl, i == eMon) && eMon != i) { eMon = i; eCh = true; }
                 }
                 ImGui::EndCombo();
             }
             ImGui::TextUnformatted("Window mode");
-            ImGui::RadioButton("Windowed (resizable)", &eMode, 0); ImGui::SameLine();
-            ImGui::RadioButton("Borderless", &eMode, 1);           ImGui::SameLine();
-            ImGui::RadioButton("Fullscreen", &eMode, 2);
+            eCh |= ImGui::RadioButton("Windowed (resizable)", &eMode, 0); ImGui::SameLine();
+            eCh |= ImGui::RadioButton("Borderless", &eMode, 1);           ImGui::SameLine();
+            eCh |= ImGui::RadioButton("Fullscreen", &eMode, 2);
         if (toggleSwitch("Widescreen (true FOV)", &m_settings.widescreen))
         {
             s_widescreen = m_settings.widescreen;
@@ -2688,24 +2692,23 @@ void PS2SettingsOverlay::drawVideoTab()
             {
                 ps2xApplyWindowMode(eMode, eMon, kW[eRes], kH[eRes]);
                 if (!envUserSet("PS2X_PGS_SSAA")) ps2x_pgs::setRenderScale(eScale);   // live on paraLLEl-GS
-            };
-            if (ImGui::Button("Reset")) eInit = false;
-            ImGui::SameLine();
-            if (ImGui::Button("Close")) { eInit = false; ImGui::CloseCurrentPopup(); }
-            ImGui::SameLine(0.0f, 24.0f);
-            if (ImGui::Button("Apply")) applyLive();
-            ImGui::SameLine();
-            if (ImGui::Button("Save"))
-            {
-                applyLive();
                 m_settings.windowMode = eMode; m_settings.monitor = eMon;
                 m_settings.renderScale = eScale;
                 m_settings.windowW = kW[eRes]; m_settings.windowH = kH[eRes];
                 m_settings.fullscreen = (eMode == 2);
                 m_dirty = true;   // persisted when the overlay closes
-                eInit = false;
-                ImGui::CloseCurrentPopup();
+            };
+            if (eCh) applyLive();
+            ImGui::Spacing();
+            if (ImGui::Button("Reset", ImVec2(120.0f, 0.0f)))
+            {   // back to what the window opened with, applied
+                eMode = oMode; eMon = oMon; eScale = oScale; eRes = oRes;
+                applyLive();
             }
+            ImGui::SameLine();
+            if (ImGui::Button("Close", ImVec2(120.0f, 0.0f))) { eInit = false; ImGui::CloseCurrentPopup(); }
+            ImGui::SameLine(0.0f, 16.0f);
+            ImGui::TextDisabled("changes apply as you make them");
             ImGui::EndPopup();
         }
     }
