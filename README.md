@@ -295,6 +295,26 @@ Known issues:
 
 ---
 
+## Native Vulkan renderer (the engine seam)
+
+The native renderer draws the game from the engine's own data at the point where it
+hands geometry to VU1 -- host meshes and GPU vertex programs instead of VU1, native
+post-processing passes instead of the GS post chain, the GIF stream interpreted only
+for the 2D layer -- on its own Vulkan device through Granite's Vulkan layer. Select it
+with `renderer = "native"` in `settings.toml` (the launcher's Video tab and the in-game
+overlay list it as "Native Vulkan (engine seam)"). It needs only Granite:
+
+```
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release            # Granite from the paraLLEl-GS checkout
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPS2X_DISABLE_PGS=ON   # no paraLLEl-GS at all
+```
+
+`PS2X_GRANITE_DIR` points at a Granite checkout when the paraLLEl-GS submodule is not
+present (default `ps2xRuntime/third_party/Granite`); `-DPS2X_DISABLE_SEAMVK=ON` leaves
+the renderer out. Environment: `PS2X_SEAMVK=1` forces it on a `parallel-gs` settings
+file (the dev scripts), `PS2X_SEAMVK_SCALE=<1..8>` overrides the render scale,
+`PS2X_SEAMVK_REF=1` keeps paraLLEl-GS running beside it for side-by-side dumps.
+
 ## Experimental: paraLLEl-GS backend
 
 This branch carries a second graphics backend: the PS2 GS emulated in Vulkan
