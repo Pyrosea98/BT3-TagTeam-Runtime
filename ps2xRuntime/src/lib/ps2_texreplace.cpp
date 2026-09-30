@@ -292,16 +292,41 @@ int packButtonLayout()
     return doc.getI("video.button_layout", 1);
 }
 
+// [texui] video.texture_pack: the switch the front-end and the in-game overlay actually write. The
+// file is tiny and re-read at most twice a second, so flipping the toggle takes effect without a
+// restart and the per-texture query below never touches the disk.
+bool packSetting()
+{
+    static std::mutex mx;
+    static bool cached = false;
+    static std::chrono::steady_clock::time_point next{};
+    std::lock_guard<std::mutex> lk(mx);
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next) return cached;
+    next = now + std::chrono::milliseconds(500);
+    const char *xd = ps2xExeDirC();
+    std::ifstream f(std::string((xd && xd[0]) ? xd : ".") + "/savedata/settings.toml");
+    if (!f.is_open()) { cached = false; return cached; }
+    ps2x_toml::Document doc;
+    doc.parse(f);
+    cached = doc.getB("video.texture_pack", false);
+    return cached;
+}
+
 bool replacementsEnabled()
 {
     std::call_once(g_once, buildIndex);
-    // [netmenu] The black-square kill is NET-ENTRY ONLY: outside it the game's own textures draw.
-    const int on = ps2xNetEntryActive();
+    // [texui] The replacement used to be drawn on the NET-entry screen ONLY, to keep the "black squares"
+    // out of the rest of the game -- but nothing in the tree ever calls ps2xNetEntrySetActive(), so that
+    // gate was stuck off forever and the feature was unreachable: the pack indexed its thousands of
+    // entries on every launch and never applied one of them, with no warning anywhere. The toggle the
+    // settings UI writes decides now; the net-entry screen is kept as an OR for when that path is wired.
+    const int on = ps2xNetEntryActive() || packSetting();
     static int s_last = -1;
     if (on != s_last)
     {
         s_last = on;
-        std::fprintf(stderr, "[texreplace] net-entry gate -> %s (indexed=%d)\n", on ? "ON" : "off", (int)g_on);
+        std::fprintf(stderr, "[texreplace] pack gate -> %s (indexed=%d)\n", on ? "ON" : "off", (int)g_on);
     }
     if (!on) return false;
     return g_on;
