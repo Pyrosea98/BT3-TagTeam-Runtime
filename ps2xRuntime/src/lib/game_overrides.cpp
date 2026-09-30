@@ -8224,6 +8224,13 @@ namespace
     PS2_REGISTER_GAME_OVERRIDE("BT3 sound init bypass", "SLUS_216.78", 0u, 0u, &applyBt3SoundInitBypass);
     PS2_REGISTER_GAME_OVERRIDE("BT3 DTX sound URPC compat", "SLUS_216.78", 0u, 0u, &applyBt3DtxCompat);
     PS2_REGISTER_GAME_OVERRIDE("BT3 sceMpeg callback stubs", "SLUS_216.78", 0u, 0u, &applyBt3MpegCallbackStubs);
+    // [modules] The same five, registered for the install's renamed boot ELF. The matcher keys on the
+    // ELF's BASENAME and every BT3 descriptor carries crc32 = 0, so the name is the only criterion --
+    // an install that ships the ELF as data/Modules/BOOT would otherwise lose all of them with no
+    // error at all. One descriptor matches either name (the other `continue`s), so nothing applies twice.
+    PS2_REGISTER_GAME_OVERRIDE("BT3 sound init bypass", "BOOT", 0u, 0u, &applyBt3SoundInitBypass);
+    PS2_REGISTER_GAME_OVERRIDE("BT3 DTX sound URPC compat", "BOOT", 0u, 0u, &applyBt3DtxCompat);
+    PS2_REGISTER_GAME_OVERRIDE("BT3 sceMpeg callback stubs", "BOOT", 0u, 0u, &applyBt3MpegCallbackStubs);
     // [nullpkt] The infinite-loading freeze: func_114860 (texture-packet address patcher) is
     // called with a NULL packet list (a1 = [obj+0x2C] not populated yet) and walks it as a
     // linked list from address 0 -- on hardware address 0 aliases the kernel's exception-vector
@@ -8303,6 +8310,11 @@ namespace
     }
     PS2_REGISTER_GAME_OVERRIDE("BT3 NULL packet-list guard", "SLUS_216.78", 0u, 0u, &applyBt3NullPacketGuard);
     PS2_REGISTER_GAME_OVERRIDE("BT3 CD read-state edge guard", "SLUS_216.78", 0u, 0u, &applyBt3CdStateEdge);
+    // [modules] ...and for the renamed boot ELF, same reasoning as the three above. These two are the
+    // ones whose absence is a real gameplay bug rather than a cosmetic one: the NULL packet-list guard
+    // is the infinite-loading freeze, and the CD read-state guard is a load-time edge case.
+    PS2_REGISTER_GAME_OVERRIDE("BT3 NULL packet-list guard", "BOOT", 0u, 0u, &applyBt3NullPacketGuard);
+    PS2_REGISTER_GAME_OVERRIDE("BT3 CD read-state edge guard", "BOOT", 0u, 0u, &applyBt3CdStateEdge);
 }
 
 // [netmenu] Play one of the game's OWN SEs (system bank A) from the host menu -- no decoded WAVs.

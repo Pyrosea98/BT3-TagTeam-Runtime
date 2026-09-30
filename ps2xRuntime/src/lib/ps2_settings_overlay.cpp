@@ -1222,28 +1222,65 @@ bool PS2SettingsOverlay::mainMenuPopupWanted()
     return ps2xNetOverlayEnabled() && open;
 }
 
-// [mmpopup] The Netplay icon: the Namek planet with a cloud drifting around it.
+// [neticon] The Netplay icon: an animated 5-frame sprite in one 245x51 RGBA8 sheet
+// (assets/netplay/neticon.png, 5 frames of 49x51 side by side, built from icono_sin_fondo.gif with
+// `magick <gif> -coalesce -background none +append +repage`: the GIF is 89a with disposal=Background,
+// so its frames are NOT cumulative and each carries its own sub-rect (37x40 at +10+3, 37x39 at +9+4,
+// ...) -- -coalesce is what composites each one onto the full 49x51 canvas, and +repage matters
+// because +append otherwise keeps the first frame's page and the sheet silently crops to one frame).
+// The GIF's magenta (#FF00FF) is a real alpha-0 palette entry, so the transparency comes through the
+// decoder with no keying.
 //
-// The artwork is the Dragon Net menu's own (assets/DragonNet/menu in the old tree, now
-// assets/netplay/): a 464x524 planet and a 300x142 cloud. Both are plain RGBA8 PNGs, decoded once
-// with the same GsDecodeImageRGBA8 the launcher uses for its background.
-//
-// The cloud's motion comes from the design's inline styles, which drive it along a CSS
-// offset-path of two elliptical arcs -- "M48.3,262.5 A170,140 -18 1,1 371.7,157.5 A170,140 -18 1,1
-// 48.3,262.5 Z" -- over 6s, linear, infinite, with the sprite mirrored. Both arcs are the same
-// ellipse (a 170x140 arc is exactly a half-ellipse), so the whole path is one closed loop: centre
-// (210,210), radii (161.7, 52.5), rotated -18 degrees, and the cloud is 78px wide inside a 420px
-// card. Parametrising that ellipse is the same path, minus the browser.
+// It replaced the Namek planet plus the orbiting cloud, which was two static PNGs with the motion
+// computed in code (an ellipse replicating the design's CSS offset-path). The sheet is one
+// texture and the frames are picked with a UV window, so there is no per-frame texture and the old
+// planet/cloud assets are simply no longer read.
 struct NetplayIcon
 {
-    unsigned long long planet = 0;
-    unsigned long long cloud  = 0;
-    int pw = 0, ph = 0, cw = 0, ch = 0;
+    unsigned long long tex = 0;
+    int sw = 0, sh = 0;      // the whole sheet
+    int fw = 0, fh = 0;      // one frame
+    int frames = 0;
+    float frameSec = 0.1f;   // the GIF's 10 cs per frame
     bool tried = false;
-    bool ok() const { return planet != 0 && cloud != 0; }
+    bool ok() const { return tex != 0 && frames > 0; }
 };
 
 static NetplayIcon g_netplayIcon;
+
+// The frame the animation is on right now, from a wall-clock phase so it keeps running whether or not
+// anything draws the icon each frame.
+static int netIconFrame()
+{
+    const int n = g_netplayIcon.ok() ? g_netplayIcon.frames : 1;
+    const float t = float(ImGui::GetTime()) / (g_netplayIcon.frameSec > 0.01f ? g_netplayIcon.frameSec : 0.1f);
+    int f = int(t) % n;
+    if (f < 0)
+        f += n;
+    return f;
+}
+
+// Draws the current frame of the sheet into the given box, keeping the frame's aspect ratio.
+static void drawNetIcon(ImDrawList *dl, float x, float y, float w)
+{
+    if (!g_netplayIcon.ok())
+        return;
+    const float h = w * float(g_netplayIcon.fh) / float(g_netplayIcon.fw);
+    // [neticon] The UV window is inset half a texel on every side. ImGui samples with GL_LINEAR, and a
+    // window that runs exactly to the frame's edge pulls in the neighbouring frame's pixels as a
+    // one-texel seam down the right border and along the top and bottom -- visible as a bright edge
+    // flickering on and off as the animation steps. The inset is in pixels of the sheet, not a
+    // fraction of the frame, so it stays correct at any sheet size.
+    const float fw = float(g_netplayIcon.fw), fh = float(g_netplayIcon.fh);
+    const float x0 = fw * float(netIconFrame());
+    const float u0 = (x0 + 0.5f) / float(g_netplayIcon.sw);
+    const float u1 = (x0 + fw - 0.5f) / float(g_netplayIcon.sw);
+    const float v0 = 0.5f / fh;
+    const float v1 = 1.0f - 0.5f / fh;
+    dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.tex),
+                 ImVec2(x, y), ImVec2(x + w, y + h),
+                 ImVec2(u0, v0), ImVec2(u1, v1));
+}
 
 static void loadNetplayIcon()
 {
@@ -1258,35 +1295,28 @@ static void loadNetplayIcon()
 
     std::vector<uint8_t> rgba;
     int w = 0, h = 0;
-    if (ps2x::gfx::GsDecodeImageRGBA8((dir + "/netplanet.png").c_str(), rgba, w, h) && w > 0 && h > 0)
+    if (ps2x::gfx::GsDecodeImageRGBA8((dir + "/neticon.png").c_str(), rgba, w, h) && w > 0 && h > 0)
     {
-        g_netplayIcon.planet = ps2x::gfx::UiLoadTextureRgba(rgba.data(), w, h);
-        g_netplayIcon.pw = w;
-        g_netplayIcon.ph = h;
+        g_netplayIcon.tex = ps2x::gfx::UiLoadTextureRgba(rgba.data(), w, h);
+        g_netplayIcon.sw = w;
+        g_netplayIcon.sh = h;
+        // 5 frames of 49x51 in a 245x51 sheet. The divisor is the one place that would need touching
+        // for a different sheet; the width is checked against the height so a wrong file shows up in
+        // the log below instead of as a squashed icon.
+        g_netplayIcon.frames = 5;
+        g_netplayIcon.fw = w / g_netplayIcon.frames;
+        g_netplayIcon.fh = h;
+        if (g_netplayIcon.fw * g_netplayIcon.frames != w)
+            g_netplayIcon.frames = 0;   // not a clean multiple: refuse rather than draw garbage
     }
-    if (ps2x::gfx::GsDecodeImageRGBA8((dir + "/netcloud.png").c_str(), rgba, w, h) && w > 0 && h > 0)
-    {
-        g_netplayIcon.cloud = ps2x::gfx::UiLoadTextureRgba(rgba.data(), w, h);
-        g_netplayIcon.cw = w;
-        g_netplayIcon.ch = h;
-    }
-    std::fprintf(stderr, "[netplay-icon] planet=%dx%d cloud=%dx%d loaded=%d\n",
-                 g_netplayIcon.pw, g_netplayIcon.ph, g_netplayIcon.cw, g_netplayIcon.ch,
-                 g_netplayIcon.ok() ? 1 : 0);
+    std::fprintf(stderr, "[netplay-icon] sheet=%dx%d frames=%d frame=%dx%d loaded=%d\n",
+                 g_netplayIcon.sw, g_netplayIcon.sh, g_netplayIcon.frames,
+                 g_netplayIcon.fw, g_netplayIcon.fh, g_netplayIcon.ok() ? 1 : 0);
 }
 
-// The one point of the design's orbit path, at phase t in [0,1).
-static void netOrbitPoint(float t, float cx, float cy, float rx, float ry, float rotDeg,
-                          float &x, float &y)
-{
-    const float a = t * 6.28318530718f;
-    const float ex = rx * std::cos(a);
-    const float ey = ry * std::sin(a);
-    const float r = rotDeg * 3.14159265359f / 180.0f;
-    const float cs = std::cos(r), sn = std::sin(r);
-    x = cx + ex * cs - ey * sn;
-    y = cy + ex * sn + ey * cs;
-}
+// [neticon] Removed with the planet and the cloud: the icon is an animated sheet now, so
+// nothing orbits anything. The old animation computed one point of the design's orbit path --
+// an ellipse, centre (210,210), radii 161.7x52.5, rotated -18 degrees, 6 s linear infinite.
 
 // [netplay] The form's values, shared by the settings tab and by the main-menu popup.
 //
@@ -1393,7 +1423,16 @@ static void drawNetplayPopupBody()
     // Header: the Namek mark, the word, and the status pill on the right. Drawn by hand rather than
     // laid out with SameLine, because the mark is an image on the draw list and the pill has to be
     // right-aligned to the panel's edge; doing it in one pass keeps all three on one baseline.
-    const float hdrH  = 42.0f;
+    //
+    // [neticon] The mark is 3x the 30px the Namek planet used, and hdrH follows it instead of staying
+    // at 42. The sheet's frame is 49x51, so a 90px mark is ~94px tall: left at 42 the header would
+    // print it straight over the panel's top edge and over the first row of the form. The panel's own
+    // size is (520, 0) -- auto height -- so a taller header just makes the panel taller with it.
+    const float markW = 90.0f;
+    const float markH = g_netplayIcon.ok()
+        ? markW * float(g_netplayIcon.fh) / float(g_netplayIcon.fw)
+        : 0.0f;
+    const float hdrH  = std::max(42.0f, markH + 10.0f);
     const float hdrW  = ImGui::GetContentRegionAvail().x;
     const ImVec2 h0   = ImGui::GetCursorScreenPos();
     ImGui::Dummy(ImVec2(0.0f, hdrH));
@@ -1401,14 +1440,8 @@ static void drawNetplayPopupBody()
     const ImVec4 gold(1.00f, 0.80f, 0.30f, 1.0f);
     const float  midY = h0.y + hdrH * 0.5f;
 
-    const float markW = 30.0f;
     if (g_netplayIcon.ok())
-    {
-        const float markH = markW * float(g_netplayIcon.ph) / float(g_netplayIcon.pw);
-        dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.planet),
-                     ImVec2(h0.x, midY - markH * 0.5f),
-                     ImVec2(h0.x + markW, midY + markH * 0.5f));
-    }
+        drawNetIcon(dl, h0.x, midY - markH * 0.5f, markW);
     const ImVec2 titleSz = ImGui::CalcTextSize("Netplay");
     dl->AddText(ImVec2(h0.x + markW + 10.0f, midY - titleSz.y * 0.5f),
                 ImGui::ColorConvertFloat4ToU32(gold), "Netplay");
@@ -1697,8 +1730,15 @@ void PS2SettingsOverlay::drawMainMenuPopup()
     const ImVec2 labelSz = ImGui::CalcTextSize(kLabel);
     const float padX  = 15.0f;
     const float gap   = 10.0f;
-    const float artSz = 34.0f;   // planet width; its 464x524 aspect makes it taller than this
-    const float pillH  = 48.0f;
+    // [mmpopup] The art is 2x the 34px the planet used, and pillH follows it for the same reason
+    // hdrH does in the header: the sheet's frame is 49x51, so a 68px mark is ~71px tall and would
+    // print through the top and the bottom of a 48px pill. The clip in the draw block below is the
+    // mark's own box, not the pill's, so it cannot catch this -- the height has to give.
+    const float artSz = 68.0f;
+    const float artH  = g_netplayIcon.ok()
+        ? artSz * float(g_netplayIcon.fh) / float(g_netplayIcon.fw)
+        : 0.0f;
+    const float pillH  = std::max(48.0f, artH + 8.0f);
     const float pillW  = padX + labelSz.x + gap + artSz + padX;
     // A pill, not a rounded box: the radius is half the height, so the ends are semicircles.
     const float pillR = pillH * 0.5f;
@@ -1752,35 +1792,25 @@ void PS2SettingsOverlay::drawMainMenuPopup()
         const float cy = (a.y + b.y) * 0.5f;
         if (g_netplayIcon.ok())
         {
-            const float ph = artSz * float(g_netplayIcon.ph) / float(g_netplayIcon.pw);
+            // [neticon] One frame of the animated sheet, in the pill's right-hand slot. The clip is
+            // kept from the planet version: the artwork is wider than the slot it sits in, and
+            // unclipped it would print over the label and the border.
+            const float ph = artSz * float(g_netplayIcon.fh) / float(g_netplayIcon.fw);
             const ImVec2 pp(cx - artSz * 0.5f, cy - ph * 0.5f);
-            // Clipped to the slot, not to the pill: the orbit reaches past the planet's own width,
-            // and unclipped the cloud would print over the label and over the border.
             dl->PushClipRect(ImVec2(cx - artSz * 0.5f, cy - ph * 0.5f),
                              ImVec2(cx + artSz * 0.5f, cy + ph * 0.5f), true);
-            dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.planet), pp,
-                         ImVec2(pp.x + artSz, pp.y + ph));
-
-            // The same cloud on the same orbit the panel uses, with the design's ratios kept:
-            // 78px of cloud and a 323x105 ellipse inside a 232px planet.
-            const float cw = artSz * 0.336f;
-            const float ch = cw * float(g_netplayIcon.ch) / float(g_netplayIcon.cw);
-            const float t = float(ImGui::GetTime() / 6.0) - float((int)(ImGui::GetTime() / 6.0));
-            float ox = 0.0f, oy = 0.0f;
-            netOrbitPoint(t, cx, cy, artSz * 0.697f, artSz * 0.226f, -18.0f, ox, oy);
-            dl->AddImage(ImTextureRef((ImTextureID)g_netplayIcon.cloud),
-                         ImVec2(ox - cw * 0.5f, oy - ch * 0.5f),
-                         ImVec2(ox + cw * 0.5f, oy + ch * 0.5f),
-                         ImVec2(1.0f, 0.0f), ImVec2(0.0f, 1.0f));
+            drawNetIcon(dl, pp.x, pp.y, artSz);
             dl->PopClipRect();
         }
         else
         {
-            // No art: three bars where the planet goes, rather than an empty slot.
-            const float w = artSz * 0.44f, h = 2.5f;
+            // No art: three bars where the mark goes, rather than an empty slot. [neticon] The
+            // height and the spacing scale with artSz -- at the planet's 34px they were 2.5 and 7,
+            // which is 0.074x and 0.206x; held fixed they would be a 30px-wide hairline stack.
+            const float w = artSz * 0.44f, h = artSz * 0.074f;
             for (int i = 0; i < 3; ++i)
             {
-                const float y = cy + (float(i) - 1.0f) * 7.0f;
+                const float y = cy + (float(i) - 1.0f) * artSz * 0.206f;
                 dl->AddRectFilled(ImVec2(cx - w, y - h), ImVec2(cx + w, y + h), accent, h);
             }
         }
@@ -3815,22 +3845,30 @@ void PS2SettingsOverlay::drawAboutTab()
         "distributed with this project.");
     ImGui::Spacing();
 
-    sectionHeader("CREDITS");
+    sectionHeader("DEVELOPERS");
     ImGui::TextWrapped("z3xox - owner / lead developer");
-    ImGui::TextDisabled("  recompiler, runtime (EE/GS/VU1/scheduler), renderer, game overrides, generators");
+    ImGui::TextDisabled("  recompiler, the runtime core (EE/GS/VU1/scheduler, the GS replay), the"
+                        " native Vulkan renderer, game overrides, generators");
     ImGui::TextWrapped("RexxColder - supporter / collaborator");
-    ImGui::TextDisabled("  optimisation (perf/async), front-end + install wizard, input & gamepads, "
-                        "build/release, deploy, game-data (AFS/AFL), docs");
+    ImGui::TextDisabled("  the OpenGL renderer, optimisation (perf/async), front-end and install"
+                        " wizard, native IOP modules, input & gamepads, build/release, deploy,"
+                        " game data, texture packs");
     ImGui::TextWrapped("valenvivaldi - collaborator");
     ImGui::TextDisabled("  port macOS arm64, packaging, audio");
+    ImGui::TextWrapped("KaibaSammy - collaborator (mods)");
+    ImGui::TextDisabled("  Mod Manager project, mod design, mod support");
     ImGui::Spacing();
 
-    sectionHeader("THIRD-PARTY");
+    sectionHeader("CREDITS");
     if (ImGui::BeginChild("##about_third", ImVec2(-1, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY))   // [gpadbox] content-sized
     {
         ImGui::TextWrapped("ran-j/PS2Recomp - static recompiler (upstream, GPL-3.0)");
         ImGui::TextWrapped("ViveTheModder - NTSC-U AFS file lists (Apache-2.0)");
         ImGui::TextWrapped("Arntzen Software - paraLLEl-GS (LGPL-3.0-or-later)");
+        ImGui::TextWrapped("Sal9im - \"4K 2D Textures Lite\" pack (GBATemp). Not distributed: drop"
+                           " it in data/Textures/. The DXT5 encoding and the runtime replacement"
+                           " work are RexxColder's.");
+        ImGui::TextWrapped("Russo One - typeface (SIL Open Font License)");
         ImGui::Spacing();
     }
     ImGui::EndChild();

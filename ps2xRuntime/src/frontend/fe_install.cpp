@@ -374,6 +374,29 @@ void InstallWizard::workerExtract()
         m_workerRunning = false;
     };
 
+    // [modules] ISO path -> flat deploy path. The runtime resolves the disc layout, a Modules folder
+    // and the flat one (see docs/DEPLOY.md, resolveIopModulePath and configureIoPathsFromElf), so this
+    // only decides what the user sees on disk:
+    //   DATA/<x>      -> <x>        the AFS containers, flattened to the CD root
+    //   BIN/<x>       -> <x>        DBZP.BIN sits beside them; the guest asks for \BIN\DBZP.BIN and
+    //                                resolvePs2HostPath() retries by name at the CD root, so a copy
+    //                                left under Modules/BIN/ would be unreachable on the FIO path
+    //   IRX/<mod>     -> Modules/<mod>
+    //   SLUS_216.78   -> Modules/BOOT   the boot ELF travels with the modules
+    // Anything else keeps its path, which puts SYSTEM.CNF in Modules/ without needing its own case.
+    static const std::string kModulesDir = "Modules";
+    auto deployRelativePath = [](const std::string &isoPath) -> std::string
+    {
+        const std::size_t slash = isoPath.find('/');
+        const std::string head = slash == std::string::npos ? std::string() : isoPath.substr(0, slash);
+        const std::string tail = slash == std::string::npos ? isoPath : isoPath.substr(slash + 1);
+        if (head == "DATA" || head == "BIN")
+            return tail;
+        if (head == "IRX")
+            return kModulesDir + "/" + tail;
+        return kModulesDir + "/" + (isoPath == "SLUS_216.78" ? "BOOT" : isoPath);
+    };
+
     Iso9660 iso;
     if (!iso.open(m_isoPath))
     {
@@ -383,6 +406,17 @@ void InstallWizard::workerExtract()
 
     std::error_code ec;
     std::filesystem::create_directories(m_dataDir, ec);
+
+    // [modules] The install writes the FLAT layout the runtime documents (docs/DEPLOY.md), not a copy
+    // of the disc tree: the AFS containers and their .idx/.ALG sidecars lose the leading "DATA/", the
+    // IOP modules and the boot ELF go together in Modules/, and the boot ELF is renamed to BOOT.
+    // The runtime resolves all three shapes (see resolveIopModulePath and configureIoPathsFromElf), so
+    // this only decides what the user sees on disk.
+    {
+        const std::filesystem::path modulesDir = m_dataDir / "Modules";
+        std::error_code mec;
+        std::filesystem::create_directories(modulesDir, mec);
+    }
 
     std::uint64_t total = 0;
     for (const Iso9660::File &f : iso.files())
@@ -402,7 +436,7 @@ void InstallWizard::workerExtract()
             return;
         }
 
-        const std::filesystem::path out = m_dataDir / f.path;
+        const std::filesystem::path out = m_dataDir / deployRelativePath(f.path);
         std::filesystem::create_directories(out.parent_path(), ec);
         if (ec)
         {

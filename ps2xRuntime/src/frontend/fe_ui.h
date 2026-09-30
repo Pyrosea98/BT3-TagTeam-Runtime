@@ -13,6 +13,68 @@
 
 namespace fe
 {
+    // ---------------------------------------------------------------------------------------------
+    // [anim] Easing and animated values. Everything here is a plain float that moves toward a target
+    // over dt, so a dropped frame shortens the motion instead of making it jump: the shell's frame
+    // time is whatever the compositor gives it, and a wall-clock tween would skip on a stall.
+    // ---------------------------------------------------------------------------------------------
+    inline float easeOutCubic(float t) { const float u = 1.0f - t; return 1.0f - u * u * u; }
+    inline float easeInOutCubic(float t) { return t < 0.5f ? 4.0f * t * t * t : 1.0f - std::pow(-2.0f * t + 2.0f, 3.0f) * 0.5f; }
+    // Slight overshoot, for the cursor and the button glow: it arrives, dips back, settles. Capped so
+    // it cannot ring (an overshoot past 1.0 reads as a bounce, which on a settings page is noise).
+    inline float easeOutBack(float t)
+    {
+        const float c1 = 1.20f, c3 = c1 + 1.0f, u = t - 1.0f;
+        return 1.0f + c3 * u * u * u + c1 * u * u;
+    }
+
+    // A value that chases a target. speed is "how much of the remaining gap is closed per second",
+    // so the motion is framerate-independent; snap() kills the animation (used for reduced motion
+    // and for the first frame, where animating from zero would look like a glitch).
+    class Chase
+    {
+    public:
+        float get() const { return m_v; }
+        void target(float t) { m_t = t; }
+        float target() const { return m_t; }
+        bool done() const { return std::fabs(m_t - m_v) < 0.0015f; }
+        void snap(float v) { m_v = m_t = v; }
+
+        void tick(float dt, float speed = 14.0f)
+        {
+            if (done()) { m_v = m_t; return; }
+            // Exponential approach: the step is a fraction of the gap, never an overshoot.
+            m_v += (m_t - m_v) * (1.0f - std::exp(-speed * dt));
+        }
+
+    private:
+        float m_v = 0.0f, m_t = 0.0f;
+    };
+
+    // A one-shot 0..1 that runs forward on start(). Used for the page slide and the boot reveal,
+    // where there is no target to hold: the motion ends and the value stays at 1.
+    class Once
+    {
+    public:
+        bool start(float seconds) { if (m_t < 1.0f) return false; m_t = 0.0f; m_sec = seconds > 0.01f ? seconds : 0.01f; return true; }
+        void tick(float dt) { if (m_t < 1.0f) m_t = std::min(1.0f, m_t + dt / m_sec); }
+        float t() const { return easeInOutCubic(m_t); }
+        float raw() const { return m_t; }
+        bool running() const { return m_t < 1.0f; }
+        bool done() const { return m_t >= 1.0f; }
+        void finish() { m_t = 1.0f; }
+        bool armed() const { return m_t == 0.0f && m_sec > 0.0f; }
+        void setInstant() { m_t = 1.0f; }
+
+    private:
+        float m_t = 1.0f, m_sec = 0.14f;
+    };
+
+    // Reduced motion. Off by default (the shell's animations are short and non-blocking), but a
+    // single switch here makes every one of them instant without touching the call sites: the
+    // helpers below check it, and a caller that wants an explicit override uses the raw value.
+    inline bool &motionOff() { static bool s = false; return s; }
+
     inline ImVec4 dbz(float r, float g, float b, float a = 1.0f) { return ImVec4(r, g, b, a); }
     inline ImVec4 accent(float a = 1.0f) { return dbz(1.00f, 0.62f, 0.10f, a); }
     inline ImVec4 gold(float a = 1.0f) { return dbz(1.00f, 0.80f, 0.30f, a); }

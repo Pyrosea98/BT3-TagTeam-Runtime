@@ -967,8 +967,18 @@ namespace ps2_stubs
                 state.formatted = true;
             }
         }
+        // [mcp] Only port 0 is created here. Port 0 is the card the game actually saves to (mcRoot,
+        // which configureIoPathsFromElf points at <deploy>/savedata), and it has to exist before the
+        // guest enumerates, so it is not left to the on-demand path.
+        //
+        // The other ports are not, and creating them eagerly is what put an empty savedata_slot1
+        // next to savedata/ on every boot. getMcRootPath derives a sibling per port --
+        // leaf + "_slot" + port -- and with mcRoot's leaf being "savedata" and parent the deploy root,
+        // port 1 lands on <deploy>/savedata_slot1. BT3 never opens a second card, so the directory was
+        // created and then never written to. sceMcMkdir and the open/format paths below already call
+        // ensureMcRootExists(port) themselves, so a port that IS used still gets its directory, just
+        // at the moment something asks for it rather than at every boot.
         ensureMcRootExists(0);
-        ensureMcRootExists(1);
         setReturnS32(ctx, 0);
     }
 
