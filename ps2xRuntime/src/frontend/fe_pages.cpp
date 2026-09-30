@@ -893,15 +893,24 @@ namespace frontend
         fe::kv("Audio", "the game's own SE/ADX engine");
         fe::kv("Pad", "SDL2 gamecontroller");
 
+        fe::sectionHeader("DEVELOPERS");
+        fe::kv("z3xox", "owner / lead developer - recompiler, the runtime core "
+                        "(EE/GS/VU1/scheduler, the GS replay), the native Vulkan "
+                        "renderer, game overrides, generators");
+        fe::kv("RexxColder", "supporter / collaborator - the OpenGL renderer, optimisation "
+                             "(perf/async), front-end and install wizard, native IOP modules, "
+                             "input and gamepads, build/release, deploy, game data, texture packs");
+        fe::kv("valenvivaldi", "collaborator - macOS arm64 port, packaging, audio");
+        fe::kv("KaibaSammy", "collaborator (mods) - Mod Manager project, mod design, mod support");
+        ImGui::Spacing();
         fe::sectionHeader("CREDITS");
         fe::hint("PS2Recomp (ran-j) - static recompiler (GPL-3.0)\n"
                  "paraLLEl-GS (Arntzen-Software) - GS backend (LGPL-3.0-or-later)\n"
                  "BT3-Recomp (z3xox) - this project\n"
                  "ViveTheModder - NTSC-U AFS file lists (Apache-2.0)\n"
-                 "Russo One - typeface (SIL Open Font License)\n"
-                 "Menu music: track 08 \"Shine\" from the Dragon Ball Z: Budokai Tenkaichi 3 "
-                 "soundtrack (2007). The audio is copyrighted material and is NOT distributed "
-                 "with the project: drop it in as assets/music/music.flac and the front-end "
-                 "plays it from there.");
+                 "Sal9im - \"4K 2D Textures Lite\" pack (GBATemp), not distributed: drop it in "
+                 "data/Textures/. The DXT5 encoding and the runtime replacement work are "
+                 "RexxColder's\n"
+                 "Russo One - typeface (SIL Open Font License)");
     }
 }
