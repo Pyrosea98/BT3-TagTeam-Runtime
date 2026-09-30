@@ -224,9 +224,16 @@ def range_registrar(struct_name: str, csv_path: Path, comment: str) -> str:
 # 0x36fbc0: inside f_36fb48 (0x36fb48-0x36fc00). Ultimate Battle's submenu (0xd->0xe->0xf) hung the same
 # way, ~300k iterations. Same mechanism, different screen -- which is why both are listed here rather
 # than chasing them one at a time.
+# 0x3ab950: inside f_3ab908 (0x3ab908-0x3ab9b8) at `daddu $a0, $s7, $zero`, the head of the same
+# straight-line argument setup the 0x39aaa0 case is: the byte load at 0x3ab954 feeds the `jal
+# func_3AB198` at 0x3ab960. The function has a label only at its entry and one resume case at
+# 0x3ab968, so this slot was NULL. Data Center's submenu (0x35 -> 0x36) jumped here and the gap
+# handler re-dispatched the same PC forever: black screen, GAME=0, and 4.1M copies of
+# "No exact recompiled function for guest PC 0x3ab950" in the log. Found by sweeping the pending
+# states in docs/MAIN-MENU.md with PS2X_MENU_JUMP, not by waiting for a user to report it.
 # See PR #31 for the investigation. Note these addresses are inside DBZP.BIN (mapped 0x334c00..0x3be71c),
 # not the main ELF, so readelf on SLUS_216.78 alone will not show that they are code at all.
-MID_FUNCTION_ENTRIES = (0x341358, 0x34c0b0, 0x39aaa0, 0x36fbc0)
+MID_FUNCTION_ENTRIES = (0x341358, 0x34c0b0, 0x39aaa0, 0x36fbc0, 0x3ab950)
 
 
 def register_mid_function_entries(lines: list, reg: str, addrs) -> tuple:
