@@ -64,11 +64,23 @@ Both layouts work. `IRX/` may sit in its own folder or flat at the root, because
 data/
 ├── DBZP.BIN  PZS3US.DIR  PZS3US{0,1,2}.{ALG,idx}  ZS3{USED,USOP}.{PSS,ADX}
 ├── PZS3US0/  PZS3US1/  PZS3US2/       # the converted AFS containers
-├── IRX/                                # kernel modules (or flat, see above)
-├── Textures/                           # optional texture pack
-├── SLUS_216.78                         # the boot ELF
-└── SYSTEM.CNF
+├── Modules/                          # kernel modules + the boot ELF
+├── Textures/                         # optional texture pack
+└── (SYSTEM.CNF inside Modules/)
 ```
+
+`Modules/` holds the boot ELF and the IOP modules together:
+
+```
+data/Modules/
+├── BOOT                               # the boot ELF (renamed from SLUS_216.78)
+├── SYSTEM.CNF
+└── *.IRX  IOPRP300.IMG
+```
+
+`IRX/` may also sit in its own folder or flat at the root: `PS2Runtime::resolveIopModulePath()` tries `<cdRoot>/IRX/<mod>`, then `<cdRoot>/Modules/<mod>`, then `<cdRoot>/<mod>`, anchored to the CD root rather than the process directory.
+
+Because the ELF lives one level down, `configureIoPathsFromElf()` strips a trailing `Modules` component before deriving `cdRoot`, and `mcRoot` follows `cdRoot` rather than the ELF's own directory. Without that the AFS lookups land in `data/Modules/` and the memory cards in `data/savedata/`, both silently. The ELF is matched by **basename** and every BT3 override descriptor carries `crc32 = 0`, so the game overrides are registered for `BOOT` as well as `SLUS_216.78` — see `game_overrides.cpp`.
 
 
 ### The IRX modules are loaded from the install, not embedded
@@ -76,9 +88,10 @@ data/
 The game asks for them: `sceSifResetIop` loads `CDVDMAN.IRX`/`CDVDFSV.IRX`
 (`Kernel/Stubs/SIF.cpp`) and the module-load RPC runs every module the game
 names, `set = "all"` by default (`Kernel/Syscalls/RPC.cpp`). A boot log shows
-13 modules resolved and run natively. They stay as files because they are
-extracted from the user's own ISO: the install copies them, and the runner
-never redistributes them inside the executable. If one is missing the loader
+13 modules resolved and run natively. They stay as files — in `data/Modules/`,
+beside the boot ELF — because they are extracted from the user's own ISO: the
+install copies them, and the runner never redistributes them inside the
+executable. If one is missing the loader
 logs `[iop-run] cannot load IRX: ...` and the HLE takes over that module, which
 is partial — `SIO2MAN`/`SIO2D`, `DS2O_D`/`DS2U_D`, `MCMAN`/`MCSERV` and the
 `MOD*` family have no HLE replacement. `IOPRP300.IMG` is never opened by the

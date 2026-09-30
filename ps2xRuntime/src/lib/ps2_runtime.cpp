@@ -2062,12 +2062,21 @@ void PS2Runtime::configureIoPathsFromElf(const std::string &elfPath)
 
     if (!paths.elfDirectory.empty())
     {
-        paths.hostRoot = paths.elfDirectory;
-        paths.cdRoot = paths.elfDirectory;
-        // [deploy] Memory cards live in savedata/ (beside data/), not data/mc0.
-        // elfDirectory = <deploy>/data, so its parent is the deploy root where the
-        // portable savedata/ folder sits (moved saves: icon.sys, dbzsm.ico, save).
-        paths.mcRoot = paths.elfDirectory.parent_path() / "savedata";
+        // [modules] The boot ELF may sit in the modules folder (data/Modules/) beside the IRX modules
+        // it loads, not directly in data/. cdRoot is the directory that holds the GAME data, which is
+        // not the directory that holds the ELF: deriving it from elfDirectory sent the AFS lookups to
+        // data/Modules/ and the memory cards to data/savedata/, both silently and with no error. So a
+        // trailing "Modules" component is stripped, and mcRoot follows cdRoot (it followed elfDirectory,
+        // which is the same thing only while the ELF sits directly in data/).
+        const std::filesystem::path elfDir = paths.elfDirectory;
+        const std::filesystem::path cdRoot =
+            (elfDir.filename() == "Modules") ? elfDir.parent_path() : elfDir;
+        paths.hostRoot = cdRoot;
+        paths.cdRoot = cdRoot;
+        // [deploy] Memory cards live in savedata/ (beside data/), not data/mc0. cdRoot = <deploy>/data,
+        // so its parent is the deploy root where the portable savedata/ folder sits (moved saves:
+        // icon.sys, dbzsm.ico, save).
+        paths.mcRoot = cdRoot.parent_path() / "savedata";
     }
 
     // Allow pointing the CDVD backend at a disc image via environment variable.
@@ -3273,14 +3282,19 @@ std::string PS2Runtime::resolveIopModulePath(const std::string &fileName)
     }
 
     // The guest names the module, the install does not have to. The CD root IS data/, so
-    // <cdRoot>/IRX/<mod> is the disc layout and <cdRoot>/<mod> the flat one. Anchored to the CD
-    // root, not the process directory, so PS2X_EXEDIR and a launch from another folder still
-    // find the modules.
+    // <cdRoot>/IRX/<mod> is the disc layout, <cdRoot>/Modules/<mod> the modules folder and
+    // <cdRoot>/<mod> the flat one. Anchored to the CD root, not the process directory, so
+    // PS2X_EXEDIR and a launch from another folder still find the modules.
     const std::filesystem::path cd = getConfiguredCdRoot();
     const std::filesystem::path inIrx = cd / "IRX" / fileName;
     std::error_code ec;
     if (std::filesystem::exists(inIrx, ec))
         return inIrx.lexically_normal().string();
+    // [modules] The install may group the modules with the boot ELF in data/Modules/.
+    const std::filesystem::path inModules = cd / "Modules" / fileName;
+    ec.clear();
+    if (std::filesystem::exists(inModules, ec))
+        return inModules.lexically_normal().string();
     const std::filesystem::path flat = cd / fileName;
     ec.clear();
     if (std::filesystem::exists(flat, ec))
