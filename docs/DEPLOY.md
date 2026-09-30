@@ -27,9 +27,9 @@ Dragon Ball Budokai Tenkaichi 3 Recompiled/
 ├── fps60_sites.txt         # 60 fps pacing table, read next to the runner on first enable
 ├── savedata/
 │   ├── settings.toml    # user settings ([logging], [video], [controllers], …)
+│   ├── BASLUS-21678DBZT3/        # the game's memory-card slot, kept across runs
 │   └── pad_p1.conf / pad_p2.conf       # front-end bindings
 ├── data/                   # the game, extracted from your ISO
-└── savedata_slot1/         # BASLUS-21678DBZT3 memory-card slot, kept across runs
 ```
 
 The game data is **not** part of the distribution. On first launch the front-end's
