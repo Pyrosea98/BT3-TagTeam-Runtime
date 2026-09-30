@@ -395,10 +395,22 @@ namespace seamvk
             return t;
         }
 
-        // [general] PS2X_SEAMVK_GENERAL=1: targets live in VK_IMAGE_LAYOUT_GENERAL for their whole life (Granite honours it for
+        // [general] Targets live in VK_IMAGE_LAYOUT_GENERAL for their whole life (Granite honours it for
         // attachments, sampling and input attachments), so a decode reading a target needs a memory barrier, not a layout
         // transition (each transition of a 1024x1024 target decompresses it: the 16 target decodes a frame cost 13 ms of GPU).
-        bool generalTargets() { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_GENERAL"); return v && v[0] && v[0] != '0'; }(); return s; }
+        //
+        // ON by default now. It was an experiment left off because the perf win did not materialise (the 2026-09-27 GPU
+        // attribution: "not the layout transitions (targets in GENERAL layout: same)"), but leaving it off is not merely a
+        // lost optimisation: the per-target layouts then disagree with what the render pass declares, which the Vulkan
+        // validation layer flags on every frame --
+        //   VUID-vkCmdBeginRenderPass-initialLayout-00900: "render pass initial layout is VK_IMAGE_LAYOUT_GENERAL and the
+        //   previous known layout of the attachment is VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL"
+        // On RADV (RX 580) that mismatch is not cosmetic at render scale >= 2: the GS emitted no fragments at all and the
+        // frame came back fully black -- colour AND dest-alpha at 0% on both FBP targets, with the game running at 60 fps,
+        // audio normal, and not one warning in the log. At scale 1 the sizes happened to line up and the picture was fine,
+        // which is why it survived. With GENERAL the same scene renders correctly at scale 1, 2, 3 and 4.
+        // PS2X_SEAMVK_GENERAL=0 restores the old per-target layouts.
+        bool generalTargets() { static const bool s = [](){ const char *v = std::getenv("PS2X_SEAMVK_GENERAL"); return !(v && v[0] == '0'); }(); return s; }
         VkImageLayout gl(const Target &t, VkImageLayout l) { return (l != VK_IMAGE_LAYOUT_UNDEFINED && t.img->get_create_info().layout == Vulkan::ImageLayout::General) ? VK_IMAGE_LAYOUT_GENERAL : l; }
         void toAttachment(Vulkan::CommandBuffer &cmd, Target &t, bool isDepth)
         {
@@ -1745,6 +1757,21 @@ namespace seamvk
                 cmd->begin_render_pass(rp);
                 cmd->set_opaque_state();   // Granite's fresh state has a zero colour write mask
                 cmd->set_cull_mode(VK_CULL_MODE_NONE);
+                {   // [gsviewport] The viewport MUST cover this pass's own attachment. The viewport is dynamic
+                    // state, so before this it was whatever the last pass that set one left behind: every
+                    // set_viewport in this file lives in runNativeStep and uses *that* step's target size, and
+                    // a frame with no native steps (every fight frame -- "0.0 native steps") set none at all.
+                    // So the GS drew into a target sized targetW(fbw)*scale x kLogicalH*scale through a
+                    // viewport of an unrelated size: at render scale 1 it happened to line up and the picture
+                    // was fine, at scale >= 2 the mismatch made the rasteriser emit no fragments at all --
+                    // a fully black frame (colour AND dest-alpha 0% on both FBP targets) with the game
+                    // running at 60 fps and audio normal, and not one warning in the log. Pin it to the
+                    // attachment; bindDraw narrows the scissor per draw right after.
+                    VkViewport vp = {}; vp.width = float(ct.img->get_width()); vp.height = float(ct.img->get_height());
+                    vp.minDepth = 0.0f; vp.maxDepth = 1.0f; cmd->set_viewport(vp);
+                    VkRect2D sr = {}; sr.extent.width = ct.img->get_width(); sr.extent.height = ct.img->get_height();
+                    cmd->set_scissor(sr);
+                }
                 inPass = true; ++g_gpu.passes;
                 curFbp = t.fbp; curZbp = zbp;
             }
@@ -1911,6 +1938,13 @@ namespace seamvk
             rp.clear_color[0].float32[2] = ((priv.bgcolor >> 16) & 0xFFu) / 255.0f; rp.clear_color[0].float32[3] = 1.0f;
             cmd->begin_render_pass(rp);
             cmd->set_opaque_state();
+            // [gsviewport] same defect as the GS pass: the fullscreen compose quad needs a viewport and a
+            // scissor for the `out` image. Inherited, they belonged to whatever pass ran last.
+            {
+                VkViewport vp = {}; vp.width = float(g_gpu.w); vp.height = float(g_gpu.h);
+                vp.minDepth = 0.0f; vp.maxDepth = 1.0f; cmd->set_viewport(vp);
+                VkRect2D sr = {}; sr.extent.width = g_gpu.w; sr.extent.height = g_gpu.h; cmd->set_scissor(sr);
+            }
             cmd->set_program(g_gpu.progPresent);
             cmd->set_cull_mode(VK_CULL_MODE_NONE);
             cmd->set_depth_test(false, false);
