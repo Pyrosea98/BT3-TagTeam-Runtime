@@ -1790,6 +1790,14 @@ def deploy_tree(runner: Path, out: Path, keep_music: bool = False) -> None:
             copytree_overlay(src, out / rel)
             LOG.info(f"  {rel} -> {out / rel}")
     (out / "logs").mkdir(parents=True, exist_ok=True)
+    # The runtime's 60 fps mode reads this next to the binary; without it it logs
+    # "[fps60] CANNOT ENABLE: fps60_sites.txt not found" on every launch and never turns on. It used to be
+    # staged by bundle_windows() only, so every Linux deploy shipped without it and the mode was silently
+    # dead there. Staged here instead, where both platforms go through.
+    fps60 = HERE / "fps60_sites.txt"
+    if fps60.exists() and not (out / "fps60_sites.txt").exists():
+        shutil.copy2(fps60, out / "fps60_sites.txt")
+        LOG.info(f"  fps60_sites.txt -> {out / 'fps60_sites.txt'}")
     if os.name == "nt":
         for p in runner.parent.glob("*.dll"):
             shutil.copy2(p, out / p.name)
@@ -1850,12 +1858,11 @@ def bundle_windows(ctx: "Context", stage: Path, runner: Path) -> None:
     else:
         shutil.copy2(runner, stage / runner_name)
 
-    # [fps60] the pacing table is build-time data the runner reads on the first enable, so it
-    # belongs next to the runner (where CMake stages it). It used to go to savedata/, which made
-    # the 60 fps switch depend on the save folder.
-    fps60 = HERE / "fps60_sites.txt"
-    if fps60.exists() and not (stage / "fps60_sites.txt").exists():
-        shutil.copy2(fps60, stage / "fps60_sites.txt")
+    # [fps60] The pacing table is build-time data the runner reads on the first enable, so it belongs
+    # next to the runner (where CMake stages it). It used to go to savedata/, which made the 60 fps
+    # switch depend on the save folder. deploy_tree() now stages it for BOTH platforms (it only ran
+    # from bundle_windows(), so every Linux deploy shipped without it), and the copy is a no-op when
+    # deploy_tree() already put it there.
 
     # FFmpeg DLLs staged next to the runner by CMake POST_BUILD.
     for pattern in ("avcodec-*.dll", "avformat-*.dll", "avutil-*.dll",

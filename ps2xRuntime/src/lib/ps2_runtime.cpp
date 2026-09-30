@@ -318,6 +318,26 @@ namespace
     // trigger it. [linuxfix] Outside the platform block: it is called on every platform.
     void texmegaHotkey()
     {
+        // [texmega] PS2X_TEXMEGA_AT=<seconds>: arm the same dump automatically that many seconds into
+        // the run, for a window of the same length. F9 needs a keypress, which a headless/CI run (or
+        // anyone measuring rather than playing) cannot send; this answers "how many replacements hit and
+        // how many miss" for a whole boot, a menu or a fight without input injection. The counters and
+        // the files are the F9 ones, in <exeDir>/logs/texmega.
+        {
+            static bool s_armed = false;
+            static const double s_at = [](){ const char *v = std::getenv("PS2X_TEXMEGA_AT"); return (v && v[0]) ? std::atof(v) : 0.0; }();
+            static const std::chrono::steady_clock::time_point s_t0 = std::chrono::steady_clock::now();
+            if (!s_armed && s_at > 0.0 &&
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - s_t0).count() >= s_at)
+            {
+                s_armed = true;
+                const char *xd = ps2xExeDirC();
+                const std::string d = std::string((xd && xd[0]) ? xd : ".") + "/logs/texmega";
+                ps2tex::megaArm(d.c_str(), s_at);
+                ps2tex::megaDumpIndex();
+                std::fprintf(stderr, "[texmega] armed by PS2X_TEXMEGA_AT=%.0f -> %s (%.0f s window)\n", s_at, d.c_str(), s_at);
+            }
+        }
         static const bool s_tm = [](){ const char *v = std::getenv("PS2X_TEXMEGA"); return v && v[0] && v[0] != '0'; }();
         if (!s_tm || !bt3IsKeyPressed(BT3_KEY_F9)) return;
         const char *xd = ps2xExeDirC();
@@ -8661,10 +8681,13 @@ void PS2Runtime::run()
         {
 #endif
         bt3BeginDrawing();
-#if defined(_WIN32)
-        texmegaHotkey();   // [texmega] F9 works here too (the D3D11 branch has its own call)
+        // [linuxfix] These two used to sit INSIDE the #if defined(_WIN32) block, which made both unreachable
+        // on Linux: the F9 texture-replacement hit/miss dump and the F10 frame dump did nothing there. The dead
+        // call also let the compiler drop texmegaHotkey() whole -- its strings never reached the binary, which is
+        // what made "does this Linux build have the feature at all?" hard to answer from the executable. Neither
+        // touches D3D11: they key off bt3IsKeyPressed and the seamvk dump request, available on every present path.
+        texmegaHotkey();
         seamvkDumpHotkey();   // [dumpkey] F10
-#endif
         {   // [winlog] Log every size the window takes, so a "wrong at startup, right after maximize"
             // report can be read straight from the log: the first line plus any later change.
             static int s_lastW = -1, s_lastH = -1;
