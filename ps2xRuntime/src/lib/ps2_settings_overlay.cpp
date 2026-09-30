@@ -3815,22 +3815,30 @@ void PS2SettingsOverlay::drawAboutTab()
         "distributed with this project.");
     ImGui::Spacing();
 
-    sectionHeader("CREDITS");
+    sectionHeader("DEVELOPERS");
     ImGui::TextWrapped("z3xox - owner / lead developer");
-    ImGui::TextDisabled("  recompiler, runtime (EE/GS/VU1/scheduler), renderer, game overrides, generators");
+    ImGui::TextDisabled("  recompiler, the runtime core (EE/GS/VU1/scheduler, the GS replay), the"
+                        " native Vulkan renderer, game overrides, generators");
     ImGui::TextWrapped("RexxColder - supporter / collaborator");
-    ImGui::TextDisabled("  optimisation (perf/async), front-end + install wizard, input & gamepads, "
-                        "build/release, deploy, game-data (AFS/AFL), docs");
+    ImGui::TextDisabled("  the OpenGL renderer, optimisation (perf/async), front-end and install"
+                        " wizard, native IOP modules, input & gamepads, build/release, deploy,"
+                        " game data, texture packs");
     ImGui::TextWrapped("valenvivaldi - collaborator");
     ImGui::TextDisabled("  port macOS arm64, packaging, audio");
+    ImGui::TextWrapped("KaibaSammy - collaborator (mods)");
+    ImGui::TextDisabled("  Mod Manager project, mod design, mod support");
     ImGui::Spacing();
 
-    sectionHeader("THIRD-PARTY");
+    sectionHeader("CREDITS");
     if (ImGui::BeginChild("##about_third", ImVec2(-1, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY))   // [gpadbox] content-sized
     {
         ImGui::TextWrapped("ran-j/PS2Recomp - static recompiler (upstream, GPL-3.0)");
         ImGui::TextWrapped("ViveTheModder - NTSC-U AFS file lists (Apache-2.0)");
         ImGui::TextWrapped("Arntzen Software - paraLLEl-GS (LGPL-3.0-or-later)");
+        ImGui::TextWrapped("Sal9im - \"4K 2D Textures Lite\" pack (GBATemp). Not distributed: drop"
+                           " it in data/Textures/. The DXT5 encoding and the runtime replacement"
+                           " work are RexxColder's.");
+        ImGui::TextWrapped("Russo One - typeface (SIL Open Font License)");
         ImGui::Spacing();
     }
     ImGui::EndChild();
