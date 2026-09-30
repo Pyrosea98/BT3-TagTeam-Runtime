@@ -174,7 +174,12 @@ namespace
                     out.firstAfs = it->path().string();
                 continue;
             }
+            // [modules] The install may rename the boot ELF to BOOT and group it with the modules in
+            // data/Modules/, so BOOT counts as an ELF here. It has no extension, which is why it needs
+            // naming explicitly: the old test (".elf" / ".78" / a name starting with SLUS) misses it and
+            // PLAY would simply be unavailable with no other symptom.
             if (endsWithNoCase(name, ".elf") || endsWithNoCase(name, ".78") ||
+                endsWithNoCase(name, "BOOT") ||
                 (name.size() > 4 && std::equal(name.begin(), name.begin() + 4, "SLUS",
                                                [](char a, char b) {
                                                    return std::toupper((unsigned char)a) == b;
@@ -206,35 +211,78 @@ namespace
     // Menu buttons sit on the artwork, so they get a glow: a few concentric translucent rounded
     // rects behind the ImGui button, pulsing slowly. Cheap (4 draw-list rects) and it reads as
     // "glowing" without a shader.
+    // [anim] The glow's strength CHASES the hover state instead of jumping, and a press spikes it and
+    // lets it settle. Without this the buttons read as two static states with a colour swap; with it
+    // they answer the pointer. The chase is per-button state kept in a static map keyed by the label,
+    // so each button remembers its own value and no allocation happens per frame.
     void glowButton(const char *label, const ImVec2 &size, bool enabled, bool *pressed,
                     const ImVec4 &tint)
     {
+        // One animated "energy" per label: 0 = idle, 1 = hovered, >1 = just pressed (decays back).
+        static std::map<std::string, fe::Chase> s_energy;
+        fe::Chase &e = s_energy[label];
+        if (e.get() == 0.0f && e.target() == 0.0f)
+            e.snap(0.0f);   // first sight of this button: no animation out of zero
+
         const ImVec2 at = ImGui::GetCursorScreenPos();
-        const float pulse = 0.5f + 0.5f * (float)std::sin((double)ImGui::GetTime() * 2.2);
+        // The widget is invisible and the face + label are drawn on the draw list, so the hit area and
+        // the painted box are the same rect by construction. InvisibleButton is what makes it focusable,
+        // which is what puts the gamepad cursor on it.
+        // The ID carries the label: two InvisibleButtons sharing one ID are the SAME widget to ImGui,
+        // which made the second button's hover/click state and the whole-widget conflict highlight
+        // ("2 visible items with conflicting ID") wrong. A per-label ID is the fix, not PushID.
+        char id[64];
+        std::snprintf(id, sizeof(id), "##glow_%s", label);
+        ImGui::InvisibleButton(id, size);
+        const bool hovered = ImGui::IsItemHovered() && enabled;
+        *pressed = ImGui::IsItemClicked() && enabled;
+
+        e.target(hovered ? 1.0f : 0.0f);
+        if (*pressed)
+            e.snap(std::min(1.6f, e.get() + 0.6f));   // the press spike, which then chases back down
+        e.tick(ImGui::GetIO().DeltaTime, 11.0f);
+        if (fe::motionOff())
+            e.snap(hovered ? 1.0f : 0.0f);
+        const float en = e.get();
+
         ImDrawList *dl = ImGui::GetWindowDrawList();
+        const float pulse = 0.5f + 0.5f * (float)std::sin((double)ImGui::GetTime() * 2.2);
+
+        // Draw order matters and is the whole trick: glow, then the face, then the label. Anything
+        // submitted later lands on top, so the label is submitted last or the face would hide it.
         for (int i = 3; i >= 1; --i)
         {
-            const float grow = 2.0f + 5.0f * (float)i * (0.75f + 0.25f * pulse);
+            // The pulse is a floor and the hover energy scales it: idle still breathes, hover lifts it.
+            const float grow = 2.0f + 5.0f * (float)i * (0.75f + 0.25f * pulse) * (1.0f + 0.55f * en);
             const ImU32 col = ImGui::GetColorU32(ImVec4(tint.x, tint.y, tint.z,
-                                                        (0.10f * (4 - i) / 3.0f) * (0.65f + 0.35f * pulse)));
+                                                        (0.10f * (4 - i) / 3.0f) * (0.65f + 0.35f * pulse)
+                                                        * (1.0f + 1.30f * en)));
             dl->AddRect(ImVec2(at.x - grow, at.y - grow), ImVec2(at.x + size.x + grow, at.y + size.y + grow),
                         col, 8.0f + grow, 0, 2.0f);
         }
-
-        ImGui::PushStyleColor(ImGuiCol_Button, enabled ? tint : ImVec4(0.16f, 0.17f, 0.18f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(tint.x * 1.25f, tint.y * 1.25f, tint.z * 1.25f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(tint.x * 0.8f, tint.y * 0.8f, tint.z * 0.8f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.02f, 0.05f, 0.03f, 1.0f));
-        ImGui::BeginDisabled(!enabled);
-        *pressed = ImGui::Button(label, size);
-        ImGui::EndDisabled();
-        ImGui::PopStyleColor(4);
+        const float k = 0.72f + 0.53f * std::min(1.0f, en);
+        dl->AddRectFilled(at, ImVec2(at.x + size.x, at.y + size.y),
+                          enabled ? ImGui::GetColorU32(ImVec4(tint.x * k, tint.y * k, tint.z * k, 1.0f))
+                                  : ImGui::GetColorU32(ImVec4(0.16f, 0.17f, 0.18f, 1.0f)),
+                          6.0f);
+        // Centre the label on the face, both axes: AddText takes the text's TOP-LEFT, so a y of at.y
+        // would pin the text to the button's top edge and half of it would sit above the box.
+        // NOT AddText(pos, col, "%s", label): this ImGui (1.93.0 WIP) has no variadic AddText overload, so
+        // that call binds text_begin to the literal "%s" and text_end to a pointer into a DIFFERENT buffer
+        // (the label). That is undefined behaviour and drew nothing at all -- the buttons came up as empty
+        // coloured boxes. Pass the string itself.
+        const ImVec2 tsz = ImGui::CalcTextSize(label);
+        const float th = ImGui::GetTextLineHeight();
+        const ImVec2 tp(at.x + (size.x - tsz.x) * 0.5f, at.y + (size.y - th) * 0.5f);
+        dl->AddText(tp, enabled ? ImGui::GetColorU32(ImVec4(0.02f, 0.05f, 0.03f, 1.0f))
+                                : ImGui::GetColorU32(ImVec4(0.45f, 0.46f, 0.47f, 1.0f)),
+                          label);
     }
 
     static constexpr int kMenuBarH = 76;   // [menusize] the PLAY / SETTINGS bar under the art
 
     void drawMenu(std::uint32_t bgTex, int bgW, int bgH, const ImVec2 &size, bool canPlay, bool &playAsked,
-                  bool &settingsAsked, bool &navFocus)
+                  bool &settingsAsked, bool &navFocus, fe::Once &artReveal)
     {
         // The bar owns the bottom strip; the artwork is laid out in what is left above it, so
         // nothing important ends up hidden behind the bar.
@@ -250,9 +298,29 @@ namespace
             const ImVec2 origin = ImGui::GetCursorScreenPos();
             const float scale = std::max(artSize.x / (float)bgW, artSize.y / (float)bgH);
             const ImVec2 drawn((float)bgW * scale, (float)bgH * scale);
+            // [anim] Parallax: a very slow horizontal drift. It moves the ARTWORK, not the crop window, so
+            // the logo never gets cut at the edges however long the launcher stays open. The amplitude is a
+            // fraction of a percent of the width, which at 1920 px is well under a pixel per second --
+            // felt rather than seen. The boot reveal settles the art from 1.03 to 1.0 about its centre.
+            //
+            // There is deliberately NO black rect painted over the art here. The first version faded the
+            // background up in step, which on the very first frame meant a fully opaque black rectangle
+            // over the whole menu: the launcher opened black and then popped in. A reveal that hides the
+            // screen it is revealing is not a reveal, so the art is drawn immediately and only its scale
+            // settles. The window's own background is already black behind the letterbox bars.
+            const float t = (float)ImGui::GetTime();
+            const float par = fe::motionOff() ? 0.0f : std::sin((double)t * 0.11) * 0.5f + std::sin((double)t * 0.047) * 0.5f;
+            const float amp = artSize.x * 0.004f;
+            const float rev = artReveal.raw();
+            const float zoom = 1.0f + (1.0f - rev) * 0.03f;
+            const ImVec2 centre(origin.x + artSize.x * 0.5f, origin.y + artSize.y * 0.5f);
+            const ImVec2 a0(centre.x - artSize.x * zoom * 0.5f + par * amp,
+                            centre.y - artSize.y * zoom * 0.5f);
+            const ImVec2 a1(centre.x + artSize.x * zoom * 0.5f + par * amp,
+                            centre.y + artSize.y * zoom * 0.5f);
             const ImVec2 uv0(std::max(0.0f, (drawn.x - artSize.x) * 0.5f / drawn.x), std::max(0.0f, (drawn.y - artSize.y) * 0.5f / drawn.y));
             const ImVec2 uv1(1.0f - uv0.x, 1.0f - uv0.y);
-            dl->AddImage(ImTextureRef((ImTextureID)(intptr_t)bgTex), origin, ImVec2(origin.x + artSize.x, origin.y + artSize.y), uv0, uv1);
+            dl->AddImage(ImTextureRef((ImTextureID)(intptr_t)bgTex), a0, a1, uv0, uv1);
         }
 
         const ImVec2 barTop(0.0f, artSize.y);
@@ -323,13 +391,49 @@ namespace frontend
             std::fprintf(stderr, "[fe] settings %s, pad config %s\n", okSettings ? "saved" : "SAVE FAILED", okPads ? "saved" : "not written");
         };
 
+        // The first screen is just the artwork with PLAY and SETTINGS; the tabbed window is what
+        // SETTINGS opens. PS2X_FE_PAGE jumps straight into it for the headless checks. Declared BEFORE
+        // the window is created: the menu's height depends on which screen we start on, and the window
+        // has to be created at that height rather than resized to it (see the comment below).
+        enum class Screen
+        {
+            Menu,
+            Settings
+        } screen = Screen::Menu;
+        int page = 0;
+        if (const char *p = std::getenv("PS2X_FE_PAGE"))
+        {
+            const int n = std::atoi(p);
+            if (n >= 0 && n < 7)   // the page count (kPages is defined with the font, further down)
+            {
+                page = n;
+                screen = Screen::Settings;
+            }
+        }
+
         FeWindow win;
-        if (!win.open(cfg.title, settings.feWidth, settings.feHeight))
+        // [menusize] The menu's height is the art's aspect plus the button bar, so the window has to be
+        // CREATED at that height. It used to be created at the pages' size (settings.feHeight) and resized
+        // to the menu's a few lines later, after the art had been decoded: on Wayland that resize is
+        // asynchronous, so the launcher visibly opened at the wrong size before settling.
+        //
+        // Only the art's DIMENSIONS are needed here, and they are read from the PNG header by
+        // probeBackgroundSize() -- deliberately NOT loadBackground(), which calls glGenTextures and so
+        // cannot run before the window's GL context exists. Doing it the other way round returned texture 0
+        // and left GL in a state where ImGui's font atlas never uploaded either, so the shell came up with
+        // no artwork AND no text at all.
+        int artW = 0, artH = 0;
+        probeBackgroundSize(exeDir / "assets" / "background.png", &artW, &artH);
+        const int menuArtW = artW > 0 ? artW : 1920, menuArtH = artH > 0 ? artH : 620;
+        const int menuH = (int)((long long)settings.feWidth * menuArtH / menuArtW) + kMenuBarH;
+        const bool startsOnMenu = (screen == Screen::Menu);
+        if (!win.open(cfg.title, settings.feWidth, startsOnMenu ? menuH : settings.feHeight))
         {
             std::fprintf(stderr, "[fe] front-end unavailable; booting directly\n");
             return FeAction::Boot;
         }
-        std::fprintf(stderr, "[fe] front-end window %dx%d\n", settings.feWidth, settings.feHeight);
+        std::fprintf(stderr, "[fe] front-end window %dx%d\n", settings.feWidth,
+                     startsOnMenu ? menuH : settings.feHeight);
 
         // [rescan] the scan is redone when the install wizard closes after installing: it used to run
         // once here, so PLAY stayed greyed after an install until the launcher was reopened
@@ -378,23 +482,8 @@ namespace frontend
         static const char *const kPages[] = {
             "Status", "Video", "Audio", "Controllers", "Logging", "Misc", "About"
         };
-        // The first screen is just the artwork with PLAY and SETTINGS; the tabbed window is
-        // what SETTINGS opens. PS2X_FE_PAGE jumps straight into it for the headless checks.
-        enum class Screen
-        {
-            Menu,
-            Settings
-        } screen = Screen::Menu;
-        int page = 0;
-        if (const char *p = std::getenv("PS2X_FE_PAGE"))
-        {
-            const int n = std::atoi(p);
-            if (n >= 0 && n < (int)(sizeof(kPages) / sizeof(kPages[0])))
-            {
-                page = n;
-                screen = Screen::Settings;
-            }
-        }
+        // screen/page and the PS2X_FE_PAGE check now live above win.open, where the window's initial
+        // height needs them.
         bool wantBoot = false;
         bool wantQuit = false;
 
@@ -412,6 +501,15 @@ namespace frontend
         fe::Fader fader;
         Transition transition = Transition::None;
         int transitionPage = 0;
+        // [anim] Page slide. The page index is swapped the moment the slide starts (above), and this
+        // only carries the motion: the new pane slides in from the side the old one left towards.
+        fe::Once slide;
+        float slideDir = 1.0f;
+        // [anim] The menu art's staged reveal: it runs once when the menu first appears (and again on
+        // BACK), scaling the art from 1.03 to 1.0 while the background behind it fades up.
+        fe::Once artReveal;
+        // [anim] Set when the menu is entered so the reveal re-arms; cleared once it has been started.
+        bool artRevealOnce = true;
         // PLAY stops here after the fade: the screen is black and the theme is fading out, and
         // the boot only happens once the audio device has been let go.
         bool playPending = false;
@@ -502,14 +600,17 @@ namespace frontend
         const bool autoQuit = autoDelayMs > 0 && std::getenv("PS2X_FE_AUTOQUIT") != nullptr;
         const auto t_start = std::chrono::steady_clock::now();
 
+        // The art is decoded and uploaded HERE, with the window's GL context current (see probeBackgroundSize
+        // for why the dimensions were read earlier instead).
         int bgW = 0, bgH = 0;
         const std::uint32_t bgTex = loadBackground(exeDir / "assets" / "background.png", &bgW, &bgH);
         // [menusize] The menu shows the art at its own aspect ratio, so its window height follows the width:
         // art height + the button bar. The settings pages use the saved height. The window is resized on every
-        // screen change; the height saved to the settings file is always the pages' height.
+        // screen change; the height saved to the settings file is always the pages' height. menuArtW/menuArtH
+        // were measured before the window was created (see the comment at win.open), so the first frame already
+        // has the right height and this only re-asserts it on screen changes.
         const auto menuHeightFor = [&](int w) {
-            const int aw = bgW > 0 ? bgW : 1920, ah = bgH > 0 ? bgH : 620;
-            return (int)((long long)w * ah / aw) + kMenuBarH;
+            return (int)((long long)w * menuArtH / menuArtW) + kMenuBarH;
         };
         const auto applyScreenSize = [&](bool menu) {
             int w = settings.feWidth, h = settings.feHeight;
@@ -577,7 +678,7 @@ namespace frontend
                     bool settingsAsked = false;
                     bool playAsked = false;
                     drawMenu(bgTex, bgW, bgH, ImGui::GetContentRegionAvail(), canPlay, playAsked,
-                              settingsAsked, navFocusWanted);
+                              settingsAsked, navFocusWanted, artReveal);
                     if (transition == Transition::None)
                     {
                         if (settingsAsked && fader.start(1.0f, 0.16f, 0.20f))
@@ -661,15 +762,18 @@ namespace frontend
                                 navFocusWanted = false;
                             }
                             if (ImGui::Selectable(kPages[i], page == i) && page != i &&
-                                transition == Transition::None)
+                                !slide.running())
                             {
-                                // A tab swap does not need a black screen; a quick dip reads as
-                                // "the page changed" without flashing the whole window.
-                                if (fader.start(0.80f, 0.08f, 0.12f))
-                                {
-                                    transitionPage = i;
-                                    transition = Transition::SwitchPage;
-                                }
+                                // [anim] A tab swap slides the page in from the side it came from. It used
+                                // to dip the whole window to 80% black (0.08 s out, 0.12 s in): a fade says
+                                // "something replaced everything", but a tab change only replaced one pane,
+                                // and the dip was the most visible thing about using the launcher. The slide
+                                // is clipped to the page pane, so it never runs over the sidebar.
+                                transitionPage = i;
+                                slideDir = (i > page) ? 1.0f : -1.0f;
+                                page = i;   // swapped now, so the new page is what slides in
+                                navFocusWanted = true;
+                                slide.start(0.16f);
                             }
                             }
                         }
@@ -683,6 +787,20 @@ namespace frontend
                                                    ImGui::GetFontSize() * 0.4f));
                         if (ImGui::BeginChild("##fe_page", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders))
                     {
+                        // [anim] The slide: the pane is offset horizontally and clipped to its own rect, so
+                        // the content travels in from the tab direction without spilling over the sidebar.
+                        // The offset is a fraction of the pane width, not a fixed pixel count, so it looks
+                        // the same at any window size. Both legs are free (no clip) when motion is off.
+                        const ImVec2 panePos = ImGui::GetCursorScreenPos();
+                        const ImVec2 paneSize = ImGui::GetContentRegionAvail();
+                        const float slideT = fe::motionOff() ? 1.0f : slide.t();
+                        const float slideDx = (1.0f - slideT) * slideDir * paneSize.x * 0.18f;
+                        if (slideDx != 0.0f)
+                        {
+                            ImGui::PushClipRect(panePos, ImVec2(panePos.x + paneSize.x,
+                                                                 panePos.y + paneSize.y), true);
+                            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + slideDx);
+                        }
                         // Fixed height, less the footer, so the action bar is pinned to the bottom.
                         // The hint line is only reserved when one was shown last frame: the page
                         // sets it later in the frame, so measuring it here would size the region
@@ -769,6 +887,8 @@ namespace frontend
                                          ImGui::GetCursorPosY() > ImGui::GetWindowHeight() ? "DESBORDA" : "entra");
                         }   // fe_scroll
                         ImGui::EndChild();
+                        if (slideDx != 0.0f)
+                            ImGui::PopClipRect();   // [anim] the slide's clip, opened with the pane
 
                         // Footer: a page can leave one line of text that goes just above the bar
                         // (so it costs no page height), and the bar is only a separator line
@@ -900,6 +1020,15 @@ namespace frontend
                 const auto t_now = std::chrono::steady_clock::now();
                 const float dt = std::chrono::duration<float>(t_now - t_prev).count();
                 t_prev = t_now;
+                slide.tick(dt);   // [anim] the page slide runs on the same dt as the fader
+                artReveal.tick(dt);
+                // [anim] The art reveal re-arms each time the menu is entered. Only on the *arrival*
+                // frame, not while it is running, or it would restart forever.
+                if (screen == Screen::Menu && artReveal.done() && !artReveal.armed() && artRevealOnce)
+                {
+                    artRevealOnce = false;
+                    artReveal.start(0.55f);
+                }
                 fader.tick(dt, [&] {
                     switch (transition)
                     {
@@ -917,9 +1046,11 @@ namespace frontend
                         screen = Screen::Menu;
                         navFocusWanted = true;
                         applyScreenSize(true);
+                        artRevealOnce = true;   // [anim] the art re-reveals on the way back
                         break;
                     case Transition::SwitchPage:
-                        page = transitionPage;
+                        // [anim] Retired: a tab swap now slides (see the sidebar). Left in the enum so an
+                        // older reference still compiles to a no-op rather than falling through to Play.
                         navFocusWanted = true;
                         break;
                     case Transition::Play:
