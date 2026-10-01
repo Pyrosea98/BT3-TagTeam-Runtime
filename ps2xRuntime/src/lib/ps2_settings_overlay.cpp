@@ -3,6 +3,7 @@
 #include "runtime/ps2_seamvk.h"   // [nativeopt] seamvk::configure
 #include "runtime/ps2_wshud.h"   // [pgsink] ink colour / width live in the walker module
 #include "ps2_settings_overlay.h"
+#include "ps2x_mods.h"   // [mods] overhead bars, kill feed, names and the curtain a mod asks for
 #include "runtime/ps2_netplay.h"   // [netplay]
 #include "runtime/ps2x_achieve.h"  // [ach]
 #include "runtime/ps2_gs_pgs.h"   // [pgsink] backend ink width
@@ -818,6 +819,12 @@ void PS2SettingsOverlay::preloadSettings()
         s_logLevel = lvl;
         s_startupLogLevel = lvl;
     }
+    {   // [mods] the launcher's Mods page: the loader (ps2x_mods.cpp) reads these as environment defaults, so a
+        // PS2X_MODS / PS2X_MODS_DISABLE set by hand still wins
+        if (!doc.getB("mods.enabled", true)) setEnvDefault("PS2X_MODS", "0");
+        const std::string disabled = doc.getS("mods.disabled", "");
+        if (!disabled.empty()) setEnvDefault("PS2X_MODS_DISABLE", disabled.c_str());
+    }
     exportRendererEnv(rendererPre, texPackPre, forceBilinearPre);
 }
 
@@ -1187,6 +1194,7 @@ extern "C" int  ps2xNetJumpState();             // [netjump] the jump's phase: 1
 // where this is declared for its own use; the label and the panel need it too, to know whether to
 // take input, and a window behind a curtain must not be clickable.
 extern std::atomic<int> g_netCurtainWant;   // game_overrides.cpp: 1 = cover the screen
+// [mods] g_ps2xModCurtainWant (ps2x_mods.h):   // game_overrides.cpp: the Tag Team mode menu's cover (no cancel hint)
 
 // [mmpopup] The panel's open state, plus the gate's previous value. File scope rather than a local
 // so the closing edge can be seen from mainMenuPopupWanted(): the draw function only runs while the
@@ -1582,12 +1590,13 @@ static float s_curtainLevel = 0.0f;
 static bool netCurtainBusy()
 {
     extern std::atomic<int> g_netCurtainWant;   // game_overrides.cpp: the target, not the level
-    return s_curtainLevel > 0.0f || g_netCurtainWant.load(std::memory_order_relaxed) != 0;
+    return s_curtainLevel > 0.0f || g_netCurtainWant.load(std::memory_order_relaxed) != 0 || g_ps2xModCurtainWant.load(std::memory_order_relaxed) != 0;
 }
 
 static void drawNetCurtain()
 {
-    const float want = g_netCurtainWant.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+    const bool netWant = g_netCurtainWant.load(std::memory_order_relaxed) != 0;
+    const float want = (netWant || g_ps2xModCurtainWant.load(std::memory_order_relaxed)) ? 1.0f : 0.0f;
     const float dt = ImGui::GetIO().DeltaTime;
     s_curtainLevel += (want - s_curtainLevel) * (1.0f - std::exp(-dt / 0.28f));
     if (std::fabs(s_curtainLevel - want) < 0.004f)
@@ -1670,7 +1679,7 @@ static void drawNetCurtain()
     // F10 is the third way out, and it is on screen because it has to be: the test hook was a button
     // in this panel, which the curtain covers. It is a key for the same reason -- you cannot click
     // what you cannot see.
-    if (want > 0.0f)
+    if (want > 0.0f && netWant)   // [tagteam] the mode menu's cover has nothing to cancel
     {
         // Two different hints, because the two phases ask for different things.
         //
@@ -1875,6 +1884,61 @@ void PS2SettingsOverlay::drawMainMenuPopup()
     ImGui::PopStyleVar();
 }
 
+// [tagteam] The extra fighters' health, bottom-left: the game's HUD only knows the two leaders. One bar per
+// extra, blue for the player's side, red for the other, the numbers next to it. Nothing here takes input.
+void PS2SettingsOverlay::drawTagTeamHud(const uint32_t *e, int n)
+{
+    // [tagteam] A bar over each extra fighter's head, from the runtime's projection of the head through the game
+    // camera onto the 512x448 frame, scaled to the viewport. Blue for the player's side, red for the other. Off
+    // screen (NaN) or behind the camera: no bar. Nothing here takes input.
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    const float sx = vp->Size.x / 512.f, sy = vp->Size.y / 448.f;
+    const float w = ImGui::GetFontSize() * 4.0f, h = ImGui::GetFontSize() * 0.45f;
+    for (int k = 0; k < n; ++k)
+    {
+        const uint32_t side = e[k * 8 + 1], hp = e[k * 8 + 2], maxhp = e[k * 8 + 3];
+        float hx, hy; std::memcpy(&hx, &e[k * 8 + 6], 4); std::memcpy(&hy, &e[k * 8 + 7], 4);
+        if (!(hx == hx) || !(hy == hy) || hx < -64.f || hx > 576.f || hy < -64.f || hy > 512.f) continue;
+        const float cx = vp->Pos.x + hx * sx, cy = vp->Pos.y + hy * sy - h * 1.5f;
+        const float frac = maxhp ? (float)std::min(hp, maxhp) / (float)maxhp : 0.f;
+        const ImU32 col = side == 0u ? IM_COL32(72, 150, 255, 220) : IM_COL32(255, 90, 72, 220);
+        const ImVec2 a(cx - w * 0.5f, cy - h * 0.5f), b(cx + w * 0.5f, cy + h * 0.5f);
+        dl->AddRectFilled(ImVec2(a.x - 1.f, a.y - 1.f), ImVec2(b.x + 1.f, b.y + 1.f), IM_COL32(6, 6, 6, 200));
+        dl->AddRectFilled(a, b, IM_COL32(64, 64, 64, 200));
+        dl->AddRectFilled(a, ImVec2(a.x + (b.x - a.x) * frac, b.y), col);
+    }
+}
+
+// [tagteam] The kill feed, top right under the fps meter: "killer  KO  victim", the names in their side's colour,
+// fading out over the last second of a four-second life. Nothing here takes input.
+void PS2SettingsOverlay::drawTagTeamFeed(const uint32_t *e, int n)
+{
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    const float base = ImGui::GetFontSize(), fs = base * 1.4f, margin = base * 0.75f, lineH = fs * 1.35f, k = fs / base;
+    ImFont *font = ImGui::GetFont();
+    float y = vp->Pos.y + margin + (m_settings.showPerf ? base * 1.9f : 0.f);
+    for (int k = 0; k < n; ++k)
+    {
+        const uint32_t victim = e[k * 5], killer = e[k * 5 + 1], vs = e[k * 5 + 2], ks = e[k * 5 + 3], age = e[k * 5 + 4];
+        const float alpha = age > 120u ? 1.f - (float)(age - 120u) / 30.f : 1.f;
+        if (alpha <= 0.f) continue;
+        auto sideCol = [&](uint32_t side) { return side == 0u ? IM_COL32(120, 180, 255, (int)(255 * alpha)) : side == 1u ? IM_COL32(255, 120, 100, (int)(255 * alpha)) : IM_COL32(220, 220, 220, (int)(255 * alpha)); };
+        const char *kn = killer != ~0u ? ps2xModsCharName(killer) : nullptr, *vn = ps2xModsCharName(victim);
+        auto sz = [&](const char *s) { const ImVec2 v = ImGui::CalcTextSize(s); return ImVec2(v.x * k, v.y * k); };
+        const ImVec2 kSz = kn ? sz(kn) : ImVec2(0, 0), vSz = sz(vn), koSz = sz("  KO  ");
+        const float w = kSz.x + koSz.x + vSz.x + fs, x0 = vp->Pos.x + vp->Size.x - margin - w;
+        dl->AddRectFilled(ImVec2(x0 - fs * 0.5f, y - fs * 0.15f), ImVec2(x0 + w + fs * 0.5f, y + fs * 1.15f), IM_COL32(0, 0, 0, (int)(150 * alpha)), fs * 0.3f);
+        float x = x0 + fs * 0.5f;
+        if (kn) { dl->AddText(font, fs, ImVec2(x, y), sideCol(ks), kn); x += kSz.x; }
+        dl->AddText(font, fs, ImVec2(x, y), IM_COL32(255, 230, 120, (int)(255 * alpha)), kn ? "  KO  " : " down ");
+        x += koSz.x;
+        dl->AddText(font, fs, ImVec2(x, y), sideCol(vs), vn);
+        y += lineH;
+    }
+}
+
 void PS2SettingsOverlay::drawPerfHud()
 {
     // [perf] Medidor de esquina, arriba a la derecha. Solo el numero de presents por segundo: es lo
@@ -2076,8 +2140,10 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
         // [notify] A card on screen is a reason to open a frame here even with nothing else to
         // draw: an unlock can land in a fight, where the panel is retracted and the main-menu popup
         // does not apply at all, and a session can connect while the player is anywhere.
+        uint32_t ttHud[8 * 10]; const int ttN = ps2xModsHud(ttHud, 10);   // [tagteam] extra fighters' health
+        uint32_t ttFeed[5 * 6]; const int ttF = ps2xModsFeed(ttFeed, 6);   // [tagteam] the kill feed
         if (!m_settings.showPerf && !mmPopup && !curtain && m_cards.empty() &&
-            ps2xNotifyPending() == 0)
+            ps2xNotifyPending() == 0 && ttN == 0 && ttF == 0)
             return;
         try
         {
@@ -2086,6 +2152,8 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
             DbzThemeScope dbzTheme;   // pops all 40 style colours on scope exit
             if (m_settings.showPerf)
                 drawPerfHud();
+            if (ttN) drawTagTeamHud(ttHud, ttN);
+            if (ttF) drawTagTeamFeed(ttFeed, ttF);
             if (mmPopup)
                 drawMainMenuPopup();
             // [netjump] Last, so it covers the label and the panel: during the transition the player
@@ -2126,6 +2194,8 @@ void PS2SettingsOverlay::draw(PS2Runtime &runtime)
         // se desvaneceria con el. Acá va a opacidad completa siempre.
         if (m_settings.showPerf)
             drawPerfHud();
+        { uint32_t hud[8 * 10]; const int hn = ps2xModsHud(hud, 10); if (hn) drawTagTeamHud(hud, hn); }   // [tagteam]
+        { uint32_t feed[5 * 6]; const int fn = ps2xModsFeed(feed, 6); if (fn) drawTagTeamFeed(feed, fn); }
 
         // Fade the whole window (and the bindings popup, if open) in/out with the
         // deploy animation.

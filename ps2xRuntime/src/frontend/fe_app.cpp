@@ -480,7 +480,7 @@ namespace frontend
             io.Fonts->AddFontDefault();
 
         static const char *const kPages[] = {
-            "Status", "Video", "Audio", "Controllers", "Logging", "Misc", "About"
+            "Status", "Video", "Audio", "Controllers", "Logging", "Misc", "Mods", "About"
         };
         // screen/page and the PS2X_FE_PAGE check now live above win.open, where the window's initial
         // height needs them.
@@ -874,6 +874,10 @@ namespace frontend
                         else if (page == 5)
                         {
                             drawMiscPage(pageCtx);
+                        }
+                        else if (page == 6)
+                        {
+                            drawModsPage(pageCtx);
                         }
                         else
                         {

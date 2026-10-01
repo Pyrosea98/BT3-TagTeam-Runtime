@@ -4,6 +4,7 @@ extern "C" bool ps2xAudioFeedOn();   // [rollback] ps2_runtime.cpp: false while 
 #include "ps2_runtime_macros.h"
 #include "game_overrides.h"
 #include "ps2_runtime.h"
+#include "ps2x_mods.h"   // [mods] loadable mods: install, frame hooks
 
 // [guestbusy-tid] Defined in ps2_gs_gpu_renderer.cpp; declared HERE at file scope on purpose.
 // Declaring it inside bt3FrameKick put it in this file's anonymous namespace, which silently
@@ -17,6 +18,7 @@ extern std::atomic<uint32_t> g_ps2ForceSkipFrames;   // [skipforce] countdown po
 
 // [framegate] vsync tick source, declared at file scope for the same reason as the above.
 namespace ps2_syscalls { uint64_t GetCurrentVSyncTick(); }
+extern std::chrono::steady_clock::time_point g_ps2xBootT0;
 // [fightgate] FILE SCOPE (a block-scope extern inside this file's anonymous namespace would declare a different symbol).
 bool ps2HalfStepFightActive();
 void ps2HalfStepNoteLogic(uint64_t frame);
@@ -929,6 +931,7 @@ extern "C" int ps2xNetServeSwapRead(unsigned long long slotId, unsigned long lon
     // nothing). The game's own Vibration option still gates it: sub_001C02C8 sets fighter+0x15D0 from the options
     // word bit (player+1), and sub_001DC5E0 only calls the accumulator when that flag is set.
     //   PS2X_RUMBLE=0 disables, PS2X_RUMBLE_SCALE=<f> scales both motors (default 1), PS2X_RUMBLE_LOG=1 prints requests.
+    // [tagteam] The Tag Team port (stages 1-30) lives in ps2xRuntime/mods/tagteam/tagteam.cpp, a loadable mod (ps2x_mod_api.h).
     // [rumble] PS2X_RUMBLE_FORCE=1 (test knob): sub_001DC5E0(fighter) is the per-fighter vibration driver; it bails
     // unless fighter+0x15D0 (set at fighter init from the game's Vibration option bits) is nonzero. Forcing the flag
     // on entry exercises the whole chain on a rig that has no memory card with the option turned on.
@@ -4178,7 +4181,7 @@ namespace
             static const bool s_guard = [](){ const char *v = std::getenv("PS2X_FIXUPGUARD"); return !(v && v[0] == '0'); }();
             const uint32_t cnt = r32(a2), entOff = r32(a2 + 4u) * 4u;
             const uint32_t entBase = (a1 + entOff) & 0x1FFFFFFFu, a1m = a1 & 0x1FFFFFFFu;
-            if (s_guard && (cnt > 1024u || entBase < a1m || entBase - a1m > 0x200000u || (a1 & 0x1FFFFFFFu) >= 0x2000000u))
+            if (s_guard && (cnt > 1024u || entBase < a1m || entBase - a1m > 0x200000u || (a1 & 0x1FFFFFFFu) >= PS2_RAM_SIZE))   // [tagteam] packs of extra fighters live in heap1 above 32 MB
             {
                 std::fprintf(stderr, "[fixupguard] REJECTED fixup #%u: a1=0x%x a2=0x%x count=%u entries@+0x%x (garbage header) -- skipping to protect 0x2c9350\n", n, a1, a2, cnt, entOff);
                 return;
@@ -6677,6 +6680,7 @@ namespace
         // would only advance when the next SE command happened to arrive.
         seServiceVoices(runtime);
         g_bt3FrameCount.fetch_add(1, std::memory_order_relaxed);
+        ps2xModsFrame(rdram, ctx, runtime);   // [mods] the mods' frame hooks (the Tag Team mod drives its loads here)
         // [rollback] the frame gate: in frame-stepped mode tid 1 parks here until the host controller
         // has had the boundary (snapshot / rollback) and opened the gate. No-op otherwise.
         ps2xFrameGateWait(g_bt3FrameCount.load(std::memory_order_relaxed), rdram, ctx);
@@ -8136,6 +8140,7 @@ namespace
         runtime.replaceFunction(0x00295fb8u, &bt3PadGetState);
         runtime.replaceFunction(0x00295e58u, &bt3PadCreateSocket);
         runtime.replaceFunction(0x00122f10u, &bt3PadSendRumble);   // [rumble]
+        ps2xModsInstall(runtime);   // [mods] loadable mods in mods/ (the Tag Team mod lives there now, ps2x_mod_api.h)
         if (const char *rf = std::getenv("PS2X_RUMBLE_FORCE"); rf && rf[0] == '1')
         {   // [rumble] test knob, see bt3VibrationDriverForced
             g_orig1dc5e0 = runtime.lookupFunction(0x001dc5e0u);
@@ -8337,3 +8342,5 @@ extern "C" int ps2xMenuSePlay(int bank, int idx)
            s_serial.fetch_add(1u, std::memory_order_relaxed));
     return 1;
 }
+
+

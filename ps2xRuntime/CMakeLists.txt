@@ -279,6 +279,11 @@ if(NOT PS2X_IS_VITA)
     endif()
 endif()
 
+# [ram128] Size of the guest RDRAM backing store in MB (32 = retail; 128 = PCSX2's "128 MB" layout, room for
+# more than two fighters). The kernel keeps reporting 32 MB either way; see include/runtime/ps2_memory.h.
+set(PS2X_RAM_MB "128" CACHE STRING "Guest RDRAM backing store in MB (power of two >= 32; 128 = room for loadable mods such as Tag Team)")
+add_compile_definitions(PS2X_RAM_MB=${PS2X_RAM_MB})
+
 add_library(ps2_host_backend INTERFACE)
 
 set(PS2X_DEFAULT_BOOT_ELF_DEFINE "")
@@ -694,6 +699,7 @@ add_subdirectory(third_party/rcheevos EXCLUDE_FROM_ALL)
 
 add_library(ps2_runtime STATIC
 src/lib/game_overrides.cpp
+src/lib/ps2x_mods.cpp         # [mods] loadable game mods (ps2x_mod_api.h)
 src/lib/ps2x_dueldump.cpp       # [dueldump] total capture of the Duel menu flow
 src/lib/ps2x_net_texdump.cpp    # [netmenu] force-decode QRS textures via the runtime's PSMT8 reader
 src/lib/ps2x_duel_fields.cpp    # [duelfields] the complete Duel-setup field map + write methods
@@ -1237,6 +1243,8 @@ add_custom_command(TARGET ps2EntryRunner POST_BUILD
 )
 
 ps2x_stage_ffmpeg_runtime_dlls(ps2EntryRunner)
+
+
 
 if(PS2X_IS_VITA)
     set(VITA_MKSFOEX_FLAGS "${VITA_MKSFOEX_FLAGS} -d PARENTAL_LEVEL=1")

@@ -40,5 +40,6 @@ namespace frontend
     void drawInputPage(PageContext &ctx);
     void drawLoggingPage(PageContext &ctx);
     void drawMiscPage(PageContext &ctx);
+    void drawModsPage(PageContext &ctx);
     void drawAboutPage(PageContext &ctx);
 }

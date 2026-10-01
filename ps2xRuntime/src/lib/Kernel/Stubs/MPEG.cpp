@@ -1327,7 +1327,7 @@ namespace ps2_stubs
             SET_GPR_U32(&callbackCtx, 5, cbDataAddr);
             SET_GPR_U32(&callbackCtx, 6, callback.data);
             SET_GPR_U32(&callbackCtx, 7, 0u);
-            SET_GPR_U32(&callbackCtx, 29, (s_callbackStackTop != 0u) ? s_callbackStackTop : (PS2_RAM_SIZE - 0x10u));
+            SET_GPR_U32(&callbackCtx, 29, (s_callbackStackTop != 0u) ? s_callbackStackTop : (PS2_RAM_NATIVE_SIZE - 0x10u));
             SET_GPR_U32(&callbackCtx, 31, 0u);
             callbackCtx.pc = callback.func;
 

@@ -24,8 +24,20 @@
 #include "runtime/ps2_gif_arbiter.h"   // [vu1pipe] Stage2Item carries packets
 #endif
 
-constexpr uint32_t PS2_RAM_SIZE = 32u * 1024u * 1024u; // 32MB
-constexpr uint32_t PS2_RAM_MASK = PS2_RAM_SIZE - 1u;   // Mask for 32MB alignment
+// [ram128] The retail console has 32 MB of RDRAM. The backing store can be larger (PS2X_RAM_MB, a
+// CMake option; 128 = the layout PCSX2's "128 MB" option gives, which the Tag Team mod's extended heap
+// at 0x02000000..0x06000000 and its code caves above 0x07000000 rely on). Everything the game can
+// observe stays at the native size: the kernel stack top, GetMemorySize, the native heap limit and the
+// default frame-buffer address use PS2_RAM_NATIVE_SIZE; bounds checks and the fast-path mask use the
+// backing size, so guest code that addresses the extra memory simply finds it there.
+#ifndef PS2X_RAM_MB
+#define PS2X_RAM_MB 32
+#endif
+constexpr uint32_t PS2_RAM_NATIVE_SIZE = 32u * 1024u * 1024u; // what the retail console (and its kernel) expose
+constexpr uint32_t PS2_RAM_SIZE = static_cast<uint32_t>(PS2X_RAM_MB) * 1024u * 1024u; // backing store
+constexpr uint32_t PS2_RAM_MASK = PS2_RAM_SIZE - 1u;   // fast-path mask (backing size, a power of two)
+static_assert(PS2_RAM_SIZE >= PS2_RAM_NATIVE_SIZE && (PS2_RAM_SIZE & (PS2_RAM_SIZE - 1u)) == 0u,
+              "PS2X_RAM_MB must be a power of two >= 32");
 constexpr uint32_t PS2_RAM_BASE = 0x00000000;          // Physical base of RDRAM
 constexpr uint32_t PS2_SCRATCHPAD_BASE = 0x70000000;
 constexpr uint32_t PS2_SCRATCHPAD_ALIAS_BASE = 0xF0000000;

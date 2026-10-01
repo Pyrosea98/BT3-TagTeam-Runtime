@@ -877,6 +877,120 @@ namespace frontend
     }
 }
 
+    // [mods] Loadable mods: every *.so / *.dll in mods/ next to the runner (see mods/README.md and
+    // ps2x_mod_api.h). A switch per file plus the master switch; the loader reads the result at the
+    // next PLAY, so a change here needs a restart of the game, not of the launcher.
+    namespace
+    {
+        struct ModFile { std::string name; std::string file; unsigned long long bytes = 0; };
+        std::vector<ModFile> scanMods(const std::filesystem::path &dir)
+        {
+            std::vector<ModFile> out;
+            std::error_code ec;
+            if (!std::filesystem::is_directory(dir, ec)) return out;
+            for (const auto &e : std::filesystem::directory_iterator(dir, ec))
+            {
+                if (!e.is_regular_file(ec)) continue;
+                const std::string ext = e.path().extension().string();
+#if defined(_WIN32)
+                if (ext != ".dll") continue;
+#elif defined(__APPLE__)
+                if (ext != ".dylib" && ext != ".so") continue;
+#else
+                if (ext != ".so") continue;
+#endif
+                ModFile m; m.name = e.path().stem().string(); m.file = e.path().filename().string();
+                const std::uintmax_t sz = e.file_size(ec); m.bytes = ec ? 0ull : (unsigned long long)sz;
+                out.push_back(m);
+            }
+            std::sort(out.begin(), out.end(), [](const ModFile &a, const ModFile &b) { return a.name < b.name; });
+            return out;
+        }
+        bool csvHas(const std::string &csv, const std::string &name)
+        {
+            size_t p = 0;
+            while (p <= csv.size())
+            {
+                size_t q = csv.find(',', p); if (q == std::string::npos) q = csv.size();
+                if (csv.compare(p, q - p, name) == 0) return true;
+                p = q + 1;
+            }
+            return false;
+        }
+        std::string csvWith(const std::string &csv, const std::string &name, bool present)
+        {
+            std::vector<std::string> items; size_t p = 0;
+            while (p <= csv.size())
+            {
+                size_t q = csv.find(',', p); if (q == std::string::npos) q = csv.size();
+                const std::string it = csv.substr(p, q - p);
+                if (!it.empty() && it != name) items.push_back(it);
+                p = q + 1;
+            }
+            if (present) items.push_back(name);
+            std::string out;
+            for (size_t i = 0; i < items.size(); ++i) { if (i) out += ','; out += items[i]; }
+            return out;
+        }
+    }
+
+    void drawModsPage(PageContext &ctx)
+    {
+        ps2x_settings::Settings &s = *ctx.settings;
+        const std::filesystem::path modsDir = ctx.exeDir / "mods";
+        static std::vector<ModFile> s_mods;
+        static uint64_t s_scanned = 0;
+        static std::string s_scannedDir;
+        if (s_scannedDir != modsDir.string() || (ImGui::GetFrameCount() - s_scanned) > 120u)
+        {   // a cheap directory listing twice a second: dropping a file in shows up without a restart
+            s_mods = scanMods(modsDir); s_scanned = ImGui::GetFrameCount(); s_scannedDir = modsDir.string();
+        }
+
+        if (fe::beginSection("MODS", true,
+                             "Game mods are shared libraries in the mods folder next to the game. Each one is "
+                             "loaded when the game starts and hooks the game through the runtime's mod API. "
+                             "A change here applies at the next PLAY."))
+        {
+            fe::toggleSwitch("Load mods", &s.modsEnabled);
+            char path[512];
+            std::snprintf(path, sizeof path, "%s", modsDir.string().c_str());
+            fe::pathRow("Folder", path);
+            if (s_mods.empty())
+            {
+                fe::rowLabel("Installed");
+                ImGui::TextDisabled("none found");
+                fe::hint("Put a mod's .so/.dll file in the folder above. The Tag Team mod ships as tagteam.");
+            }
+            else
+            {
+                for (const ModFile &m : s_mods)
+                {
+                    bool on = !csvHas(s.modsDisabled, m.name);
+                    ImGui::BeginDisabled(!s.modsEnabled);
+                    if (fe::toggleSwitch(m.name.c_str(), &on))
+                        s.modsDisabled = csvWith(s.modsDisabled, m.name, !on);
+                    ImGui::EndDisabled();
+                    char size[32]; fe::formatBytes(m.bytes, size, sizeof size);
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s  %s", m.file.c_str(), size);
+                }
+                if (!s.modsEnabled) fe::hint("Mods are off: nothing in the folder loads.");
+            }
+        }
+
+        if (fe::beginSection("TAG TEAM", true,
+                             "The Tag Team mod: up to six fighters at once, Team Battle, Free-for-all and Co-op, "
+                             "picked from a TAG TEAM entry on the game's main menu. It needs the 128 MB memory build."))
+        {
+            bool have = false;
+            for (const ModFile &m : s_mods) if (m.name == "tagteam") have = true;
+            if (!have) fe::statusRow("Status", fe::warnCol(), "tagteam.so / tagteam.dll not in the mods folder");
+            else if (!s.modsEnabled || csvHas(s.modsDisabled, "tagteam")) fe::statusRow("Status", fe::gold(), "installed, switched off");
+            else fe::statusRow("Status", fe::okCol(), "installed, loads at PLAY");
+            fe::hint("In the game: Main Menu > TAG TEAM. Lock-on switches with R3. Co-op puts player 2 on the second pad.");
+        }
+    }
+
     void drawAboutPage(PageContext &ctx)
     {
         // All fixed: the page is short and there is nothing to fold away.

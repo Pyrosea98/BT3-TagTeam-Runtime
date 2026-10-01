@@ -102,6 +102,10 @@ namespace ps2x_settings
         bool dumpControllers = true;
         bool dumpRuntime = true;
         bool dumpGamepad = false;
+        // [mods] loadable mods in mods/ next to the runner (ps2x_mod_api.h): the master switch and the
+        // disabled ones by file name (comma separated, no extension)
+        bool modsEnabled = true;
+        std::string modsDisabled;
     };
 
     const char *rendererName(int renderer);

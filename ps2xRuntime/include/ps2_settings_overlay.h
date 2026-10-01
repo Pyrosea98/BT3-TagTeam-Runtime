@@ -109,6 +109,8 @@ public:
     // retraido (el estado normal) y, cuando esta desplegandose, lo pinta antes del fade para que no
     // herede su opacidad.
     void drawPerfHud();
+    void drawTagTeamFeed(const uint32_t *e, int n);
+    void drawTagTeamHud(const uint32_t *entries, int count);   // [tagteam]
 
     // [mmpopup] The main-menu popup: an icon in the bottom-right corner that unfolds a panel.
     // Wanted() is what the draw() early-out asks, so a retracted panel with the perf HUD off still

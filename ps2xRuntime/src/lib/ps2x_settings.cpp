@@ -201,6 +201,8 @@ namespace
         s.dumpControllers = doc.getB("logging.dump_controllers", s.dumpControllers);
         s.dumpRuntime = doc.getB("logging.dump_runtime", s.dumpRuntime);
         s.dumpGamepad = doc.getB("logging.dump_gamepad", s.dumpGamepad);
+        s.modsEnabled = doc.getB("mods.enabled", s.modsEnabled);
+        s.modsDisabled = doc.getS("mods.disabled", s.modsDisabled);
 
         clamp(s);
         return true;
@@ -347,7 +349,7 @@ namespace ps2x_settings
                a.overlayKeys == b.overlayKeys && a.logLevel == b.logLevel &&
                a.dumpAudio == b.dumpAudio && a.dumpVideo == b.dumpVideo &&
                a.dumpControllers == b.dumpControllers && a.dumpRuntime == b.dumpRuntime &&
-               a.dumpGamepad == b.dumpGamepad;
+               a.dumpGamepad == b.dumpGamepad && a.modsEnabled == b.modsEnabled && a.modsDisabled == b.modsDisabled;
     }
 
     const char *rendererName(int renderer)
@@ -494,6 +496,11 @@ namespace ps2x_settings
         os << "dump_controllers = " << fmtBool(s.dumpControllers) << "\n";
         os << "dump_runtime = " << fmtBool(s.dumpRuntime) << "\n";
         os << "dump_gamepad = " << fmtBool(s.dumpGamepad) << "\n\n";
+
+        // [mods] loadable mods (mods/ next to the runner): the master switch and the disabled file names
+        os << "[mods]\n";
+        os << "enabled = " << fmtBool(s.modsEnabled) << "\n";
+        os << "disabled = \"" << s.modsDisabled << "\"\n\n";
 
         // [frontend] shell window only. The game never reads this: on PLAY it applies
         // [video] window_w/window_h to its own window, and this window just reopens at
