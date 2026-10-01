@@ -28,7 +28,7 @@ _Screenshots are on the way._
 
 - [For players](#for-players) — requirements, download & run
 - [For developers](#for-developers) — build from source, project structure & docs
-- [Features](#features) — texture packs, cache, widescreen
+- [Features](#features) — texture packs, cache, widescreen, mods
 - [Status & known issues](#status--known-issues)
 - [Repository layout](#repository-layout)
 - [Experimental: paraLLEl-GS backend](#experimental-parallelgs-backend)
@@ -239,6 +239,7 @@ Component READMEs: [`games/bt3/README.md`](games/bt3/README.md) ·
   built-in overlay in the runner.
 - **Widescreen** and selectable render scale.
 - **Texture replacement & cache** — see below.
+- **Mods** — a small C API for loadable game mods (`mods/*.so` / `*.dll`); see below.
 
 ### Texture replacement & cache
 
@@ -260,6 +261,22 @@ play and is rebuilt automatically when the pack, the Texture Replacement toggle
 or the button layout changes. Toggle it in **Misc → Texture Cache**
 (`[video] texcache`); delete it there (or set `PS2X_TEXCACHE_REGEN=1`) to force a
 rebuild.
+
+### Mods (modding API)
+
+The runtime loads every shared library found in `<deploy>/mods/` at startup and hands it a versioned
+table of function pointers, `ps2xRuntime/include/ps2x_mod_api.h`: install hooks on the recompiled
+game's function table (replace / look up a routine by its guest address and chain to the original),
+read the frame counter and the live pads, register a per-frame hook, and feed the host overlay
+(overhead bars, a kill feed, the loading curtain). A mod exports one symbol,
+`int ps2xModInit(const Ps2xModApi *api)`, compiles against the runtime's public headers only and
+never links against the executable, so a mod built once runs on any later runner with the same API
+version. The front-end's **Mods** page lists the installed files with a switch each. See
+[`mods/README.md`](mods/README.md).
+
+The first mod built on it is **Tag Team** (up to six fighters at once: Team Battle, Free-for-all and
+Co-op from a TAG TEAM entry on the game's main menu), shipped separately as `tagteam.so` /
+`tagteam.dll` to drop into `mods/`. It needs the 128 MB guest-memory build, which is the default.
 
 ---
 
@@ -292,6 +309,7 @@ Known issues:
 | `games/bt3/gen_overlay.py`, `apply_patches.py` | generators for the game-specific pieces |
 | `ps2xRecomp/` | the static recompiler (with EE FPU/VU semantics fixes) |
 | `ps2xRuntime/` | runtime: memory, GS/GPU renderer, VU1, scheduler, game overrides |
+| `ps2xRuntime/include/ps2x_mod_api.h`, `mods/` | the modding API and the folder loadable mods are read from |
 | `PS2Recomp-README.md` | the upstream PS2Recomp documentation |
 
 ---
