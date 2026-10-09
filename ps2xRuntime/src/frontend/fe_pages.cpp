@@ -600,10 +600,10 @@ namespace frontend
 
         fe::sectionHeader("CONTROLLER");
         {
-            // The runtime has always had two per-player profiles (savedata/pad_p1.conf and
-            // pad_p2.conf); the front-end only exposed P1. Editing them here goes through the
-            // same PadConfig the game polls, so what you set is what it reads.
-            static const char *const kPlayers[] = {"Player 1", "Player 2"};
+            // Host profiles 3 and 4 feed the mod's native seat mailbox; the
+            // stock guest continues to use two pad ports.
+            static const char *const kPlayers[] = {"Player 1", "Player 2", "Player 3", "Player 4"};
+            static_assert(sizeof(kPlayers)/sizeof(kPlayers[0]) == ps2_stubs::PadConfig::kPlayerCount);
             fe::comboRow("Player", &player, kPlayers, (int)ps2_stubs::PadConfig::kPlayerCount);
 
             const ps2_stubs::PadPlayerConfig cur = pads.snapshot((size_t)player);
@@ -624,8 +624,17 @@ namespace frontend
                 if (!ps2x_pad::isController(i))
                     continue;
                 const char *n = ps2x_pad::name(i);
-                devNames.emplace_back(n && *n ? n : ("Pad " + std::to_string(i + 1)));
-                devSlots.push_back(i);
+                const int index = ps2_stubs::padGamepadIndex(i);
+                const int owner = pads.gamepadOwner(index, static_cast<size_t>(player));
+                devNames.emplace_back("Gamepad " + std::to_string(index) + " (" + (n && *n ? n : "controller") + ")" +
+                    (owner >= 0 ? " (in use by Player " + std::to_string(owner+1) + ")" : ""));
+                devSlots.push_back(index);
+            }
+            if (cur.device.kind == ps2_stubs::PadDeviceKind::Gamepad &&
+                std::find(devSlots.begin(),devSlots.end(),cur.device.gamepad) == devSlots.end())
+            {
+                devNames.emplace_back("Gamepad " + std::to_string(cur.device.gamepad) + " (not connected)");
+                devSlots.push_back(cur.device.gamepad);
             }
             for (size_t i = 0; i < devNames.size(); ++i)
                 devPtrs.push_back(devNames[i].c_str());
@@ -659,8 +668,7 @@ namespace frontend
                     dev.kind = ps2_stubs::PadDeviceKind::None;
                     dev.gamepad = -1;
                 }
-                pads.setDevice((size_t)player, dev);
-                pads.save();
+                if (pads.setDevice((size_t)player, dev)) pads.save();
             }
             fe::pathRow("Profile", pads.playerConfigPath((size_t)player).c_str());
             fe::sliderRow("Stick deadzone", &s.deadzone, 0.0f, 0.5f, "%.2f");

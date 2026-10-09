@@ -14,14 +14,112 @@
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
 #include "runtime/ps2_coverage.h"   // [coverage]
+#include "runtime/ps2_interp_budget.h"
+#include "runtime/ps2_interp_decode.h"
+#include "runtime/ps2_training_cleanup.h"
+#include <fstream>
 
 #include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <unordered_map>
+#include <vector>
+#include <algorithm>
+#include <chrono>
+extern void ps2xTagteamCodeWritten(uint32_t address, uint32_t size);
+extern uint32_t ps2xTagteamBootInsn(uint32_t pc, uint32_t insn, R5900Context *ctx);
+extern bool ps2xTagteamNativeElfEntry(uint32_t pc);
+extern const uint32_t* ps2xTagteamNativeElfEntries(unsigned& count);
+extern bool ps2xTagteamRunNativeTargets(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+extern void ps2xTagteamTraceTargetInstruction(uint8_t *rdram, R5900Context *ctx, uint32_t pc, uint32_t insn);
+extern bool ps2xTagteamRunNativeHudDraw(uint8_t *rdram,R5900Context *ctx,PS2Runtime* runtime);
+extern bool ps2xTagteamRunNativeTrainingDamage(uint8_t *rdram,R5900Context *ctx,PS2Runtime *runtime);
+static thread_local int interpreterBlocksTestOverride=-1;
 
 namespace
 {
+    // Optional exact instruction histogram, shared by guest fibers on this
+    // host thread. Count delay slots too, without double-counting native code.
+    // Thread teardown prints the aggregate rather than every nested call.
+    struct InterpreterCostProfile {
+        std::array<uint64_t, 0x8000> pages{};
+        uint64_t total = 0, main = 0, outsideRam = 0;
+        const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+        std::chrono::steady_clock::time_point reported = started;
+        void instruction(uint32_t pc, bool mainContext) {
+            ++total; main += mainContext;
+            if ((pc >> 12) < pages.size()) ++pages[pc >> 12];
+            else ++outsideRam;
+            if((total&65535)==0 && std::chrono::steady_clock::now()-reported>=std::chrono::seconds(20)) {
+                report();reported=std::chrono::steady_clock::now();
+            }
+        }
+        void report() {
+            if (!total) return;
+            std::vector<std::pair<uint64_t, uint32_t>> ranked;
+            for (uint32_t i=0; i<pages.size(); ++i)
+                if (pages[i]) ranked.emplace_back(pages[i], i << 12);
+            std::sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) { return a.first>b.first; });
+            const double seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+            std::fprintf(stderr,"[interp-profile] total=%llu main=%llu service=%llu outside_ram=%llu elapsed_s=%.3f delay_slots=included\n",
+                (unsigned long long)total,(unsigned long long)main,(unsigned long long)(total-main),(unsigned long long)outsideRam,seconds);
+            for (size_t i=0; i<std::min(size_t(30),ranked.size()); ++i)
+                std::fprintf(stderr,"[interp-profile-page] rank=%zu base=0x%08x instructions=%llu percent=%.3f\n",
+                    i+1,ranked[i].second,(unsigned long long)ranked[i].first,100.0*ranked[i].first/total);
+        }
+        ~InterpreterCostProfile() {report();}
+    };
+    InterpreterCostProfile *interpreterCostProfile() {
+        static const bool enabled=[] { const char *v=std::getenv("PS2X_INTERP_PROFILE"); return v && *v && *v!='0'; }();
+        if (!enabled) return nullptr;
+        thread_local InterpreterCostProfile profile;
+        return &profile;
+    }
+    struct InterpreterFrame { uint32_t entry, stop; };
+    struct InterpreterTrace {
+        std::vector<InterpreterFrame> frames;
+        std::array<uint32_t, 16> pcs{};
+        uint32_t next = 0, count = 0;
+        uint32_t lastEntry = 0, lastStop = 0, lastExit = 0, lastRa = 0;
+        uint64_t equalEntryReturns = 0;
+    };
+    // Key by guest context so fibers sharing a host thread retain separate traces.
+    thread_local std::unordered_map<R5900Context *, InterpreterTrace> interpreterTraces;
+    bool interpreterTraceEnabled() {
+        static const bool enabled = [] {
+            const char *v = std::getenv("PS2X_STALL_INTERP");
+            return v && v[0] && v[0] != '0';
+        }();
+        return enabled;
+    }
+    struct InterpreterTraceScope {
+        R5900Context *ctx;
+        InterpreterTrace *trace;
+        InterpreterTraceScope(R5900Context *context, uint32_t stop) : ctx(context),
+            trace(interpreterTraceEnabled() ? &interpreterTraces[context] : nullptr) {
+            if (!trace) return;
+            trace->frames.push_back({ctx->pc, stop});
+            trace->lastEntry = ctx->pc;
+            trace->lastStop = stop;
+            if (ctx->pc == stop) ++trace->equalEntryReturns;
+        }
+        ~InterpreterTraceScope() {
+            if (!trace) return;
+            trace->lastExit = ctx->pc;
+            trace->lastRa = uint32_t(_mm_extract_epi32(ctx->r[31], 0));
+            trace->frames.pop_back();
+        }
+        void instruction(uint32_t pc) {
+            if (!trace) return;
+            trace->pcs[trace->next] = pc;
+            trace->next = (trace->next + 1u) % trace->pcs.size();
+            if (trace->count < trace->pcs.size()) ++trace->count;
+        }
+    };
     inline uint32_t fetchInsn(uint8_t *rdram, uint32_t pc)
     {
         return Ps2FastRead32(rdram, pc);
@@ -34,19 +132,28 @@ namespace
 
     std::atomic<uint32_t> g_interpUnknownLog{0};
     std::atomic<uint64_t> g_interpInsnCount{0};
+    struct InterpreterCounter {
+        uint32_t pending=0;
+        void instruction(){if(++pending==1024){g_interpInsnCount.fetch_add(pending,std::memory_order_relaxed);pending=0;}}
+        ~InterpreterCounter(){if(pending)g_interpInsnCount.fetch_add(pending,std::memory_order_relaxed);}
+    };
 
+    Ps2DecodedInstruction decodeInstruction(uint32_t pc,uint32_t word) {
+        // Comparison switch until the same-roster live benchmark establishes
+        // whether this saves time on this compiler/CPU. No block execution yet.
+        static const bool enabled=[] { const char *v=std::getenv("PS2X_INTERP_PREDECODE"); return v && *v=='1'; }();
+        if(!enabled)return Ps2DecodedInstruction(word);
+        thread_local Ps2InstructionDecodeCache cache;
+        return cache.get(pc,word);
+    }
     // Execute a single NON-control-flow instruction (also used for delay slots).
     // Returns true if handled; false if the opcode is unknown/unsupported.
-    bool execSimple(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t insn, uint32_t pc)
+    bool execSimple(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t insn, uint32_t pc,
+                    const Ps2DecodedInstruction* cached=nullptr)
     {
-        const uint32_t op = insn >> 26;
-        const uint32_t rs = (insn >> 21) & 31u;
-        const uint32_t rt = (insn >> 16) & 31u;
-        const uint32_t rd = (insn >> 11) & 31u;
-        const uint32_t sa = (insn >> 6) & 31u;
-        const uint32_t funct = insn & 0x3fu;
-        const uint16_t imm = static_cast<uint16_t>(insn & 0xffffu);
-        const uint32_t simm = signExtend16(imm);
+        const auto d=cached?*cached:decodeInstruction(pc,insn);
+        const uint32_t op=d.op, rs=d.rs, rt=d.rt, rd=d.rd, sa=d.sa, funct=d.funct, simm=d.simm;
+        const uint16_t imm=d.imm;
 
         switch (op)
         {
@@ -245,10 +352,64 @@ namespace
         case 0x0f: // lui
             SET_GPR_S32(ctx, rt, (int32_t)((uint32_t)imm << 16));
             return true;
+        case 0x10: // COP0: loading animation reads the EE Count register.
+            if (rs == 0 && rd == 9 && (insn & 0x7ffu) == 0) {
+                SET_GPR_S32(ctx, rt, (int32_t)ctx->cop0_count);
+                return true;
+            }
+            break;
         case 0x18: // daddi
         case 0x19: // daddiu
             SET_GPR_U64(ctx, rt, GPR_U64(ctx, rs) + (uint64_t)(int64_t)(int32_t)simm);
             return true;
+
+        case 0x1c: // R5900 MMI scalar secondary multiply/divide unit
+            switch (funct) {
+            case 0x00: // madd
+            case 0x01: // maddu
+            case 0x20: // madd1
+            case 0x21: { // maddu1
+                uint64_t &hi=(funct&0x20)?ctx->hi1:ctx->hi;
+                uint64_t &lo=(funct&0x20)?ctx->lo1:ctx->lo;
+                const uint64_t accumulator=(uint64_t(uint32_t(hi))<<32)|uint32_t(lo);
+                const uint64_t product=(funct&1)
+                    ? uint64_t(GPR_U32(ctx,rs))*uint64_t(GPR_U32(ctx,rt))
+                    : uint64_t(int64_t(GPR_S32(ctx,rs))*int64_t(GPR_S32(ctx,rt)));
+                const uint64_t result=accumulator+product;
+                lo=uint64_t(int64_t(int32_t(result)));
+                hi=uint64_t(int64_t(int32_t(result>>32)));
+                if(rd)SET_GPR_S32(ctx,rd,int32_t(result));
+                return true;
+            }
+            case 0x10: SET_GPR_U64(ctx,rd,ctx->hi1);return true; // mfhi1
+            case 0x11: ctx->hi1=GPR_U64(ctx,rs);return true;
+            case 0x12: SET_GPR_U64(ctx,rd,ctx->lo1);return true; // mflo1
+            case 0x13: ctx->lo1=GPR_U64(ctx,rs);return true;
+            case 0x18: // mult1
+            case 0x19: { // multu1
+                uint64_t product=funct==0x18
+                    ? uint64_t(int64_t(GPR_S32(ctx,rs))*int64_t(GPR_S32(ctx,rt)))
+                    : uint64_t(GPR_U32(ctx,rs))*uint64_t(GPR_U32(ctx,rt));
+                ctx->lo1=uint64_t(int64_t(int32_t(product)));
+                ctx->hi1=uint64_t(int64_t(int32_t(product>>32)));
+                if(rd)SET_GPR_S32(ctx,rd,int32_t(product));
+                return true;
+            }
+            case 0x1a: { // div1
+                int32_t a=GPR_S32(ctx,rs),b=GPR_S32(ctx,rt);
+                if(b==0){ctx->lo1=uint64_t(int64_t(a<0?1:-1));ctx->hi1=uint64_t(int64_t(a));}
+                else if(a==INT32_MIN && b==-1){ctx->lo1=uint64_t(int64_t(INT32_MIN));ctx->hi1=0;}
+                else {ctx->lo1=uint64_t(int64_t(a/b));ctx->hi1=uint64_t(int64_t(a%b));}
+                return true;
+            }
+            case 0x1b: { // divu1
+                uint32_t a=GPR_U32(ctx,rs),b=GPR_U32(ctx,rt);
+                ctx->lo1=uint64_t(int64_t(int32_t(b?a/b:UINT32_MAX)));
+                ctx->hi1=uint64_t(int64_t(int32_t(b?a%b:a)));return true;
+            }
+            default:break;
+            }
+            break;
 
         // ---- loads ----
         case 0x20: // lb
@@ -269,6 +430,7 @@ namespace
             const uint32_t addr = (GPR_U32(ctx, rs) + simm) & ~0xFu;
             alignas(16) uint64_t v[2]; _mm_store_si128(reinterpret_cast<__m128i *>(v), ctx->r[rt]);
             WRITE64(addr, v[0]); WRITE64(addr + 8u, v[1]);
+            ps2xTagteamCodeWritten(addr,16);
             return true;
         }
         case 0x23: // lw
@@ -334,15 +496,19 @@ namespace
         // ---- stores ----
         case 0x28: // sb
             WRITE8(GPR_U32(ctx, rs) + simm, (uint8_t)GPR_U32(ctx, rt));
+            ps2xTagteamCodeWritten(GPR_U32(ctx,rs)+simm,1);
             return true;
         case 0x29: // sh
             WRITE16(GPR_U32(ctx, rs) + simm, (uint16_t)GPR_U32(ctx, rt));
+            ps2xTagteamCodeWritten(GPR_U32(ctx,rs)+simm,2);
             return true;
         case 0x2b: // sw
             WRITE32(GPR_U32(ctx, rs) + simm, GPR_U32(ctx, rt));
+            ps2xTagteamCodeWritten(GPR_U32(ctx,rs)+simm,4);
             return true;
         case 0x3f: // sd
             WRITE64(GPR_U32(ctx, rs) + simm, GPR_U64(ctx, rt));
+            ps2xTagteamCodeWritten(GPR_U32(ctx,rs)+simm,8);
             return true;
         case 0x2c: // sdl (little-endian)
         {
@@ -500,44 +666,155 @@ namespace
     }
 } // namespace
 
-bool PS2Runtime::interpretUntil(uint8_t *rdram, R5900Context *ctx, uint32_t returnPc)
+extern bool ps2xTagteamNeedsInterpret(uint32_t);
+
+void ps2xDumpInterpreterDiagnostics(R5900Context *ctx) {
+    const auto it = interpreterTraces.find(ctx);
+    if (it == interpreterTraces.end()) {
+        std::fprintf(stderr, "[stall-interp] no trace for guest context (enable PS2X_STALL_INTERP=1)\n");
+        return;
+    }
+    const InterpreterTrace &t = it->second;
+    const uint32_t ra = uint32_t(_mm_extract_epi32(ctx->r[31], 0));
+    std::fprintf(stderr, "[stall-interp] pc=0x%x ra=0x%x active=%zu last_entry=0x%x last_return=0x%x last_exit=0x%x last_ra=0x%x equal_entry_returns=%llu\n",
+        ctx->pc, ra, t.frames.size(), t.lastEntry, t.lastStop, t.lastExit, t.lastRa,
+        static_cast<unsigned long long>(t.equalEntryReturns));
+    for (size_t i = 0; i < t.frames.size(); ++i)
+        std::fprintf(stderr, "[stall-interp-stack] depth=%zu entry=0x%x return=0x%x current=0x%x ra=0x%x\n",
+            i, t.frames[i].entry, t.frames[i].stop, ctx->pc, ra);
+    std::fprintf(stderr, "[stall-interp-pcs] oldest_first count=%u", t.count);
+    for (uint32_t i = 0; i < t.count; ++i)
+        std::fprintf(stderr, " 0x%x", t.pcs[(t.next + t.pcs.size() - t.count + i) % t.pcs.size()]);
+    std::fprintf(stderr, "\n");
+}
+
+bool PS2Runtime::interpretUntil(uint8_t *rdram, R5900Context *ctx, uint32_t returnPc,
+                               bool executeEntry)
 {
+    InterpreterTraceScope traceScope(ctx, returnPc);
     PS2Runtime *runtime = this;
     ps2cov::noteEeOverlay(ctx->pc);   // [coverage] overlay entry point that has no recompiled function
-    uint64_t guard = 0;
-    const uint64_t kGuardLimit = 2000000000ull; // runaway backstop
+    Ps2InterpreterBudget budget;
+    InterpreterCounter counter;
+    bool firstEntry = true;
+    const bool mainContext = ctx == &m_cpuContext;
+    auto *costProfile = interpreterCostProfile();
+    static const bool fightProfileOnly=[] {const char* v=std::getenv("PS2X_INTERP_PROFILE_FIGHT_ONLY");return v && *v=='1';}();
+    if(costProfile && fightProfileOnly) {
+        auto u=[&](uint32_t at){uint32_t value;std::memcpy(&value,rdram+at,4);return value;};
+        const auto phase=u(0x2FEB38);
+        if(u(0xD8080)!=1 || phase<0x100000 || phase>=0x02000000-4 || u(phase)!=3 ||
+           u(0xC4004)!=0 || u(0x073E1C00)!=0)costProfile=nullptr;
+    }
+    const auto entered = std::chrono::steady_clock::now();
+    auto progressAt = entered;
+    static const bool blocksEnabled=[]{const char* v=std::getenv("PS2X_INTERP_BLOCKS");return !(v && *v=='0');}();
+    thread_local Ps2StraightBlockCache blocks;
 
-    while (ctx->pc != returnPc)
+    // A patched block can be resumed by top-level dispatch at the previous
+    // call's return address. Execute that entry before checking its stop PC,
+    // otherwise a stale link register makes the block return without progress.
+    while (ctx->pc != returnPc || (executeEntry && firstEntry))
     {
-        if (++guard > kGuardLimit)
-        {
-            std::cerr << "[interp] guard limit at pc=0x" << std::hex << ctx->pc << std::dec << std::endl;
-            return false;
-        }
+        firstEntry = false;
+        if (isStopRequested()) return false;
 
         const uint32_t pc = ctx->pc;
 
-        // If we've reached recompiled code, run it natively (it runs its whole
-        // subtree and returns with ctx->pc set to its return target).
-        if (hasFunction(pc))
-        {
-            RecompiledFunction fn = lookupFunction(pc);
-            fn(rdram, ctx, runtime);
+        if(pc==0x1CE630u && ps2xTagteamRunNativeTrainingDamage(rdram,ctx,runtime)) {
+            budget.nativeProgress();progressAt=std::chrono::steady_clock::now();continue;
+        }
+
+        if ((pc==0x2188B8u || pc==0x073DA200u || pc==0x07272000u || pc==0x072D1800u || pc==0x07413400u || pc==0x07414000u || pc==0x07414800u || (pc>0x070D6800u && pc<0x070D6C00u)) &&
+            ps2xTagteamRunNativeHudDraw(rdram,ctx,runtime)) {
+            budget.nativeProgress();
+            progressAt=std::chrono::steady_clock::now();
             continue;
         }
 
-        const uint32_t insn = fetchInsn(rdram, pc);
-        g_interpInsnCount.fetch_add(1, std::memory_order_relaxed);
+        if (((pc & 0xfffff000u) == 0x07368000u || pc==0x077C4000u || pc==0x070B0400u ||
+             pc==0x070B1000u || pc==0x07260000u || pc==0x071A0000u ||
+             pc==0x07243000u || pc==0x07180000u || pc==0x070F0000u || pc==0x070F0400u ||
+             pc==0x07781000u || pc==0x07788000u || pc==0x06944000u || pc==0x06944400u || (pc<0x400000u && ps2xTagteamNativeElfEntry(pc))) && ps2xTagteamRunNativeTargets(rdram, ctx, runtime))
+        {
+            budget.nativeProgress();
+            progressAt = std::chrono::steady_clock::now();
+            continue;
+        }
 
-        const uint32_t op = insn >> 26;
-        const uint32_t rs = (insn >> 21) & 31u;
-        const uint32_t rt = (insn >> 16) & 31u;
-        const uint16_t imm = static_cast<uint16_t>(insn & 0xffffu);
-        const uint32_t simm = signExtend16(imm);
-        const uint32_t funct = insn & 0x3fu;
+        // If we've reached recompiled code, run it natively (it runs its whole
+        // subtree and returns with ctx->pc set to its return target).
+        static const bool presenceCacheEnabled=[] {const char* v=std::getenv("PS2X_INTERP_DISPATCH_CACHE");return !(v && *v=='0');}();
+        thread_local Ps2GeneratedPresenceCache presenceCache;
+        const bool generated=presenceCacheEnabled?presenceCache.get(pc,[&](uint32_t address){return hasFunction(address);}):hasFunction(pc);
+        if (generated && !ps2xTagteamNeedsInterpret(pc))
+        {
+            RecompiledFunction fn = lookupFunction(pc);
+            fn(rdram, ctx, runtime);
+            budget.nativeProgress();
+            progressAt = std::chrono::steady_clock::now();
+            continue;
+        }
+
+        auto blockEligible=[](uint32_t at){
+            return ((at>=0x06000000u && at<0x07FFF000u) || (at>=0x1CE000u && at<0x1DB000u)) &&
+                !(at>=0x073D6000u && at<0x073D8000u) && !(at>=0x07784400u && at<0x07784800u);
+        };
+        if((interpreterBlocksTestOverride<0?blocksEnabled:interpreterBlocksTestOverride!=0) && blockEligible(pc) && ps2StraightInstruction(fetchInsn(rdram,pc))) {
+            auto& block=blocks.get(pc,[&](uint32_t at){return fetchInsn(rdram,at);},[&](uint32_t at){
+                return !blockEligible(at) || at==0x1CE630u || at==0x2188B8u || at==0x073DA200u || at==0x07272000u || at==0x072D1800u || at==0x07413400u || at==0x07414000u || at==0x07414800u ||
+                    (at>0x070D6800u && at<0x070D6C00u) || (at&0xFFFFF000u)==0x07368000u ||
+                    at==0x077C4000u || at==0x070B0400u || at==0x070B1000u || at==0x07260000u ||
+                    at==0x071A0000u || at==0x07243000u || at==0x07180000u ||
+                    at==0x070F0000u || at==0x070F0400u || at==0x07781000u || at==0x07788000u ||
+                    at==0x06944000u || at==0x06944400u || (at<0x400000u && ps2xTagteamNativeElfEntry(at)) ||
+                    presenceCache.get(at,[&](uint32_t address){return hasFunction(address);});
+            });
+            // A memory operation can yield a guest fiber; another interpreter
+            // may then replace a cache slot. Keep active instructions on this
+            // invocation's stack, never execute through a shared cache reference.
+            const auto count=block.count;
+            std::array<Ps2StraightBlockCache::Instruction,32> active;
+            std::copy_n(block.code.begin(),count,active.begin());
+            unsigned executed=0;
+            for(unsigned i=0;i<count;++i){
+                const auto& instruction=active[i];
+                if(i && ctx->pc==returnPc)break;
+                if(fetchInsn(rdram,instruction.pc)!=instruction.word){if(block.pc==pc)blocks.invalidate(block);break;}
+                if(!budget.instruction())return false;
+                traceScope.instruction(instruction.pc);counter.instruction();
+                if(costProfile)costProfile->instruction(instruction.pc,mainContext);
+                if(!execSimple(rdram,ctx,runtime,instruction.word,instruction.pc,&instruction.decoded))return false;
+                ctx->pc=instruction.pc+4;++executed;
+            }
+            if(executed)continue;
+        }
+
+        if (!budget.instruction())
+        {
+            const auto now=std::chrono::steady_clock::now();
+            std::fprintf(stderr,"[interp] guard limit at pc=0x%x context=%s uninterrupted=%llu total=%llu native_dispatches=%llu elapsed_s=%.3f since_native_s=%.3f\n",
+                pc,mainContext?"main":"service",(unsigned long long)budget.uninterrupted,
+                (unsigned long long)budget.total,(unsigned long long)budget.nativeDispatches,
+                std::chrono::duration<double>(now-entered).count(),std::chrono::duration<double>(now-progressAt).count());
+            return false;
+        }
+
+        const uint32_t insn = ps2xTagteamBootInsn(pc,fetchInsn(rdram, pc),ctx);
+        if ((pc >= 0x073D6000u && pc < 0x073D8000u) || (pc >= 0x07784400u && pc < 0x07784800u))
+            ps2xTagteamTraceTargetInstruction(rdram,ctx,pc,insn);
+        traceScope.instruction(pc);
+        counter.instruction();
+        if (costProfile) costProfile->instruction(pc, mainContext);
+
+        const auto decoded=decodeInstruction(pc,insn);
+        const uint32_t op=decoded.op,rs=decoded.rs,rt=decoded.rt,simm=decoded.simm,funct=decoded.funct;
+        const uint16_t imm=decoded.imm;
 
         auto runDelaySlot = [&](uint32_t dsPc) -> bool
         {
+            traceScope.instruction(dsPc);
+            if (costProfile) costProfile->instruction(dsPc, mainContext);
             uint32_t dsInsn = fetchInsn(rdram, dsPc);
             if (dsInsn == 0) return true; // nop
             return execSimple(rdram, ctx, runtime, dsInsn, dsPc);
@@ -653,3 +930,4 @@ bool PS2Runtime::interpretUntil(uint8_t *rdram, R5900Context *ctx, uint32_t retu
 
     return true;
 }
+#include "ps2_interp_self_test.inc"

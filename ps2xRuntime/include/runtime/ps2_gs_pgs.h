@@ -9,12 +9,18 @@
 #include <vector>
 struct GSRegisters;
 class GS;
+#ifdef PS2X_HAVE_PGS
+bool ps2xPgsDiagnosticSyncShadow(GS *gs);
+#else
+inline bool ps2xPgsDiagnosticSyncShadow(GS *) { return false; }
+#endif
 namespace ps2x_pgs
 {
     // [seamvk] diagnostics: when set, the next transfer writes the backend's VRAM view of a target as PPM (rgb) + PGM (alpha)
     // into the directory, then clears the request. fbp = block address, fbw = width/64, CT32.
     struct TargetDumpReq { uint32_t fbp = 0, fbw = 0, w = 0, h = 0; const char *dir = nullptr; };
 #if defined(PS2X_HAVE_PGS)
+    uint64_t publishedPacketCount(); // monotonic, published on swap; lock-free guest read
     void requestTargetDump(const TargetDumpReq &r);
     // [steporacle] the whole 4 MB VRAM as the backend holds it now (flushes first), plus its register state as text.
     // Caller must have the GS stream drained to this point (PS2Memory::drainKickQueue). Game thread.
@@ -26,6 +32,7 @@ namespace ps2x_pgs
     // (FUN_00106ba8), 2 Z top byte (sub_0024B118), 3 blur weight (FUN_00245a50), 4 glow downscale + composite (FUN_00103070).
     bool nativePostStep(int step);
 #else
+inline uint64_t publishedPacketCount() { return 0; }
     inline void requestTargetDump(const TargetDumpReq &) {}
     inline bool dumpVramRaw(const char *, const char *) { return false; }
     inline bool dumpVramRawUnderLock(const char *, const char *) { return false; }

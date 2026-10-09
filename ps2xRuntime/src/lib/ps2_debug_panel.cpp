@@ -1483,8 +1483,9 @@ namespace
         {
             editPlayer = 0;
         }
-        const char *playerNames[] = {"Player 1", "Player 2"};
-        ImGui::Combo("Player", &editPlayer, playerNames, 2);
+        const char *playerNames[] = {"Player 1", "Player 2", "Player 3", "Player 4"};
+        static_assert(sizeof(playerNames)/sizeof(playerNames[0]) == PadConfig::kPlayerCount);
+        ImGui::Combo("Player", &editPlayer, playerNames, static_cast<int>(PadConfig::kPlayerCount));
 
         struct PadInfo
         {
@@ -1542,7 +1543,7 @@ namespace
             {
                 if (ImGui::Selectable("Auto (any pad + keyboard)", dev.kind == PadDeviceKind::None))
                 {
-                    cfg.resetPlayer(static_cast<size_t>(editPlayer));
+                    cfg.setPlayerDefaults(static_cast<size_t>(editPlayer), PadDeviceKind::None);
                 }
                 if (ImGui::Selectable("Keyboard", dev.kind == PadDeviceKind::Keyboard))
                 {
@@ -1553,12 +1554,17 @@ namespace
                     char label[128];
                     std::snprintf(label, sizeof(label), "Gamepad %d (%s)", pads[i].index,
                                   pads[i].name ? pads[i].name : "?");
-                    if (ImGui::Selectable(label,
+                    const int owner = cfg.gamepadOwner(pads[i].index,static_cast<size_t>(editPlayer));
+                    const std::string ownershipLabel = std::string(label) +
+                        (owner >= 0 ? " (in use by Player " + std::to_string(owner+1) + ")" : "");
+                    ImGui::BeginDisabled(owner >= 0);
+                    if (ImGui::Selectable(ownershipLabel.c_str(),
                                           dev.kind == PadDeviceKind::Gamepad && dev.gamepad == pads[i].index))
                     {
                         cfg.setPlayerDefaults(static_cast<size_t>(editPlayer), PadDeviceKind::Gamepad);
                         cfg.setDevice(static_cast<size_t>(editPlayer), PadDevice{PadDeviceKind::Gamepad, pads[i].index});
                     }
+                    ImGui::EndDisabled();
                 }
                 ImGui::EndCombo();
             }
@@ -1672,6 +1678,7 @@ namespace
                 for (int i = 0; i < scanCount && bind.kind == PadBindKind::None; ++i)
                 {
                     const int g = scan[i];
+                    if (dev.kind == PadDeviceKind::None && cfg.gamepadOwner(g,static_cast<size_t>(editPlayer)) >= 0) continue;
                     for (int b = 0; b < 32; ++b)
                     {
                         if (bt3IsGamepadButtonPressed(g, b))

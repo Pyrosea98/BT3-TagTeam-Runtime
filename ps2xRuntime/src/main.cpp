@@ -555,6 +555,42 @@ extern "C" const char *ps2xExeDirC()
 }
 int main(int argc, char *argv[])
 {
+    if(argc==2 && std::strcmp(argv[1],"--native-seat-pads-self-test")==0){
+        extern int ps2xNativeSeatPadsSelfTest();return ps2xNativeSeatPadsSelfTest();
+    }
+    if(argc==3 && std::strcmp(argv[1],"--native-fusion-input-self-test")==0){
+        extern int ps2xFusionInputSelfTest(const char*);return ps2xFusionInputSelfTest(argv[2]);
+    }
+    if(argc==3 && std::strcmp(argv[1],"--native-cpu-transform-self-test")==0){
+        extern int ps2xCpuTransformSelfTest(const char*);return ps2xCpuTransformSelfTest(argv[2]);
+    }
+    if(argc==3 && std::strcmp(argv[1],"--native-fusion-form-self-test")==0){
+        extern int ps2xFusionFormSelfTest(const char*);return ps2xFusionFormSelfTest(argv[2]);
+    }
+    if(argc==3 && std::strcmp(argv[1],"--native-fusion-controls-self-test")==0){
+        extern int ps2xFusionControlsSelfTest(const char*);return ps2xFusionControlsSelfTest(argv[2]);
+    }
+    if(argc==3 && std::strcmp(argv[1],"--native-event-tail-self-test")==0){
+        extern int ps2xEventTailSelfTest(const char*);return ps2xEventTailSelfTest(argv[2]);
+    }
+    if(argc==3 && std::strcmp(argv[1],"--native-exit-capture-self-test")==0){
+        extern int ps2xGuestExitCaptureSelfTest(const char*);return ps2xGuestExitCaptureSelfTest(argv[2]);
+    }
+    if(argc==3 && std::strcmp(argv[1],"--native-overhead-self-test")==0){
+        extern int ps2xOverheadHudSelfTest(const char*);return ps2xOverheadHudSelfTest(argv[2]);
+    }
+    if (argc == 3 && std::strcmp(argv[1], "--native-leaf-self-test") == 0) {
+        extern int ps2xNativeLeafSelfTest(const char*);
+        return ps2xNativeLeafSelfTest(argv[2]);
+    }
+    if ((argc == 2 || argc == 3) && std::strcmp(argv[1], "--native-interpreter-self-test") == 0) {
+        extern int ps2xInterpreterSelfTest(const char*);
+        return ps2xInterpreterSelfTest(argc==3?argv[2]:nullptr);
+    }
+    if (argc == 4 && std::strcmp(argv[1], "--native-ui-vulkan-self-test") == 0) {
+        extern int ps2xNativeUiVulkanSelfTest(const char*, const char*);
+        return ps2xNativeUiVulkanSelfTest(argv[2], argv[3]);
+    }
     // [boot] process/main start: the runtime logs start -> first frame on its first present.
     extern std::chrono::steady_clock::time_point g_ps2xBootT0;
     g_ps2xBootT0 = std::chrono::steady_clock::now();
@@ -797,6 +833,8 @@ int main(int argc, char *argv[])
             return 0;
         }
 
+        extern void ps2xTagteamStart(PS2Runtime &);
+        ps2xTagteamStart(runtime);
         runtime.run();
 
 #ifdef _DEBUG

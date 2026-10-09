@@ -700,6 +700,13 @@ add_subdirectory(third_party/rcheevos EXCLUDE_FROM_ALL)
 add_library(ps2_runtime STATIC
 src/lib/game_overrides.cpp
 src/lib/ps2x_mods.cpp         # [mods] loadable game mods (ps2x_mod_api.h)
+src/lib/ps2x_tagteam_bridge.cpp # experimental Python/PINE native trial
+src/lib/ps2_tagteam_native_targets.cpp # frozen, authenticated embedded getter/target feature
+src/lib/ps2_target_trace.cpp # optional bounded in-process target/input observations
+src/lib/ps2_ki_trace.cpp # focused native projectile steering/callback observations
+src/lib/ps2_hud_diagnostic.cpp # bounded developer-only indexed texture dump/draw census
+src/lib/ps2_hud_upload_trace.cpp # source metadata and bounded HUD IMAGE chunks
+  src/lib/ps2_ui_vulkan.cpp # native indexed UI sprite compositor + isolated GPU self-test
 src/lib/ps2x_dueldump.cpp       # [dueldump] total capture of the Duel menu flow
 src/lib/ps2x_net_texdump.cpp    # [netmenu] force-decode QRS textures via the runtime's PSMT8 reader
 src/lib/ps2x_duel_fields.cpp    # [duelfields] the complete Duel-setup field map + write methods
@@ -824,6 +831,13 @@ add_executable(ps2EntryRunner
     ${RUNNER_SRC_FILES}
     ${RUNNER_RESOURCES}
 )
+set(PS2X_RUNNER_OUTPUT_NAME "" CACHE STRING "Optional runner filename for isolated diagnostic builds")
+if(PS2X_RUNNER_OUTPUT_NAME)
+    if(NOT PS2X_RUNNER_OUTPUT_NAME MATCHES "^[A-Za-z0-9_-]+$")
+        message(FATAL_ERROR "PS2X_RUNNER_OUTPUT_NAME must be a filename stem")
+    endif()
+    set_target_properties(ps2EntryRunner PROPERTIES OUTPUT_NAME "${PS2X_RUNNER_OUTPUT_NAME}")
+endif()
 
 # [r3000] Recompiled IOP modules are compiled straight into the runner (not a static lib) so
 # their function-table registration objects are never dropped by the linker.

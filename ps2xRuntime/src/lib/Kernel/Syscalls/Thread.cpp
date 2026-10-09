@@ -3,6 +3,7 @@
 #include "ps2_runtime_macros.h"
 #include "Common.h"
 #include "Thread.h"
+#include "ps2_trace_diagnostics.h"
 
 extern std::atomic<uint32_t> g_bt3StateLive; // [eeround2] gate (ps2_runtime.cpp)
 
@@ -572,7 +573,7 @@ namespace ps2_syscalls
                             if ((samePcCount % (kSamePcWarnInterval * 8u)) == 0u)
                             {
                                 static std::atomic<uint32_t> s_spinDbg{0};
-                                if (s_spinDbg.fetch_add(1) < 400u)
+                                if (ps2xContinuousTrace() || s_spinDbg.fetch_add(1) < 400u)
                                     std::cerr << "[spin] tid=" << tid << " pc=0x" << std::hex << pc
                                               << " ra=0x" << GPR_U32(threadCtx, 31) << std::dec << std::endl;
                                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -997,6 +998,10 @@ namespace ps2_syscalls
         {
             static std::atomic<uint32_t> s_sleepBlockLogs{0};
             const uint32_t sleepBlockLog = s_sleepBlockLogs.fetch_add(1, std::memory_order_relaxed);
+            if (ps2xContinuousTrace())
+                std::cerr << "[thread-trace] sleep-block tid=" << g_currentThreadId
+                          << " pc=0x" << std::hex << ctx->pc
+                          << " ra=0x" << getRegU32(ctx,31) << std::dec << std::endl;
             if (sleepBlockLog < 256u)
             {
                 RUNTIME_LOG("[SleepThread:block] tid=" << g_currentThreadId
@@ -1074,6 +1079,9 @@ namespace ps2_syscalls
 
         static std::atomic<uint32_t> s_sleepWakeLogs{0};
         const uint32_t sleepWakeLog = s_sleepWakeLogs.fetch_add(1, std::memory_order_relaxed);
+        if (ps2xContinuousTrace())
+            std::cerr << "[thread-trace] sleep-wake tid=" << g_currentThreadId
+                      << " ret=" << ret << " wakeupCount=" << wakeupCountAfter << std::endl;
         if (sleepWakeLog < 256u)
         {
             RUNTIME_LOG("[SleepThread:wake] tid=" << g_currentThreadId
@@ -1115,7 +1123,7 @@ namespace ps2_syscalls
 
         static std::atomic<uint32_t> s_wakeDbg{0};
         uint32_t wn = s_wakeDbg.fetch_add(1);
-        if (wn < 200u || (wn % 200u) == 0u)
+        if (ps2xContinuousTrace() || wn < 200u || (wn % 200u) == 0u)
             std::cerr << "[wake] n=" << wn << " caller=" << g_currentThreadId << " target=" << tid << std::endl;
 
         int newWakeupCount = 0;
@@ -1154,6 +1162,10 @@ namespace ps2_syscalls
 
         static std::atomic<uint32_t> s_wakeupLogs{0};
         const uint32_t wakeupLog = s_wakeupLogs.fetch_add(1, std::memory_order_relaxed);
+        if (ps2xContinuousTrace())
+            std::cerr << "[thread-trace] wake tid=" << g_currentThreadId
+                      << " target=" << tid << " status=" << statusAfter
+                      << " wakeupCount=" << newWakeupCount << std::endl;
         if (wakeupLog < 256u)
         {
             RUNTIME_LOG("[WakeupThread] tid=" << g_currentThreadId

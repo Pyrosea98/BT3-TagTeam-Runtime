@@ -898,6 +898,7 @@ namespace seam
     // Emits one chunk of the current batch: fills t_run, and in skip mode submits it.
     static void afterRunOwned();
     // [seamvk] hand the chunk to the native renderer with the program's constants laid out for the shader.
+#if defined(PS2X_HAVE_SEAMVK)
     static void recordForVk(const seammesh::Chunk &c, bool isStage, bool isFx, bool isChar2, bool isChar1, const uint8_t *vuData, PS2Memory *mem)
     {
         seamvk::DrawPacket k; std::memset(&k, 0, sizeof(k));
@@ -940,6 +941,7 @@ namespace seam
         std::memcpy(buf.data() + sizeof(k), c.verts.data(), size_t(count) * stride);
         mem->submitGifPacket(GifPathId::HostDraw, buf.data(), (uint32_t)buf.size());
     }
+#endif
     static bool emitChunk(uint32_t chunkIdx, uint32_t top, uint8_t *vuData, uint32_t dataSize, void *memory, bool verifyCheck)
     {
         g_seamHostChunks.fetch_add(1u, std::memory_order_relaxed);   // [fightgate] the seam's meshes count as the fight's render work (its VU1 programs are skipped)
@@ -1034,7 +1036,9 @@ namespace seam
             if (ok) { t_run.kicks.push_back(seamxform::Kick{0u, (uint32_t)t_run.expect.size()}); t_run.clipOut = clip; t_run.hasClipOut = true; }
         }
         if (!ok) return false;
+#if defined(PS2X_HAVE_SEAMVK)
         if (seamvk::on() && !t_run.kicks.empty()) recordForVk(c, isStage, isFx, isChar2, isChar1, vuData, static_cast<PS2Memory *>(memory));
+#endif
         t_run.active = true;
         if (skipOn())
         {   // PS2X_SEAMSKIP=2: bisect mode, skip VU1 but submit nothing.
@@ -1042,6 +1046,7 @@ namespace seam
             PS2Memory *mem = static_cast<PS2Memory *>(memory);
             if (!s_noSubmit)
             {
+#if defined(PS2X_HAVE_SEAMVK)
                 if (seamvk::on())
                 {   // [seamvk] 'SVKG': the arbiter hands the payload to the GS backend as PATH1 and to the native front-end in order
                     static thread_local std::vector<uint8_t> hbuf;
@@ -1054,6 +1059,7 @@ namespace seam
                     }
                 }
                 else
+#endif
                     for (const seamxform::Kick &k : t_run.kicks) mem->submitGifPacket(GifPathId::Path1, t_run.expect.data() + k.off, k.len);
             }
             ++g_st.skipped;
@@ -1254,3 +1260,9 @@ namespace seam
         }
     }
 }
+#if !defined(PS2X_HAVE_SEAMVK)
+// The stream markers are consumed only by the native Vulkan seam renderer.
+// Keep the default GS renderer linkable when that optional renderer is absent.
+extern "C" void ps2xSeamFlipStamp(unsigned long long, unsigned long long) {}
+extern "C" void ps2xSeamTickMark(unsigned long long) {}
+#endif

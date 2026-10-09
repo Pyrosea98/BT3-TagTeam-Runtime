@@ -142,7 +142,7 @@ void censusWalk(GifPathId pathId, const uint8_t *data, uint32_t size)
 }
 }
 
-void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl)
+void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl, uint32_t eeSource)
 {
     if (!data || sizeBytes < 16 || !m_processFn)
         return;
@@ -153,6 +153,7 @@ void GifArbiter::submit(GifPathId pathId, const uint8_t *data, uint32_t sizeByte
     pkt.path2DirectHl = (pathId == GifPathId::Path2) && path2DirectHl;
     pkt.path3Image = (pathId == GifPathId::Path3) && isImagePacket(data, sizeBytes);
     pkt.size = sizeBytes;
+    pkt.eeSource = eeSource;
     if (pathId == GifPathId::Path2 && seamprobe::kickProbeOn()) pkt.owner = seamprobe::lastDirectOwner();   // [pktoracle]
     Lane &ln = lane();
     CountedLock lk(m_qMtx, m_lockWaits, m_lockWaitNs);
@@ -328,6 +329,8 @@ namespace
 }
 void GifArbiter::process(const GifArbiterPacket &pkt)
 {
+    extern void ps2xHudObservePacket(const GifArbiterPacket &);
+    ps2xHudObservePacket(pkt);
     if (!m_processFn || !pkt.data || pkt.size == 0u) return;
     if (!g_pktOracles.empty() && pkt.pathId == GifPathId::Path2)
         for (PktOracle &o : g_pktOracles)
@@ -390,8 +393,26 @@ void GifArbiter::process(const GifArbiterPacket &pkt)
             ps2x_pgs::gifTransfer(pathId, data, size);
             return;
         }
+        extern bool ps2xHudDiagnosticActive();
+        extern GS *ps2xHudDiagnosticGS();
+        extern unsigned ps2xHudDiagnosticGeneration();
+        const bool diagnostic=ps2xHudDiagnosticActive();
+        static bool diagnosticSynced=false, diagnosticFailed=false;
+        static unsigned generation=0;
+        if(diagnostic && generation!=ps2xHudDiagnosticGeneration()) {
+            generation=ps2xHudDiagnosticGeneration();
+            diagnosticSynced=false; diagnosticFailed=false;
+            std::fprintf(stderr,"[huddiag] capture %u first packet path=%u bytes=%u; importing baseline\n",generation,unsigned(pathId),unsigned(size));
+        }
+        if(diagnostic && !diagnosticSynced && !diagnosticFailed && ps2x_pgs::exclusive()) {
+            // Import state BEFORE this packet. Parsing begins with the same
+            // register/VRAM baseline; packets outside the window were skipped.
+            diagnosticSynced=ps2xPgsDiagnosticSyncShadow(ps2xHudDiagnosticGS());
+            diagnosticFailed=!diagnosticSynced;
+            std::fprintf(stderr,"[huddiag] capture %u baseline import %s; packet %s\n",generation,diagnosticSynced?"OK":"FAILED",diagnosticSynced?"will feed shadow parser":"skipped");
+        }
         const bool consumed = ps2x_pgs::gifTransfer(pathId, data, size);
-        if (consumed && ps2x_pgs::exclusive()) return;   // not consumed (backend unavailable): our parse takes it
+        if (consumed && ps2x_pgs::exclusive() && (!diagnostic || diagnosticFailed)) return;
     }
     g_gifArbCurPath = pathId;
     m_processFn(data, size);

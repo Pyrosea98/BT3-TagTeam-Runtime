@@ -23,6 +23,9 @@
 #include "runtime/ps2_texreplace.h"   // [pgscensus] identify
 #include <cstdlib>
 #include <iostream>
+extern bool ps2xHudDiagnosticEnabled();
+extern void ps2xHudDiagnosticKick(GS &, const GSContext &, const GSPrimReg &,
+                                 const GSVertex *, unsigned, unsigned);
 #include <vector>
 
 // GIF-packet time profiler (env PS2X_DMAPROF): split processGIFPacket cost into
@@ -4180,7 +4183,8 @@ void GS::vertexKick(bool drawing)
         }
         // [nodraw] PS2X_GS_NODRAW=1 (or the paraLLEl-GS pack mode): keep the GS state machine, VRAM and palettes current but
         // record no draws -- the cheap parse that feeds texture identification while another backend renders.
-        static const bool s_noDraw = [](){ const char *v = std::getenv("PS2X_GS_NODRAW"); return (v && v[0] && v[0] != '0') || ps2x_pgs::packMode(); }();
+        ps2xHudDiagnosticKick(*this, activeContext(), m_prim, m_vtxQueue, m_vtxCount, m_curSrcPath);
+        static const bool s_noDraw = [](){ const char *v = std::getenv("PS2X_GS_NODRAW"); return (v && v[0] && v[0] != '0') || ps2x_pgs::packMode() || (ps2xHudDiagnosticEnabled() && ps2x_pgs::exclusive()); }();
         static const bool s_dp = [](){ const char *v = std::getenv("PS2X_DMAPROF"); return v && v[0] && v[0] != '0'; }();
         if (s_noDraw)
         {   // state only + [rtstale] page stamps

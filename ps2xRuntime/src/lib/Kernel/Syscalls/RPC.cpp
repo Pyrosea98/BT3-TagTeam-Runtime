@@ -1,5 +1,6 @@
 #include "Common.h"
 #include "RPC.h"
+#include "ps2_trace_diagnostics.h"
 
 extern Ps2ArmedAtomic<uint32_t> g_ps2WatchLo;   // [tracearm] (Common.h pulls in ps2_runtime.h)
 extern Ps2ArmedAtomic<uint32_t> g_ps2WatchHi;
@@ -1638,7 +1639,7 @@ namespace ps2_syscalls
             uint32_t sidLog = 0;
             { std::lock_guard<std::mutex> lk(g_rpc_mutex); auto it = g_rpc_clients.find(clientPtr); if (it != g_rpc_clients.end()) sidLog = it->second.sid; }
             const uint32_t n = s_rpcDbg.fetch_add(1);
-            if (n >= 40u && n < 120u)
+            if (ps2xContinuousTrace() || (n >= 40u && n < 120u))
                 std::cerr << "[rpc-loop] sid=0x" << std::hex << sidLog << " rpcNum=0x" << rpcNum
                           << " ra=0x" << getRegU32(ctx, 31)
                           << " tid=" << std::dec << g_currentThreadId << std::endl;
@@ -2692,6 +2693,17 @@ namespace ps2_syscalls
         event.result = 0;
         pushSifRpcDebugEvent(event);
 
+        if (sid == 0x2000004u && std::getenv("PS2X_DVCI_PROBE"))
+        {
+            uint32_t response = 0;
+            if (recvBuf && recvSize >= 4u)
+                if (const uint8_t *buffer = getMemPtr(rdram, recvBuf))
+                    std::memcpy(&response, buffer, sizeof(response));
+            std::cerr << "[dvci-return] cmd=" << rpcNum << " tid=" << g_currentThreadId
+                      << " handled=" << handled << " by_iop=" << handledByIop
+                      << " mode=" << mode << " callback=" << callbackInvokedForDebug
+                      << " recv=0x" << std::hex << response << std::dec << " busy=0" << std::endl;
+        }
         setReturnS32(ctx, 0);
     }
 

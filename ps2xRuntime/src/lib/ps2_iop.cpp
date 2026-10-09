@@ -6,6 +6,7 @@
 #include "runtime/ps2_iop_sdrdrv.h"
 #include "runtime/ps2_memory.h"
 #include "ps2_runtime.h"
+#include "ps2_trace_diagnostics.h"
 #include "Kernel/Syscalls/RPC.h"
 #include "Kernel/Stubs/CD.h"
 #include <fstream>
@@ -138,6 +139,55 @@ bool ps2_iop::handleRPC(PS2Runtime *runtime,
     resultPtr = 0u;
     signalNowaitCompletion = false;
 
+    // DIAGNOSTIC: dump DVCI RPC (sid 0x2000004) commands + sendBuf so we can see
+    // the movie read/stream requests and their params.
+    if (sid == 0x2000004u && std::getenv("PS2X_DVCI_PROBE"))
+    {
+        static std::atomic<uint32_t> s_d{0};
+        uint32_t n = s_d.fetch_add(1);
+        if (ps2xContinuousTrace() || n < 120u)
+        {
+            std::cerr << "[dvci-rpc] #" << n << " rpcNum=" << rpcNum << " sendBuf=0x" << std::hex << sendBufAddr
+                      << " size=" << std::dec << sendSize << " |";
+            if (const uint8_t *sb = getMemPtr(m_rdram, sendBufAddr))
+                for (uint32_t i = 0; i < 32u && i < sendSize; i += 4)
+                    std::cerr << " " << std::hex << *reinterpret_cast<const uint32_t *>(sb + i) << std::dec;
+            std::cerr << std::endl;
+        }
+    }
+
+    // EMPIRICAL: cmd 13 is the batch-dispatch. sendBuf 0x300ec0 holds the whole
+    // DVCI command queue that the game just built: word[0] = count, then `count`
+    // entries of 12 bytes each starting at sendBuf+4 (see FUN_001242f0/00124150).
+    // Parse and log every queued command so we can learn the per-type semantics
+    // before executing them. Gated on PS2X_DVCI_Q.
+    if (sid == 0x2000004u && rpcNum == 13u && std::getenv("PS2X_DVCI_Q"))
+    {
+        static std::atomic<uint32_t> s_q{0};
+        uint32_t n = s_q.fetch_add(1);
+        if (ps2xContinuousTrace() || n < 200u)
+        {
+            if (const uint8_t *sb = getMemPtr(m_rdram, sendBufAddr))
+            {
+                uint32_t count = *reinterpret_cast<const uint32_t *>(sb);
+                std::cerr << "[dvci-q] #" << n << " count=" << count << std::endl;
+                uint32_t available = sendSize >= 4u ? (sendSize - 4u) / 12u : 0u;
+                uint32_t cap = std::min(count, std::min(32u, available));
+                for (uint32_t e = 0; e < cap; ++e)
+                {
+                    const uint8_t *ent = sb + 4u + e * 12u;
+                    std::cerr << "  e" << e << " type=" << (int)ent[0]
+                              << " b1=" << std::hex << (int)ent[1]
+                              << " seq=" << *reinterpret_cast<const uint16_t *>(ent + 2)
+                              << " b4=" << (int)ent[4] << " b5=" << (int)ent[5]
+                              << " b6=" << (int)ent[6] << " b7=" << (int)ent[7]
+                              << " w8=0x" << *reinterpret_cast<const uint32_t *>(ent + 8)
+                              << std::dec << std::endl;
+                }
+            }
+        }
+    }
+
     // [r3000] Prefer the native IOPRP file service (CDVDFSV) for the DVCI RPCs (on by default;
     // opt out with PS2X_IOP_IOPRP=0).
     if (const char *e = std::getenv("PS2X_IOP_IOPRP"); !(e && e[0] == '0'))
@@ -147,6 +197,8 @@ bool ps2_iop::handleRPC(PS2Runtime *runtime,
         {
             signalNowaitCompletion = true;
             if (recvBufAddr) resultPtr = recvBufAddr;
+            if (sid == 0x2000004u && std::getenv("PS2X_DVCI_PROBE"))
+                std::cerr << "[dvci-route] cmd=" << rpcNum << " route=native returned=1 completion=1" << std::endl;
             return true;
         }
     }
@@ -237,54 +289,6 @@ bool ps2_iop::handleRPC(PS2Runtime *runtime,
         return true;
     }
 
-    // DIAGNOSTIC: dump DVCI RPC (sid 0x2000004) commands + sendBuf so we can see
-    // the movie read/stream requests and their params.
-    if (sid == 0x2000004u && std::getenv("PS2X_DVCI_PROBE"))
-    {
-        static std::atomic<uint32_t> s_d{0};
-        uint32_t n = s_d.fetch_add(1);
-        if (n < 120u)
-        {
-            std::cerr << "[dvci-rpc] #" << n << " rpcNum=" << rpcNum << " sendBuf=0x" << std::hex << sendBufAddr
-                      << " size=" << std::dec << sendSize << " |";
-            if (const uint8_t *sb = getMemPtr(m_rdram, sendBufAddr))
-                for (uint32_t i = 0; i < 32u && i < sendSize; i += 4)
-                    std::cerr << " " << std::hex << *reinterpret_cast<const uint32_t *>(sb + i) << std::dec;
-            std::cerr << std::endl;
-        }
-    }
-
-    // EMPIRICAL: cmd 13 is the batch-dispatch. sendBuf 0x300ec0 holds the whole
-    // DVCI command queue that the game just built: word[0] = count, then `count`
-    // entries of 12 bytes each starting at sendBuf+4 (see FUN_001242f0/00124150).
-    // Parse and log every queued command so we can learn the per-type semantics
-    // before executing them. Gated on PS2X_DVCI_Q.
-    if (sid == 0x2000004u && rpcNum == 13u && std::getenv("PS2X_DVCI_Q"))
-    {
-        static std::atomic<uint32_t> s_q{0};
-        uint32_t n = s_q.fetch_add(1);
-        if (n < 200u)
-        {
-            if (const uint8_t *sb = getMemPtr(m_rdram, sendBufAddr))
-            {
-                uint32_t count = *reinterpret_cast<const uint32_t *>(sb);
-                std::cerr << "[dvci-q] #" << n << " count=" << count << std::endl;
-                uint32_t cap = count > 32u ? 32u : count;
-                for (uint32_t e = 0; e < cap; ++e)
-                {
-                    const uint8_t *ent = sb + 4u + e * 12u;
-                    std::cerr << "  e" << e << " type=" << (int)ent[0]
-                              << " b1=" << std::hex << (int)ent[1]
-                              << " seq=" << *reinterpret_cast<const uint16_t *>(ent + 2)
-                              << " b4=" << (int)ent[4] << " b5=" << (int)ent[5]
-                              << " b6=" << (int)ent[6] << " b7=" << (int)ent[7]
-                              << " w8=0x" << *reinterpret_cast<const uint32_t *>(ent + 8)
-                              << std::dec << std::endl;
-                }
-            }
-        }
-    }
-
     // Locate the game's DVCI file table by scanning RAM for the distinctive AFS2 LBA
     // (715866=0xAEC5A) so we can decode the 76-byte entry layout (lbn / position / size).
     if (sid == 0x2000004u && (rpcNum == 3u || rpcNum == 13u) && std::getenv("PS2X_DVCI_TABLE"))
@@ -336,6 +340,8 @@ bool ps2_iop::handleRPC(PS2Runtime *runtime,
             resultPtr = recvBufAddr;
         }
         signalNowaitCompletion = true;
+        if (sid == 0x2000004u && std::getenv("PS2X_DVCI_PROBE"))
+            std::cerr << "[dvci-route] cmd=" << rpcNum << " route=fallback returned=1 completion=1" << std::endl;
         ps2cov::noteIopModule("DVCI", rpcNum);
         return true;
     }

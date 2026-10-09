@@ -97,8 +97,8 @@ namespace ps2_stubs
     class PadConfig
     {
     public:
-        // [launcher] BT3 is a 1v1 fighter: cap local players at 2.
-        static constexpr size_t kPlayerCount = 2;
+        // Four host profiles; stock guest pad ports remain unchanged.
+        static constexpr size_t kPlayerCount = 4;
 
         static PadConfig &instance();
         // [overlay] Suspend gamepad->guest input while the settings overlay is open, so
@@ -109,7 +109,10 @@ namespace ps2_stubs
         // Thread-safe snapshot / mutators (the guest thread reads via poll(), the
         // configurator UI writes via these; both hold the internal mutex).
         PadPlayerConfig snapshot(size_t p) const;
-        void setDevice(size_t p, const PadDevice &device);
+        // Explicit gamepad indices have one owner. Failed assignment preserves
+        // the existing profile; -1 is an explicitly disconnected neutral pad.
+        bool setDevice(size_t p, const PadDevice &device);
+        int gamepadOwner(int index, size_t exceptPlayer = kPlayerCount) const;
         void setBind(size_t p, PadAction action, const PadBind &bind);
         void setPlayerDefaults(size_t p, PadDeviceKind kind);
         void resetPlayer(size_t p);
@@ -117,8 +120,8 @@ namespace ps2_stubs
         void setDefaultDir(const std::string &elfDir);
         std::string defaultPath() const;
 
-        // Per-player savedata files: <ELF dir>/savedata/pad_p1.conf (p1) and
-        // pad_p2.conf (p2). defaultPath() is kept for compatibility so the
+        // Per-player savedata files: <ELF dir>/savedata/pad_p1..4.conf.
+        // defaultPath() is kept for compatibility so the
         // legacy single pad.conf can be found for migration.
         std::string playerConfigPath(size_t p) const;
         std::string legacyConfigPath() const;

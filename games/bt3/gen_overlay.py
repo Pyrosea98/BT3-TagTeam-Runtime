@@ -17,6 +17,7 @@ Usage: gen_overlay.py --recomp <ps2_recomp> --dbzp <DBZP.BIN> --work <dir> --run
 """
 import argparse
 import csv
+import hashlib
 import re
 import struct
 import subprocess
@@ -57,6 +58,14 @@ RENAMES = [
 
 def make_wrapper_elf(dbzp: Path, dst: Path) -> None:
     code = dbzp.read_bytes()
+    # Power Scale loads a 2 KiB initializer at 0x334400 and jumps into the
+    # byte-identical stock overlay at 0x334c00. Keep the stock address map;
+    # the runtime's guest interpreter executes the new initializer.
+    if hashlib.sha256(code).hexdigest() == "038c002ad24dcbd88ae6e8868006fe2eb7cdab06f482525514fef3e708b205f7":
+        if hashlib.sha256(code[2048:]).hexdigest() != "30f61f9c78c3859e5dd4fcfd8df6753b0f2d2c64beb924b92da5b2eaaa5e09cc":
+            raise ValueError("Power Scale overlay body mismatch")
+        code = code[2048:]
+        print("Power Scale: preserved initializer at 0x334400; recompile unchanged body at 0x334c00")
     size = len(code)
     EHDR, PHDR, SHENT = 52, 32, 40
     phoff = EHDR

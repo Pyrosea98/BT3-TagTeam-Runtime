@@ -1,4 +1,7 @@
 #include "ps2_waitprof.h"   // [waitprof]
+#include "runtime/ps2_bridge_perf.h"
+#include "runtime/ps2_ui_transport.h"
+#include "ps2_trace_diagnostics.h"
 #include "runtime/ps2_guestprof.h"
 #include "runtime/ps2_fiber.h"   // [fibers]
 #include <deque>
@@ -31,6 +34,7 @@ extern "C" int ps2xSchedTraceOn();               // PS2X_SCHEDTRACE window (defi
 #include "runtime/ps2_toml.h"   // [winmode] startup read of [video] window_mode / monitor
 #include "runtime/ps2_fmv_override.h"  // [fmvoverride]
 #include <filesystem>
+#include <fstream>
 #include "runtime/ps2_memory.h"
 #include "runtime/ps2x_mainmenu.h"   // [mainmenu] the main-menu lifecycle gate
 #include "runtime/ps2_gs_pgs.h"   // [pgs]
@@ -804,6 +808,17 @@ namespace
     };
 
     thread_local DispatchHistory g_dispatchHistory;
+    struct ExitBranch { uint32_t pc, source, ra, sp; int kind; };
+    struct ExitHistory {
+        std::array<ExitBranch,200> entries{};
+        size_t next=0,count=0;
+        void push(uint32_t pc,uint32_t source,const R5900Context* ctx,int kind) {
+            entries[next]={pc,source,uint32_t(_mm_extract_epi32(ctx->r[31],0)),
+                          uint32_t(_mm_extract_epi32(ctx->r[29],0)),kind};
+            next=(next+1)%entries.size();count=(std::min)(count+1,entries.size());
+        }
+    };
+    thread_local ExitHistory g_mainExitHistory;
     // [rollback] CADENCE COUNTERS: the branch counters that decide when a guest fiber yields, pumps
     // the CD tick, or checks the vsync. They live on the shared host thread, so a rollback did not
     // reset their phase: the first yield after a restore landed at a different branch offset than
@@ -836,7 +851,7 @@ namespace
     std::atomic<uint64_t> g_displaySwapCounter{0};
     inline bool schedDbgEnabled() { static const bool on = [](){ const char *v = std::getenv("PS2X_SCHED_DEBUG"); return v && v[0] && v[0] != '0'; }(); return on; }
     std::atomic<int> g_guestMutexHolderTid{-1};
-    inline bool schedDbgOn() { return schedDbgEnabled() && g_schedDbgCount.fetch_add(1) < 2000u; }
+    inline bool schedDbgOn() { return schedDbgEnabled() && (ps2xContinuousTrace() || g_schedDbgCount.fetch_add(1) < 2000u); }
 
     void pushDispatchPc(uint32_t pc)
     {
@@ -1397,11 +1412,18 @@ void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
     m_debugUiUserData = userData;
 }
 
+extern bool ps2xTagteamNeedsInterpret(uint32_t);
+extern bool ps2xTagteamLifecycleDispatch(uint32_t);
+extern void ps2xDumpInterpreterDiagnostics(R5900Context *);
+extern PS2Runtime::RecompiledFunction ps2xTagteamPatchedFunction(uint32_t);
+extern void ps2xTagteamStop();
+
 PS2Runtime::~PS2Runtime()
 {
     try
     {
         requestStop();
+        ps2xTagteamStop();
         ps2_syscalls::detachAllGuestHostThreads();
 #if defined(PLATFORM_VITA)
         m_audioBackend.stopAll();
@@ -1453,6 +1475,10 @@ bool PS2Runtime::syncCoreSubsystems()
     }
 
     m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
+    // Register at initialization; exclusive Vulkan may never run the shadow
+    // parser before a diagnostic trigger, so its lazy writeback pointer is null.
+    extern void ps2xHudDiagnosticSetGS(GS *);
+    ps2xHudDiagnosticSetGS(&m_gs);
     ps2x_pgs::setGs(&m_gs);   // [pgs-texreplace] the backend's replacement hook hashes this GS's VRAM/palettes
     m_gifArbiter.setProcessPacketFn([this](const uint8_t *data, uint32_t size)
                                     {
@@ -2100,6 +2126,11 @@ void PS2Runtime::configureIoPathsFromElf(const std::string &elfPath)
     }
 
     // Allow pointing the CDVD backend at a disc image via environment variable.
+    // The standalone app separates persistent cards from disposable import
+    // files. Developer launches retain the existing ELF-relative card path.
+    if (const char *mcRootEnv = std::getenv("PS2X_MC_ROOT"))
+        if (mcRootEnv[0] != '\0' && std::filesystem::path(mcRootEnv).is_absolute())
+            paths.mcRoot = std::filesystem::path(mcRootEnv);
     if (const char *cdImageEnv = std::getenv("PS2X_CD_IMAGE"))
     {
         if (cdImageEnv[0] != '\0')
@@ -2109,6 +2140,8 @@ void PS2Runtime::configureIoPathsFromElf(const std::string &elfPath)
     }
 
     setIoPaths(paths);
+    if (const char *mcLog = std::getenv("PS2X_MCLOG"); mcLog && std::strcmp(mcLog,"1")==0)
+        std::fprintf(stderr,"[mclog] effective root=%s\n",getIoPaths().mcRoot.string().c_str());
 }
 
 // Recompiled DBZP.BIN overlay (the game code, base 0x334c00). Defined in
@@ -2265,6 +2298,7 @@ static thread_local R5900Context *t_bjCtx = nullptr; static thread_local uint8_t
 PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
 {
     pushDispatchPc(address);
+    if (auto patched = ps2xTagteamPatchedFunction(address)) return patched;
 
     // Track the last successfully-dispatched in-code function so that when a garbage
     // (out-of-code, e.g. stack-address) target appears, we can name where it came from.
@@ -3870,6 +3904,91 @@ void ps2xSuperTraceArm()
                  (unsigned long long)s_durMs, g_straceGen.load());
 }
 
+// Triggered before an unsupported interpreter path requests stop, or when
+// the main dispatcher returns without a user/runtime stop. One local capture.
+void ps2xCaptureGuestExit(PS2Runtime* rt,uint8_t* ram,R5900Context* ctx,
+                         const char* reason,uint32_t callerPc,uint32_t callerRa) {
+    const char* directory=std::getenv("PS2X_EXIT_CAPTURE_DIR");
+    if(!directory || !*directory)return;
+    static std::atomic<bool> captured{false},sceneCaptured{false},defeatCaptured{false};
+    const bool scene=std::strcmp(reason,"fight-gs-packet-collapse")==0 || std::strcmp(reason,"cinematic-gs-packet-collapse")==0;
+    const bool defeat=std::strcmp(reason,"team-defeat-not-resolved")==0;
+    auto& once=defeat?defeatCaptured:scene?sceneCaptured:captured;
+    bool expected=false;if(!once.compare_exchange_strong(expected,true))return;
+    try {
+        PS2Runtime::GuestExecutionScope scope(rt);
+        const auto stamp=std::chrono::steady_clock::now().time_since_epoch().count();
+        const auto root=std::filesystem::path(directory)/(((scene || defeat)?"black-scene-":"guest-exit-")+std::to_string(stamp));
+        std::filesystem::create_directories(root.parent_path());
+        if(!std::filesystem::create_directory(root))throw std::runtime_error("capture exists");
+        auto binary=[&](const char* name,const void* data,size_t length) {
+            std::ofstream stream(root/name,std::ios::binary);
+            stream.write(static_cast<const char*>(data),length);
+            if(!stream)throw std::runtime_error("capture write failed");
+        };
+        binary("ram.bin",ram,PS2_RAM_SIZE);
+        binary("context.bin",ctx,sizeof(*ctx));
+        binary("main-context.bin",&rt->cpu(),sizeof(rt->cpu()));
+        auto word=[&](uint32_t at){uint32_t value;std::memcpy(&value,ram+at,4);return value;};
+        std::ofstream out(root/"state.json");
+        out<<"{\"schema\":1,\"reason\":\""<<reason<<"\",\"pc\":"<<ctx->pc
+           <<",\"ra\":"<<uint32_t(_mm_extract_epi32(ctx->r[31],0))
+           <<",\"caller_pc\":"<<callerPc<<",\"caller_ra\":"<<callerRa
+           <<",\"guest_tid\":"<<g_schedTid<<",\"layout\":"<<word(0x331DEC)
+           <<",\"manager\":"<<word(0x2FEB14)<<",\"rematch_state\":"<<word(0x7FFF104)
+           <<",\"cinematic_stop\":"<<word(0x0711F03C)<<",\"cinematic_kind\":"<<word(0x0711F034)
+           <<",\"cinematic_members\":"<<word(0x0711F038)<<",\"quad_draws\":"<<word(0x06C0F018)
+           <<",\"reload_commit\":"<<word(0x0762F004)<<",\"reload_retire\":"<<word(0x0767F004)
+           <<",\"history_scope\":\"main-context dispatch entries and branches on this host thread\",\"history\":[";
+        for(size_t i=0;i<g_mainExitHistory.count;++i) {
+            const auto& e=g_mainExitHistory.entries[(g_mainExitHistory.next+200-g_mainExitHistory.count+i)%200];
+            if(i)out<<',';
+            out<<"{\"pc\":"<<e.pc<<",\"source\":"<<e.source<<",\"ra\":"<<e.ra
+               <<",\"sp\":"<<e.sp<<",\"kind\":"<<e.kind<<'}';
+        }
+        out<<"],\"participation\":{\"status\":"<<word(0x077CF000)<<",\"present\":"<<word(0x077CF00C)<<",\"consumed\":"<<word(0x077CF010)<<"},\"actors\":[";
+        for(unsigned i=0;i<std::min(10u,word(0xD8084));++i){
+            const auto p=word(0xD8040+4*i);if(i)out<<',';
+            out<<"{\"physical\":"<<i<<",\"pointer\":"<<p;
+            if(p>=0x100000 && p<PS2_RAM_SIZE-0x1600)out<<",\"team\":"<<word(p+8)<<",\"hp\":"<<int32_t(word(p+0x9E4))<<",\"action\":"<<word(p+2376);
+            out<<'}';
+        }
+        out<<"]}\n";if(!out)throw std::runtime_error("capture metadata failed");
+        std::fprintf(stderr,"[guest-exit-capture] saved RAM, contexts and %zu main dispatch records; reason=%s caller=0x%x ra=0x%x final=0x%x\n",
+                     g_mainExitHistory.count,reason,callerPc,callerRa,ctx->pc);
+    } catch(const std::exception&) {
+        std::fprintf(stderr,"[guest-exit-capture] local capture failed\n");
+    }
+}
+
+int ps2xGuestExitCaptureSelfTest(const char* directory) {
+#if defined(_WIN32)
+    _putenv_s("PS2X_EXIT_CAPTURE_DIR",directory);
+#else
+    setenv("PS2X_EXIT_CAPTURE_DIR",directory,1);
+#endif
+    auto owner=std::make_unique<PS2Runtime>();
+    auto& runtime=*owner;
+    if(!runtime.memory().initialize())return 1;
+    auto& ctx=runtime.cpu();ctx.pc=0x2F0;ctx.r[29]=_mm_set_epi32(0,0,0,0x300000);
+    uint8_t* ram=runtime.memory().getRDRAM();
+    const uint32_t layout=1,opcode=0x8001;
+    std::memcpy(ram+0x331DEC,&layout,4);std::memcpy(ram+0x2F0,&opcode,4);
+    for(uint32_t i=0;i<600;++i)g_mainExitHistory.push(0x100000+4*i,0x110000+4*i,&ctx,0);
+    ps2xCaptureGuestExit(&runtime,ram,&ctx,"unsupported-interpreted-path",0x2BAAE8,0x123456);
+    ps2xCaptureGuestExit(&runtime,ram,&ctx,"duplicate-must-be-ignored",0,0);
+    if(std::getenv("PS2X_SCENE_CAPTURE_SELF_TEST")) {
+        ps2xCaptureGuestExit(&runtime,ram,&ctx,"cinematic-gs-packet-collapse",0x100000,0x123456);
+        ps2xCaptureGuestExit(&runtime,ram,&ctx,"fight-gs-packet-collapse",0,0);
+    }
+    if(std::getenv("PS2X_DEFEAT_CAPTURE_SELF_TEST")){
+        ps2xCaptureGuestExit(&runtime,ram,&ctx,"team-defeat-not-resolved",0x20B878,0x123456);
+        ps2xCaptureGuestExit(&runtime,ram,&ctx,"team-defeat-not-resolved",0,0);
+    }
+    return runtime.isStopRequested()?1:0;
+}
+
+extern void ps2xTagteamTraceKiBranch(uint8_t *,R5900Context *,uint32_t,uint32_t);
 bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                                      R5900Context *ctx,
                                      uint32_t targetPc,
@@ -3879,6 +3998,11 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                                      const char *debugName)
 {
     t_bjCtx = ctx; t_bjRdram = rdram;   // [thunkwatch] for the [badjump] slot dump
+    static const bool exitHistoryEnabled=std::getenv("PS2X_EXIT_CAPTURE_DIR")!=nullptr;
+    if(ctx==&m_cpuContext && exitHistoryEnabled)
+        g_mainExitHistory.push(targetPc,sourcePc,ctx,int(kind));
+    if(targetPc==0x176788u || sourcePc==0x1310bcu || sourcePc==0x1310a4u)
+        ps2xTagteamTraceKiBranch(rdram,ctx,targetPc,sourcePc);
     ctx->pc = targetPc;
     // [DIAG] temporary: is our injected address even reaching the branch dispatcher?
     if (targetPc >= 0x00D00000u && targetPc < 0x00E00000u)
@@ -4552,7 +4676,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
     }
 
     // Hot-call cache fast path (skips lookupFunction + hasFunction for repeat calls).
-    if (s_hcPc[hcI] == targetPc && s_hcFn[hcI] != nullptr && targetPc != 0u)
+    if (s_hcPc[hcI] == targetPc && s_hcFn[hcI] != nullptr && targetPc != 0u && !ps2xTagteamNeedsInterpret(targetPc) && !ps2xTagteamLifecycleDispatch(targetPc))
     {
         m_debugPc.store(targetPc, std::memory_order_relaxed);
         const uint32_t entryPc = ctx->pc;
@@ -4576,7 +4700,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
         if (isCall && rdram)
         {
             const uint32_t phys = targetPc & 0x1FFFFFFFu;
-            if (phys >= 0x10000u && phys < 0x02000000u)
+            if (phys >= 0x10000u && phys < PS2_RAM_SIZE)
             {
                 uint32_t firstInsn = 0u;
                 std::memcpy(&firstInsn, rdram + phys, sizeof(firstInsn));
@@ -5395,6 +5519,45 @@ void PS2Runtime::dispatchLoop(uint8_t *rdram, R5900Context *ctx)
                 std::fprintf(stderr, "[stallprobe] pc=0x%x x%u %s ra=0x%x | t6=0x%x [t6+8]=0x%x [t6+0]=0x%08x [t6+4]=0x%08x [t6+c]=0x%08x | a0=0x%x a1=0x%x a2=0x%x a3=0x%x v0=0x%x s0=0x%x s1=0x%x s2=0x%x t7=0x%x t8=0x%x\n",
                              pc, samePcCount, (ctx == &m_cpuContext) ? "main" : "thread", R(31), t6, rd16(t6 + 8u), rd32(t6), rd32(t6 + 4u), rd32(t6 + 0xCu),
                              R(4), R(5), R(6), R(7), R(2), R(16), R(17), R(18), R(15), R(24));
+                static const bool stallHistory = []() {
+                    const char *value = std::getenv("PS2X_STALL_HISTORY");
+                    return value && value[0] && value[0] != '0';
+                }();
+                if (stallHistory && samePcCount == 2000u)
+                {
+                    // This ring is host-thread-local. Guest fibers on the same
+                    // host thread share it; tid identifies the current fiber,
+                    // not exclusive ownership of every entry in the ring.
+                    const std::string history = formatDispatchHistory();
+                    const uint32_t sceneManager = rd32(0x2FF10Cu);
+                    const bool validSceneManager = sceneManager >= 0x100000u &&
+                        sceneManager < 0x2000000u - 0x690u && !(sceneManager & 3u);
+                    std::fprintf(stderr,
+                        "[stall-history] tid=%d pc=0x%x scope=host-thread trace=%s\n"
+                        "[stall-state] tid=%d scene_manager=0x%x result=0x%x return=0x%x scene_flags=0x%x loop=0x%x scene=0x%x manager_flags=0x%x field624=0x%x field68c=0x%x\n",
+                        g_schedTid, pc, history.c_str(), g_schedTid, sceneManager,
+                        rd32(0x333700u), rd32(0x333704u), rd32(0x3337B8u), rd32(0x3337C0u),
+                        validSceneManager ? rd32(sceneManager + 0x18u) : 0xFFFFFFFFu,
+                        validSceneManager ? rd32(sceneManager + 0x14u) : 0xFFFFFFFFu,
+                        validSceneManager ? rd32(sceneManager + 0x624u) : 0xFFFFFFFFu,
+                        validSceneManager ? rd32(sceneManager + 0x68Cu) : 0xFFFFFFFFu);
+                    if (std::getenv("PS2X_STALL_INTERP"))
+                    {
+                        ps2xDumpInterpreterDiagnostics(ctx);
+                        // Probe after the history dump: lookupFunction records
+                        // these diagnostic lookups in the dispatch ring too.
+                        for (const uint32_t probePc : {0x100280u, 0x100628u, 0x100640u,
+                                                     0x8CD188u, 0x336A90u, 0x12BD10u})
+                        {
+                            const bool generated = hasFunction(probePc);
+                            const bool dirty = ps2xTagteamNeedsInterpret(probePc);
+                            const auto resolved = lookupFunction(probePc);
+                            std::fprintf(stderr, "[stall-lookup] pc=0x%x generated=%d dirty=%d function=%p\n",
+                                probePc, generated ? 1 : 0, dirty ? 1 : 0,
+                                reinterpret_cast<void *>(resolved));
+                        }
+                    }
+                }
             }
             if ((samePcCount % 2000u) == 0u && ctx == &m_cpuContext)   // [pumpmain] never run the tick on a sound thread's 2 KB stack
             {   // [spinpump] a busy-poll: advance the CD file server and let other guest threads run (see game_overrides)
@@ -5433,6 +5596,9 @@ void PS2Runtime::dispatchLoop(uint8_t *rdram, R5900Context *ctx)
         m_debugGp.store(static_cast<uint32_t>(_mm_extract_epi32(ctx->r[28], 0)), std::memory_order_relaxed);
 
         RecompiledFunction fn = lookupFunction(pc);
+        static const bool exitHistoryEnabled=std::getenv("PS2X_EXIT_CAPTURE_DIR")!=nullptr;
+        if(ctx==&m_cpuContext && exitHistoryEnabled)
+            g_mainExitHistory.push(pc,pc,ctx,-1);
         const uint32_t dispatchedPc = pc;
         const uint32_t dispatchedRa = static_cast<uint32_t>(_mm_extract_epi32(ctx->r[31], 0));
 
@@ -7392,6 +7558,8 @@ void PS2Runtime::run()
             }
             else
             dispatchLoop(m_memory.getRDRAM(), &m_cpuContext);
+            if(!isStopRequested())
+                ps2xCaptureGuestExit(this,m_memory.getRDRAM(),&m_cpuContext,"main-dispatch-return",m_debugPc.load(),m_debugRa.load());
             std::cerr << "[GAMETHREAD-EXIT] final pc=0x" << std::hex << m_cpuContext.pc
                       << " ra=0x" << static_cast<uint32_t>(_mm_extract_epi32(m_cpuContext.r[31], 0))
                       << " lastDebugPc=0x" << m_debugPc.load() << std::dec << std::endl;
@@ -8439,6 +8607,14 @@ void PS2Runtime::run()
         // Refresh the host gamepad layer (SDL2 poll + hotplug, or the evdev reader under raylib).
         { const auto _t = std::chrono::steady_clock::now();
           ps2x_pad::update();
+          if(ps2x::ui::uiStore().creditsActive.load(std::memory_order_relaxed)) {
+              bool pressed=false;
+              for(int key=8;key<512 && !pressed;++key)pressed=bt3IsKeyPressed(key);
+              for(int slot=0;slot<ps2x_pad::kMaxSlots && !pressed;++slot)
+                  if(ps2x_pad::available(slot))for(int button=1;button<=17 && !pressed;++button)
+                      pressed=ps2x_pad::buttonDown(slot,button);
+              if(pressed)ps2x::ui::uiStore().creditsSkip.store(true,std::memory_order_relaxed);
+          }
           extern double g_fpPad; g_fpPad += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t).count(); }
         { const auto _t = std::chrono::steady_clock::now();
           if (gpuMode) ps2GpuRenderer().serviceBlockingBarriers();   // [barblock]
@@ -9404,6 +9580,18 @@ void PS2Runtime::run()
                            std::ostringstream v; v << " vbr_waits/s=" << (uint64_t)((w - s_w) / dt) << " vbr_wraps/s=" << (uint64_t)((r - s_r) / dt)
                                                    << " mvpskip/s=" << (uint64_t)((m - s_m) / dt);
                            s_w = w; s_r = r; s_m = m; return v.str(); }();
+                    o << [&]{
+                        auto& p=ps2x::bridgePerf();
+                        static uint64_t last[7]{};
+                        const uint64_t values[]={p.packets.load(std::memory_order_relaxed),p.operations.load(std::memory_order_relaxed),
+                            p.rejected.load(std::memory_order_relaxed),p.serviceNs.load(std::memory_order_relaxed),
+                            p.sendNs.load(std::memory_order_relaxed),p.receivedBytes.load(std::memory_order_relaxed),p.sentBytes.load(std::memory_order_relaxed)};
+                        std::ostringstream v;
+                        v << " pine_packets/s=" << (values[0]-last[0])/dt << " pine_ops/s=" << (values[1]-last[1])/dt
+                          << " pine_rejected/s=" << (values[2]-last[2])/dt << " pine_service_ms/s=" << (values[3]-last[3])/1e6/dt
+                          << " pine_send_ms/s=" << (values[4]-last[4])/1e6/dt << " pine_rx_kb/s=" << (values[5]-last[5])/1024.0/dt
+                          << " pine_tx_kb/s=" << (values[6]-last[6])/1024.0/dt << " pine_guest_wait=none_no_guest_lock";
+                        std::copy(std::begin(values),std::end(values),std::begin(last));return v.str(); }();
                     const std::string line = o.str();
                     if (!line.empty()) std::fprintf(stderr, "%s\n", line.c_str());   // [loglevel] empty at OFF
                 }

@@ -126,7 +126,11 @@ void ps2xModsInstall(PS2Runtime &runtime)
     }
 }
 
-void ps2xModsFrame(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) { if (g_frameHook) g_frameHook(rdram, ctx, runtime); }
+extern void ps2xTagteamFrame(uint8_t *, R5900Context *, PS2Runtime *);
+void ps2xModsFrame(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) {
+    ps2xTagteamFrame(rdram,ctx,runtime);
+    if (g_frameHook) g_frameHook(rdram, ctx, runtime);
+}
 int ps2xModsHud(uint32_t *out, int maxEntries) { return g_hudProvider ? g_hudProvider(out, maxEntries) : 0; }
 int ps2xModsFeed(uint32_t *out, int maxEntries) { return g_feedProvider ? g_feedProvider(out, maxEntries) : 0; }
 const char *ps2xModsCharName(uint32_t id) { const char *s = g_nameProvider ? g_nameProvider(id) : nullptr; return s ? s : ""; }

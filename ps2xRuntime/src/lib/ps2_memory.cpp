@@ -3263,8 +3263,15 @@ void PS2Memory::submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t 
         flushMaskedPath3Packets(false);
     }
 
-    if (m_gifArbiter)
-        m_gifArbiter->submit(pathId, data, sizeBytes, path2DirectHl);
+    if (m_gifArbiter) {
+        uint32_t source=UINT32_MAX;
+        const uintptr_t pointer=reinterpret_cast<uintptr_t>(data), base=reinterpret_cast<uintptr_t>(m_rdram);
+        if(m_rdram && pointer>=base && pointer-base<PS2_RAM_SIZE && sizeBytes<=PS2_RAM_SIZE-(pointer-base))
+            source=uint32_t(pointer-base);
+        else if(pathId==GifPathId::Path2 && seamprobe::kickProbeOn())
+            source=seamprobe::lastDirectSource();
+        m_gifArbiter->submit(pathId, data, sizeBytes, path2DirectHl,source);
+    }
     else if (m_gifPacketCallback)
         m_gifPacketCallback(data, sizeBytes);
 

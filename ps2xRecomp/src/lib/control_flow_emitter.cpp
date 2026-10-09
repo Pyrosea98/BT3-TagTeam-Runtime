@@ -217,6 +217,16 @@ namespace ps2recomp
             return false;
         }
 
+        // BT3's two-row achievement sink is patched to bound extra fighters.
+        // In particular the revert tail emits event77 for physical fighter2:
+        // unguarded it aliases the global scene flags and disables 3D drawing.
+        // Keep these rare event tails on runtime dispatch so installed hooks
+        // are honored; unrelated native tail calls retain the direct path.
+        if (m_gen.arch() != Arch::R3000 && target == 0x1296B8u)
+        {
+            return false;
+        }
+
         const std::string functionName = m_gen.getFunctionName(target);
         if (functionName.empty())
         {

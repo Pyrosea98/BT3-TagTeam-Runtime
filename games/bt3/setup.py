@@ -1611,6 +1611,13 @@ def verify_elf(ctx: "Context") -> None:
     if ctx.args.skip_setup:
         return
     got = sha256_of(ctx.elf)
+    if os.environ.get("PS2X_TARGET_PROFILE") == "power-scale-beta151":
+        if got != "b8ac3756da720f8a6fa3f9ab77a3c54f13f0735b159ad9098860e744dd9732f7":
+            die("Power Scale target: unexpected boot executable")
+        if sha256_of(WORK / "BIN" / "DBZP.BIN") != "038c002ad24dcbd88ae6e8868006fe2eb7cdab06f482525514fef3e708b205f7":
+            die("Power Scale target: unexpected gameplay overlay")
+        LOG.info("Verified exact Power Scale BETA 1.5.1 executable and overlay")
+        return
     if got != ELF_SHA256:
         print(f"ERROR: ELF sha256 mismatch.\n  expected: {ELF_SHA256}\n  got:      {got}")
         print("Only the USA release (SLUS-21678) is supported. Set PS2X_SETUP_FORCE=1 to continue anyway.")
@@ -1682,7 +1689,9 @@ def generate_runner(ctx: "Context", recomp: Path) -> None:
     sync_tree(out, rt / "src" / "runner",
               exclude=("ps2_recompiled_functions.h", "ps2_recompiled_stubs.h"))
     for h in ("ps2_recompiled_functions.h", "ps2_recompiled_stubs.h"):
-        shutil.copyfile(out / h, rt / "include" / h)
+        target = rt / "include" / h
+        if not target.exists() or (out / h).read_bytes() != target.read_bytes():
+            shutil.copyfile(out / h, target)
 
 
 def build_runner(ctx: "Context", jobs: str) -> Path:

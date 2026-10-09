@@ -395,6 +395,7 @@ namespace seamprobe
         std::map<const void *, std::vector<std::array<uint32_t, 3>>> g_chainMaps;   // chain buffer -> (offset, guest, scratch)
         thread_local std::vector<std::array<uint32_t, 3>> t_chainMap;
         thread_local uint32_t t_lastOwner = 0;
+        thread_local uint32_t t_lastSource = UINT32_MAX;
         uint32_t ownerOfAddrLocked(uint32_t a)
         {
             for (auto it = g_pubAllocs.rbegin(); it != g_pubAllocs.rend(); ++it)
@@ -659,6 +660,7 @@ namespace seamprobe
         else t_chainMap.clear();
     }
     uint32_t lastDirectOwner() { return t_lastOwner; }
+    uint32_t lastDirectSource() { return t_lastSource; }
     void noteDirect(uint32_t pos, const uint8_t *gif, uint32_t bytes)
     {
         {   // PS2X_KICKPROBE_DUMP=1: transcript of one busy frame (armed by the first window with > 50 callers)
@@ -675,6 +677,12 @@ namespace seamprobe
             if (t_chainMap[mi - 1][0] <= pos) { guest = t_chainMap[mi - 1][1] + (pos - t_chainMap[mi - 1][0]); break; }
         std::lock_guard<std::mutex> lk(g_pubMtx);
         t_lastOwner = guest ? ownerOfAddrLocked(guest & 0x1FFFFFFu) : 0u;
+        t_lastSource = guest ? (guest & 0x1FFFFFFFu) : UINT32_MAX;
+        // A flattened DIRECT payload can cross a DMA REF boundary. Its start
+        // alone does not authenticate all bytes as one contiguous guest range.
+        for(const auto &segment:t_chainMap)
+            if(segment[0]>pos && uint64_t(segment[0])<uint64_t(pos)+bytes)
+                t_lastSource=UINT32_MAX;
         static const bool s_light = [](){ const char *v = std::getenv("PS2X_KICKPROBE"); return (v && v[0] == '2') || (!(v && v[0]) && seamvk::on()); }();   // PS2X_KICKPROBE=2: owner attribution only (for the native post steps), no per-packet GIF census (that census cost ~10 fps)
         if (s_light) return;
         KickSite &k = g_sites[t_lastOwner];

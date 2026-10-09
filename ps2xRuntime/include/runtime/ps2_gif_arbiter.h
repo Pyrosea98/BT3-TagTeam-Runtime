@@ -29,6 +29,7 @@ struct GifArbiterPacket
     uint32_t size = 0;
     const uint8_t *data = nullptr;    // resolved by takeQueue()
     uint32_t owner = 0;               // [kickprobe] the guest code that built a PATH2 DIRECT packet (0 unknown)
+    uint32_t eeSource = UINT32_MAX;   // original contiguous RAM payload; unknown for unmapped copies
 };
 
 struct GifArbiterBatch
@@ -48,7 +49,7 @@ public:
 
     void setProcessPacketFn(ProcessPacketFn fn) { m_processFn = std::move(fn); }
 
-    void submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl = false);
+    void submit(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool path2DirectHl = false, uint32_t eeSource = UINT32_MAX);
 
     void drain();
     void takeQueue(GifArbiterBatch &out);     // [vu1pipe] hand the queued packets (ordered as drain would) to another thread

@@ -47,4 +47,5 @@ namespace seamprobe
     void beginChain(const void *chainData);
     void noteDirect(uint32_t pos, const uint8_t *gif, uint32_t bytes);
     uint32_t lastDirectOwner();   // the owner noteDirect resolved on this thread (0 when unknown / probe off)
+    uint32_t lastDirectSource();  // mapped guest DIRECT payload start, UINT32_MAX when unknown
 }

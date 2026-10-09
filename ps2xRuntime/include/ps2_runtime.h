@@ -517,7 +517,8 @@ public:
     // returnPc (the recompiled caller). Invokes recompiled functions natively
     // when reached. Returns true on clean return, false if it hit something
     // unhandled (an unknown opcode / runaway).
-    bool interpretUntil(uint8_t *rdram, R5900Context *ctx, uint32_t returnPc);
+    bool interpretUntil(uint8_t *rdram, R5900Context *ctx, uint32_t returnPc,
+                        bool executeEntry = false);
     void setMissingFunctionPolicy(MissingFunctionPolicy policy);
     MissingFunctionPolicy missingFunctionPolicy() const;
     void resetMissingFunctionReportOnce();

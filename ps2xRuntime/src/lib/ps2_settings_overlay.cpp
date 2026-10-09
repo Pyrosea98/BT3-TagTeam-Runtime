@@ -3,6 +3,7 @@
 #include "runtime/ps2_seamvk.h"   // [nativeopt] seamvk::configure
 #include "runtime/ps2_wshud.h"   // [pgsink] ink colour / width live in the walker module
 #include "ps2_settings_overlay.h"
+#include "runtime/ps2_ui_transport.h"
 #include "ps2x_mods.h"   // [mods] overhead bars, kill feed, names and the curtain a mod asks for
 #include "runtime/ps2_netplay.h"   // [netplay]
 #include "runtime/ps2x_achieve.h"  // [ach]
@@ -1019,11 +1020,12 @@ void PS2SettingsOverlay::buildDeviceList()
     // 2+: host gamepad slots
     for (int g = 0; g < ps2x_pad::kMaxSlots; ++g)
     {
-        if (!ps2x_pad::available(g))
+        if (!ps2_stubs::padSlotIsController(g))
             continue;
 
         const char *name = ps2x_pad::name(g);
-        std::string devName = (name && name[0]) ? name : ("Gamepad slot " + std::to_string(g));
+        const int index = ps2_stubs::padGamepadIndex(g);
+        std::string devName = "Gamepad " + std::to_string(index) + " (" + ((name && name[0]) ? name : "controller") + ")";
 
 #if defined(__linux__)
         bool evdevMatch = false;
@@ -1033,9 +1035,9 @@ void PS2SettingsOverlay::buildDeviceList()
             evdevMatch = true;
             devName += " (" + native.node() + ")";
         }
-        m_deviceList.push_back({devName, g, evdevMatch, ps2_stubs::PadDeviceKind::Gamepad});
+        m_deviceList.push_back({devName, g, evdevMatch, ps2_stubs::PadDeviceKind::Gamepad, index});
 #else
-        m_deviceList.push_back({devName, g, false, ps2_stubs::PadDeviceKind::Gamepad});
+        m_deviceList.push_back({devName, g, false, ps2_stubs::PadDeviceKind::Gamepad, index});
 #endif
     }
 
@@ -1052,10 +1054,24 @@ void PS2SettingsOverlay::buildDeviceList()
         if (!found)
         {
             std::string evdevName = native.name() + " (" + native.node() + ")";
-            m_deviceList.push_back({evdevName, -1, true, ps2_stubs::PadDeviceKind::Gamepad});
+            m_deviceList.push_back({evdevName, -1, true, ps2_stubs::PadDeviceKind::Gamepad, 0});
         }
     }
 #endif
+
+    // Keep explicit profiles visible while disconnected; selecting a missing
+    // controller is neutral, never an implicit switch to Auto.
+    auto &pads = ps2_stubs::PadConfig::instance();
+    for (size_t p = 0; p < ps2_stubs::PadConfig::kPlayerCount; ++p)
+    {
+        const auto device = pads.snapshot(p).device;
+        if (device.kind != ps2_stubs::PadDeviceKind::Gamepad) continue;
+        const bool found = std::any_of(m_deviceList.begin(), m_deviceList.end(), [&](const DeviceInfo &d) {
+            return d.kind == device.kind && d.gamepadIndex == device.gamepad;
+        });
+        if (!found) m_deviceList.push_back({"Gamepad " + std::to_string(device.gamepad) + " (not connected)",
+            -1, false, ps2_stubs::PadDeviceKind::Gamepad, device.gamepad});
+    }
 
     // Clamp selection
     if (m_selectedDevice < 0 || m_selectedDevice >= static_cast<int>(m_deviceList.size()))
@@ -1072,9 +1088,9 @@ int PS2SettingsOverlay::deviceIndexForPlayer(int player) const
         const auto &d = m_deviceList[i];
         if (d.kind != cfg.device.kind) continue;
         if (d.kind == ps2_stubs::PadDeviceKind::Keyboard) return i;
-        if (ps2_stubs::padGamepadIndex(d.glfwSlot) == cfg.device.gamepad) return i;
+        if (d.gamepadIndex == cfg.device.gamepad) return i;
     }
-    return 0;   // assigned pad not present right now: show Auto rather than someone else's device
+    return 0;
 }
 
 void PS2SettingsOverlay::applyDeviceToPlayer(int player, int devIdx)
@@ -1087,8 +1103,8 @@ void PS2SettingsOverlay::applyDeviceToPlayer(int player, int devIdx)
     const auto cfg = pcfg.snapshot(p);
     // Persist the launcher's index convention ("Gamepad N"), never the raw slot: the slot layout != what
     // pad_pN.conf names, and a bare slot made pad_pN.conf point at a dead controller.
-    const int idx = ps2_stubs::padGamepadIndex(dev.glfwSlot);
-    if (dev.kind == ps2_stubs::PadDeviceKind::Gamepad && idx < 0) return;   // slot not (yet) a controller
+    const int idx = dev.gamepadIndex;
+    if (dev.kind == ps2_stubs::PadDeviceKind::Gamepad && pcfg.gamepadOwner(idx,p) >= 0) return;
     if (cfg.device.kind != dev.kind)
     {   // [padbinds] a different KIND of device gets that kind's default bindings
         pcfg.setPlayerDefaults(p, dev.kind);
@@ -1596,7 +1612,10 @@ static bool netCurtainBusy()
 static void drawNetCurtain()
 {
     const bool netWant = g_netCurtainWant.load(std::memory_order_relaxed) != 0;
-    const float want = (netWant || g_ps2xModCurtainWant.load(std::memory_order_relaxed)) ? 1.0f : 0.0f;
+    const bool modWant = g_ps2xModCurtainWant.load(std::memory_order_relaxed) != 0;
+    const float want = (netWant || modWant) ? 1.0f : 0.0f;
+    static bool modStyle=false;
+    if(want>0)modStyle=modWant && !netWant; // retain appearance during fade-out
     const float dt = ImGui::GetIO().DeltaTime;
     s_curtainLevel += (want - s_curtainLevel) * (1.0f - std::exp(-dt / 0.28f));
     if (std::fabs(s_curtainLevel - want) < 0.004f)
@@ -1634,7 +1653,8 @@ static void drawNetCurtain()
     ImDrawList *dl = ImGui::GetForegroundDrawList();   // the main viewport, which is the one we sized
     if (!dl)
         return;
-    dl->AddRectFilled(a, b, ImGui::ColorConvertFloat4ToU32(ImVec4(0.0f, 0.0f, 0.0f, s_level)));
+    dl->AddRectFilled(a, b, ImGui::ColorConvertFloat4ToU32(
+        modStyle?ImVec4(.025f,.065f,.12f,s_level):ImVec4(0,0,0,s_level)));
 
     // Both strings ride the level, and their alpha leads the black slightly on the way in and trails
     // it on the way out, so the text does not sit on a half-black screen looking like a rendering
@@ -1665,7 +1685,39 @@ static void drawNetCurtain()
     // this scales that one rather than asking for a size that does not exist.
     const float fsize = ImGui::GetFontSize() * 1.6f;
     const ImVec2 lsz = font->CalcTextSizeA(fsize, FLT_MAX, 0.0f, load);
-    dl->AddText(font, fsize, ImVec2(cx - lsz.x * 0.5f, cy - lsz.y * 0.5f), goldA, load);
+    if(!modStyle)dl->AddText(font, fsize, ImVec2(cx - lsz.x * 0.5f, cy - lsz.y * 0.5f), goldA, load);
+    else {
+        // Procedural art keeps this transition cheap and independent of disc assets.
+        const float scale=(std::min)(vp->Size.x/640.f,vp->Size.y/448.f);
+        auto colour=[&](float r,float g,float blue,float alpha){return ImGui::ColorConvertFloat4ToU32(ImVec4(r,g,blue,alpha*s_level));};
+        const float radius=16*scale,gap=52*scale,y=cy+12*scale;
+        const unsigned active=unsigned(ImGui::GetTime()*3)%7;
+        for(unsigned i=0;i<7;++i){
+            const float x=cx+(float(i)-3)*gap,alpha=i==active?1.f:.42f;
+            dl->AddCircleFilled(ImVec2(x,y),radius*1.22f,colour(1,.48f,.04f,i==active?.16f:.04f),24);
+            dl->AddCircleFilled(ImVec2(x,y),radius,colour(1,.63f,.08f,alpha),24);
+            dl->AddCircleFilled(ImVec2(x-radius*.3f,y-radius*.4f),radius*.2f,colour(1,.94f,.65f,alpha*.7f),12);
+            for(unsigned star=0;star<=i;++star){
+                const float angle=6.2831853f*float(star)/float(i+1);
+                const float orbit=i?radius*.43f:0;
+                const ImVec2 centre(x+std::cos(angle)*orbit,y+std::sin(angle)*orbit);
+                const float outer=radius*.16f,inner=outer*.43f;
+                for(unsigned point=0;point<10;++point){
+                    const float t=-1.5707963f+point*.62831853f,next=t+.62831853f;
+                    const float r1=point%2?inner:outer,r2=point%2?outer:inner;
+                    dl->AddTriangleFilled(centre,ImVec2(centre.x+std::cos(t)*r1,centre.y+std::sin(t)*r1),
+                        ImVec2(centre.x+std::cos(next)*r2,centre.y+std::sin(next)*r2),colour(.78f,.12f,.025f,alpha));
+                }
+            }
+        }
+        auto centred=[&](const char* title,float size,float yy,ImU32 ink){
+            const auto width=font->CalcTextSizeA(size,FLT_MAX,0,title).x;
+            dl->AddText(font,size,ImVec2(cx-width/2,yy),ink,title);
+        };
+        const bool spanish=ps2x::ui::uiStore().lifecycle.snapshot(ps2x::ui::uiNow()).language==ps2x::ui::Language::Spanish;
+        centred("TAG TEAM MOD",24*scale,cy-76*scale,colour(1,.8f,.3f,1));
+        centred(spanish?"PREPARANDO COMBATE":"PREPARING BATTLE",12*scale,cy+54*scale,colour(.8f,.89f,1,.85f));
+    }
 
     // "Press O circle to cancel", bottom right. Grey rather than gold: it is an instruction, not
     // the state of things, and the eye should go to the centre first. Only drawn while the curtain
@@ -2891,10 +2943,10 @@ void PS2SettingsOverlay::drawControllersTab()
         };
         char val[128], note[256];
         std::snprintf(val, sizeof val, "P%d", m_editPlayer + 1);
-        dot("Player", val, m_editPlayer == 0 ? "first gamepad, else the keyboard" : "second gamepad, else the keyboard");
+        dot("Player", val, m_editPlayer >= 2 ? "native mod seat; missing gamepad is neutral" : "stock guest pad port");
         std::snprintf(val, sizeof val, "%.0f%%", m_settings.deadzone * 100.0f);
         std::snprintf(note, sizeof note, "%s | %s", devName,
-                      pads > 0 ? "gamepad detected" : "no gamepad: keyboard fallback");
+                      pads > 0 ? "gamepad detected" : "no connected gamepad");
         dot("Deadzone", val, note);
 
         ImGui::Spacing();
@@ -2905,6 +2957,8 @@ void PS2SettingsOverlay::drawControllersTab()
             ImGui::SameLine(160);
             ImGui::SetNextItemWidth(220.0f);
             if (ImGui::SliderInt("##rumblestr", &m_settings.rumbleStrength, 0, 200, "%d%%")) m_dirty = true;
+            if (ImGui::Button("Test selected player's vibration"))
+                ps2_stubs::padRumblePlayer(m_editPlayer,32767,32767,250);
             ImGui::TextDisabled("100%% = the game's own strengths. The game's Options > Controller > Vibration must be on too.");
         }
 
@@ -2940,13 +2994,32 @@ void PS2SettingsOverlay::drawControllersTab()
             };
             bool ch = false;   // [applyonchange] every control applies as it is changed; no Apply/Save step
             ImGui::TextUnformatted("Player");
-            ch |= ImGui::RadioButton("P1", &pPlayer, 0); ImGui::SameLine();
-            ch |= ImGui::RadioButton("P2", &pPlayer, 1);
+            bool playerChanged = false;
+            for (size_t seat = 0; seat < ps2_stubs::PadConfig::kPlayerCount; ++seat)
+            {
+                if (seat) ImGui::SameLine();
+                const std::string label = "P" + std::to_string(seat+1);
+                playerChanged |= ImGui::RadioButton(label.c_str(), &pPlayer, static_cast<int>(seat));
+            }
+            if (playerChanged) { m_editPlayer = pPlayer; resetCaptureState(); pDev = m_selectedDevice; }
+            static double nextDeviceScan = 0;
+            if (ImGui::GetTime() >= nextDeviceScan)
+            {
+                ps2x_pad::update(); buildDeviceList(); pDev = deviceIndexForPlayer(pPlayer);
+                m_selectedDevice = pDev; nextDeviceScan = ImGui::GetTime()+1.0;
+            }
             ImGui::TextUnformatted("Device");
             ImGui::SetNextItemWidth(360.0f);
+            std::vector<std::string> names;
+            for (const auto &d : m_deviceList)
+            {
+                const int owner = d.kind == ps2_stubs::PadDeviceKind::Gamepad ?
+                    ps2_stubs::PadConfig::instance().gamepadOwner(d.gamepadIndex, static_cast<size_t>(pPlayer)) : -1;
+                names.push_back(d.name + (owner >= 0 ? " (in use by Player " + std::to_string(owner+1) + ")" : ""));
+            }
             std::vector<const char *> labels;
             labels.reserve(m_deviceList.size());
-            for (auto &d : m_deviceList) labels.push_back(d.name.c_str());
+            for (auto &name : names) labels.push_back(name.c_str());
             if (labels.empty()) ImGui::TextDisabled("No devices detected.");
             else ch |= ImGui::Combo("##pdev", &pDev, labels.data(), (int)labels.size());
             ImGui::TextUnformatted("Deadzone");
@@ -2955,7 +3028,7 @@ void PS2SettingsOverlay::drawControllersTab()
             ImGui::SameLine();
             ImGui::TextDisabled("(%.0f%%)", pDz * 100.0f);
             ImGui::TextDisabled("Auto uses the first gamepad, or the keyboard if none is plugged in.");
-            if (ch) applyLive();
+            if (ch) { applyLive(); pDev = deviceIndexForPlayer(pPlayer); m_selectedDevice = pDev; }
             ImGui::Spacing();
             if (ImGui::Button("Reset", ImVec2(120.0f, 0.0f))) { pInit = false; }
             ImGui::SameLine();

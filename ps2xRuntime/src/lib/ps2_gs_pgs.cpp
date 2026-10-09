@@ -5,6 +5,8 @@
 //   * at the swap: flush + vsync, then a synchronous readback of the scanout to an RGBA8 buffer that the present
 //     thread uploads as a texture. The readback is a full GPU sync per frame -- fine for first light, not for perf.
 #include "runtime/ps2_gs_pgs.h"
+#include "runtime/ps2_ui_vulkan.h"
+#include "runtime/ps2_ui_transport.h"
 #include "runtime/ps2_seamvk.h"   // [seamvk]
 #include "runtime/ps2_wshud.h"   // [wshud] the HUD packet walker, shared with the native renderer
 #include "runtime/ps2x_perf_status.h"   // [perf] the shared fps / frame-time / GPU-busy readout
@@ -43,6 +45,8 @@ extern std::atomic<uint64_t> g_bt3FrameCount;   // [presentlat] game_overrides.c
 namespace ps2x_pgs
 {
 static std::atomic<int> g_enabled{-1};
+static std::atomic<uint64_t> g_publishedPackets{0};
+uint64_t publishedPacketCount() { return g_publishedPackets.load(std::memory_order_relaxed); }
 
 static std::atomic<int> g_packOn{1};          // [pgslive] the overlay's Texture Replacement toggle (hook returns nothing when off)
 static std::atomic<int> g_packFlushReq{0};    // [pgslive] toggle changed: drop the backend's cached textures at the next transfer
@@ -239,6 +243,7 @@ struct State
     bool frameFresh = false;
     uint32_t field = 0;
     uint64_t swaps = 0, packets = 0, bytes = 0, noImage = 0;
+    uint64_t lifetimePackets = 0;
     double xferMs = 0.0;   // CPU time inside gif_transfer (the packet parse on our GsThread)
     uint64_t fsPrims = 0, fsPasses = 0, fsCopies = 0, fsPal = 0;   // paraLLEl-GS flush stats per stats window
     struct SlowCall { double ms; uint32_t size, path, nloop, flg, nreg; uint64_t regs; uint32_t firstAD; };   // [pgs-slow] the 3 slowest gif_transfer calls per window
@@ -371,7 +376,7 @@ void copyPrivLocked(State &s)
 // this frame's scanout and consumes the copy submitted two swaps ago IF its fence is already signalled (never waits).
 // The first version waited for the GPU every frame (wait_idle); with the GPU idle at every frame start paraLLEl-GS
 // took its CPU upload path for the frame's IMAGE transfers, a flat ~6 ms per frame ([pgs-slow] 2026-09-10).
-struct RbSlot { BufferHandle buf; Fence fence; ImageHandle image; uint32_t w = 0, h = 0; bool pending = false; VkFormat fmt = VK_FORMAT_UNDEFINED; uint64_t gframe = 0; };   // [presentlat] gframe: the game frame this scanout belongs to
+struct RbSlot { BufferHandle buf; Fence fence; ImageHandle image; uint32_t w = 0, h = 0; bool pending = false; VkFormat fmt = VK_FORMAT_UNDEFINED; uint64_t gframe = 0, uiGen=0, uiRevision=0; };   // [presentlat] gframe: the game frame this scanout belongs to
 static RbSlot g_rb[3];
 static uint32_t g_rbIdx = 0;
 static void consumeSlotLocked(State &s, RbSlot &slot)
@@ -394,9 +399,10 @@ static void consumeSlotLocked(State &s, RbSlot &slot)
         }
     s.device.unmap_host_buffer(*slot.buf, MEMORY_ACCESS_READ_BIT);
     s.frameW = slot.w; s.frameH = slot.h; s.frameFresh = true; s.frameGframe = slot.gframe;
+    if(slot.uiRevision) {auto& ui=ps2x::ui::uiStore();ui.drawnGeneration=slot.uiGen;ui.drawnRevision=slot.uiRevision;}
     slot.pending = false; slot.image.reset(); slot.fence.reset();
 }
-void readbackLocked(State &s, const ScanoutResult &res)
+void readbackLocked(State &s, const ScanoutResult &res, bool restoreUiLayout = false)
 {
     static const bool s_sync = envOn("PS2X_PGS_SYNCREADBACK");   // the old behaviour, for A/B
     // 1. consume the oldest pending slot without waiting (or with a wait in sync mode)
@@ -419,12 +425,18 @@ void readbackLocked(State &s, const ScanoutResult &res)
         slot.w = w; slot.h = h;
     }
     slot.fmt = res.image->get_format();
+    slot.uiGen=slot.uiRevision=0;
+    if(restoreUiLayout)ps2x::ui::vulkanUiFrameStamp(slot.uiGen,slot.uiRevision);
     slot.gframe = g_bt3FrameCount.load(std::memory_order_relaxed);   // [presentlat]
     auto cmd = s.device.request_command_buffer();
     cmd->image_barrier(*res.image, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
                        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     cmd->copy_image_to_buffer(*slot.buf, *res.image, 0, {}, { w, h, 1 }, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 });
+    if (restoreUiLayout)
+        cmd->image_barrier(*res.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+                          VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                  VK_PIPELINE_STAGE_2_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
     Fence fence;
@@ -823,7 +835,7 @@ bool gifTransfer(uint8_t pathId, const uint8_t *data, size_t size)
         int worst = 0; for (int i = 1; i < 3; i++) if (s.slowCalls[i].ms < s.slowCalls[worst].ms) worst = i;
         if (c.ms > s.slowCalls[worst].ms) s.slowCalls[worst] = c;
     }
-    s.packets++; s.bytes += size;
+    s.packets++; ++s.lifetimePackets; s.bytes += size;
     return true;
 }
 
@@ -935,11 +947,16 @@ void onSwap()
     if (res.image) { s.baseW = res.image->get_width() >> res.high_resolution_shift; s.baseH = res.image->get_height() >> res.high_resolution_shift; }
     const auto t1 = std::chrono::steady_clock::now();
     static const bool s_noReadback = envOn("PS2X_PGS_NOREADBACK");   // isolation: skip the sync scanout readback (nothing presented)
-    if (res.image && !s_noReadback) readbackLocked(s, res); else if (!res.image) s.noImage++;
+    if (res.image && !s_noReadback) {
+        auto original = res.image;
+        res.image = ps2x::ui::vulkanComposite(s.device, original);
+        readbackLocked(s, res, res.image.get() != original.get());
+    } else if (!res.image) s.noImage++;
     const auto t2 = std::chrono::steady_clock::now();
     s.vsyncMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
     s.readbackMs += std::chrono::duration<double, std::milli>(t2 - t1).count();
     s.swaps++;
+    g_publishedPackets.store(s.lifetimePackets,std::memory_order_relaxed);
     ps2x_wshud::noteSwap(s.baseH);   // [wshud] the walker's per-frame reset
     // [perf] Feed the shared GPU-busy readout from the REAL GPU timestamps, per swap. The 5 s
     // [pgs] line below reads the same counters but only for printing, and at that cadence it cannot
@@ -1045,6 +1062,42 @@ void shutdown()
     State &s = st();
     std::lock_guard<std::mutex> lk(s.mtx);
     if (s.inited) s.device.wait_idle();
+    ps2x::ui::vulkanUiShutdown();
 }
+}
+
+bool ps2xPgsDiagnosticSyncShadow(GS *gs)
+{
+    if(!gs) { std::fprintf(stderr,"[huddiag] baseline import FAILED: no initialized shadow GS\n"); return false; }
+    if(!gs->vramData() || gs->vramSize()!=4u*1024u*1024u) { std::fprintf(stderr,"[huddiag] baseline import FAILED: invalid shadow VRAM\n"); return false; }
+    auto &s=ps2x_pgs::st();
+    std::lock_guard<std::mutex> lock(s.mtx);
+    if(!s.inited) { std::fprintf(stderr,"[huddiag] baseline import FAILED: Vulkan GS not initialized\n"); return false; }
+    s.iface.flush();
+    const void *vram=s.iface.map_vram_read(0,gs->vramSize());
+    if(!vram) { std::fprintf(stderr,"[huddiag] Vulkan VRAM import failed; shadow capture disabled\n"); return false; }
+    // Read Vulkan state; only the separate diagnostic shadow is written.
+    std::memcpy(gs->vramData(),vram,gs->vramSize());
+    const auto &r=s.iface.get_register_state();
+    for(unsigned i=0;i<2;++i) {
+        const auto &c=r.ctx[i];
+        gs->writeRegister(0x06+i,c.tex0.bits); gs->writeRegister(0x14+i,c.tex1.bits);
+        gs->writeRegister(0x08+i,c.clamp.bits); gs->writeRegister(0x18+i,c.xyoffset.bits);
+        gs->writeRegister(0x40+i,c.scissor.bits); gs->writeRegister(0x42+i,c.alpha.bits);
+        gs->writeRegister(0x47+i,c.test.bits); gs->writeRegister(0x4a+i,c.fba.bits);
+        gs->writeRegister(0x4c+i,c.frame.bits); gs->writeRegister(0x4e+i,c.zbuf.bits);
+    }
+    gs->writeRegister(0x1c,r.texclut.bits); gs->writeRegister(0x3b,r.texa.bits);
+    gs->writeRegister(0x1a,r.prmodecont.bits); gs->writeRegister(0x1b,r.prim.bits);
+    gs->writeRegister(0x00,r.prim.bits); gs->writeRegister(0x01,r.rgbaq.bits);
+    gs->writeRegister(0x02,r.st.bits); gs->writeRegister(0x03,r.uv.bits);
+    gs->writeRegister(0x0a,r.fog.bits); gs->writeRegister(0x3d,r.fogcol.bits);
+    gs->writeRegister(0x44,r.dimx.bits); gs->writeRegister(0x45,r.dthe.bits);
+    gs->writeRegister(0x46,r.colclamp.bits); gs->writeRegister(0x49,r.pabe.bits);
+    gs->writeRegister(0x50,r.bitbltbuf.bits); gs->writeRegister(0x51,r.trxpos.bits);
+    gs->writeRegister(0x52,r.trxreg.bits);
+    gs->invalidateClutCache();
+    std::fprintf(stderr,"[huddiag] imported Vulkan VRAM/register baseline once; capture parser enabled\n");
+    return true;
 }
 

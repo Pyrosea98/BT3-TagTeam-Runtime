@@ -144,18 +144,14 @@ namespace ps2_stubs
 
         // Map a "Gamepad N" index (how the Qt launcher names pads: 0 = first
         // gamepad detected) to a concrete GLFW/raylib slot, or -1 if out of range.
-        // Accepts a raw GLFW slot as a fallback so configs written by the older
-        // in-game overlay (which stored dev.glfwSlot directly) keep working.
+        // Out-of-range ordinals are neutral. A raw-slot fallback would make
+        // P3 mirror the first controller when its host slot happens to be 2.
         int gamepadIndexToSlot(int index)
         {
             const std::vector<int> avail = availableGamepads();
             if (index >= 0 && index < static_cast<int>(avail.size()))
             {
                 return avail[index];
-            }
-            if (ps2x_pad::available(index))
-            {
-                return index;
             }
             return -1;
         }
@@ -176,7 +172,7 @@ namespace ps2_stubs
                     return static_cast<int>(i);
                 }
             }
-            return ps2x_pad::available(glfwSlot) ? glfwSlot : -1;
+            return -1;
         }
 
         std::vector<int> availableGamepads()
@@ -651,6 +647,7 @@ namespace ps2_stubs
         for (size_t i = 0; i < kPlayerCount; ++i)
         {
             m_players[i] = makeDefaultPlayer();
+            if (i >= 2) m_players[i].device = PadDevice{PadDeviceKind::Gamepad, static_cast<int>(i)};
         }
     }
 
@@ -670,13 +667,29 @@ namespace ps2_stubs
         return (p < kPlayerCount) ? m_players[p] : PadPlayerConfig{};
     }
 
-    void PadConfig::setDevice(size_t p, const PadDevice &device)
+    int PadConfig::gamepadOwner(int index, size_t exceptPlayer) const
+    {
+        if (index < 0) return -1;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (size_t i = 0; i < kPlayerCount; ++i)
+            if (i != exceptPlayer && m_players[i].device.kind == PadDeviceKind::Gamepad &&
+                m_players[i].device.gamepad == index) return static_cast<int>(i);
+        return -1;
+    }
+
+    bool PadConfig::setDevice(size_t p, const PadDevice &device)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (p < kPlayerCount)
         {
+            if (device.kind == PadDeviceKind::Gamepad && device.gamepad >= 0)
+                for (size_t i = 0; i < kPlayerCount; ++i)
+                    if (i != p && m_players[i].device.kind == PadDeviceKind::Gamepad &&
+                        m_players[i].device.gamepad == device.gamepad) return false;
             m_players[p].device = device;
+            return true;
         }
+        return false;
     }
 
     void PadConfig::setBind(size_t p, PadAction action, const PadBind &bind)
@@ -705,7 +718,8 @@ namespace ps2_stubs
 
     void PadConfig::resetPlayer(size_t p)
     {
-        setPlayerDefaults(p, PadDeviceKind::None);
+        setPlayerDefaults(p, p >= 2 ? PadDeviceKind::Gamepad : PadDeviceKind::None);
+        if (p >= 2) (void)setDevice(p, PadDevice{PadDeviceKind::Gamepad, static_cast<int>(p)});
     }
 
     void PadConfig::setDefaultDir(const std::string &elfDir)
@@ -864,6 +878,7 @@ namespace ps2_stubs
         for (size_t i = 0; i < kPlayerCount; ++i)
         {
             players[i] = makeDefaultPlayer();
+            if (i >= 2) players[i].device = PadDevice{PadDeviceKind::Gamepad, static_cast<int>(i)};
         }
 
         // Prefer one savedata file per player (savedata/pad_p1.conf, pad_p2.conf).
@@ -986,6 +1001,18 @@ namespace ps2_stubs
             }
         }
 
+        // A hand-edited or older profile must not create two explicit owners.
+        // Keep the earlier seat and make the conflicting seat neutral, never Auto.
+        for (size_t i = 0; i < kPlayerCount; ++i)
+            if (players[i].device.kind == PadDeviceKind::Gamepad && players[i].device.gamepad >= 0)
+                for (size_t j = 0; j < i; ++j)
+                    if (players[j].device.kind == PadDeviceKind::Gamepad &&
+                        players[j].device.gamepad == players[i].device.gamepad)
+                    {
+                        std::printf("[pad_config] Player %zu gamepad already owned by Player %zu; seat neutral\n", i+1,j+1);
+                        players[i].device.gamepad = -1;
+                        break;
+                    }
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             for (size_t i = 0; i < kPlayerCount; ++i)
@@ -995,7 +1022,7 @@ namespace ps2_stubs
             m_loaded = true;
         }
 
-        if (any)
+        if (any || !foundNew)
         {
             // Persist the migrated / freshly-loaded config back into per-player
             // savedata files so the new layout is the one that sticks.

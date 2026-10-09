@@ -100,6 +100,7 @@ public:
         int glfwSlot = -1;         // GLFW slot index, -1 if not GLFW
         bool isEvdev = false;      // true if evdev native matches this device
         ps2_stubs::PadDeviceKind kind = ps2_stubs::PadDeviceKind::None;
+        int gamepadIndex = -1;     // persistent ordinal, including disconnected devices
     };
 
     void initialize();
