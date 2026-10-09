@@ -9,6 +9,12 @@ int ps2xFusionInputSelfTest(const char* capture){
     constexpr uint32_t done=0x0FFFFFFC,row=0x074DF100,probe=0x06FE0400,control=0x074DF000,param=0x06FE5000;
     const uint32_t sites[]={0x2037CC,0x2037E0,0x2037F0,0x203804,0x203814,0x203830,0x203848,0x203884,0x2038A4,0x2038BC};
     const uint32_t targets[]={0x1CF0C8,0x1DAC78,0x1DC348,0x20E340,0x20E3E8,0x077DD800,0x1CED60,0x1CE108,0x1CE198,0x1CE198};
+    // This isolated fixture executes its audited RAM body and boundary stubs.
+    // Generated dispatch would otherwise run the unmodified compiled getters.
+    // Recompiler continuations at return PCs must also interpret this fixture.
+    for(uint32_t pc=0x203788;pc<0x203900;pc+=4)rt.replaceFunction(pc,nullptr);
+    rt.replaceFunction(0x20E3A0,nullptr);
+    for(const auto target:targets)if(target<0x400000)rt.replaceFunction(target,nullptr);
     uint32_t wrapped[10];for(unsigned i=0;i<10;++i)wrapped[i]=u(sites[i]);
     auto hooks=[&](bool on){for(unsigned i=0;i<10;++i)put(sites[i],on?wrapped[i]:0x0C000000|(targets[i]>>2));};
     auto context=[&](uint32_t pc,unsigned stock,unsigned state,uint32_t returnPc=done){
@@ -34,7 +40,13 @@ int ps2xFusionInputSelfTest(const char* capture){
         for(unsigned i=0;i<10;++i)put(probe+0x100+4*i,0);
         put(control+4,0);put(probe+4,0xFFFFFFFF);hooks(false);
         auto expected=context(0x203788,1,1);
-        if(!rt.interpretUntil(ram,&expected,done,false)||expected.pc!=done)return 3;
+        if(!rt.interpretUntil(ram,&expected,done,false)||expected.pc!=done){
+            extern void ps2xDumpInterpreterDiagnostics(R5900Context*);
+            ps2xDumpInterpreterDiagnostics(&expected);
+            std::fprintf(stderr,"fixture refusal=%u active=%u sp=%08X ra=%08X savedRA=%08X\n",refusal,active,
+                uint32_t(_mm_extract_epi32(expected.r[29],0)),uint32_t(_mm_extract_epi32(expected.r[31],0)),u(0x01FFE000-0x40+0x30));
+            return 3;
+        }
         uint32_t calls[10];for(unsigned i=0;i<10;++i){calls[i]=u(probe+0x100+4*i);put(probe+0x100+4*i,0);}
         put(probe+4,0xFFFFFFFF);hooks(true);auto actual=context(0x074D0000,1,1);
         if(!rt.interpretUntil(ram,&actual,done,false)||actual.pc!=done)return 4;
@@ -78,7 +90,12 @@ int ps2xFusionInputSelfTest(const char* capture){
     // and cannot append a candidate even when an active-row word is forged.
     put(control+4,row);put(probe,0);const auto before=u(row+64);
     auto expected=context(0x1CF0C8,1,1),actual=context(0x074D2000,1,1);
-    if(!rt.interpretUntil(ram,&expected,done,false)||!rt.interpretUntil(ram,&actual,done,false)||!same(actual,expected))return 20;
+    // Counter stubs deliberately expose their increment in caller-scratch r11.
+    // Both executions must start at the same count for ABI comparison.
+    put(probe+0x100,0);
+    if(!rt.interpretUntil(ram,&expected,done,false)||u(probe+0x100)!=1)return 20;
+    put(probe+0x100,0);
+    if(!rt.interpretUntil(ram,&actual,done,false)||u(probe+0x100)!=1||!same(actual,expected))return 20;
     if(u(row+64)!=before)return 21;put(control+4,0);
     std::fprintf(stderr,"PASS actual EE fusion gates: original eligibility branch/search, every early refusal, actual stock/state flags, four candidates, raw recipe, correct stock vs ki, reset/unreached markers, cleared active scope; GPR128/FPU/HI0/LO0/HI1/LO1 unchanged\n");
     return 0;
