@@ -555,6 +555,9 @@ extern "C" const char *ps2xExeDirC()
 }
 int main(int argc, char *argv[])
 {
+    if(argc==2 && std::strcmp(argv[1],"--native-v11-prompts-self-test")==0){
+        extern int ps2xV11PromptSelfTest();return ps2xV11PromptSelfTest();
+    }
     if(argc==2 && std::strcmp(argv[1],"--native-seat-pads-self-test")==0){
         extern int ps2xNativeSeatPadsSelfTest();return ps2xNativeSeatPadsSelfTest();
     }

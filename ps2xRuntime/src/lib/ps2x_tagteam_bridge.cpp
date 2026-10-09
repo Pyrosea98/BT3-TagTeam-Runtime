@@ -461,6 +461,21 @@ bool ps2xTagteamRunNativeHudDraw(uint8_t *ram,R5900Context *ctx,PS2Runtime* rt) 
     static const bool enabledUi=std::getenv("PS2X_NATIVE_UI_SLICE")!=nullptr;
     if(!enabledUi)return false;
     auto& store=hudStore();const auto presented=store.presentedGeneration.load(std::memory_order_acquire);
+    if(v11PromptProbePc(ctx->pc)){
+        if(!presented || !uiStore().rendererReady.load())return false;
+        const auto subject=uint32_t(_mm_extract_epi32(ctx->r[4],0));
+        std::lock_guard lock(store.mutex);const auto& h=store.state;
+        if(!h.active || h.paused || h.generation!=presented || subject>=10 ||
+           readWord(ram+0x2FEB14)!=h.manager)return false;
+        bool coverage=false;for(const auto& view:h.views)if(view.valid && view.subject==subject){
+            if(ctx->pc==0x072533F0)coverage=true;
+            else {coverage=true;for(unsigned i=0;i<10;++i)if(h.actors[i].present && h.actors[i].alive && !view.points[i].valid)coverage=false;}
+        }
+        if(!coverage)return false;
+        const unsigned kind=ctx->pc==0x072533F0?1:ctx->pc==0x0694D0F0?2:3;
+        if(!v11PromptGuard({ram,PS2_RAM_SIZE},kind))return false;
+        ctx->r[2]=_mm_set_epi64x(0,1);ctx->pc=uint32_t(_mm_extract_epi32(ctx->r[31],0));return true;
+    }
     if(ctx->pc==0x2188B8){
         bool hide=false,retain=false;
         {std::lock_guard lock(store.mutex);
@@ -475,6 +490,10 @@ bool ps2xTagteamRunNativeHudDraw(uint8_t *ram,R5900Context *ctx,PS2Runtime* rt) 
         return false;
     }
     if(ctx->pc==0x07414000 || ctx->pc==0x07414800){
+        // A beam caption reaches the old text routine only when its native
+        // presentation probe declined coverage. Keep that fallback visible.
+        const auto caller=uint32_t(_mm_extract_epi32(ctx->r[31],0));
+        if(ctx->pc==0x07414000 && caller>=0x07252C00 && caller<0x07253400)return false;
         const auto screen=uiStore().lifecycle.snapshot(uiNow());
         const auto next=ownedModTextDrawPc({ram,PS2_RAM_SIZE},screen,ctx->pc,uint32_t(_mm_extract_epi32(ctx->r[31],0)));
         if(next){ctx->pc=next;return true;}
@@ -658,6 +677,7 @@ void ps2xTagteamFrame(uint8_t *ram, R5900Context *ctx, PS2Runtime *rt) {
 // Execute the actual generated revert tail and captured production guard.
 // No window, PINE server, disc, renderer or saved-state load is involved.
 #include "ps2_fusion_controls_self_test.inc"
+#include "ps2_v11_prompt_self_test.inc"
 #include "ps2_fusion_form_self_test.inc"
 #include "ps2_cpu_transform_self_test.inc"
 #include "ps2_fusion_input_self_test.inc"

@@ -469,6 +469,72 @@
         }
         sink.opacity=hud.fade;
     }
+    void drawV11Prompts(Rect vp,float fullWidth,float fullHeight) {
+        const float fit=std::min(vp.width/640,vp.height/448);
+        for(const auto& view:hud.views){if(!view.valid || view.subject>=10)continue;
+            const auto& prompt=hud.prompts[view.subject];
+            OverheadBox bounds{view.x*fullWidth/512,view.y*fullHeight/448,view.width*fullWidth/512,view.height*fullHeight/448};
+            sink.clipped=true;sink.clip={vp.x+bounds.x*fit,vp.y+bounds.y*fit,bounds.width*fit,bounds.height*fit};
+            const float size=std::clamp(view.height/448.f,.65f,1.f)*std::clamp(hud.preferences.scale/65.f,.8f,1.4f);
+            sink.opacity=hud.fade;
+            if(prompt.beamText[0]){
+                const float width=std::min(230.f*size,bounds.width-24),height=23.f*size;
+                const float x=bounds.x+12,y=bounds.y+bounds.height-85.f*size;
+                image(hudGlass,vp,x,y,width,height,std::max(.45f,hud.preferences.opacity/100.f));
+                image(prompt.beamWarning?hudBars[3]:hudGold,vp,x,y,2*size,height,.9f);
+                const auto seat=hud.actors[view.subject].seat;
+                if(seat && seat<seatIcons.size())image(seatIcons[seat],vp,x+7*size,y+8*size,14*size,7*size);
+                const float offset=seat?27.f:8.f;
+                text(smallBody,{prompt.beamText.data()},prompt.beamWarning?Palette::Gold:Palette::White,
+                     x+offset*size,y+16*size,vp,width-offset*size-5,TextAlign::Left,size);
+            }
+            // A view with incomplete native projections keeps the guest markers.
+            bool coverage=true;for(unsigned i=0;i<10;++i)if(hud.actors[i].present && hud.actors[i].alive && !view.points[i].valid)coverage=false;
+            if(coverage && !hud.cinematic){
+                for(unsigned i=0;i<10;++i){const auto& a=hud.actors[i];const auto& point=view.points[i];
+                    const bool target=prompt.target==i,threat=(prompt.threats&(1u<<i))!=0,warning=(prompt.warnings&(1u<<i))!=0;
+                    if(!a.present || !a.alive || !point.valid || (!target && !threat))continue;
+                    const bool gold=warning?prompt.blink:target;
+                    const auto ink=gold?Palette::Gold:Palette::Red;
+                    const auto art=gold?hudGold:hudBars[3];
+                    const float px=point.x*fullWidth/512,py=point.y*fullHeight/448;
+                    const float radius=std::clamp(22.f*point.scale,14.f,26.f)*size;
+                    if(!point.onScreen){
+                        float dx=px-(bounds.x+bounds.width/2),dy=py-(bounds.y+bounds.height/2);
+                        const float hx=std::max(1.f,bounds.width/2-14*size),hy=std::max(1.f,bounds.height/2-35*size);
+                        const float factor=std::max(std::abs(dx)/hx,std::abs(dy)/hy);
+                        if(!std::isfinite(factor) || factor<=0)continue;
+                        const float x=bounds.x+bounds.width/2+dx/factor,y=bounds.y+bounds.height/2+dy/factor;
+                        const char* arrow=std::abs(dx)/hx>std::abs(dy)/hy?(dx<0?"<":">"):(dy<0?"^":"v");
+                        image(hudGlass,vp,x-9*size,y-12*size,18*size,20*size,.7f);
+                        text(body,arrow,ink,x,y+3*size,vp,18*size,TextAlign::Centre,size);
+                        continue;
+                    }
+                    const float x=std::clamp(px,bounds.x+radius+4,bounds.x+bounds.width-radius-4);
+                    const float y=std::clamp(py,bounds.y+40*size,bounds.y+bounds.height-radius-10);
+                    sink.opacity=hud.fade*(warning?.95f:.75f);
+                    if(target && (prompt.targetStyle&2)){
+                        // The same ring/hexagon language as fusion and revival.
+                        for(unsigned n=0;n<36;++n){const unsigned edge=n/6;const float t=float(n%6)/6;
+                            const float a0=edge*1.04719755f-1.5707963f,a1=a0+1.04719755f;
+                            float dx=radius*((1-t)*std::cos(a0)+t*std::cos(a1)),dy=radius*((1-t)*std::sin(a0)+t*std::sin(a1));
+                            if(hud.preferences.shape!=1){const float angle=n*6.2831853f/36;dx=radius*std::cos(angle);dy=radius*std::sin(angle);}
+                            image(hudGlass,vp,x+dx-2,y+dy-2,4*size,4*size,.8f);
+                            image(art,vp,x+dx-1,y+dy-1,2*size,2*size,.9f);
+                        }
+                    }
+                    if(target && (prompt.targetStyle&1))text(body,"v",ink,x,y-radius-6*size,vp,22*size,TextAlign::Centre,size);
+                    if(threat){
+                        const float markScale=size*(warning?1.3f:1.f);
+                        text(body,">",ink,x-radius-7*size,y+5*markScale,vp,18*markScale,TextAlign::Centre,markScale);
+                        text(body,"<",ink,x+radius+7*size,y+5*markScale,vp,18*markScale,TextAlign::Centre,markScale);
+                    }
+                }
+            }
+            sink.clipped=false;
+        }
+        sink.opacity=hud.fade;
+    }
     void drawHud(Rect vp) {
         if(!hud.active || hud.paused || hud.generation!=frameState.generation)return;
         hudEdges=true;
@@ -511,6 +577,7 @@
         sink.opacity=hud.fade;
         drawOverheads(vp,fullWidth,fullHeight); // fighter status has priority over auxiliary panels
         drawRevives(vp,fullWidth,fullHeight);
+        drawV11Prompts(vp,fullWidth,fullHeight);
         sink.clipped=false;sink.opacity=1;hudEdges=false;
     }
     void drawCredits(Rect vp) {

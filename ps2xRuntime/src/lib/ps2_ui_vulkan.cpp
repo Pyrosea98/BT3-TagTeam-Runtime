@@ -315,6 +315,7 @@ int ps2xNativeUiVulkanSelfTest(const char* assets, const char* output) {
                     cases.push_back({std::string("fusion-native-")+language+"-"+std::to_string(kind)+(wide?"-21x9":"-16x9"),language,5,5,kind,0,4,wide});
                 for(unsigned wide:{0u,1u})for(unsigned kind:{28u,29u,30u})
                     cases.push_back({std::string("revive-native-")+language+"-"+std::to_string(kind)+(wide?"-21x9":"-16x9"),language,5,5,kind,0,2,wide});
+                for(unsigned kind:{31u,32u,33u,34u})cases.push_back({std::string("v11-prompts-")+language+"-"+std::to_string(kind),language,5,5,kind,0,4,kind==32 || kind==34?1u:0u});
             }
         } else for(auto language:{"en","es"})cases.push_back({std::string("vulkan-ui-")+language,language});
         if(state.product)cases.push_back({"aspect-en","en",5,5,4});
@@ -336,6 +337,7 @@ int ps2xNativeUiVulkanSelfTest(const char* assets, const char* output) {
         }
         uint64_t generation=100;
         for(const auto& test:cases) {
+            if(std::getenv("PS2X_V11_HUD_TEST_ONLY") && test.kind<31)continue;
             if(std::getenv("PS2X_FUSION_HUD_TEST_ONLY") && (test.kind<25 || test.kind>=28))continue;
             if(std::getenv("PS2X_REVIVE_HUD_TEST_ONLY") && test.kind<28)continue;
             if(std::getenv("PS2X_NATIVE_UI_TEST_MENUS_ONLY") && test.kind!=24)continue;
@@ -346,7 +348,7 @@ int ps2xNativeUiVulkanSelfTest(const char* assets, const char* output) {
             state.locale.select(language);
             auto& store=ps2x::ui::uiStore();auto& lifecycle=store.lifecycle;
             if(state.product) {
-                ps2x_wshud::setPresentSize(test.wide==2?1440:test.kind==4 || test.wide==1?2560:test.kind>=9 && test.kind<31?1920:0,test.kind==4 || (test.kind>=9 && test.kind<31)?1080:0);
+                ps2x_wshud::setPresentSize(test.wide==2?1440:test.kind==4 || test.wide==1?2560:test.kind>=9 && test.kind<35?1920:0,test.kind==4 || (test.kind>=9 && test.kind<35)?1080:0);
                 {auto& hs=ps2x::ui::hudStore();std::lock_guard lock(hs.mutex);hs.state={};}
                 auto previous=lifecycle.snapshot(ps2x::ui::uiNow());
                 if(previous.screen==ps2x::ui::Screen::Loading)lifecycle.teardown(previous.generation,ps2x::ui::uiNow());
@@ -432,7 +434,7 @@ int ps2xNativeUiVulkanSelfTest(const char* assets, const char* output) {
                             if(test.kind==9){view.points[0].x=200;view.points[1].x=205;view.points[0].y=view.points[1].y=220;}
                             if(test.kind==10){view.points[1].x=560;view.points[1].onScreen=false;}
                         }
-                        if(test.kind>=28){
+                        if(test.kind>=28 && test.kind<=30){
                             h.preferences.shape=test.kind==28?1:test.kind==29?2:3;h.mode=ps2x::ui::BattleMode::Coop;
                             h.viewCount=2;h.views[0].subject=0;h.views[1].subject=2;
                             for(unsigned v=0;v<2;++v){auto& view=h.views[v];view.x=v*257.f;view.width=255;view.height=448;
@@ -441,6 +443,25 @@ int ps2xNativeUiVulkanSelfTest(const char* assets, const char* output) {
                             h.revives[0]={0,2,1,2,.62f,.5f,.5f,true};
                             h.revives[4]={4,6,2,3,0,.5f,0,true};h.actors[6].alive=false;
                             h.revives[8]={8,255,4,1,1,.5f,0,true};
+                        }
+                        if(test.kind>=31){
+                            h.viewCount=test.kind==32?2:test.kind==33?4:1;h.views={};h.revives={};h.kills={};
+                            h.preferences.shape=1;h.preferences.scale=65;h.preferences.opacity=50;
+                            for(auto& a:h.actors){a.fused=a.fusePrompt=false;a.fusionSeconds=0;}
+                            for(unsigned v=0;v<h.viewCount;++v){auto& view=h.views[v];view.valid=true;view.subject=uint8_t(v);view.seat=uint8_t(v+1);
+                                if(h.viewCount==2){view.x=v*257.f;view.width=255;}
+                                if(h.viewCount==4){view.x=(v%2)*257.f;view.y=(v/2)*225.f;view.width=255;view.height=223;}
+                                for(unsigned i=0;i<10;++i){auto& p=view.points[i];p.valid=p.onScreen=true;
+                                    p.x=view.x+view.width*(.15f+.17f*(i%5));p.y=view.y+view.height*(.4f+.3f*(i/5));p.scale=.8f;}
+                                auto& p=h.prompts[v];p.target=uint8_t((v+1)%4);p.targetStyle=3;p.threats=0x1a;p.warnings=0x12;p.blink=v%2==0;
+                                const bool es=std::strcmp(language,"es")==0;
+                                const char* caption=test.kind==31?(es?"R3 - ASISTENCIA DE RAYO":"R3 - BEAM ASSIST"):
+                                    test.kind==32?(es?"ASISTENCIA FALLIDA - BLOQUEADO":"ASSIST FAILED - BLOCKED"):
+                                    (es?"ASISTENCIA DE RAYO X1.5":"BEAM ASSIST X1.5");
+                                std::snprintf(p.beamText.data(),p.beamText.size(),"%s",caption);p.beamWarning=test.kind==32;
+                                if(test.kind==34){view.points[1].onScreen=false;view.points[1].x=view.x+view.width+90;
+                                    view.points[3].onScreen=false;view.points[3].y=view.y-120;}
+                            }
                         }
                         if(test.kind==18 || test.kind==19 || test.kind==20){
                             h.preferences.detail=3;h.preferences.friends=h.preferences.enemies=false;

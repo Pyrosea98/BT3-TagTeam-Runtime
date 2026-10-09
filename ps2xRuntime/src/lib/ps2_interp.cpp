@@ -725,7 +725,7 @@ bool PS2Runtime::interpretUntil(uint8_t *rdram, R5900Context *ctx, uint32_t retu
             budget.nativeProgress();progressAt=std::chrono::steady_clock::now();continue;
         }
 
-        if ((pc==0x2188B8u || pc==0x073DA200u || pc==0x07272000u || pc==0x072D1800u || pc==0x07413400u || pc==0x07414000u || pc==0x07414800u || (pc>0x070D6800u && pc<0x070D6C00u)) &&
+        if ((pc==0x072533F0u || pc==0x0694D0F0u || pc==0x06955B20u || pc==0x2188B8u || pc==0x073DA200u || pc==0x07272000u || pc==0x072D1800u || pc==0x07413400u || pc==0x07414000u || pc==0x07414800u || (pc>0x070D6800u && pc<0x070D6C00u)) &&
             ps2xTagteamRunNativeHudDraw(rdram,ctx,runtime)) {
             budget.nativeProgress();
             progressAt=std::chrono::steady_clock::now();

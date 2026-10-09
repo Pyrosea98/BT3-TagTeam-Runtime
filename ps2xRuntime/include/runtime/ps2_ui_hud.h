@@ -32,6 +32,10 @@ struct HudActor {
     bool fused=false,fusePrompt=false,showFusionOwner=false,showSwap=false;
 };
 struct HudRevive {uint8_t owner=255,target=255,state=0,cost=0;float progress=0,opacity=.5f,wave=0;bool ring=true;};
+struct HudV11Prompt {
+    std::array<char,32> beamText{};uint16_t threats=0,warnings=0;
+    uint8_t target=255,targetStyle=0;bool beamWarning=false,blink=false;
+};
 struct HudKill {uint16_t killer=0,victim=0;bool known=false,active=false;};
 struct HudProjection {float x=0,y=0,scale=1,distance=0;bool valid=false,onScreen=false;};
 struct HudViewport {float x=0,y=0,width=512,height=448;uint8_t subject=0,target=255,seat=1;bool valid=false;std::array<HudProjection,10> points{};};
@@ -40,6 +44,7 @@ struct HudSnapshot {
     BattleMode mode=BattleMode::Teams;
     HudPreferences preferences;bool showGameHud=true;float fade=1;std::array<HudViewport,4> views{};uint8_t viewCount=0;
     std::array<HudRevive,10> revives{};
+    std::array<HudV11Prompt,10> prompts{};
     std::array<HudActor,10> actors{};std::array<HudKill,3> kills{};
     uint8_t introStage=0;uint8_t subject=0,target=255;bool paused=false;bool active=false,training=false,refill=false,idle=false,cinematic=false;
     uint32_t hits=0,damage=0;
@@ -58,6 +63,47 @@ inline bool trainingDamageHook(std::span<const uint8_t> ram) {
         (jump==((2u<<26)|(0x070B7000u>>2)) && u(0x070BF000)==0x52565631u && u(0x070BF028)==0x07411000u);
 }
 #include "ps2_ui_guest_draw_guards.inc"
+#include "ps2_ui_v11_prompt_guards.inc"
+inline const V11PromptGuard* v11PromptGuard(std::span<const uint8_t> ram,unsigned kind) {
+    constexpr uint32_t probeWords[]={0x24020000,0x03E00008,0,0};
+    for(const auto& g:v11PromptGuards)if(g.kind==kind && uint64_t(g.base)+g.size<=ram.size() &&
+       uint64_t(g.probe)+sizeof(probeWords)<=ram.size() &&
+       std::memcmp(ram.data()+g.base,g.bytes,g.size)==0 &&
+       std::memcmp(ram.data()+g.probe,probeWords,sizeof(probeWords))==0)return &g;
+    return nullptr;
+}
+inline bool v11PromptProbePc(uint32_t pc){return pc==0x072533F0 || pc==0x0694D0F0 || pc==0x06955B20;}
+// Presentation rows are written after the upstream admission/camera gates.
+// Never infer gameplay eligibility in the host renderer.
+inline void captureV11Prompts(std::span<const uint8_t> ram,HudSnapshot& h,unsigned count) {
+    if(ram.size()<0x08000000)return;
+    auto u=[&](uint32_t p){uint32_t v;std::memcpy(&v,ram.data()+p,4);return v;};
+    const uint32_t clock=u(0x073D680C),mask=(1u<<count)-1;
+    const bool beam=v11PromptGuard(ram,1) && u(0x07257000)==0x424D5331 &&
+        u(0x07257004)==h.manager && u(0x07257008)==count && u(0x07257010)==2 && u(0x07257058)==1 &&
+        u(0x0724F000)==0x42434C31 && u(0x0724F004)==h.manager && u(0x0724F010)!=0;
+    const bool threat=v11PromptGuard(ram,2) && u(0x0694F000)==0x54485231 && u(0x0694F004)==h.manager &&
+        u(0x0694F00C)>=1 && u(0x0694F00C)<=2;
+    const bool target=v11PromptGuard(ram,3) && u(0x06957000)==0x4C4B5331 && u(0x06957004)==h.manager && u(0x06957018)==1;
+    for(unsigned i=0;i<count;++i){auto& out=h.prompts[i];const auto& actor=h.actors[i];
+        if(!actor.present || !actor.alive)continue;
+        if(beam){const auto r=0x07257500+32*i,text=u(r+12);
+            if(u(r)==actor.pointer && u(r+8)==u(0x0724F018) && u(0x0724F014)-u(r+4)<=1 &&
+               text>=0x07256C00 && text<0x07256D00 && ((text-0x07256C00)&31)==0 &&
+               std::memchr(ram.data()+text,0,32)){
+                std::memcpy(out.beamText.data(),ram.data()+text,32);out.beamWarning=text>=0x07256CA0;
+            }}
+        if(h.cinematic || actor.cinematic)continue;
+        if(threat){const auto r=0x0694F100+64*i;
+            if(u(r+60)==0x4E505231 && clock-u(r+48)<=1 && clock-u(r)<=1){
+                out.threats=uint16_t(u(r+52)&mask);out.warnings=uint16_t(u(r+56)&mask);
+                out.blink=(clock&u(0x0694F04C))!=0;
+            }}
+        if(target){const auto r=0x06957600+16*i,t=u(r+8),style=u(r+12);
+            if(u(r)==actor.pointer && clock-u(r+4)<=1 && t && t<=count && style>=1 && style<=3 &&
+               h.actors[t-1].present && h.actors[t-1].alive){out.target=uint8_t(t-1);out.targetStyle=uint8_t(style);}}
+    }
+}
 inline bool guestHudDrawBoundary(uint32_t pc) {
     return pc==0x073DA200 || pc==0x07272000 || pc==0x072D1800 || pc==0x07413400 || pc==0x07414000 || pc==0x07414800 ||
            (pc>0x070D6800 && pc<0x070D6C00);
@@ -241,6 +287,7 @@ inline HudSnapshot captureHud(std::span<const uint8_t> ram,const ScreenSnapshot&
         u(training)==0x54524E31 && u(training+4)==h.manager && u(training+8)==count;
     if(h.training){h.refill=u(training+12)!=0;h.idle=u(training+24)!=0;}
     captureReviveHud(ram,h,count,uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()));
+    captureV11Prompts(ram,h,count);
     h.active=true;return h;
 }
 // Mirrors multiplayer_fusion.SHARED's authenticated two-seat shared view.
