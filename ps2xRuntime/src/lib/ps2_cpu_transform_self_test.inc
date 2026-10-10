@@ -57,14 +57,17 @@ int ps2xCpuTransformSelfTest(const char* capture){
     reset();put(model+12,77);ram[0x06FE1098]=78;ram[0x06FE1099]=255;ram[0x06FE109C]=0;
     if(!check(call()>=0 && !u(probe),"unknown zero-cost destination excluded"))return 33;
     // Expanded runtime IDs use the production Python-reviewed table in RAM.
-    for(const auto& forms:std::array<std::array<unsigned,4>,6>{{
+    for(const auto& forms:std::array<std::array<unsigned,4>,15>{{
         {{67,190,192,1}},{{190,67,192,1}},{{192,190,67,255}},
-        {{149,177,122,1}},{{122,177,51,255}},{{149,192,51,255}}}}){
+        {{149,177,122,1}},{{122,177,51,255}},{{149,192,51,255}},
+        {{60,181,184,1}},{{181,60,184,1}},{{184,60,183,255}},
+        {{119,76,179,1}},{{179,119,167,255}},{{60,76,119,255}},
+        {{31,32,31,0}},{{32,31,33,1}},{{33,31,32,255}}}}){
         reset();put(model+12,forms[0]);
         for(unsigned f=0;f<4;++f){ram[0x06FE1098+f]=255;ram[0x06FE109C+f]=0;}
         ram[0x06FE1098]=forms[1];ram[0x06FE1099]=forms[2];
         if(!check(call()>=0 && (forms[3]==255?!u(probe):(u(probe)==1 && u(probe+12)==forms[3])),
-            "reviewed Black/Vegito best free upgrade, reverse/cross-family refusal"))return 35;
+            "reviewed family best free upgrade, reverse/cross-family refusal"))return 35;
     }
     reset();put(ctrl+52,1);put(ctrl+16,1);
     if(!check(call()>=0 && u(ctrl+76)==1 && !u(ctrl+72),"FFA counts all CPUs as enemies"))return 34;
