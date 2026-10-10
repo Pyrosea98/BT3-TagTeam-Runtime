@@ -160,7 +160,7 @@ inline void captureReviveHud(std::span<const uint8_t> ram,HudSnapshot& h,unsigne
     if(history.generation!=h.generation){history={};history.generation=h.generation;}
     if(u(ctrl)!=0x52565631 || u(ctrl+4)!=h.manager || u(ctrl+8)!=count || u(ctrl+24)<2 || u(ctrl+24)>5 ||
        u(ctrl+20)<8 || u(ctrl+20)>1800 || u(ctrl+16)>10000000 || u(ctrl+16)%100000)return;
-    const float radius=f(ctrl+64);if(!std::isfinite(radius) || radius<5 || radius>200)return;
+    const float radius=f(ctrl+64);if(!std::isfinite(radius) || radius<5 || radius>400)return;
     for(unsigned i=0;i<count;++i){const auto& owner=h.actors[i];auto& out=h.revives[i];const auto row=rows+64*i;
         if(!owner.present || u(row)!=owner.pointer)continue;
         out.owner=uint8_t(i);out.cost=uint8_t(u(ctrl+16)/100000);out.ring=u(ctrl+80)==1 && u(ctrl+84)>0;
