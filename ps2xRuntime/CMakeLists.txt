@@ -707,6 +707,7 @@ src/lib/ps2_ki_trace.cpp # focused native projectile steering/callback observati
 src/lib/ps2_hud_diagnostic.cpp # bounded developer-only indexed texture dump/draw census
 src/lib/ps2_hud_upload_trace.cpp # source metadata and bounded HUD IMAGE chunks
   src/lib/ps2_ui_vulkan.cpp # native indexed UI sprite compositor + isolated GPU self-test
+  src/lib/ps2_ui_opengl.cpp # same native UI layouts on the OpenGL presentation path
 src/lib/ps2x_dueldump.cpp       # [dueldump] total capture of the Duel menu flow
 src/lib/ps2x_net_texdump.cpp    # [netmenu] force-decode QRS textures via the runtime's PSMT8 reader
 src/lib/ps2x_duel_fields.cpp    # [duelfields] the complete Duel-setup field map + write methods

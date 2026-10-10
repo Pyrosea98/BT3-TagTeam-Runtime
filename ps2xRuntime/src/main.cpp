@@ -590,6 +590,10 @@ int main(int argc, char *argv[])
         extern int ps2xInterpreterSelfTest(const char*);
         return ps2xInterpreterSelfTest(argc==3?argv[2]:nullptr);
     }
+    if (argc == 4 && std::strcmp(argv[1], "--native-ui-opengl-self-test") == 0) {
+        extern int ps2xNativeUiOpenGlSelfTest(const char*, const char*);
+        return ps2xNativeUiOpenGlSelfTest(argv[2], argv[3]);
+    }
     if (argc == 4 && std::strcmp(argv[1], "--native-ui-vulkan-self-test") == 0) {
         extern int ps2xNativeUiVulkanSelfTest(const char*, const char*);
         return ps2xNativeUiVulkanSelfTest(argv[2], argv[3]);

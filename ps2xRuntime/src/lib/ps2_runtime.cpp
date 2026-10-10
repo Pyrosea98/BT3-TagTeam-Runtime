@@ -1,6 +1,7 @@
 #include "ps2_waitprof.h"   // [waitprof]
 #include "runtime/ps2_bridge_perf.h"
 #include "runtime/ps2_ui_transport.h"
+#include "runtime/ps2_ui_opengl.h"
 #include "ps2_trace_diagnostics.h"
 #include "runtime/ps2_guestprof.h"
 #include "runtime/ps2_fiber.h"   // [fibers]
@@ -1444,6 +1445,7 @@ PS2Runtime::~PS2Runtime()
 
         if (bt3IsWindowReady())
         {
+            ps2x::ui::openglUiShutdown();
             bt3CloseWindow();
         }
 
@@ -9132,6 +9134,7 @@ void PS2Runtime::run()
                 if (ch) { std::fprintf(stderr, "[presentlog] #%lu tex=%u %dx%d src=(%.1f,%.1f %gx%g) screen=%gx%g dst=(%.2f,%.2f %.2fx%.2f)\n", s_n, presentTex.id, presentTex.width, presentTex.height, srcX, srcY, srcWidth, srcHeight, screenWidth, screenHeight, dstRect.x, dstRect.y, dstRect.width, dstRect.height); for (int i = 0; i < 10; ++i) prev[i] = cur[i]; }
             }
         }
+        if (!pgsTexPtr) ps2x::ui::openglComposite(dstRect.x,dstRect.y,dstRect.width,dstRect.height);
         if (m_debugUiInitialized && m_debugUiDrawCallback)
         {
             const auto _tUi = std::chrono::steady_clock::now();
@@ -9717,6 +9720,7 @@ void PS2Runtime::run()
         m_debugUiShutdownCallback(*this, m_debugUiUserData);
         m_debugUiInitialized = false;
     }
+    ps2x::ui::openglUiShutdown();
     bt3UnloadTexture(frameTex);
     bt3CloseWindow();
 
