@@ -37,7 +37,7 @@
     ".gitignore": "493024fc067bd3d155a41d6d70689f27020c6cf6163f9627cd5bf525c094c068",
     "LICENSE": "e0eedba615d5cd1b986afb6c5b3a4b1ae33713e7e9dc74d19daec5e3221f9d2e",
     "LICENSE-MIT": "029c78044ea2d264a744de6c1af67a438864f4a76495f258528ce8fd975eb0f0",
-    "README.md": "fe5ea5d93b2cb414c575fee1735fc9f0c3679250c7a1905b65fdcbadb96bf3ad",
+    "README.md": "05919457bff527ccd2db8715ab45005c5944d81ebbb437d43a1c5185a3603b3e",
     "compile_flags.txt": "eac39340e89a7ae1edd80843ba32024a85e6f8b396537ac0b58d984308076699",
     "config/DBZP.yaml": "22a4961b62887d91e04da4908d71ec28cf53937fa88e0d98861510728874b779",
     "config/SLUS_216.78.yaml": "f132cce5d08b49153890d1b65e0be36c9e1eb50c517ddc8d954da9d7360a7866",
@@ -1158,7 +1158,8 @@
     "src/vu1/prog6.vsm": "9fcc3f2013c66b6bf6ca798346d8959733ef6eff58f82d6fa330c3a5406c4509",
     "src/vu1/prog7.vsm": "5ebaefe6da5eef90cc283ac478e3bf8c2e7427a6f8cf7e21b5b9ae561579c8f1",
     "src/vu1/prog8.vsm": "509b98ce63e362538e5d9e1e59db25b14b1190e5926d31247b763241e8907948",
-    "src/vu1/vutext.s": "2285aaad13f64e9fe02721848001c92b5efac37180ce1730f93dd5369f64a103"
+    "src/vu1/vutext.s": "2285aaad13f64e9fe02721848001c92b5efac37180ce1730f93dd5369f64a103",
+    "README.upstream.md": "fe5ea5d93b2cb414c575fee1735fc9f0c3679250c7a1905b65fdcbadb96bf3ad"
   },
   "game_files_included": false
 }
