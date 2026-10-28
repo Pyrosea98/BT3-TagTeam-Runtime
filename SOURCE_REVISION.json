@@ -33,7 +33,7 @@
     }
   },
   "source_files": {
-    ".github/workflows/release.yml": "7a059e0e01d2499b60b34e877a4562908df6ac524c111737378cef887785280f",
+    ".github/workflows/release.yml": "a18c18fe581e604b77fd8686eb0d5f281160cd8b637997d34718ff31d9625cb1",
     ".gitignore": "493024fc067bd3d155a41d6d70689f27020c6cf6163f9627cd5bf525c094c068",
     "LICENSE": "e0eedba615d5cd1b986afb6c5b3a4b1ae33713e7e9dc74d19daec5e3221f9d2e",
     "LICENSE-MIT": "029c78044ea2d264a744de6c1af67a438864f4a76495f258528ce8fd975eb0f0",

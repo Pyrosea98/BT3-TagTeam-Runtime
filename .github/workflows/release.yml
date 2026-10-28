@@ -4,14 +4,13 @@
 # port/release/build.sh.
 #
 #   every push to main        the archives as downloadable artifacts of the run (a check that everything builds)
-#   a tag  v*                 the same, and a draft release with both archives attached
+#   v0.4.1 releases are packaged and verified through the installer repository
 #   "Run workflow" button     the same as a push
 name: release
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
     paths-ignore: ["docs/**", "**.md", "LICENSE", "LICENSE-MIT"]
   workflow_dispatch:
 
