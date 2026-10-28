@@ -1,0 +1,71 @@
+# Builds the Linux and Windows release archives on GitHub's machines, from the repository alone.
+# No disc and no game data are involved: the game's data tables are built blank (port/data) and the finished
+# program fetches their values from the user's own disc at start. The same build runs locally with
+# port/release/build.sh.
+#
+#   every push to main        the archives as downloadable artifacts of the run (a check that everything builds)
+#   a tag  v*                 the same, and a draft release with both archives attached
+#   "Run workflow" button     the same as a push
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["docs/**", "**.md", "LICENSE", "LICENSE-MIT"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to create the draft release on a tag
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The build container (port/release/Dockerfile): Ubuntu 22.04, clang/LLVM 22, SDL3 from source, mingw-w64.
+      # Its layers are cached between runs, so only the first run pays for building it.
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: port/release
+          tags: bt3-port-release:jammy
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # BT3_BUILD_KEY: the release's build key (port/matchmaking/README.md), from the repository secret of that
+      # name, for a tag's build only: the archives of an ordinary push are not a release and carry no key. Where
+      # there is no such secret (a fork) it is empty, and the programs are built without a key as well.
+      - name: Build both archives
+        env:
+          BT3_BUILD_KEY: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.BT3_BUILD_KEY || '' }}
+        run: |
+          mkdir -p port/build
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e BT3_BUILD_KEY -v "$PWD":/src -w /src \
+            bt3-port-release:jammy sh port/release/inside.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tenkaichi3Decomp-linux-x64
+          path: port/build/Tenkaichi3Decomp-linux-x64.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tenkaichi3Decomp-windows-x64
+          path: port/build/Tenkaichi3Decomp-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --draft --title "${GITHUB_REF_NAME}" --generate-notes \
+            port/build/Tenkaichi3Decomp-linux-x64.zip port/build/Tenkaichi3Decomp-windows-x64.zip
