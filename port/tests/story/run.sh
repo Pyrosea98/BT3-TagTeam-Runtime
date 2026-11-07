@@ -87,3 +87,7 @@ python3 port/tests/story/check_nappa_ending_ground_anchor.py
 
 python3 port/tests/story/check_flat_scene_zones.py
 python3 port/tests/story/check_scene_cached_ground.py
+
+cc -std=gnu99 -w -fsanitize=address,undefined -Iinclude -Iport/include -Iport/src port/tests/story/test_campaign_completion.c port/src/gs/tag_tournament_core.c -lm -o "$task_tmp/completion"
+"$task_tmp/completion"
+python3 port/tests/story/check_result_sound_gate.py
