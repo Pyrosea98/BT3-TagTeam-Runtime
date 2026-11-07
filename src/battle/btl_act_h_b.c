@@ -1,3 +1,6 @@
+#ifdef PORT
+extern int Port_EggTransformPay(void*,int);
+#endif
 #include "common.h"
 #include "battle/btl_act_h.h"
 
@@ -683,7 +686,13 @@ static s32 BtlAct_DefusePresent(BtlActHChr *chr, s32 phase) {
             if (BtlAnim_Advance(chr, 0) && BtlChange_IsLoadedFor(chr->player) && Port_DefuseReady(chr)) {
                 Port_DefuseHoldCamera(chr);
                 BtlAnim_Request(chr, BtlAct_IsAirMotion(chr, 1) ? 0xB1 : 0xB4, 0.0f);
-                BtlMember_SubBlast(chr, chr->form.cost);
+                BtlMember_SubBlast(chr,
+#ifdef PORT
+ Port_EggTransformPay(chr,chr->form.cost)
+#else
+ chr->form.cost
+#endif
+ );
                 BtlChange_SetReady(chr->player);
             }
             break;
@@ -774,7 +783,13 @@ s32 BtlAct_TransformA(BtlActHChr *chr, s32 phase) {
             BtlActChange_PushBack(chr);
             if (BtlChange_IsLoadedFor(chr->player)) {
                 BtlAnim_Request(chr, 0x179, 0.0f);
-                BtlMember_SubBlast(chr, chr->form.cost);
+                BtlMember_SubBlast(chr,
+#ifdef PORT
+ Port_EggTransformPay(chr,chr->form.cost)
+#else
+ chr->form.cost
+#endif
+ );
                 BtlChange_SetReady(chr->player);
             }
             break;
@@ -861,7 +876,13 @@ s32 BtlAct_TransformB(BtlActHChr *chr, s32 phase) {
             BtlAnim_AdvanceLoop(chr, 0);
             if (BtlChange_IsLoadedFor(chr->player)) {
                 BtlAnim_Request(chr, 0x191, 0.0f);
-                BtlMember_SubBlast(chr, chr->form.cost);
+                BtlMember_SubBlast(chr,
+#ifdef PORT
+ Port_EggTransformPay(chr,chr->form.cost)
+#else
+ chr->form.cost
+#endif
+ );
                 BtlChange_SetReady(chr->player);
             }
             break;
@@ -926,7 +947,13 @@ s32 BtlAct_TransformC(BtlActHChr *chr, s32 phase) {
             if (BtlAnim_Advance(chr, 0)) {
                 if (BtlChange_IsLoadedFor(chr->player)) {
                     BtlAnim_Request(chr, 0x179, 0.0f);
-                    BtlMember_SubBlast(chr, chr->form.cost);
+                    BtlMember_SubBlast(chr,
+#ifdef PORT
+ Port_EggTransformPay(chr,chr->form.cost)
+#else
+ chr->form.cost
+#endif
+ );
                     BtlChange_SetReady(chr->player);
                 }
             }
@@ -1037,7 +1064,13 @@ s32 BtlAct_TransformD(BtlActHChr *chr, s32 phase) {
             }
             if (BtlAnim_Advance(chr, 0) && BtlChange_IsLoadedFor(chr->player)) {
                 BtlAnim_Request(chr, 0x179, 0.0f);
-                BtlMember_SubBlast(chr, chr->form.cost);
+                BtlMember_SubBlast(chr,
+#ifdef PORT
+ Port_EggTransformPay(chr,chr->form.cost)
+#else
+ chr->form.cost
+#endif
+ );
                 BtlChange_SetReady(chr->player);
             }
             BtlPartner_StepAnim(chr);
@@ -1138,7 +1171,13 @@ s32 BtlAct_TransformE(BtlActHChr *chr, s32 phase) {
             waiting = 1;
             if (BtlChange_IsLoadedFor(chr->player)) {
                 BtlAnim_Request(chr, 0x179, 0.0f);
-                BtlMember_SubBlast(chr, chr->form.cost);
+                BtlMember_SubBlast(chr,
+#ifdef PORT
+ Port_EggTransformPay(chr,chr->form.cost)
+#else
+ chr->form.cost
+#endif
+ );
                 BtlChange_SetReady(chr->player);
             }
             break;
@@ -1279,7 +1318,13 @@ s32 BtlAct_Fusion(BtlActHChr *chr, s32 phase) {
             }
             if (BtlAnim_Advance(chr, 0) && BtlChange_IsLoadedFor(chr->player)) {
                 BtlAnim_Request(chr, 0x1A4, 0.0f);
-                BtlMember_SubBlast(chr, chr->form.cost);
+                BtlMember_SubBlast(chr,
+#ifdef PORT
+ Port_EggTransformPay(chr,chr->form.cost)
+#else
+ chr->form.cost
+#endif
+ );
                 BtlChange_SetReady(chr->player);
             }
             BtlPartner_StepAnim(chr);

@@ -206,10 +206,33 @@ int PortSongs_Offset(int index) {
     return gPortSongOffsets[index];
 }
 
+/* Story presentation ADX slots are independent of the music list (no index shifts in saves).
+   Chapter-specific files override saga families, allowing a different intro for each movie. */
+#define STORY_TRACK_FIRST 75000
+#define STORY_TRACK_MAX 160
+static struct {char target[512];int loop,durationMs;} sStoryTracks[STORY_TRACK_MAX];
+static int sStoryTrackCount;
+int PortSongs_StoryBgm(const char *chapter,int saga,int title){
+ char path[512];FILE*f;int i,pass,p=saga==0||saga==1?0:saga>=2&&saga<8?saga:0;
+ for(pass=0;pass<3;pass++){
+  int durationMs=0;
+  if(pass==0){if(!chapter||!*chapter||strchr(chapter,'/')||strchr(chapter,'\\'))continue;snprintf(path,sizeof(path),"%s/tagteam-ui/history-prefight/%s-%s.adx",data_root(),chapter,title?"title":"recap");}
+  else {int profile=pass==1?p:0;if(pass==2&&p==0)break;snprintf(path,sizeof(path),"%s/tagteam-ui/history-prefight/%s-%d.adx",data_root(),title?"title":"recap",profile);}
+  f=fopen(path,"rb");if(!f)continue;{unsigned char h[16];int valid=fread(h,1,16,f)==16&&h[0]==0x80&&h[1]==0&&h[7]==2;fclose(f);if(!valid)continue;unsigned rate=((unsigned)h[8]<<24)|((unsigned)h[9]<<16)|((unsigned)h[10]<<8)|h[11],samples=((unsigned)h[12]<<24)|((unsigned)h[13]<<16)|((unsigned)h[14]<<8)|h[15];if(rate>=8000&&rate<=192000){unsigned long long ms=(unsigned long long)samples*1000/rate;if(ms>=500&&ms<=120000)durationMs=(int)ms;}}
+  for(i=0;i<sStoryTrackCount;i++)if(!strcmp(path,sStoryTracks[i].target))return 0xD48+STORY_TRACK_FIRST+i;
+  if(sStoryTrackCount>=STORY_TRACK_MAX)break;i=sStoryTrackCount++;snprintf(sStoryTracks[i].target,sizeof(sStoryTracks[i].target),"%s",path);sStoryTracks[i].loop=!title;sStoryTracks[i].durationMs=durationMs;return 0xD48+STORY_TRACK_FIRST+i;
+ }
+ /* Native series-specific fallback when a resource has not been supplied yet. */
+ return saga==5?0x10B28:saga==6?0x10B1E:0x10B1C;
+}
+
+int PortSongs_StoryDurationMs(const char*chapter,int saga,int title){int i=PortSongs_StoryBgm(chapter,saga,title)-0xD48-STORY_TRACK_FIRST;return i>=0&&i<sStoryTrackCount?sStoryTracks[i].durationMs:0;}
+
 /* Whether `path` is the file of a song added from outside the disc (for the sound code: such a file is played
    round and round like the disc's music, though it has no loop points of its own). */
 int PortSongs_IsFile(const char *path) {
     size_t pl = strlen(path), tl;
+    for(int k=0;k<sStoryTrackCount;k++)if(!strcmp(path,sStoryTracks[k].target))return sStoryTracks[k].loop;
     int i;
     for (i = 0; i < sAliasCount; i++) {
         tl = strlen(sAliases[i].target);
@@ -222,6 +245,14 @@ int PortSongs_IsFile(const char *path) {
 
 int PortSongs_Alias(const char *rel, char *out, unsigned n) {
     int i;
+    char canonical[256];
+    /* Beta8 mounts PAK3US2; the original executable mounts PZS3US2.
+       Imported music aliases must work with either partition spelling. */
+    if (strncmp(rel,"pak3us2/",8)==0) {
+        snprintf(canonical,sizeof(canonical),"pzs3us2/%s",rel+8);
+        rel=canonical;
+    }
+    {int entry=-1,used=0;if(sscanf(rel,"pzs3us2/%d.bin%n",&entry,&used)==1&&rel[used]==0&&entry>=STORY_TRACK_FIRST&&entry<STORY_TRACK_FIRST+sStoryTrackCount){snprintf(out,n,"%s",sStoryTracks[entry-STORY_TRACK_FIRST].target);return 1;}}
     for (i = 0; i < sAliasCount; i++) {
         if (strcmp(sAliases[i].rel, rel) == 0) {
             snprintf(out, n, "%s", sAliases[i].target);

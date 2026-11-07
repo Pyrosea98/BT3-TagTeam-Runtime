@@ -36,5 +36,5 @@ puts("PASS actual SSJ4 flag-load +native aura dispatcher:230/241/244 before UI, 
 with tempfile.TemporaryDirectory() as d:
  p=Path(d);(p/'test.cpp').write_text(h+'\n#include <initializer_list>\n#define PORT 1\n'+body+t);subprocess.run(['gcc','-ffunction-sections','-fdata-sections','-Iport/include','-c','port/src/plat_beta8.c','-o',str(p/'b8.o')],check=True);subprocess.run(['g++','-Iport/include',str(p/'test.cpp'),str(p/'b8.o'),'-Wl,--gc-sections','-o',str(p/'test')],check=True);subprocess.run([str(p/'test')],cwd=p,check=True)
 obj=(r/'src/battle/btl_obj.c').read_text();mgr=(r/'src/battle/btl_char_mgr.c').read_text();assert 'Port_Beta8Ssj4Load(id,obj->chara' in obj;assert 'Port_Beta8Ssj4Load(chr->objId,m->chara' in mgr
-before=(out/'before/port/src/plat_beta8.c').read_text();after=(r/'port/src/plat_beta8.c').read_text();assert fn(before,'Port_Beta8Ssj4Load') if False else True
+# The old local before/ snapshot was unused; runtime/callsite assertions above are self-contained.
 print('PASS native object-bind and logical-member-load callsites present; no skill page required for lightning')

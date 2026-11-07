@@ -64,12 +64,13 @@ extern f32 BtlParam_GetUnkC7Scale(BtlFlagChr *chr);
  * the game's own answer (each one's target is the other). */
 extern s32 BtlChar_GetCount(void);
 extern int Port_FightTeam(int k); /* port/src/plat_fighters.c: extra fighter k's, decided when the fight loads */
-#define PORT_FIGHTERS 10 /* (PORT_FIGHTER_MAX, port/include/port_fighters.h) */
-s32 gPortTarget[PORT_FIGHTERS] = { 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+#define PORT_FIGHTERS 16 /* (PORT_FIGHTER_MAX, port/include/port_fighters.h) */
+s32 gPortTarget[PORT_FIGHTERS] = { 1, 0 };
 static s32 sPortTargetHold[PORT_FIGHTERS];
 extern s32 Port_ClashPartner(s32 i); /* btl_char_flag_clash.c: the other fighter of the clash i is in, or -1 */
 s32 Port_Team(s32 i) {
-    return i < 2 ? i : Port_FightTeam(i - 2);
+    extern s32 Port_StoryTeam(s32 actor, s32 team); /* mod_story_scene.inc: a story event's side switch */
+    return Port_StoryTeam(i, i < 2 ? i : Port_FightTeam(i - 2));
 }
 s32 Port_IsEnemy(s32 a, s32 b) {
     return a != b && Port_Team(a) != Port_Team(b);
@@ -137,7 +138,7 @@ static s32 sPortLock[PORT_FIGHTERS];  /* 1 + the chosen enemy, or 0 */
 static s32 sPortLockAuto[PORT_FIGHTERS]; /* the choice was the game's (the nearest, at the start or when the one
                                             before went down), not a flick */
 static s32 sPortLockNew[PORT_FIGHTERS]; /* chosen and not the target yet: no hold keeps the old one */
-static s32 sPortWatch[PORT_FIGHTERS] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 }; /* spectating (below): the
+static s32 sPortWatch[PORT_FIGHTERS] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 }; /* spectating (below): the
                                          fighter the player of fighter p watches, or -1 */
 static s32 sPortWatchWait[PORT_FIGHTERS]; /* frames since player p's fighter went down */
 extern s32 BattleSide_IsCpu(s32 side);                  /* battle_load.c */
@@ -147,6 +148,28 @@ extern int Port_TargetTestFlick(int i);                 /* port/src/plat_stub.c:
 extern void Port_TargetLog(int i, int target, int x, int locked);
 static int sControlOwner[PORT_FIGHTERS],sControlTarget[PORT_FIGHTERS],sControlNotice[PORT_FIGHTERS];
 void Port_TakeoverReset(void){int i;for(i=0;i<PORT_FIGHTERS;i++)sControlOwner[i]=sControlTarget[i]=sControlNotice[i]=0;}
+/* Dragon History hand-over: the human of the player's side (fighter `from`, alive or down) becomes the computer and `to`
+   takes his controller; the name notice shows who is played now. */
+int Port_StoryHumanActor(void){int i;for(i=0;i<BtlChar_GetCount()&&i<PORT_FIGHTERS;i++)if(Port_TargetHuman(i))return i;return -1;}
+void Port_StoryHandControl(int to){int from,i;s32 pad;void Port_TakeoverApply(void*);extern void Port_SpectateLog(int p,int fighter,int why);
+ if((u32)to>=PORT_FIGHTERS||to>=BtlChar_GetCount())return;from=-1;
+ for(i=0;i<BtlChar_GetCount()&&i<PORT_FIGHTERS;i++)if(i!=to&&Port_TargetHuman(i)&&Port_Team(i)==Port_Team(to)){from=i;break;}
+ if(from<0)return;pad=BtlChar_Get(from)->pad;if((u32)pad>=4)return;
+ sControlOwner[from]=1;sControlOwner[to]=pad+2;
+ for(i=0;i<PORT_FIGHTERS;i++)if(sControlTarget[i]==from+1)sControlTarget[i]=to+1;
+ sControlTarget[from]=to+1;sControlTarget[to]=0;sPortWatch[to]=-1;sPortWatchWait[to]=0;sControlNotice[to]=3*30;
+ Port_TakeoverApply(BtlChar_Get(from));Port_TakeoverApply(BtlChar_Get(to));
+ {extern void BtlInput_Init(void*),BtlAct_ClearQueue(void*);BtlInput_Init(BtlChar_Get(to));BtlAct_ClearQueue(BtlChar_Get(to));}
+ {int j;
+  for(j=0;j<2;j++){BtlFlagChr*c=BtlChar_Get(j?to:from);ChrCam_EndCut(c);BtlChar_ClearFlag(c,0xCC);BtlChar_ClearFlag(c,0xDC);BtlChar_ClearFlag(c,0xD3);}
+ }
+ Port_SpectateLog(from,to,3);}
+/* Story cues follow the controller actually handed to the current hero. */
+s32 Port_StoryR3Pressed(void){int i;extern u32 Port_PadPressed(s32);
+ for(i=0;i<BtlChar_GetCount()&&i<PORT_FIGHTERS;i++)if(Port_TargetHuman(i)){
+  int p=BtlChar_Get(i)->pad;if((u32)p<4&&(Port_PadPressed(p)&PAD_R3))return 1;
+ }return 0;
+}
 void Port_TakeoverApply(void*actor){int i=*(int*)actor;if((u32)i>=PORT_FIGHTERS)return;
  if(sControlOwner[i]){*(int*)((u8*)actor+0x1278)=sControlOwner[i]==1;if(sControlOwner[i]>=2)*(int*)((u8*)actor+4)=sControlOwner[i]-2;}
 }
@@ -160,16 +183,14 @@ s32 Port_TargetHuman(s32 i) {
 }
 /* Input bridge: controller number is not necessarily a fighter's roster/object id. */
 s32 Port_ModClashActionForPad(s32 pad) {
-    extern BtlFlagRoster *gBtlChars;
-    s32 i;
-    if (gBtlChars == NULL || (u32)pad >= 4) return -1;
-    for (i = 0; i < BtlChar_GetCount(); i++) {
-        BtlFlagChr *chr = BtlChar_Get(i);
-        if(chr!=NULL&&Port_TargetHuman(i)){
-            extern int Port_FusionControlPads(int,int*,int*);int move,attack;
-            if(Port_FusionControlPads(i,&move,&attack)){if(attack==pad)return BtlAct_GetCurrent(chr);}
-            else if(chr->pad==pad)return BtlAct_GetCurrent(chr);
-        }
+    extern BtlFlagRoster *gBtlChars;s32 i;
+    if(gBtlChars==NULL||(u32)pad>=4)return -1;
+    for(i=0;i<BtlChar_GetCount();i++){
+        BtlFlagChr*chr=BtlChar_Get(i);int move,attack,act;
+        if(!chr||!Port_TargetHuman(i))continue;act=BtlAct_GetCurrent(chr);
+        if(!(act==0xFA||(act>=0x130&&act<=0x132)))continue;
+        if(Port_FusionControlPads(i,&move,&attack)){if(attack==pad)return act;}
+        else if(chr->pad==pad)return act;
     }
     return -1;
 }
@@ -365,9 +386,11 @@ extern void Port_SpectateLog(int p, int fighter, int why); /* port/src/plat_stub
 extern int Port_NetActive(void),BattleReplay_IsActive(void),BtlSeq_GetState(void),Port_Setting(const char*,int);
 extern Pad *Port_Pad(s32);
 static int Port_TakeoverCandidate(int p){int t;BtlFlagChr*c;
+ /* Dragon History: no take-over prompt; a fallen hero's view follows the ally that fights on (spectate). */
+
  if(Port_NetActive()||BattleReplay_IsActive()||BtlSeq_GetState()!=3||!Port_Setting("spectator_takeover_enabled",1)||(u32)p>=PORT_FIGHTERS||!Port_TargetHuman(p)||!BtlChar_IsDead(BtlChar_Get(p)))return -1;
  t=sPortWatch[p];if(t<0||t>=BtlChar_GetCount()||Port_TargetHuman(t)||Port_IsEnemy(p,t)||BtlChar_IsDead(BtlChar_Get(t)))return -1;
- c=BtlChar_Get(t);{extern int BtlChar_IsFrozen(void*),ChrCam_IsCutActive(void*);if(BtlChar_IsFrozen(c)||ChrCam_IsCutActive(c))return -1;}
+ c=BtlChar_Get(t);{extern int Port_StoryActive(void),Port_StorySceneParked(int);if(Port_StoryActive()&&Port_StorySceneParked(t))return -1;}{extern int BtlChar_IsFrozen(void*),ChrCam_IsCutActive(void*);if(BtlChar_IsFrozen(c)||ChrCam_IsCutActive(c))return -1;}
  return t;
 }
 int Port_TakeoverHud(int who){int p;if(Port_NetActive()||BattleReplay_IsActive())return 0;
@@ -401,6 +424,7 @@ static void Port_UpdateSpectate(void) {
         } else {
             s32 pad = BtlChar_Get(p)->pad;
             int t=Port_TakeoverCandidate(p);
+            {extern int Port_StoryActive(void);if(t>=0&&Port_StoryActive()){Port_StoryHandControl(t);continue;}}
             if(t>=0&&(u32)pad<4&&(Port_Pad(pad)->held&PAD_L2)&&(Port_PadPressed(pad)&PAD_SQUARE)){
              int seconds=Port_Setting("takeover_confirmation_seconds",3);if(seconds<1)seconds=1;if(seconds>10)seconds=10;
              sControlOwner[p]=1;sControlOwner[t]=pad+2;sControlTarget[p]=t+1;sControlNotice[t]=seconds*30;

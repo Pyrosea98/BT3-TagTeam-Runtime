@@ -8,7 +8,7 @@ extern "C" {
 
 /* How many fighters a fight can have: the two sides' and the extra ones. THE one number: every table that is kept
    by fighter (roster index, which is also the fighter's object id) is this long. */
-#define PORT_FIGHTER_MAX 10
+#define PORT_FIGHTER_MAX 16 /* Dragon History's large battles (16 actors); the normal selector still offers 10 */
 #define PORT_EXTRA_MAX (PORT_FIGHTER_MAX - 2)
 /* Teams are numbered from 0: 0 is player 1's, 1 player 2's, and in a fight where everyone is alone each fighter
    has its own, so there can be as many as fighters. */

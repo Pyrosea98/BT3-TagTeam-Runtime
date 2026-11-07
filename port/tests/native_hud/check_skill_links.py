@@ -132,6 +132,8 @@ const char *Port_CharaName(int chara) {
         case 5: return "Goku SS2";
         case 6: return "Goku SS3";
         case 21: return "Gohan";
+        case 23: return "Piccolo";
+        case 247: return "Gokulo";
         case 34: return "Vegeta";
         case 51: return "Vegetto";
         case 54: return "Gogeta";
@@ -250,7 +252,8 @@ int main(void) {
     assert(!contains_ascii(slot, "Gogeta Super Saiyajin Full Power]"));
     assert(contains_ascii(slot, "Pareja: Vegeta"));
     assert(contains_ascii(slot, "Pareja: Gohan"));
-    assert(!contains_ascii(slot, "Pareja: Vegeta /"));
+    assert(contains_ascii(slot, "Pareja: Vegeta / Piccolo"));
+    assert(!contains_ascii(slot, "Vegeta / Vegeta"));
 
     /* Fresh costs keep the two icon digits. The stock 001 / 001 / 001 stay, and the new entry is 001. */
     {
@@ -334,7 +337,7 @@ with tempfile.TemporaryDirectory() as directory:
     )
     subprocess.run(
         [
-            "g++",
+            "g++", "-include", "port/include/v05_roster_rules.h",
             "-std=c++17",
             "-fsanitize=address,undefined",
             "-fno-omit-frame-pointer",

@@ -207,10 +207,33 @@ const char *PortStages_Name(int index) {
     return gPortStageNames[index];
 }
 
+/* The second archive's folder is "pzs3us2" on the stock disc and "pak3us2" on the Beta8 data (its PAK3US.DIR): an
+   added stage's file answers for either. */
+static int same_part2_file(const char *alias, const char *rel) {
+    if (strncmp(alias, "pzs3us2/", 8) != 0) {
+        return 0;
+    }
+    if (rel[0] == '/') { /* (the attract demo starts a fight before the menus have loaded that archive) */
+        return strcmp(alias + 7, rel) == 0;
+    }
+    return strncmp(rel, "pak3us2/", 8) == 0 && strcmp(alias + 8, rel + 8) == 0;
+}
+
+/* The id of the added stage shown as `name` (its file name with spaces), or -1 when no such file is installed. */
+int PortStages_Find(const char *name) {
+    int i;
+    for (i = 0; name != NULL && i < gPortExtraStageCount; i++) {
+        if (strcmp(gPortStageNames[i], name) == 0) {
+            return gPortExtraStages[i];
+        }
+    }
+    return -1;
+}
+
 int PortStages_Alias(const char *rel, char *out, unsigned n) {
     int i;
     for (i = 0; i < sAliasCount; i++) {
-        if (strcmp(sAliases[i].rel, rel) == 0) {
+        if (strcmp(sAliases[i].rel, rel) == 0 || same_part2_file(sAliases[i].rel, rel)) {
             snprintf(out, n, "%s", sAliases[i].target);
             return 1;
         }

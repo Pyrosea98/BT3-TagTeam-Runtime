@@ -1,3 +1,5 @@
+#include "mod_damage_safe.h"
+extern int Port_CombatScaleDamage(void*,int);
 #include "common.h"
 #include "battle/btl_act_f.h"
 
@@ -477,10 +479,10 @@ void BtlSuper_SetupRushDamage(BtlSuperChr *chr, s32 cls, s32 fromAnim) {
         damage = BtlSuper_GetDamage(chr, cls, 0, 1);
         rem = damage % 10;
         if (rem) {
-            damage = damage - rem + 10;
+            damage = MD_Round10(damage);
         }
         if (BtlChar_TestFlag(chr, 0xA0)) {
-            damage += damage / 2;
+            damage = MD_Add(damage,damage/2);
         }
         if (chr->unkEE8) {
             damage /= 2;
@@ -505,7 +507,7 @@ void BtlSuper_SetupRushDamage(BtlSuperChr *chr, s32 cls, s32 fromAnim) {
             chr->dmgFlags = 0x2000180;
             break;
         }
-        chr->dmgPerHit = BtlUtil_Min(chr->dmgPerHit, 15000);
+        chr->dmgPerHit = BtlUtil_Min(chr->dmgPerHit, Port_CombatScaleDamage(chr,15000));
         rem = chr->dmgPerHit % 10;
         if (rem) {
             chr->dmgPerHit = chr->dmgPerHit - rem + 10;
@@ -636,6 +638,11 @@ void BtlAct_SuperBeamHandler(BtlSuperChr *chr, s32 phase) {
             if (++*timer > BTL_SUPER_TIMEOUT) {
                 BtlChar_SetHeldFlag(chr, 0xA7);
             }
+#ifdef PORT
+            {extern int Port_StoryBeamChargeGate(int);int gate=Port_StoryBeamChargeGate(chr->player);
+             if(gate==1){*timer=0;BtlChar_ClearFlag(chr,0xA7);}
+             else if(gate==2)BtlChar_SetHeldFlag(chr,0xA7);}
+#endif
             if (BtlChar_TestFlag(chr, 0xA7)) {
                 if (chr->work[0] & 1) {
                     if (BtlChange_IsLoadedFor(chr->player)) {
@@ -679,6 +686,10 @@ void BtlAct_SuperBeamHandler(BtlSuperChr *chr, s32 phase) {
             BtlAnim_AdvanceLoop(chr, 0);
             BtlSuper_ShakeOnEvent(chr, cls, 1);
             BtlSuper_Recoil(chr, cls, 1);
+#ifdef PORT
+            {extern int Port_StorySpiritBallPending(int);
+             if(Port_StorySpiritBallPending(chr->player))*timer=0;}
+#endif
             if (++*timer > BTL_SUPER_TIMEOUT) {
                 BtlChar_SetHeldFlag(chr, 0xA8);
             }
@@ -1122,6 +1133,11 @@ void BtlAct_SuperChargeHandler(BtlSuperChr *chr, s32 phase) {
                 }
                 chr->chargeFull++;
             }
+#ifdef PORT
+            {extern int Port_StoryBeamChargeGate(int);int gate=Port_StoryBeamChargeGate(chr->player);
+             if(gate==1){*timer=0;chr->work[0]&=~1;}
+             else if(gate==2){chr->work[0]|=1;chr->charge=1.0f;}}
+#endif
             if (chr->work[0] & 1) {
                 BtlAnim_Request(chr, SUPER_ANIM(cls, 2), 0.0f);
                 *timer = 0;
@@ -1295,6 +1311,12 @@ void BtlAct_SuperRepeatHandler(BtlSuperChr *chr, s32 phase) {
             if (++*timer > BTL_SUPER_TIMEOUT) {
                 BtlChar_SetHeldFlag(chr, 0xA7);
             }
+#ifdef PORT
+            /* Story beam pair (CH8 Kaioken x4 vs Galick Gun): hold until the partner charges too, then fire together. */
+            {extern int Port_StoryBeamChargeGate(int);int gate=Port_StoryBeamChargeGate(chr->player);
+             if(gate==1){*timer=0;BtlChar_ClearFlag(chr,0xA7);}
+             else if(gate==2)BtlChar_SetHeldFlag(chr,0xA7);}
+#endif
             if (BtlChar_TestFlag(chr, 0xA7)) {
                 BtlAnim_Request(chr, SUPER_ANIM(cls, 2), 0.0f);
                 *timer = 0;
@@ -3055,6 +3077,12 @@ void BtlAct_ClashStruggleHandler(ActGChr *chr, s32 phase) {
             chr->clashPower -= 3;
         }
     }
+#ifdef PORT
+    if(phase==0){extern void Port_ClashCpuReset(int,int,int);Port_ClashCpuReset(chr->player,chr->clashPower,1);}
+#endif
+#ifdef PORT
+    extern int Port_ClashCpuPoint(int,int,int);
+#endif
     if (phase == 1) {
         s32 up = -1;
         s32 down = -1;
@@ -3091,7 +3119,11 @@ void BtlAct_ClashStruggleHandler(ActGChr *chr, s32 phase) {
         BtlChar_SetFlag(chr, 0x45);
         BtlChar_SetFlag(chr, 0x46);
         BtlChar_SetFlag(chr, 0x134);
-        if (chr->actionFrame >= 0x10 && BtlInput_TestAction(chr, 0x33, 1)) {
+        if (chr->actionFrame >= 0x10 && BtlInput_TestAction(chr, 0x33, 1)
+#ifdef PORT
+            && Port_ClashCpuPoint(chr->player,chr->actionFrame,1)
+#endif
+        ) {
             chr->clashPower++;
 #ifdef PORT /* PC build: BT3_CLASH_LOG=1 says what a clash counts (testing the Square option) */
             Port_ClashLog(chr->player, "beam clash", 1, chr->clashPower, chr->actionFrame);
@@ -3313,7 +3345,7 @@ void BtlActThrow_SetupDamage(ActGChr *chr, s32 extraHit) {
     if (rem) {
         s32 up = chr->queue.perHit - rem + 10;
 
-        if (up * chr->queue.hits < chr->queue.unk0) {
+        if ((long long)up * chr->queue.hits < chr->queue.unk0) {
             chr->queue.perHit = up;
         }
     }

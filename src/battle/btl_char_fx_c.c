@@ -539,13 +539,22 @@ void BtlFx_UpdateStageFx(void) {
     FxChr *chr;
 
     for (i = 0; i < BtlChar_GetCount(); i++) {
+#ifdef PORT
+        {extern int Port_StorySceneParked(int);if(Port_StorySceneParked(i))continue;}
+#endif
         BtlFx_UpdateStageFxRequest(BtlChar_Get(i));
     }
     for (i = 0; i < BtlChar_GetCount(); i++) {
         chr = BtlChar_Get(i);
+#ifdef PORT
+        {extern int Port_StorySceneParked(int);if(Port_StorySceneParked(i))continue;}
+#endif
         now |= BtlChar_TestFxBit(chr, 0x12);
         prev |= BtlChar_TestPrevFxBit(chr, 0x12);
     }
+#ifdef PORT
+    {extern int Port_StoryActive(void);static int storyWas,storyOn;int active=Port_StoryActive();if(active){prev=storyOn?storyWas:0;storyWas=now;}storyOn=active;}
+#endif
     if (now && !prev) {
         StgTint_Start(0, 0, 0.2f);
     }

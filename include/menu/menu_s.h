@@ -51,7 +51,11 @@ extern void BattleSetup_SetPoolMember(s32 count, s32 idx, s32 chara, s32 costume
 
 #define S_VOICE_IDLE 5          /* Voice_GetStat result when nothing is playing */
 #define S_VOICE_BASE 0x8765     /* voice bank base of this mode group's guides (Voice_PlayWithSubtitle) */
+#ifdef PORT
+#define S_MONEY_MAX 999999999
+#else
 #define S_MONEY_MAX 9999999
+#endif
 
 /* ---- gProgress and gSaveData as this chunk uses them ---- */
 

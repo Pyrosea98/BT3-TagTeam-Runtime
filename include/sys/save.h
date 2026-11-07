@@ -20,6 +20,11 @@
 #define SAVE_FLAG8_COUNT 7    /* bits of unlockFlags set by Save_UnlockAll */
 #define SAVE_ITEM_COUNT 350   /* entries of item[] and of the item table in common file 4 */
 #define SAVE_SLOT_COUNT 9
+#ifdef PORT
+#define SAVE_STORY_RANK_CAPACITY (SAVE_SLOT_COUNT * 8)
+s32 Save_GetStoryRank(s32 chapter);
+void Save_RaiseStoryRank(s32 chapter, s32 rank);
+#endif
 #define SAVE_CUSTOM_COUNT 97
 #define SAVE_CUSTOM_SETS 3
 #define SAVE_CUSTOM_ITEMS 8   /* 7 usable item slots + a zero terminator */
@@ -28,7 +33,12 @@
 #define SAVE_KEY_COUNT 8
 #define SAVE_RULE_COUNT 6
 
+#ifdef PORT
+/* Same signed 32-bit save field; reserve ample headroom for stock score transfers. */
+#define SAVE_MONEY_MAX 999999999
+#else
 #define SAVE_MONEY_MAX 9999999
+#endif
 #define SAVE_MONEY_UNLOCK_ALL 4850000
 #define SAVE_VOLUME_DEFAULT 9 /* volumes are 0..9 */
 

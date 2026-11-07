@@ -1,3 +1,4 @@
+#include "mod_damage_safe.h"
 #include "common.h"
 #include "battle/hud_c.h"
 #include "battle/battle.h"
@@ -34,9 +35,9 @@ extern int Port_HudSwap(void);
 #define HUDC_PAUSED() (Battle_GetWork()->flags & BATTLE_FLAG_PAUSE)
 
 #ifdef PORT
-#define HUD_COMBO_DAMAGE_DIGITS 9
+#define HUD_COMBO_DAMAGE_DIGITS 10
 #define HUD_COMBO_HIT_DIGITS 6
-#define HUD_COMBO_SPR_COUNT 19
+#define HUD_COMBO_SPR_COUNT 20
 #else
 #define HUD_COMBO_DAMAGE_DIGITS 5
 #define HUD_COMBO_HIT_DIGITS 3
@@ -64,7 +65,7 @@ extern int Port_HudSwap(void);
 #define HUD_COMBO_ST_OFF 10
 
 #ifdef PORT
-#define HUD_COMBO_DAMAGE_MAX 999999999
+#define HUD_COMBO_DAMAGE_MAX 2147483647
 #define HUD_COMBO_HITS_MAX 999999
 #else
 #define HUD_COMBO_DAMAGE_MAX 199998
@@ -397,7 +398,7 @@ void HudCombo_SetDamageDigits(HudCNode *node) {
         spr = node->sprites[i + 1];
         HudSprite_InitTex(spr, gHudCombo->res, 1, 0);
         HudSprite_SetRect(spr, 1, 31, 1, 31);
-        digit = value % pow[i + 1] / pow[i];
+        digit = value / pow[i] % 10;
         if (!HUDC_PAUSED() && i == 0 && value - 100 <= 99898 && ramp->value != ramp->target) {
             do {
                 digit = Rand_IntRange(0, 9);
@@ -680,8 +681,8 @@ void HudCombo_SetDamage(s32 side, s32 damage, s32 isNew) {
         if (isNew && gHudCombo->hitsRaw[side] <= gHudCombo->hitsPrev[side]) {
             gHudCombo->damageFrom[side] = 0;
         } else if (gHudCombo->countRamp[side].value != gHudCombo->countRamp[side].target) {
-            gHudCombo->damageFrom[side] += (s32)(gHudCombo->countRamp[side].value *
-                                                 (f32)(gHudCombo->damage[side] - gHudCombo->damageFrom[side]));
+            gHudCombo->damageFrom[side] = MD_Add(gHudCombo->damageFrom[side],MD_FromDouble((double)(gHudCombo->countRamp[side].value *
+                                                 (f32)(gHudCombo->damage[side] - gHudCombo->damageFrom[side]))));
         } else {
             gHudCombo->damageFrom[side] = gHudCombo->damage[side];
         }
@@ -998,7 +999,7 @@ void HudCombo_Init(HudCNode **out, HudCRes *res) {
     node->sprites[2] = &gHudCombo->sprites[10];
     node->sprites[3] = &gHudCombo->sprites[11];
 #ifdef PORT
-    for(i=3;i<HUD_COMBO_HIT_DIGITS;i++)node->sprites[i+1]=&gHudCombo->sprites[16+i-3];
+    for(i=3;i<HUD_COMBO_HIT_DIGITS;i++)node->sprites[i+1]=&gHudCombo->sprites[17+i-3];
 #endif
     node->update = HudCombo_UpdateHits;
     node->draw = HudCombo_DrawSprites;

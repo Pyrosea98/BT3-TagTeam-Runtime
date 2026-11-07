@@ -38,6 +38,13 @@ extern void TextBox_AttachLine(Flash *flash, FlashRef *ref, s32 a, s32 b, s32 li
 /* Defined here: this object's .sdata (0x2FF0D0). */
 GetWin *gGetWin = NULL;
 
+#ifdef PORT
+extern int Port_StoryRewardText(int,int,u16*,int);
+extern void TextBox_AttachString(Flash*,FlashRef*,s32,s32,u16*,TextBox*);
+static int sPortStoryReward=-1;
+static u16 sPortStoryRewardText[2][192];
+#endif
+
 /* Allocates the reward window and builds its movie and five text boxes from a pack file. */
 void GetWin_Init(u32 *pack, s32 lang) {
     FlashTexRes *res = NULL;
@@ -213,6 +220,10 @@ void GetWin_Draw(void) {
 
     if (gGetWin->line1 >= 0) {
         Flash_FindLabel(flash, NULL, "mc_dammy_text_1", &ref);
+#ifdef PORT
+        if(sPortStoryReward>=0)TextBox_AttachString(flash,&ref,0,0,sPortStoryRewardText[0],&gGetWin->box[gGetWin->box1]);
+        else
+#endif
         TextBox_AttachLine(flash, &ref, 0, 0, gGetWin->line1, &gGetWin->box[gGetWin->box1]);
     } else {
         Flash_FindLabel(flash, NULL, "mc_text_base_1", &ref);
@@ -232,6 +243,10 @@ void GetWin_Draw(void) {
         }
         Flash_FindLabel(flash, NULL, "mc_dammy_text_2", &ref);
         if (kind != 6) {
+#ifdef PORT
+            if(sPortStoryReward>=0)TextBox_AttachString(flash,&ref,0,0,sPortStoryRewardText[1],&gGetWin->box[gGetWin->box2]);
+            else
+#endif
             TextBox_AttachLine(flash, &ref, 0, 0, gGetWin->line2, &gGetWin->box[gGetWin->box2]);
         }
         TextBox_SetLineOffsets(&gGetWin->box[gGetWin->box2], 0, 0, 0, 0, 0);
@@ -271,6 +286,10 @@ s32 GetWin_IsAnimating(void) {
 
 /* Chooses what the window announces: the kind and a line number, item index or amount. */
 void GetWin_Setup(s32 kind, s32 value) {
+#ifdef PORT
+    sPortStoryReward=-1;
+    if(kind==8 && value>=0x100 && Port_StoryRewardText(value-0x100,0,sPortStoryRewardText[0],192) && Port_StoryRewardText(value-0x100,1,sPortStoryRewardText[1],192))sPortStoryReward=value-0x100;
+#endif
     gGetWin->line1 = -1;
     gGetWin->line2 = __builtin_abs(value);
     gGetWin->tall = 0;
@@ -296,6 +315,9 @@ void GetWin_Setup(s32 kind, s32 value) {
         gGetWin->box2 = 3;
         gGetWin->se = 7;
     } else if (kind == 8) {
+#ifdef PORT
+        if(sPortStoryReward>=0){gGetWin->kind=8;gGetWin->se=8;gGetWin->line1=gGetWin->line2=0;gGetWin->box1=3;gGetWin->box2=4;return;}
+#endif
         gGetWin->se = 8;
         gGetWin->line1 = gGetWin->line2;
         if (gGetWin->line1 < 3) {

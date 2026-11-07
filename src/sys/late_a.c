@@ -872,3 +872,21 @@ s32 Shen_Run(s32 section) {
     Dma_ResetBuffers();
     return work.result;
 }
+
+#ifdef PORT
+/* Story-only summoning film: native balls/dragon/cameras, no wish menu, no ball consumption or save edits. */
+s32 gPortStoryWishFilm;
+void Port_StoryWishScene(void){
+    s32 f,ready=0;extern void Port_StorySubtitle(int,int,int);
+    gPortStoryWishFilm=1;Bgm_Play(0x10B18);ShenScene_Init(0);ColorFade_StartIn(0,0,0,20);
+    for(f=0;f<1800;f++){
+        Gfx_BeginFrame();Pad_Update();ColorFade_Update();Snd_Update();ShenScene_Update();ColorFade_Draw();Gfx_EndFrame(2);Dma_Flush();File_Stub264D90();
+        if(ShenScene_GetState()==1){
+            if(++ready==1)Port_StorySubtitle(5,1,1);
+            if(ready>=210){Port_StorySubtitle(-1,0,0);ShenScene_SetState(3);}
+        }
+        if(ShenScene_GetState()==2)break;
+    }
+    Port_StorySubtitle(-1,0,0);ShenScene_Term();gPortStoryWishFilm=0;Dma_ResetBuffers();
+}
+#endif

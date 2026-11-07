@@ -26,10 +26,14 @@
    files. Found 2026-10-08 while listing the file ids for added characters.) */
 #include "port_fighters.h" /* port/include: the experiment of more than two fighters (plat_fighters.c) */
 #include "plat_stages.h" /* port/include: which stage ids are the added ones (Port_IsAddedStage) */
+#include "mod_select.h"
+#include "mod_achievements.h"
+#include <stdio.h>
 #include "plat_beta8.h" /* port/include: file ids for the Beta8 model volumes (the mod's added characters) */
 /* A voice bank exists only for the stock character ids; an added character uses the first stock voice. */
 static s32 Port_BattleVoiceFile(s32 chara){
  s32 language=(gSaveData->flags&SAVE_FLAG_VOICE)!=0;
+ if(chara==301)return Port_Beta8VoiceFileId(chara,language);
  if(chara>160){
   s32 stock=Port_Beta8StockAlias(chara);
   if(stock>=0)chara=stock;
@@ -988,6 +992,12 @@ void BtlLoad_PollCharaRequest(void) {
 }
 
 /* Restart: drops running jobs and reloads the initial stage / characters where they changed (blocking). */
+#ifdef PORT
+static inline BattleSide *Side(s32 n);
+static int Port_RematchModelMismatch(int chara,int costume,int variant,int slot){
+ int expected;if(slot<0)return 0;expected=Port_Beta8ResolveFile(chara,costume,variant,0,chara*10+costume+0x590+(variant?4:0));return Port_ResModelFile(slot)!=expected;
+}
+#endif
 void BtlLoad_Reload(void) {
     BattleRes *res = BATTLE_RES;
     s32 side;
@@ -1003,13 +1013,24 @@ void BtlLoad_Reload(void) {
         Heap_Free(res->transition);
         res->transition = NULL;
     }
+#ifdef PORT
+    /* The selection plan is immutable across a fight; live form/member mirrors are not. */
+    {MsPick original;int actor;for(actor=0;actor<Port_LoadFighters();actor++)if(Port_ModSelectPlan(&original,actor)){
+      if(actor<2){Side(actor)->startForm.chara=original.chara;Side(actor)->startForm.costume=original.costume;Side(actor)->startForm.variant=0;Side(actor)->members[Side(actor)->lead].chara=original.chara;Side(actor)->members[Side(actor)->lead].costume=original.costume;}
+      else {sPortFighter[actor].startChara=original.chara;sPortFighter[actor].startCostume=original.costume;sPortFighter[actor].startVariant=0;}
+    }}
+#endif
     BtlRes_CommitReloadEx();
     Job_Clear();
     BtlJob_InitPool();
     /* The original passes a second argument (0) that the function does not have. */
     ((s32 (*)(s32, s32))BtlLoad_RequestStageReload)(Battle_GetStartStage(), 0);
     for (side = 0; side < 2; side++) {
-        if (BattleSide_IsFormChanged(side)) {
+        if (BattleSide_IsFormChanged(side)
+#ifdef PORT
+ ||Port_RematchModelMismatch(BattleSide_GetStartChara(side),BattleSide_GetStartCostume(side),BattleSide_GetStartVariant(side),BattleSide_GetModelSlot(side))
+#endif
+ ) {
             chara = BattleSide_GetStartChara(side);
             costume = BattleSide_GetStartCostume(side);
             variant = BattleSide_GetStartVariant(side);
@@ -1061,7 +1082,7 @@ void BtlLoad_Reload(void) {
         }
         BtlObj_Rebind(Port_LoadObj(side), Port_FighterSlot(side));
         Port_ResReleaseOld(Port_FighterSlot(side));
-        if (f->chara != f->startChara || f->costume != f->startCostume || f->variant != f->startVariant) {
+        if (f->chara != f->startChara || f->costume != f->startCostume || f->variant != f->startVariant || Port_RematchModelMismatch(f->startChara,f->startCostume,f->startVariant,Port_FighterSlot(side))) {
             f->chara = f->startChara;
             f->costume = f->startCostume;
             f->variant = f->startVariant;
@@ -1193,6 +1214,9 @@ s32 BattleResult_HasWinner(void) {
 
 /* Side 0 won; always 1 in split-screen and in modes 8 and 1. */
 s32 BattleResult_IsPlayerWin(void) {
+#ifdef PORT
+    if(Port_ModSelectMulti())return Port_ModSelectPlayerWin();
+#endif
     BattleResult *result = Battle_GetResult();
 
     if (Battle_IsSplitScreen() || Battle_GetMode() == 8 || Battle_GetMode() == 1) {
@@ -1390,6 +1414,9 @@ static void Port_LoadExtras(void) {
     if (Battle_GetMode() == 7 && Port_TestDemoMode() >= 0) {
         extern int Port_TestScreen(void);
         setup->rule.mode = Port_TestDemoMode();
+        setup->rule.timeLimit = 0; /* attract demos may use a non-versus timer index; diagnostic real fights have no timer */
+        BattleReplay_SetActive(0); /* a diagnostic real fight must not immediately finish on the attract replay's end marker */
+        BattleReplay_ClearDataFlag();
         if (Port_TestScreen() >= 0) { /* (BT3_TEST_SCREEN, which the demo's own mode had put back to one view) */
             setup->rule.screenMode = Port_TestScreen();
         }
@@ -1499,6 +1526,30 @@ void BattleResult_CountFrame(void) {
 void BattleResult_Stub1291B8(void) {
 }
 
+#ifdef PORT
+/* Called at the victory transition, before a rematch/menu can replace the result. */
+void Port_AchievementBattleResult(void) {
+    BattleResult *res=Battle_GetResult();
+    {extern void Port_StoryFoundBall(int);Port_StoryFoundBall(res->unk44);} /* the ball a story fight found, before its result */
+    {extern unsigned Port_ScenarioResult(int,int,int,const int*,int,int);extern void Port_ScenarioSetFinalHp(const int*,int);extern int Port_ScenarioActorForm(int);extern int BtlCharApi_GetHp(int);int forms[16],hp[16],j,n=BtlChar_GetCount();
+     if(n>0&&n<=16){for(j=0;j<n;j++){forms[j]=Port_ScenarioActorForm(j);hp[j]=BtlCharApi_GetHp(j);}Port_ScenarioSetFinalHp(hp,n);
+      Port_AchievementSubmit(Port_ScenarioResult(res->winner==1?0:res->winner==2?1:-1,res->winner,res->reason,forms,n,Port_ModesFight()==1&&!BattleReplay_IsActive()&&!Port_NetActive()));}}
+    /* Evaluate the immutable draft, not transformed/absorbed dragon identities. */
+    {
+        int ids[10],teams[10],pads[10],i,n=Port_ModSelectPlanCount();
+        int winner=res->winner==1?0:res->winner==2?1:-1;
+        int eligible=Port_ModesFight()==1&&!BattleReplay_IsActive()&&!Port_NetActive();
+        if(n==8&&winner>=0){
+            for(i=0;i<n;i++){MsPick pick;if(!Port_ModSelectPlan(&pick,i))break;ids[i]=pick.chara;teams[i]=pick.team;pads[i]=pick.pad;}
+            if(i==n){unsigned bits=Port_AchievementEvaluate(ids,teams,pads,n,winner,Side(winner)->form.chara,res->winner,res->reason,eligible);
+                Port_AchievementSubmit(bits);
+                fprintf(stderr,"bt3: achievement result winner%d flags%d reason%x roster%d eligible%d form%d award%x\n",winner,res->winner,res->reason,n,eligible,Side(winner)->form.chara,bits);
+            }
+        }
+    }
+}
+#endif
+
 /* Fills the result block at the end of the battle: event summary, clock copy, abort flag, forced winner. */
 void BattleResult_Finish(void) {
     BattleResult *res = Battle_GetResult();
@@ -1514,6 +1565,9 @@ void BattleResult_Finish(void) {
     if (res->reason & 0x40) {
         res->winner |= 1;
     }
+#ifdef PORT
+    Port_AchievementBattleResult();
+#endif
 }
 
 /* Returns result.flags (winner / draw / abort bits). */
@@ -2138,7 +2192,13 @@ void BattleSetup_FinishEx(s32 wide) {
     }
     rule = &SETUP()->rule;
     rule->unk18 = 0;
+#ifdef PORT
+    /* Dragon History chapters of the port (versus path) hide a ball by the same rule (mod_story_runtime.inc). */
+    { extern int Port_StoryDragonBallSearch(void);
+    if (Battle_GetMode() == 1 || Port_StoryDragonBallSearch()) {
+#else
     if (Battle_GetMode() == 1) {
+#endif
         for (i = 0; i < 7; i++) {
             s32 mask = 1 << i;
 
@@ -2148,6 +2208,9 @@ void BattleSetup_FinishEx(s32 wide) {
             }
         }
     }
+#ifdef PORT
+    }
+#endif
     BattleSetup_DefaultOptions();
     SETUP()->unk5A0 = 1;
     memset(&gBattleReplay, 0, sizeof(BtlReplay));
@@ -2273,9 +2336,22 @@ s32 Battle_GetBgm(void) {
     return SETUP()->rule.bgm;
 }
 
+/* The port stores a song-list offset here; PORT_BGM_FILE resolves it when
+   playback starts, including tracks supplied outside the disc. */
+void Battle_SetBgm(s32 bgm) {
+    SETUP()->rule.bgm = bgm;
+}
+
 /* Returns the stage the battle starts on. */
 s32 Battle_GetStartStage(void) {
     return SETUP()->rule.stage;
+}
+
+/* The initial loader reads both words at different points, so a forced
+   scenario stage must update both together. */
+void Battle_SetStartStage(s32 stage) {
+    SETUP()->rule.stage = stage;
+    SETUP()->rule.curStage = stage;
 }
 
 /* Returns the current stage. */
@@ -2457,7 +2533,7 @@ s32 BattleSide_IsCharaUsable(s32 side, s32 chara) {
     u64 *bits;
 #ifdef PORT
     if(chara==54||chara==59||chara==110||chara==149)return 1; /* repurposed fusion/form entries do not match stock save unlock bits */
-    if(chara>=165)return Port_Beta8HasCharacter(chara);
+    if(chara>=165||(chara>=161&&Port_Beta8StockAlias(chara)>=0))return Port_Beta8HasEntry(chara);
     if(chara<0||chara>160)return 0;
 #endif
     bits = Side(side)->charaBits.bits;

@@ -54,7 +54,11 @@ extern void Save_AddItem(s32 idx);
 #define SIM_FACE_FILE 0x2F9      /* + character id: compressed portrait */
 #define SIM_FACE_SIZE 0x16800
 #define SIM_BGM_FIRST 0x10B16    /* Bgm_Play id of music 0 */
+#ifdef PORT
+#define SIM_MONEY_MAX 999999999
+#else
 #define SIM_MONEY_MAX 9999999
+#endif
 
 /*
  * The state of the ladder, kept between its screens and its fights (gProgress + 0x64C; SimState of

@@ -60,7 +60,8 @@ head=r'''#include <assert.h>
 #include <string.h>
 #include <math.h>
 #include "battle/bobj_a.h"
-static float factor=4;static BobjPart node;u16 gPortBodyTouch[12];
+#include "port_body_contacts.h"
+static float factor=4;static BobjPart node;unsigned int gPortBodyTouch[PORT_BODY_OBJECTS];
 float Port_GiantScale(const void*o){return factor;}
 int BtlObjBody_Update(BobjObj*o,int n){return 0;}
 BobjPart*BtlObj_GetNodeByCode(BobjObj*o,int n){return &node;}
@@ -82,7 +83,7 @@ o.hit.hitIndex=-1;BtlObjHit_BuildVolumes(&o);assert(!w.atkObbCount&&!w.atkSphere
 puts("PASS actual giant attack volumes: sphere and OBB x1..x4, scaled limb offsets, unit query basis, unchanged source radii/node matrices, closed hit window");}
 '''
 with tempfile.TemporaryDirectory()as tmp:
- p=Path(tmp);(p/'hit.c').write_text(head+fn(src,'BtlObjHit_BuildVolumes')+tail);subprocess.run(['gcc','-std=c99','-Iinclude','-fsanitize=address,undefined',str(p/'hit.c'),'-lm','-o',str(p/'test')],check=True);subprocess.run([str(p/'test')],check=True)
+ p=Path(tmp);(p/'hit.c').write_text(head+fn(src,'BtlObjHit_BuildVolumes')+tail);subprocess.run(['gcc','-std=c99','-Iinclude','-Iport/include','-fsanitize=address,undefined',str(p/'hit.c'),'-lm','-o',str(p/'test')],check=True);subprocess.run([str(p/'test')],check=True)
 src=(r/'src/battle/btl_char_cam_modes.c').read_text()
 head=r'''#include <cassert>
 #include <cstdio>

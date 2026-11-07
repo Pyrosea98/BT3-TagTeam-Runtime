@@ -25,6 +25,8 @@
 extern s32 BtlInput_GetFramesSincePress(BtlActJChr *chr, s32 n);
 extern s32 BtlInput_GetNotHeldFrames(BtlActJChr *chr, s32 n);
 extern int Port_FusionCostume(int source, int partner, int result);   /* [beta8-fusion] port/src/plat_sys.c */
+extern int Port_Beta8FormSlotTargetForCostume(int,int,int,int);
+extern int Port_Beta8TransformCostume(int,int,int);
 extern int Port_Beta8FormTarget(int source, int target);               /* port/src/plat_beta8.c: split form entries */
 extern int Port_Beta8FormSlotTarget(int source, int slot, int target); /* ... with the free-slot SSJ4 link */
 extern int Port_Beta8FusionResult(int source, int scost, int partner, int pcost, int result);
@@ -239,7 +241,14 @@ static void Port_CpuTacticsQueued(BtlActJChr *,int,int);
 #ifdef PORT
 static int Port_CpuFormAllowed(BtlActJChr*,int);
 #endif
+#ifdef PORT
+#include "mod_eggs_native.inc"
+#include "mod_scenarios.h"
+#endif
 s32 BtlAct_CanTransform(BtlActJChr *chr, u32 index, s32 needBlast, s32 needAllowed) {
+#ifdef PORT
+    extern int Port_StoryFormGranted(int,int);
+#endif
     s32 chara;
     s32 cost;
     s32 kind;
@@ -257,7 +266,11 @@ s32 BtlAct_CanTransform(BtlActJChr *chr, u32 index, s32 needBlast, s32 needAllow
     ) {
         return 0;
     }
-    if (BtlMember_HasAbility(chr, 0x5E)) {
+    if (BtlMember_HasAbility(chr, 0x5E)
+#ifdef PORT
+        && !Port_StoryFormGranted(chr->player,BtlParam_GetSlotId(chr,index))
+#endif
+    ) {
         return 0;
     }
     if (BtlChar_TestFlag(chr, 0xAF)) {
@@ -268,17 +281,30 @@ s32 BtlAct_CanTransform(BtlActJChr *chr, u32 index, s32 needBlast, s32 needAllow
     }
     chara = BtlParam_GetSlotId(chr, index);
 #ifdef PORT
-    chara = Port_Beta8FormSlotTarget(BtlMember_GetActive(chr)->chara, (int)index, chara);
+    chara = Port_Beta8FormSlotTargetForCostume(BtlMember_GetActive(chr)->chara,BtlMember_GetActive(chr)->costume,(int)index,chara);
 #endif
     cost = BtlParam_GetSlotCost(chr, index);
     kind = BtlParam_GetSlotA4(chr, index);
+#ifdef PORT
+    if(!Port_ScenarioFormAllowed(chr->player,chara))return 0;
+    cost=eg_price(chr,chara,cost,NULL);if(cost<0)return 0;
+#endif
     if (chara == 0xFF) {
         return 0;
     }
+#ifdef PORT
+    {
+    if (!Port_StoryFormGranted(chr->player,chara)&&!BattleSide_IsCharaUsable(chr->player,chara)) return 0;}
+#else
     if (!BattleSide_IsCharaUsable(chr->player, chara)) {
         return 0;
     }
-    if (kind == 3 && !BtlStage_HasMoon()) {
+#endif
+    if (kind == 3 && !BtlStage_HasMoon()
+#ifdef PORT
+        && !Port_StoryFormGranted(chr->player,chara)
+#endif
+    ) {
         return 0;
     }
     if (needBlast && !BtlMember_HasBlast(chr, cost)) {
@@ -288,7 +314,7 @@ s32 BtlAct_CanTransform(BtlActJChr *chr, u32 index, s32 needBlast, s32 needAllow
     {
         /* The mod's added forms can point at models the port's object code cannot bind (the bundle volumes hold
            the mod's own layout); queueing such a change would crash in BtlObjMdl_BindFiles on a NULL texture. */
-        s32 costume = BtlMember_GetActive(chr)->costume;
+        s32 costume = Port_Beta8TransformCostume(BtlMember_GetActive(chr)->chara,BtlMember_GetActive(chr)->costume,chara);
         s32 variant = BtlMember_GetActiveGauge(chr)->variant;
 
         if (BtlParam_TestUnkADBit(chr, index)) {
@@ -388,11 +414,18 @@ s32 BtlAct_QueueTransform(BtlActJChr *chr, s32 index) {
     s32 action;
 
 #ifdef PORT
-    chara = Port_Beta8FormSlotTarget(BtlMember_GetActive(chr)->chara, (int)index, chara);
+    chara = Port_Beta8FormSlotTargetForCostume(BtlMember_GetActive(chr)->chara,BtlMember_GetActive(chr)->costume,(int)index,chara);
 #endif
+    #ifdef PORT
+    cost=eg_queue(chr,chara,cost);if(cost<0)return 0;
+    #endif
     chr->form.index = index;
     chr->form.chara = chara;
+#ifdef PORT
+    chr->form.costume = Port_Beta8TransformCostume(BtlMember_GetActive(chr)->chara,BtlMember_GetActive(chr)->costume,chara);
+#else
     chr->form.costume = BtlMember_GetActive(chr)->costume;
+#endif
     chr->form.cost = cost;
     chr->form.partner = -1;
     chr->form.kind = kind;
@@ -461,6 +494,9 @@ s32 BtlAct_CanFuse(BtlActJChr *chr, s32 index, s32 needBlast, s32 needAllowed, s
         return 0;
     }
     chara = BtlParam_GetUnkB4(chr, index);
+#ifdef PORT
+    if(!Port_ScenarioFusionAllowed(chr->player,chara))return 0;
+#endif
     cost = BtlParam_GetCostAE(chr, index);
     if (chara == 0xFF) {
         return 0;
@@ -787,7 +823,7 @@ s32 BtlAct_CheckSwitchInput(BtlActJChr *chr) {
 s32 BtlAct_QueueSwitch(BtlActJChr *chr) {
 #ifdef PORT
     /* The scripted switch (flag 0x11D) skips the gauge check: a mirrored fusion row must still never be
-       switched to — the ally it mirrors is already fighting as its own actor. */
+       switched to â€” the ally it mirrors is already fighting as its own actor. */
     { extern int Port_IsFusionMirror(const void *,int); extern s32 BtlMember_GetSwitchTarget(BtlActJChr *);
       if (Port_IsFusionMirror(chr, BtlMember_GetSwitchTarget(chr))) {
           return 0;
@@ -1427,6 +1463,14 @@ s32 BtlAct_CheckRecoveryInput(BtlActJChr *chr, s32 held) {
  */
 s32 BtlAct_CheckStoryForced(BtlActJChr *chr) {
     if (Battle_GetMode() != 1) {
+#ifdef PORT
+        /* Our chapter rides on the local fight path. Permit only its owned scene
+           motion, not the stock script's free transformations/fusions. */
+        extern s32 Port_StorySceneActorShown(s32 actor);
+        if(Port_StorySceneActorShown(chr->player) && BtlChar_TestFlag(chr,0xFA)){
+            BtlAct_SetQueue(chr,0,4);return 1;
+        }
+#endif
         return 0;
     }
     if (BtlChar_TestFlag(chr, 0xFA)) {

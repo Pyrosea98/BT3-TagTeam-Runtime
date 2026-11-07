@@ -7,14 +7,18 @@
 /* The experiment of more than two fighters: every extra fighter has an arena for its shots and one for its
    effects, as fighter 1 has 5 and 8. Extra fighter k's are 9 + 2k and 10 + 2k (BTL_POOL_EXTRA_SHOT / _EFFECT);
    eight extra fighters. */
-#define BTL_POOL_SLOT_COUNT 25
+#define BTL_POOL_SLOT_COUNT 37 /* 9 + 2 x 14 extra fighters */
 #define BTL_POOL_EXTRA_SHOT(k) (9 + 2 * (k))
 #define BTL_POOL_EXTRA_EFFECT(k) (10 + 2 * (k))
 #else
 #define BTL_POOL_SLOT_COUNT 9
 #endif
 /* Bit in BtlPool.arenaMask saying that a slot is a bump arena. */
+#ifdef PORT
+#define BTL_POOL_ARENA_BIT(slot) (1ull << ((slot) + 1)) /* 37 slots: a 64-bit mask */
+#else
 #define BTL_POOL_ARENA_BIT(slot) (1 << ((slot) + 1)) /* arenaMask is unsigned: a signed mask compiles to srav/andi */
+#endif
 
 /* One pool slot. base/cur/size are only set for slots that are bump arenas. */
 typedef struct BtlPoolSlot {
@@ -29,7 +33,11 @@ typedef struct BtlPool {
     /* 0x00 */ BtlPoolSlot slots[BTL_POOL_SLOT_COUNT];
     /* 0x90 */ u8 *arenaMem;  /* one heap block holding every arena back to back */
     /* 0x94 */ s32 current;   /* slot id used by callers: BtlPool_Alloc(BtlPool_GetCurrent(), n) */
+#ifdef PORT
+    u64 arenaMask; /* BTL_POOL_ARENA_BIT of every slot that is an arena (64 bits: 37 slots) */
+#else
     /* 0x98 */ u32 arenaMask; /* BTL_POOL_ARENA_BIT of every slot that is an arena */
+#endif
 } BtlPool; /* size 0x9C */
 
 void BtlPool_Init(s32 arg);

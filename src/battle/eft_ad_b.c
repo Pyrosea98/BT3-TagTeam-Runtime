@@ -752,6 +752,11 @@ void EftMesh_DrawNowTriClip(EftMeshOut *v, u64 tex0, s32 abe) {
 s32 EftObj_Create(EftObjRes *res, void *model) {
     s32 id;
 
+#ifdef PORT
+    /* An absent cosmetic model must follow the existing allocation-failure path,
+       rather than dereference NULL inside BtlObj_Setup. */
+    if (!res || !model) return -1;
+#endif
     memset(res, 0, sizeof(EftObjRes));
     res->model = model;
     res->size = 0x20;

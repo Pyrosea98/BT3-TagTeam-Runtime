@@ -15,11 +15,12 @@ head+='''
 using BtlMgrChr=Actor;using s32=int;struct Obj{int flags;};static Obj objs[4];static int hidden[4],nativeAnim[4];static float phase[4];
 int BtlChar_TestFlag(void*p,int f){return f==0xB?hidden[idx(p)]:0;}
 Obj*BtlChar_GetObj(void*p){return &objs[idx(p)];}int Port_AboutPlayer(int){return 0;}
+int Port_StorySceneActorShown(int){return 0;}int gPortTarget[10];int Port_FormPresentationOwner(){return -1;}typedef unsigned char u8;typedef unsigned u32;
 int BtlAnim_GetId(BtlMgrChr*c){return nativeAnim[idx(c)];}float BtlAnim_GetProgress(BtlMgrChr*c){return phase[idx(c)];}
 '''
 mgr=(r/'src/battle/btl_char_mgr.c').read_text()
 sample=ex(mgr,'Port_AssistQteSample').replace('c=BtlChar_Get(leader);','c=(BtlMgrChr*)BtlChar_Get(leader);')
-visibility=mgr[mgr.index('void BtlChars_UpdateObjFlag2(void)'):mgr.index('/* Clears bit 1')].replace('chr = BtlChar_Get(i);','chr = (BtlMgrChr*)BtlChar_Get(i);').replace('chr=BtlChar_Get(i);','chr=(BtlMgrChr*)BtlChar_Get(i);')
+visibility=mgr[mgr.index('void BtlChars_UpdateObjFlag2(void)'):mgr.index('/* Clears bit 1')].replace('chr = BtlChar_Get(i);','chr = (BtlMgrChr*)BtlChar_Get(i);').replace('chr=BtlChar_Get(i);','chr=(BtlMgrChr*)BtlChar_Get(i);').replace('chr = BtlChar_Get(t);','chr = (BtlMgrChr*)BtlChar_Get(t);')
 foot=r'''int main(){init();for(int i=0;i<4;i++)actors[i].objId=i;
  sAssist[2].state=2;sAssist[2].kind=2;sAssist[2].paid=1;sAssist[2].target=1;action[2]=7;
  int anim=-1;float ratio=-1;

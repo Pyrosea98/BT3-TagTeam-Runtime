@@ -403,7 +403,7 @@ void EntrySel_Init(s32 section) {
 
             while (1) {
                 n = Rand_Range(gEntrySel->gridCount);
-                if (gEntrySel->grid[n].id <= 0xA0 || Port_Beta8HasCharacter(gEntrySel->grid[n].id)) {
+                if (gEntrySel->grid[n].id <= 0xA0 || Port_Beta8HasEntry(gEntrySel->grid[n].id)) {
                     gEntrySel->sel->entry[i].col = n % cols;
                     gEntrySel->sel->entry[i].row = n / cols;
                     gEntrySel->sel->entry[i].custom = Rand_Range(4);

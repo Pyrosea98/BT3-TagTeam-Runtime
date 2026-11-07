@@ -1,5 +1,6 @@
 #include "common.h"
 #include "battle/btl_char_member.h"
+#include "mod_damage_safe.h"
 
 /*
  * Team members, parameters and gauges of a fighter: 0x1CDCA8..0x1CF578.
@@ -155,6 +156,9 @@ void BtlMember_LoadParams(BtlMemberChr *chr, s32 member, s32 init, f32 healthPct
             g->healthMax -= 10000;
         }
         g->healthMax = BtlUtil_Max(g->healthMax, 10000);
+#ifdef PORT
+        {extern int Port_ScenarioHealthMax(int,int);g->healthMax=Port_ScenarioHealthMax(chr->side,g->healthMax);}
+#endif
     }
     g->kiMax = 100000;
     g->blastMax = gBtlChars->paramTbl[m->chara].blastStocks * 100000;
@@ -383,6 +387,9 @@ void BtlMember_PrevSwitchTarget(BtlMemberChr *chr) {
 s32 BtlMember_Damage(BtlMemberChr *chr, s32 amount, s32 flags) {
 #ifdef PORT
     {extern int Port_ReviveProtected(int);if(Port_ReviveProtected(chr->side))return 0;}
+    /* BtlMemberChr.side is the actor ID at offset 0 (BtlChar_Init: side=i).
+       Do not confuse it with HitChr.side at offset 8, which is the view/team. */
+    {extern int Port_StoryProtectedDamage(int,int);if(Port_StoryProtectedDamage(chr->side,flags))return 0;}
 #endif
 
     BtlMemberCombo *combo = &chr->combo;
@@ -399,17 +406,17 @@ s32 BtlMember_Damage(BtlMemberChr *chr, s32 amount, s32 flags) {
         s32 n = combo->hits - 4;
 
         if (n > 0) {
-            s32 pct = BtlUtil_Max(100 - n * 3, 50);
+            s32 pct = n>=17?50:100-n*3;
 
             if (BtlOpp_HasAbility(chr, 0x5D)) {
-                pct = BtlUtil_Max(100 - n * 2, 70);
+                pct = n>=15?70:100-n*2;
             }
-            amount = amount * pct / 100;
+            amount = MD_MulDiv(amount,pct,100);
         }
     }
     if (!(flags & BTL_DMG_NO_DEFENSE)) {
         s32 second = 1;
-        s32 v = amount * BtlParam_GetDamageTakenScale(chr);
+        s32 v = MD_FloatScale(amount,BtlParam_GetDamageTakenScale(chr));
 
         if (v <= 0 && amount > 0) {
             amount = 1;
@@ -420,7 +427,7 @@ s32 BtlMember_Damage(BtlMemberChr *chr, s32 amount, s32 flags) {
             second = BtlOpp_HasAbility(chr, 0x4C) == 0;
         }
         if (second) {
-            v = amount * BtlStat_GetScale7(chr);
+            v = MD_FloatScale(amount,BtlStat_GetScale7(chr));
             if (v <= 0 && amount > 0) {
                 amount = 1;
             } else {
@@ -452,7 +459,7 @@ s32 BtlMember_Damage(BtlMemberChr *chr, s32 amount, s32 flags) {
         s32 r = amount % 10;
 
         if (r != 0) {
-            amount = amount - r + 10;
+            amount = MD_Round10(amount);
         }
     }
 #ifdef PORT
@@ -484,9 +491,9 @@ s32 BtlMember_Damage(BtlMemberChr *chr, s32 amount, s32 flags) {
     if (amount > 0 || (flags & BTL_DMG_FORCE)) {
         if (flags & BTL_DMG_NO_HIT) {
             if (!(flags & BTL_DMG_NO_TOTAL)) {
-                combo->damage += amount;
+                combo->damage = MD_Add(combo->damage,amount);
                 if (!(flags & BTL_DMG_NO_TIMER)) {
-                    combo->timer = (s32)(combo->damage * 30.0f * 0.0001f) + 30;
+                    combo->timer = MD_ComboTimer(combo->damage);
                     if (combo->timer > 90) {
                         combo->timer = 90;
                     }
@@ -494,13 +501,13 @@ s32 BtlMember_Damage(BtlMemberChr *chr, s32 amount, s32 flags) {
                 }
             }
         } else {
-            combo->hits++;
+            combo->hits = MD_Add(combo->hits,1);
             if (combo->hits == 1) {
                 combo->damage = amount;
             } else {
-                combo->damage += amount;
+                combo->damage = MD_Add(combo->damage,amount);
             }
-            combo->timer = (s32)(combo->damage * 30.0f * 0.0001f) + 30;
+            combo->timer = MD_ComboTimer(combo->damage);
             if (combo->timer > 90) {
                 combo->timer = 90;
             }
@@ -802,6 +809,17 @@ static s32 Port_AssistQueuedDamage(BtlMemberChr*source,s32 damage,s32 flags){
 #else
 #define Port_AssistQueuedDamage(source,damage,flags) (damage)
 #endif
+#ifdef PORT
+/* Rush-cinematic hits bypass projectile collision. Notify Story only AFTER actual native damage. */
+static s32 Port_StoryQueuedHit(BtlMemberChr*source,BtlMemberChr*victim,s32 damage,s32 flags){
+    s32 lost=BtlMember_Damage(victim,Port_AssistQueuedDamage(source,damage,flags),flags);
+    s32 slot=(flags&0x2000000)?4:(flags&0x1000000)?3:(flags&0x800000)?2:-1;
+    if(lost>0&&slot>=2){extern void Port_StoryAttackContact(int,int,int);Port_StoryAttackContact(source->side,victim->side,0x100+slot);}
+    return lost;
+}
+#else
+#define Port_StoryQueuedHit(source,victim,damage,flags) BtlMember_Damage(victim,damage,flags)
+#endif
 /* Per frame: deals the damage each fighter has queued against its opponent, and runs its health / ki drain. */
 void BtlMembers_UpdateQueuedDamage(void) {
     s32 i;
@@ -818,12 +836,12 @@ void BtlMembers_UpdateQueuedDamage(void) {
         other = BtlChar_Get(BtlOpp_GetPlayer(chr));
         if (BtlAnim_TestAttr(chr, 0x200000000)) {
             if (chr->queue.hits >= 2) {
-                BtlMember_Damage(other, Port_AssistQueuedDamage(chr,chr->queue.perHit,chr->queue.flags), chr->queue.flags);
+                Port_StoryQueuedHit(chr,other,chr->queue.perHit,chr->queue.flags);
                 chr->queue.total -= chr->queue.perHit;
                 BtlChar_Vibrate(chr, 1.0f, 0.1f);
                 BtlChar_Vibrate(other, 1.0f, 0.1f);
             } else {
-                BtlMember_Damage(other, Port_AssistQueuedDamage(chr,chr->queue.total,chr->queue.flags), chr->queue.flags);
+                Port_StoryQueuedHit(chr,other,chr->queue.total,chr->queue.flags);
                 chr->queue.total = 0;
                 BtlChar_Vibrate(chr, 1.0f, 0.3f);
                 BtlChar_Vibrate(other, 1.0f, 0.3f);
@@ -863,7 +881,7 @@ void BtlMembers_UpdateQueuedDamage(void) {
                 } else {
                     flags |= BTL_DMG_NO_DEFENSE | BTL_DMG_EXACT | BTL_DMG_NO_HIT;
                 }
-                lost = BtlMember_Damage(other, Port_AssistQueuedDamage(chr,amount,flags), flags);
+                lost = Port_StoryQueuedHit(chr,other,amount,flags);
                 if (!BtlChar_TestFlag(chr, 0x13C)) {
                     BtlMember_AddHealth(chr, lost);
                 }
@@ -889,7 +907,7 @@ void BtlMembers_UpdateQueuedDamage(void) {
         }
         if (BtlChar_TestFlag(chr, 0x8C)) {
             if (chr->queue.total > 0) {
-                BtlMember_Damage(other, Port_AssistQueuedDamage(chr,chr->queue.total,chr->queue.flags), chr->queue.flags);
+                Port_StoryQueuedHit(chr,other,chr->queue.total,chr->queue.flags);
             }
             chr->queue.unk0 = 0;
             chr->queue.total = 0;
@@ -909,3 +927,24 @@ void BtlMembers_UpdateQueuedDamage(void) {
         }
     }
 }
+
+#ifdef PORT
+/* Session checkpoint numeric state. Resource/model loading remains native; never memcpy pointers or pending drains. */
+int Port_StoryResourceIO(int actor,int write,int*v){
+ BtlMemberChr*c;BtlMember*m;BtlMemberGauge*g;
+ if(actor<0||actor>=16||!v||(c=BtlChar_Get(actor))==0||(m=BtlMember_GetActive(c))==0)return 0;
+ g=&m->gauge;
+ if(!write){v[0]=m->chara;v[1]=m->costume;v[2]=g->health;v[3]=g->healthMax;v[4]=g->ki;v[5]=g->kiMax;v[6]=g->blast;v[7]=g->blastMax;v[8]=g->maxPower;return 1;}
+ if(m->chara!=v[0])return 0; /* restore only after the real form's resources finish binding */
+ g->healthMax=v[3]>0?v[3]:g->healthMax;g->health=v[2]<0?0:v[2]>g->healthMax?g->healthMax:v[2];
+ g->ki=v[4]<0?0:v[4]>g->kiMax?g->kiMax:v[4];g->blast=v[6]<0?0:v[6]>g->blastMax?g->blastMax:v[6];
+ g->maxPower=v[8]<0?0:v[8]>30000?30000:v[8];return 1;
+}
+#endif
+
+#ifdef PORT
+void Port_StoryTailOutfit(int actor){
+ BtlMemberChr*c;extern int Port_StoryActive(void);extern void BtlChar_SetHeldFlag(BtlMemberChr*,int);
+ if(Port_StoryActive()&&actor>=0&&actor<16&&(c=BtlChar_Get(actor))&&BtlMember_GetActiveGauge(c)->variant==0)BtlChar_SetHeldFlag(c,0xAB);
+}
+#endif

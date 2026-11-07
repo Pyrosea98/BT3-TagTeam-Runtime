@@ -72,6 +72,21 @@ void File_AdxErrorCallback(void *obj, char *msg) {
 s32 File_LoadPartitionNw(s32 pt) {
     AfsPartition *part = &gAfsPartitionTbl[pt];
 
+#ifdef PORT
+    /* Release builds use the original table data, but skeleton builds leave the
+       three archive-name literals empty.  The host file layer addresses these
+       archives by their extracted folder names, so provide the canonical names
+       when the stripped table has no literal. */
+    if (part->name == NULL) {
+        static char *const kPortPartitionNames[FILE_PT_COUNT] = {
+            "pzs3us0.afs", "pzs3us1.afs", "pzs3us2.afs"
+        };
+        if (pt >= 0 && pt < FILE_PT_COUNT) {
+            part->name = kPortPartitionNames[pt];
+        }
+    }
+#endif
+
     return ADXF_LoadPartitionNw(pt, part->name, NULL, part->info);
 }
 
@@ -130,6 +145,26 @@ void File_InitAdx(void) {
     ADXT_Init();
     Vsync_InstallHandler();
     ADXERR_EntryErrFunc(File_AdxErrorCallback, NULL);
+
+#ifdef PORT
+    /* Skeleton data preserves table shapes but not the original CRI work
+       sizes.  These are the SLUS-21678 USA values; the host ADXF layer still
+       uses the extracted folders, but the allocations must remain real. */
+    {
+        static const s32 kPortInfoSize[FILE_PT_COUNT] = {0x11C, 0x1BA8, 0x1FE7C};
+        static const s32 kPortWorkSize[ADX_PLAYER_COUNT] = {
+            0x659E4, 0x299E4, 0x301E4, 0x301E4, 0x301E4, 0x301E4
+        };
+        static const s32 kPortReloadSct[ADX_PLAYER_COUNT] = {0x28, 0x14, 0x28, 0x28, 0x28, 0x28};
+        for (i = 0; i < FILE_PT_COUNT; i++) {
+            if (gAfsPartitionTbl[i].infoSize == 0) gAfsPartitionTbl[i].infoSize = kPortInfoSize[i];
+        }
+        for (i = 0; i < ADX_PLAYER_COUNT; i++) {
+            if (gAdxPlayerTbl[i].workSize == 0) gAdxPlayerTbl[i].workSize = kPortWorkSize[i];
+            if (gAdxPlayerTbl[i].reloadSct == 0) gAdxPlayerTbl[i].reloadSct = kPortReloadSct[i];
+        }
+    }
+#endif
 
     part = gAfsPartitionTbl;
     for (i = 0; i < FILE_PT_COUNT; i++, part++) {

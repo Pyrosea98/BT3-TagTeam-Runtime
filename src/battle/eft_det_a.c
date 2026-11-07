@@ -1,3 +1,6 @@
+#ifdef PORT
+#include "port_body_contacts.h"
+#endif
 #include "common.h"
 #include "battle/eft_det_a.h"
 
@@ -533,6 +536,9 @@ void EftVolleyAim_Steer(EftVolleyAimShot *shot, s32 objId, EftDetVec *offset, s3
     f32 dot;
     f32 c;
 
+#ifdef PORT /* Dragon History: the Spirit Bomb choreography follows (and once turns round) its ball */
+    {extern void Port_StoryShotSteer(int, float *, float *);Port_StoryShotSteer(objId, (float *)&shot->pos, (float *)&shot->dir);}
+#endif
     if (opp < 0) {
         return;
     }
@@ -696,7 +702,7 @@ s32 BtlBodyHit_TestVolumes(EftDetObjWork *work, EftDetPart **body) {
    the entry is cleared where the game clears the bits (BtlObjHit_BuildVolumes, bobj_a.c). In the word itself the
    bits are set as the game sets them for objects 0..3; for an object past them the attacker gets one of its
    four all the same, because the game asks "did my strike touch anybody" by those (& 0xF000000). */
-u16 gPortBodyTouch[12]; /* (BTL_OBJ_MAX) */
+unsigned int gPortBodyTouch[PORT_BODY_OBJECTS];
 #endif
 
 /* Tests the strike volumes of `atk` against the body of `def` and records the contact in both objects. */
@@ -727,16 +733,16 @@ s32 BtlBodyHit_Test(EftDetObj *atk, EftDetObj *def) {
         return 0;
     }
 #ifdef PORT
-    if ((u32)atk->id < 12 && (u32)def->id < 12) {
-        gPortBodyTouch[atk->id] |= 1 << def->id;
+    if (Port_BodyObjectValid(atk->id) && Port_BodyObjectValid(def->id)) {
+        gPortBodyTouch[atk->id] |= Port_BodyObjectBit(def->id);
     }
-    work->hitFlags |= 1 << ((def->id & 3) + 0x18);
+    work->hitFlags |= 1u << ((def->id & 3) + 0x18);
     if ((u32)atk->id < 4) {
-        defWork->hitFlags |= 1 << (atk->id + 0x1C);
+        defWork->hitFlags |= 1u << (atk->id + 0x1C);
     }
 #else
     work->hitFlags |= 1 << (def->id + 0x18);
-    defWork->hitFlags |= 1 << (atk->id + 0x1C);
+    defWork->hitFlags |= 1u << (atk->id + 0x1C);
 #endif
     return 1;
 }
@@ -1005,7 +1011,7 @@ s32 EftDet_HitFighterMulti(EftDetRec *rec, s32 target, s32 idx) {
 static struct {
     void *task;
     u32 hit;     /* fighters this beam has hit (bit = roster index) */
-    u32 at[10];  /* the pass it last hit each of them */
+    u32 at[16];  /* the pass it last hit each of them */
     u32 last;    /* the pass it was last seen in */
 } sPortShotMemo[PORT_SHOT_MEMO];
 static u32 sPortShotPass, sPortShotNext;
@@ -1038,7 +1044,7 @@ static void Port_ShotExtraVictims(EftDetRec *rec, s32 primary, s32 (*test)(EftDe
     s32 multi = EftHit_IsMultiHit(rec);
     s32 interval = EftHit_GetDefUnkB(rec) > 0 ? EftHit_GetDefUnkB(rec) : 8;
 
-    for (k = 0; k < BtlChar_GetCount() && k < 10; k++) {
+    for (k = 0; k < BtlChar_GetCount() && k < 16; k++) {
         s32 obj = Port_FighterObjId(k);
 
         if (obj == primary || !Port_IsEnemy(owner, k) || !test(BtlObj_Get(obj), &rec->shape)) {
@@ -1082,6 +1088,16 @@ void EftDet_FighterPass(void) {
 #endif
     for (i = 0; i < list->count; i++) {
         rec = &list->rec[i];
+#ifdef PORT
+        { /* Story: where a projectile really is (a straight beam never steers; CH8 Spirit Bomb beats) */
+            extern void Port_StoryShotReport(s32 owner, f32 x, f32 y, f32 z);
+            Port_StoryShotReport(rec->objId, (rec->shape.bounds.min[0] + rec->shape.bounds.max[0]) * 0.5f,
+                                 (rec->shape.bounds.min[1] + rec->shape.bounds.max[1]) * 0.5f,
+                                 (rec->shape.bounds.min[2] + rec->shape.bounds.max[2]) * 0.5f);
+            {extern int Port_StorySpiritBallPass(int);
+             if(Port_StorySpiritBallPass(rec->objId))continue;} /* Vegeta dodges; Gohan returns this same ball. */
+        }
+#endif
         if (EftHit_CanHit(rec, 1)) {
             s32 target = list->rec[i].objId ^ 1;
             s32 ok;
@@ -1543,6 +1559,10 @@ void EftDet_StagePass(void) {
     list = EftHit_GetList();
     for (i = 0; i < list->count; i++) {
         rec = &list->rec[i];
+#ifdef PORT
+        {extern int Port_StoryTechniqueDonor(int);
+         if(Port_StoryTechniqueDonor(rec->objId)>=0)continue;} /* authored Genkidama flight, including its rebound */
+#endif
         if (EftHit_CanHit(rec, 0)) {
             s32 objectsOnly = 0;
 

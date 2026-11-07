@@ -830,6 +830,9 @@ void BtlColl_ApplyRushHit(BtlCollChr *chr, BtlCollChr *atk, BtlCollHit *hit, s32
         break;
     }
     BtlMember_Damage(chr, dmg, fl);
+#ifdef PORT
+    {extern void Port_StoryAttackContact(int,int,int);Port_StoryAttackContact(atk->side,chr->side,0x100+slot);}
+#endif
     BtlCharApi_ShakeCamsNear(&hit->pos, 100.0f, 1500.0f, 5.0f, 0.3f);
     BtlCharApi_RumbleNear(&hit->pos, 100.0f, 1000.0f, 1.0f, 0.3f);
     BtlChar_SetHeldFlag(chr, 0x1D);
@@ -894,6 +897,9 @@ void BtlColl_ApplyRushNoFlinch(BtlCollChr *chr, BtlCollChr *atk, BtlCollHit *hit
         break;
     }
     BtlMember_Damage(chr, dmg, fl);
+#ifdef PORT
+    {extern void Port_StoryAttackContact(int,int,int);Port_StoryAttackContact(atk->side,chr->side,0x100+slot);}
+#endif
     n = BtlSuper_GetRecoilDamage(atk, slot);
     if (n > 0) {
         if (BtlMember_Damage(atk, n, 0x42B)) {
@@ -1104,6 +1110,12 @@ s32 BtlColl_TryDodge(s32 objId, BtlCollHit *hit) {
     if (BtlChar_IsFrozen(chr)) {
         return 1;
     }
+#ifdef PORT
+    /* Only the scripted source/target/slot bypasses evasion; normal attacks and
+       genuine engine freezes retain their native admission rules. */
+    {extern int Port_StoryAuthoredVictim(int,int,int);
+     if(hit->owner&&Port_StoryAuthoredVictim(hit->owner->side,chr->side,hit->owner->slot))return 0;}
+#endif
     if (BtlChar_TestFlag(chr, 0xAA)) {
         return 1;
     }
@@ -1480,6 +1492,12 @@ s32 BtlColl_Hit(s32 objId, BtlCollHit *hit) {
     if (chr == NULL) {
         return 0;
     }
+#ifdef PORT
+    /* A shield scene has one real victim. Do not let a protected bystander
+       enter a hit/reload action merely because its HP damage was rejected. */
+    {extern int Port_StoryShieldBystander(int);
+     if(Port_StoryShieldBystander(chr->side))return 1;}
+#endif
     switch (chr->react.id) {
     case 9:
     case 10:

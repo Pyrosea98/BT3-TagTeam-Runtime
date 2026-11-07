@@ -603,6 +603,8 @@ void BtlInput_Sample(BtlInputChr *chr) {
       const u32 movement=PAD_UP|PAD_DOWN|PAD_LEFT|PAD_RIGHT|PAD_LSTICK_LEFT|PAD_LSTICK_RIGHT|PAD_LSTICK_UP|PAD_LSTICK_DOWN|PAD_R1|PAD_R2|PAD_CROSS;
       in->rawHeld=(m->held&movement)|(a->held&~movement);in->rawStickX=BtlInput_StickToByte(m->left[0]);in->rawStickY=BtlInput_StickToByte(m->left[1]);
       in->padStatus=m->status;in->padLastStatus=m->lastStatus;
+      {extern int Port_Setting(const char*,int),BtlAct_GetCurrent(void*);int act=BtlAct_GetCurrent(chr);
+       if(Port_Setting("mod_clash_buttons",0)&&(act==0xFA||(act>=0x130&&act<=0x132))){in->rawStickX=BtlInput_StickToByte(a->left[0]);in->rawStickY=BtlInput_StickToByte(a->left[1]);}}
      }
     }
 #endif

@@ -1,12 +1,19 @@
+extern void Port_TextPatch(void*,int,const char*);
 #ifdef PORT
+#include <stdio.h>
 #include "plat_beta8.h"
 extern int Port_ModesFight(void);
 #include "coop_selection.h"
+#include "mod_select.h"
+extern int Port_ScenarioActive(void),Port_ScenarioStage(void),Port_ScenarioBgm(void);
 #endif
 #include "common.h"
 #include "menu/menu_e.h"
 #include "menu/menu_f.h"
 #include "sys/pad.h"
+#ifdef PORT
+#include "mod_select_catalog.h"
+#endif
 #ifdef PORT
 #include "port_costume_numbers.h"
 #endif
@@ -56,6 +63,76 @@ TeamSel *gTeamSel = NULL;
 static int sTeamSelFaceChara[2]={-1,-1},sTeamSelFaceCostume[2]={-1,-1};
 extern void TeamSel_RequestFace(s32 side);
 static s32 Port_TeamSelFaceFile(s32 side){s32 cid=gTeamSel->side[side]->chara;return Port_Beta8PortraitResolve(cid,gTeamSel->side[side]->member[(gTeamSel->side[side]->cur>=0&&gTeamSel->side[side]->cur<5)?gTeamSel->side[side]->cur:0].color,(cid>=0&&cid<=160?cid:0)+TS_FACE_FILE);}
+extern int Port_Setting(const char*,int);
+extern void Port_SettingSave(const char*,int),Port_SettingsWrite(void);
+static int Port_ModSelectMusic(void){
+ int id=Port_Setting("mod_select_bgm",-1),i;PortSongs_Init();
+ if(id>=0&&id<20)return id;
+ for(i=0;i<gPortSongCount;i++)if(gPortSongOffsets[i]==id)return id;
+ return gPortSongCount?gPortSongOffsets[0]:8;
+}
+static void Port_TeamSelPreviewBgm(void){
+    s32 id=gTeamSel->bgmIds[gTeamSel->stage->bgmCursor];
+    if(id==TS_BGM_RANDOM) Bgm_Play(Rand_Range(9)+0x10B1E);
+    else if(id!=TS_BGM_LOCKED) Bgm_Play(PORT_BGM_FILE(id));
+}
+/* The modern draft hands the final stage screen to the native loader, but the
+   PC overlay still needs a stable state signal so it can present the split
+   stage/BGM layout above that loader. */
+extern int Port_StagePreviewStep(int);extern void Port_StagePreviewEnd(void);
+static int sModernStageCursor,sModernStageMusic,sModernRandomBgm=-1,sModernPreviewReady;
+static void Port_LogSelectionIds(int stage,int bgm){
+    if(getenv("BT3_SELECT_IDS")!=NULL)
+        fprintf(stderr,"bt3: selection ids stage_id=%d bgm_id=%d\n",stage,bgm);
+}
+static int Port_ModernRandomSong(void){int candidates[160],i,n=0;for(i=0;i<gTeamSel->bgmCount&&n<160;i++)if(gTeamSel->bgmIds[i]!=TS_BGM_RANDOM&&gTeamSel->bgmIds[i]!=TS_BGM_LOCKED)candidates[n++]=gTeamSel->bgmIds[i];return n?candidates[Rand_Range(n)]:8;}
+static s32 sModernStages[192],sModernSongs[160];
+static void Port_ModernStageLists(void){
+ extern int gPortStageReplaceCount,gPortReplaceOld[16],gPortReplaceNew[16];int i,j,n=0;
+ /* Local modded fights use all maps authored in this ISO, including both tournament arenas. */
+ sModernStages[n++]=TS_STAGE_RANDOM;
+ for(i=0;i<(int)(sizeof(sMsAuthoredStages)/sizeof(sMsAuthoredStages[0]));i++){
+  int id=sMsAuthoredStages[i];if(id==TS_STAGE_RANDOM)continue;for(j=0;j<gPortStageReplaceCount;j++)if(id==gPortReplaceOld[j]){id=gPortReplaceNew[j];break;}sModernStages[n++]=id;
+ }
+ for(i=0;i<gPortExtraStageCount&&n<192;i++){for(j=0;j<n&&sModernStages[j]!=gPortExtraStages[i];j++);if(j==n)sModernStages[n++]=gPortExtraStages[i];}
+ gTeamSel->stageIds=sModernStages;gTeamSel->stageCount=n;sPortStageRows=(n+5)/6;sPortStagesAdded=1;
+ /* A Beta 8 soundtrack manifest supplies the ISO's replacement tracks. Mixing
+    the stock twenty with that catalogue repeats music under stock titles. */
+ n=0;sModernSongs[n++]=TS_BGM_RANDOM;if(!gPortSongCount)for(i=0;i<20;i++)sModernSongs[n++]=i;
+ for(i=0;i<gPortSongCount&&n<160;i++)sModernSongs[n++]=gPortSongOffsets[i];
+ gTeamSel->bgmIds=sModernSongs;gTeamSel->bgmCount=n;sPortSongsAdded=1;
+}
+static void Port_ModernStageSnapshot(int active){
+ MsStageView v;int i;memset(&v,0,sizeof(v));v.active=active;
+ if(active){v.preview=sModernPreviewReady;v.music=sModernStageMusic;v.cursor=sModernStageCursor;v.count=gTeamSel->stageCount<192?gTeamSel->stageCount:192;v.bgmCursor=gTeamSel->stage->bgmCursor;v.bgmCount=gTeamSel->bgmCount<160?gTeamSel->bgmCount:160;
+ for(i=0;i<v.count;i++)v.stages[i]=gTeamSel->stageIds[i];for(i=0;i<v.bgmCount;i++)v.songs[i]=gTeamSel->bgmIds[i];}
+ Port_ModernStagePublish(&v);
+}
+static void Port_ModernStageInput(void){
+ Pad *p=Port_Pad(0);int delta=0,i,n,id;
+ if(gTeamSel->flags&TEAMSEL_LEAVING)return;
+ if(p->pressed&PAD_SQUARE){if(sModernStageMusic){sModernStageMusic=0;gTeamSel->stage->bgmCursor=gTeamSel->stage->bgm;Port_TeamSelPreviewBgm();}else sModernStageMusic=1;}
+ if(sModernStageMusic){
+  n=gTeamSel->bgmCount;
+  if(p->repeat&(PAD_LEFT|PAD_LSTICK_LEFT))delta=-1;
+  else if(p->repeat&(PAD_RIGHT|PAD_LSTICK_RIGHT))delta=1;
+  else if(p->repeat&(PAD_UP|PAD_LSTICK_UP))delta=-4;
+  else if(p->repeat&(PAD_DOWN|PAD_LSTICK_DOWN))delta=4;
+  if(delta){i=MS_Move(gTeamSel->stage->bgmCursor,delta,n);if(gTeamSel->bgmIds[i]!=TS_BGM_LOCKED){gTeamSel->stage->bgmCursor=i;id=gTeamSel->bgmIds[i];if(id==TS_BGM_RANDOM)id=sModernRandomBgm=Port_ModernRandomSong();Bgm_Play(PORT_BGM_FILE(id));}}
+  if(p->pressed&PAD_TRIANGLE){sModernStageMusic=0;gTeamSel->stage->bgmCursor=gTeamSel->stage->bgm;Port_TeamSelPreviewBgm();}
+  if(p->pressed&PAD_CROSS){id=gTeamSel->bgmIds[gTeamSel->stage->bgmCursor];if(id!=TS_BGM_LOCKED){if(id==TS_BGM_RANDOM){id=sModernRandomBgm>=0?sModernRandomBgm:Port_ModernRandomSong();for(i=0;i<gTeamSel->bgmCount;i++)if(gTeamSel->bgmIds[i]==id){gTeamSel->stage->bgmCursor=i;break;}}gTeamSel->stage->bgm=gTeamSel->stage->bgmCursor;Port_SettingSave("mod_select_bgm",id);Port_SettingsWrite();Port_LogSelectionIds(gTeamSel->stage->stage,id);sModernStageMusic=0;}}
+ }else{
+  n=gTeamSel->stageCount;
+  if(p->repeat&(PAD_LEFT|PAD_LSTICK_LEFT))delta=-1;
+  else if(p->repeat&(PAD_RIGHT|PAD_LSTICK_RIGHT))delta=1;
+  else if(p->repeat&(PAD_UP|PAD_LSTICK_UP))delta=-6;
+  else if(p->repeat&(PAD_DOWN|PAD_LSTICK_DOWN))delta=6;
+  if(delta){i=MS_Move(sModernStageCursor,delta,n);for(int tries=0;tries<n&&gTeamSel->stageIds[i]>=STGGRID_ID_LOCKED;tries++)i=MS_Move(i,delta<0?-1:1,n);if(gTeamSel->stageIds[i]<STGGRID_ID_LOCKED){sModernStageCursor=i;gTeamSel->stage->col=i%6;gTeamSel->stage->row=i/6;gTeamSel->stage->stage=gTeamSel->stageIds[i];TeamSel_RequestStage();}}
+  if(p->pressed&PAD_CROSS){Port_LogSelectionIds(gTeamSel->stage->stage,Port_ModSelectMusic());gTeamSel->flags|=TEAMSEL_DECIDED|TEAMSEL_LEAVING;gTeamSel->timer=12;}
+ }
+ Port_ModernStageSnapshot(1);
+}
+
 #endif
 
 
@@ -681,7 +758,13 @@ void TeamSel_Init(s32 section) {
     gTeamSel->nameText = MPACK_AT(gTeamSel->res, 43);
     gTeamSel->formText = MPACK_AT(gTeamSel->res, 44);
 #ifdef PORT
+        Port_TextPatch(gTeamSel->nameText,213,"Oceanus Shenron");
+        Port_TextPatch(gTeamSel->nameText,245,"Oceanus Shenron (Dragon)");
+        Port_TextPatch(gTeamSel->nameText,247,"Gokoro");
+        Port_TextPatch(gTeamSel->formText,213,"3.5B");
+        Port_TextPatch(gTeamSel->formText,245,"7B");
     Port_Beta8PatchPowerText(gTeamSel->formText);
+    Port_Beta8PatchDragonNames(gTeamSel->nameText);
 #endif
 #ifdef PORT
     {
@@ -771,20 +854,20 @@ void TeamSel_Init(s32 section) {
            an online session. The list is ours, with whole rows: the reel reads rows of six. */
         extern int gPortStageReplaceCount, gPortReplaceOld[16], gPortReplaceNew[16];
         extern int Port_NetSession(void); /* port/src/gs/net.c */
-        static s32 sAllIds[96];
+        static s32 sAllIds[192];
         s32 extra = Port_NetSession() ? 0 : gPortExtraStageCount;
         s32 swaps = Port_NetSession() ? 0 : gPortStageReplaceCount;
         s32 n = gTeamSel->stageCount, k, r;
         sPortStageRows = TS_STAGE_COLS;
         sPortStagesAdded = extra > 0 || swaps > 0;
         if (extra > 0 || swaps > 0) {
-            if (n > 64) {
-                n = 64;
+            if (n > 128) {
+                n = 128;
             }
-            for (k = 0; k < 96; k++) {
+            for (k = 0; k < 192; k++) {
                 sAllIds[k] = k < n ? gTeamSel->stageIds[k] : STGGRID_ID_EMPTY;
             }
-            for (k = 0; k < extra && n < 90; k++) {
+            for (k = 0; k < extra && n < 192; k++) {
                 sAllIds[n++] = (s32)gPortExtraStages[k];
             }
             for (r = 0; r < swaps; r++) {
@@ -824,10 +907,10 @@ void TeamSel_Init(s32 section) {
         sPortSongsAdded = 0;
         Port_NameFontSheets((int)(u32)gTeamSel->tex[39], (int)(u32)gTeamSel->tex[19], (int)(u32)gTeamSel->tex[20]);
         if (added > 0) {
-            static s32 sBgmIds[72];
+            static s32 sBgmIds[160];
             s32 n = gTeamSel->bgmCount, k, last = gTeamSel->bgmIds[n - 1];
-            if (n > 30) {
-                n = 30;
+            if (n > 128) {
+                n = 128;
             }
             if (added > PORT_SONG_MAX) {
                 added = PORT_SONG_MAX;
@@ -1678,6 +1761,7 @@ f32 TeamSel_Input(s32 *result) {
                     gTeamSel->stage->stage =
                         gTeamSel->stageIds[gTeamSel->stage->row * TS_STAGE_COLS + gTeamSel->stage->col];
                     TeamSel_RequestStage();
+                    Port_TeamSelPreviewBgm();
                 }
                 Snd_PlaySe(2, 0);
             } else if (gPad[0].gameRepeat & 2) {
@@ -1688,6 +1772,7 @@ f32 TeamSel_Input(s32 *result) {
                     gTeamSel->stage->stage =
                         gTeamSel->stageIds[gTeamSel->stage->row * TS_STAGE_COLS + gTeamSel->stage->col];
                     TeamSel_RequestStage();
+                    Port_TeamSelPreviewBgm();
                 }
                 Snd_PlaySe(2, 0);
             } else if ((gPad[0].gameRepeat & 8) && gTeamSel->stage->col != TS_STAGE_COLS) {
@@ -1703,6 +1788,7 @@ f32 TeamSel_Input(s32 *result) {
                 TeamSel_SetStageChips();
                 gTeamSel->stage->stage = gTeamSel->stageIds[gTeamSel->stage->row * TS_STAGE_COLS + gTeamSel->stage->col];
                 TeamSel_RequestStage();
+                Port_TeamSelPreviewBgm();
                 Snd_PlaySe(2, 2);
             } else if ((gPad[0].gameRepeat & 4) && gTeamSel->stage->col != TS_STAGE_COLS) {
                 Flash_GotoLabel(&gTeamSel->flash[0], "fl_reel_up", 1);
@@ -1717,6 +1803,7 @@ f32 TeamSel_Input(s32 *result) {
                 TeamSel_SetStageChips();
                 gTeamSel->stage->stage = gTeamSel->stageIds[gTeamSel->stage->row * TS_STAGE_COLS + gTeamSel->stage->col];
                 TeamSel_RequestStage();
+                Port_TeamSelPreviewBgm();
                 Snd_PlaySe(2, 1);
             } else if (gPad[0].gamePressed & 0x200) {
                 gTeamSel->stage->mask = 0;
@@ -1766,12 +1853,14 @@ f32 TeamSel_Input(s32 *result) {
                 if (gTeamSel->stage->bgmCursor < 0) {
                     gTeamSel->stage->bgmCursor = gTeamSel->bgmCount - 1;
                 }
+                Port_TeamSelPreviewBgm();
                 Snd_PlaySe(1, 0);
             } else if (gPad[0].gameRepeat & 4) {
                 gTeamSel->stage->bgmCursor++;
                 if (gTeamSel->stage->bgmCursor > gTeamSel->bgmCount - 1) {
                     gTeamSel->stage->bgmCursor = 0;
                 }
+                Port_TeamSelPreviewBgm();
                 Snd_PlaySe(1, 0);
             } else if (gPad[0].gamePressed & 0x200) {
                 if (gTeamSel->bgmIds[gTeamSel->stage->bgmCursor] != TS_BGM_LOCKED) {
@@ -2425,7 +2514,7 @@ f32 TeamSel_Input(s32 *result) {
 /* The song a chosen "random" stands for: one of the nine battle songs. PC build, with songs added from outside
    the disc: any entry of the music list before "random", the disc's and the added ones alike. */
 #ifdef PORT
-#define TS_RANDOM_BGM() (sPortSongsAdded ? gTeamSel->bgmIds[Rand_Range(gTeamSel->bgmCount - 1)] : Rand_Range(9) + 8)
+#define TS_RANDOM_BGM() (sPortSongsAdded ? Port_ModernRandomSong() : Rand_Range(9) + 8)
 #else
 #define TS_RANDOM_BGM() (Rand_Range(9) + 8)
 #endif
@@ -2436,6 +2525,9 @@ f32 TeamSel_Input(s32 *result) {
  * the versus battle) and 1 is returned.
  */
 s32 TeamSel_Run(s32 section) {
+#ifdef PORT
+    s32 modern=Port_ModSelectEnabled(),scenarioLocked=0,retryDraft=0,previewLast=-1,previewSettle=0;
+#endif
     s32 result = 1;
     s32 i;
     s32 j;
@@ -2443,7 +2535,42 @@ s32 TeamSel_Run(s32 section) {
     s32 timeLimit;
     s32 cpuLevel;
 
+#ifdef PORT
+modern_restart:
+    retryDraft=0;previewLast=-1;previewSettle=0;sModernPreviewReady=0;
+    if(modern&&!Port_ModSelectRun())return 0;
+    scenarioLocked=modern&&Port_ScenarioActive()&&Port_ScenarioStage()>=0;
+#endif
     TeamSel_Init(section);
+#ifdef PORT
+    if(modern){
+        int selectedMusic=scenarioLocked?Port_ScenarioBgm():Port_ModSelectMusic();
+        if(selectedMusic<0)selectedMusic=Port_ModSelectMusic();
+        MsPick root;for(i=0;i<2;i++){
+            Port_ModSelectPlan(&root,i);
+            gTeamSel->side[i]->memberCount=1;gTeamSel->side[i]->cur=0;
+            memset(&gTeamSel->side[i]->member[0],0,sizeof(TsMember));
+            gTeamSel->side[i]->member[0].chara=root.chara;
+            gTeamSel->side[i]->member[0].color=root.costume;
+            {int j;for(j=0;j<8;j++)gTeamSel->side[i]->member[0].items.id[j]=(u16)root.items[j];}
+            gTeamSel->side[i]->chara=root.chara;gTeamSel->side[i]->state=TEAMSEL_ST_DONE;
+            TeamSel_RequestFace(i);
+        }
+        Flash_GotoLabel(&gTeamSel->flash[0],"fl_map",1);IconWin_Open();
+        TeamSel_ClipGoto(0,0,TEAMSEL_CLIP_STAGE_CHIP,"fl_on_start");
+        gTeamSel->flags|=TEAMSEL_STAGE;gTeamSel->faceMask=1;gTeamSel->stage->state=TEAMSEL_STAGE_GRID;
+        Port_ModernStageLists();sModernStageMusic=0;sModernStageCursor=0;
+        if(scenarioLocked)gTeamSel->stage->stage=Port_ScenarioStage();
+        for(i=0;i<gTeamSel->stageCount;i++)if(gTeamSel->stageIds[i]==gTeamSel->stage->stage){sModernStageCursor=i;break;}
+        gTeamSel->stage->stage=gTeamSel->stageIds[sModernStageCursor];gTeamSel->stage->col=sModernStageCursor%6;gTeamSel->stage->row=sModernStageCursor/6;TeamSel_RequestStage();
+        for(i=0;i<gTeamSel->bgmCount;i++)if(gTeamSel->bgmIds[i]==selectedMusic){gTeamSel->stage->bgm=gTeamSel->stage->bgmCursor=i;break;}
+        Bgm_Play(PORT_BGM_FILE(selectedMusic));
+        /* Keep native face/stage IO and its fade-out drain, but admit no
+           stage/music input for scenarios: their route already chose both. */
+        if(scenarioLocked){gTeamSel->flags|=TEAMSEL_LEAVING;gTeamSel->timer=0;Port_ModernStageSnapshot(0);}
+        else Port_ModernStageSnapshot(1);
+    }
+#endif
     ColorFade_StartIn(0, 0, 0, 0x14);
     while (1) {
         Gfx_BeginFrame();
@@ -2458,8 +2585,14 @@ s32 TeamSel_Run(s32 section) {
         if (!(gProgress->flags & MPROG_FREEZE)) {
             TeamSel_Update();
         }
-        TeamSel_Draw();
-        Font_FlushAll();
+        if(modern&&!scenarioLocked){
+            int id=gTeamSel->stage->stage;
+            if(id!=previewLast){previewLast=id;previewSettle=0;sModernPreviewReady=0;}else previewSettle++;
+            if(previewSettle>=12&&gTeamSel->faceState==TEAMSEL_LOAD_IDLE&&gTeamSel->stageState==TEAMSEL_LOAD_IDLE)sModernPreviewReady=Port_StagePreviewStep(id);
+            Port_ModernStageSnapshot(1);
+        }
+        /* The modern cards own presentation; do not draw the old Flash panels underneath. */
+        if(!modern){TeamSel_Draw();Font_FlushAll();}
         ColorFade_Draw();
         Gfx_EndFrame(1);
         Dma_Flush();
@@ -2472,7 +2605,11 @@ s32 TeamSel_Run(s32 section) {
             continue;
         }
         if (ColorFade_IsOutDone()) {
-            if (gTeamSel->faceState == TEAMSEL_LOAD_IDLE || gTeamSel->stageState == TEAMSEL_LOAD_IDLE) {
+            if ((gTeamSel->faceState == TEAMSEL_LOAD_IDLE || gTeamSel->stageState == TEAMSEL_LOAD_IDLE)
+#ifdef PORT
+                && (!scenarioLocked || (gTeamSel->faceState == TEAMSEL_LOAD_IDLE && gTeamSel->stageState == TEAMSEL_LOAD_IDLE))
+#endif
+            ) {
                 break;
             }
             continue;
@@ -2488,8 +2625,14 @@ s32 TeamSel_Run(s32 section) {
             }
             continue;
         }
-        TeamSel_Input(&result);
+#ifdef PORT
+        if(modern&&!sModernStageMusic&&(gPad[0].gamePressed&0x400)){
+            {extern int Port_ScenarioActive(void);retryDraft=Port_ScenarioActive()?0:1;}result=0;break;
+        }
+#endif
+        if(modern)Port_ModernStageInput();else TeamSel_Input(&result);
     }
+    if(modern){Port_StagePreviewEnd();sModernPreviewReady=0;Port_ModernStageSnapshot(0);}
 
     if (result != 0) {
         s32 handicap[2] = { 1, 1 };
@@ -2509,7 +2652,7 @@ s32 TeamSel_Run(s32 section) {
         }
         bgm = gTeamSel->bgmIds[gTeamSel->stage->bgm];
         if (bgm == TS_BGM_RANDOM) {
-            bgm = TS_RANDOM_BGM();
+            bgm = modern?Port_ModSelectMusic():TS_RANDOM_BGM();
         }
         switch (gSaveData->rule[0]) {
         case 0:
@@ -2534,10 +2677,16 @@ s32 TeamSel_Run(s32 section) {
         handicap[0] = gSaveData->rule[3] ^ 1;
         handicap[1] = gSaveData->rule[4] ^ 1;
         cpuLevel = CpuLevel_FromSetting(gSaveData->rule[1]);
+#ifdef PORT
+        { extern int Port_StoryActive(void),Port_StoryCpuLevel(void);
+          if(Port_StoryActive())cpuLevel=Port_StoryCpuLevel(); }
+#endif
         Battle_ClearWork();
         BattleSetup_SetRule(Port_CoopActive() || gTeamSel->players == TEAMSEL_PLAYERS_TWO, Port_ModesFight()==3 ? 6 : 0, bgm, Port_ModesFight()==3 ? 0 : timeLimit, gSaveData->rule[2],
                             gTeamSel->stage->stage, gSaveData->rule[5] ^ 1);
-        if (Port_CoopActive()) {
+        if (modern) {
+            MsPick root;for(i=0;i<2;i++){Port_ModSelectPlan(&root,i);BattleSetup_SetSide(i,root.pad>=0?0:2,root.pad>=0?root.pad:i,1,1,1,0,NULL);}
+        } else if (Port_CoopActive()) {
             for (i = 0; i < 2; i++) {
                 s32 leader = Port_CoopLeader(i);
                 BattleSetup_SetSide(i, leader >= 0 ? 0 : 2, leader >= 0 ? leader : i,
@@ -2566,10 +2715,20 @@ s32 TeamSel_Run(s32 section) {
         }
         BattleSetup_Finish();
     }
+#ifdef PORT
+    if(modern){extern void File_CancelRequests(void);File_CancelRequests();}
+#endif
     TeamSel_Term();
     Dma_ResetBuffers();
 #ifdef PORT
     {extern void PortInput_KeyboardContext(u32);PortInput_KeyboardContext(0);}
 #endif
+#ifdef PORT
+    if(retryDraft)goto modern_restart;
+#endif
     return result;
 }
+
+#ifdef PORT
+#include "mod_select_game.inc"
+#endif

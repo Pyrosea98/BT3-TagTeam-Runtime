@@ -106,7 +106,11 @@ typedef struct PSave {
 extern void *gSaveData;
 
 #define P_SAVE ((PSave *)gSaveData)
+#ifdef PORT
+#define P_MONEY_MAX 999999999
+#else
 #define P_MONEY_MAX 9999999
+#endif
 
 #define P_UBFLAG_ITEM3 1          /* 30 missions cleared: the third plate of the mode 13 menu (mode 17) is open */
 #define P_UBFLAG_ALL_MISSIONS 4   /* all 100 missions cleared */

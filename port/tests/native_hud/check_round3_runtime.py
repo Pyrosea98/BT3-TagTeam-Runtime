@@ -32,4 +32,4 @@ Port_Beta8ChargeReset();float prior=1;for(int i=0;i<12;i++){Port_Beta8ChargeUpda
 puts("PASS actual Round3 native parameters + skill consumer: sparse slots, Down-only revert glyph, live costs, other-page preservation, stale combo removal, native tiers and isolated bounded charge ramp");}
 '''
 with tempfile.TemporaryDirectory() as d:
- p=Path(d);subprocess.run(['gcc','-std=gnu99','-ffunction-sections','-fdata-sections','-Iport/include','-c','port/src/plat_beta8.c','-o',str(p/'b8.o')],check=True);(p/'test.cpp').write_text(head+body+test);subprocess.run(['g++','-std=c++17','-no-pie','-Iport/include',str(p/'test.cpp'),str(p/'b8.o'),'-Wl,--gc-sections','-o',str(p/'test')],check=True);subprocess.run([str(p/'test')],check=True)
+ p=Path(d);subprocess.run(['gcc','-std=gnu99','-ffunction-sections','-fdata-sections','-Iport/include','-c','port/src/plat_beta8.c','-o',str(p/'b8.o')],check=True);(p/'test.cpp').write_text(head+body+test);subprocess.run(['g++','-include','port/include/v05_roster_rules.h','-std=c++17','-no-pie','-Iport/include',str(p/'test.cpp'),str(p/'b8.o'),'-Wl,--gc-sections','-o',str(p/'test')],check=True);subprocess.run([str(p/'test')],check=True)

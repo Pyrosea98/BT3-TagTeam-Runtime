@@ -159,6 +159,8 @@ s32 Battle_GetAnnouncer(void);
 s32 Battle_GetBgm(void);
 s32 Battle_GetStartStage(void);
 s32 Battle_GetStage(void);
+void Battle_SetBgm(s32 bgm);
+void Battle_SetStartStage(s32 stage);
 void Battle_SetStage(s32 stage);
 s32 Battle_IsStageChanged(void);
 void Battle_ResetStage(void);

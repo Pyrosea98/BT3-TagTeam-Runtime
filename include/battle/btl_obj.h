@@ -36,7 +36,7 @@
    ten of them beside two fighters; with ten fighters in the game's twelve there were two, and a volley of such
    blasts was handed "no object" (-1), which nobody checks: a crash. gBtlObjTbl is the game's own table of twelve
    at a fixed place; btl_obj.c keeps the longer one for this build. */
-#define BTL_OBJ_MAX 20
+#define BTL_OBJ_MAX 32 /* sixteen fighters and the models effects show */
 #else
 #define BTL_OBJ_MAX 12
 #endif
@@ -219,7 +219,11 @@ typedef struct BtlResSlot {
 #define BTL_RES_SLOT_USED 1
 #define BTL_RES_SLOT_HEAP 2 /* the buffers came from the heap (File_Request allocated them) */
 
+#ifdef PORT
+#define BTL_RES_SLOT_MAX 24 /* fourteen extra fighters plus technique models; native allocation uses sizeof */
+#else
 #define BTL_RES_SLOT_MAX 12
+#endif
 #define BTL_RES_FIXED_MAX 2
 #define BTL_RES_ID_KEEP (-99) /* BtlRes_SetFileId: leave the file as it is */
 

@@ -143,6 +143,49 @@ def take_fonts(out, lic):
 def take_tbo_art(out, lic):
     """The pictures of the Tenkaichi Budokai Online screens, and who made them (port/tbo/ui/CREDITS.md)."""
     src = ROOT / "port/tbo/ui"
+    kit = ROOT / "port/assets/mod-select/select-kit-v1.rgba"
+    if kit.exists():
+        (out / "mod-select").mkdir(exist_ok=True)
+        shutil.copy2(kit, out / "mod-select/select-kit-v1.rgba")
+    # Standalone whole icons: retained with each package, no atlas crop dependency.
+    menu_art = ROOT / "port/assets/mod-menu-story-20261101"
+    for icon in ("dragon-history-v1", "achievements-v1", "story-difficulty-plaque-v1"):
+        asset = menu_art / (icon + ".rgba")
+        if asset.exists():
+            target = out / "gamedata/tagteam-ui/menu-hd"
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(asset, target / asset.name)
+    readable = ROOT / "port/third_party/fonts/dejavu/DejaVuSansCondensed.ttf"
+    readable_target = out / "gamedata/tagteam-ui/story-readable.ttf"
+    readable_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(readable, readable_target)
+    history_art = ROOT / "port/assets/history-v2"
+    if history_art.exists():
+        target = out / "gamedata/tagteam-ui/history-v2"
+        target.mkdir(parents=True, exist_ok=True)
+        for asset in history_art.glob("*.rgba"):
+            shutil.copy2(asset, target / asset.name)
+    # Owned-disc story resources stay separate from generated artwork and ordinary roster slots.
+    story_roster = ROOT / "port/assets/story-roster"
+    if story_roster.exists():
+        for asset in story_roster.rglob("*"):
+            if not asset.is_file() or asset.suffix not in (".bin", ".rgba"): continue
+            target = out / "gamedata" / asset.relative_to(story_roster)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(asset, target)
+    story_stages = ROOT / "port/assets/story-stages"
+    if story_stages.exists():
+        target = out / "stages"
+        target.mkdir(parents=True, exist_ok=True)
+        for stage in story_stages.glob("*.unk"):
+            shutil.copy2(stage,target/stage.name)
+    presentation = ROOT / "port/assets/history-prefight"
+    if presentation.exists():
+        target = out / "gamedata/tagteam-ui/history-prefight"
+        target.mkdir(parents=True, exist_ok=True)
+        for asset in presentation.iterdir():
+            if asset.suffix in (".rgba", ".adx", ".txt", ".json"):
+                shutil.copy2(asset, target / asset.name)
     (out / "tbo/ui").mkdir(parents=True, exist_ok=True)
     for p in sorted(src.glob("*.png")):
         shutil.copy2(p, out / "tbo/ui" / p.name)
@@ -208,7 +251,7 @@ def main_win():
     (out / "textures").mkdir()
     (out / "textures/README.txt").write_text(TEXTURES_NOTE.replace("\n", "\r\n"))
     for kind, note in (("stages", STAGES_NOTE), ("songs", SONGS_NOTE)):
-        (out / kind).mkdir()
+        (out / kind).mkdir(exist_ok=True)
         (out / kind / "README.txt").write_text(note.replace("\n", "\r\n"))
     (lic / "sdl3.txt").write_text("SDL3 (SDL3.dll) is distributed under the zlib license: https://www.libsdl.org/license.php\n")
     for f in (out / "Tenkaichi3Decomp.exe", out / "Tenkaichi3Decomp-setup.exe"):

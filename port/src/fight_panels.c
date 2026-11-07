@@ -49,7 +49,7 @@ extern int BtlChar_TestFlag(void GAME_PTR chr, unsigned n);
 
 extern int Port_FilePath(int ptid, int flid, const char *fname, char *out, int size); /* plat_file.c */
 #define FACE_FILE 0x2F9 /* the large portraits (the character select's): file FACE_FILE + character of partition 1 */
-#define CHARA_MAX 291 /* the grid's marker cells and up are not characters */
+#define CHARA_MAX 302 /* stock roster, native aliases and Yajirobe (301) */
 
 /* include/battle/btl_char_member.h: BtlMemberChr */
 #define CHR_ACTIVE 0x994
@@ -173,6 +173,7 @@ static void read_revive_rings(FpState*st){
  extern int Port_Setting(const char*,int),Port_NetActive(void),BattleReplay_IsActive(void),BtlChar_FrameMod(int);
  extern float BtlCharApi_GetGroundY(int);extern void*BtlChar_GetPos(void*);
  static float circle[25][2];static int made;int i,j,q,radius,height,speed;float phase,wave;
+ {extern int Port_StoryActive(void);if(Port_StoryActive())return;}
  if(!Port_Setting("revive_enabled",1)||!Port_Setting("show_revive_ring",1)||Port_NetActive()||BattleReplay_IsActive())return;
  if(!made){for(j=0;j<25;j++){float angle=j*6.283185307f/24;circle[j][0]=cosf(angle);circle[j][1]=sinf(angle);}made=1;}
  radius=Port_Setting("revive_radius",80);if(radius<5)radius=5;if(radius>400)radius=400;
@@ -181,6 +182,7 @@ static void read_revive_rings(FpState*st){
  phase=BtlChar_FrameMod(30000)*speed*.0003333333f;wave=.5f+.5f*sinf(phase*6.283185307f);
  for(i=0;i<BtlChar_GetCount()&&i<FP_ACTORS;i++){
   void*c=BtlChar_Get(i),*m=c?BtlMember_GetActive(c):0;float*p,y;FpReviveRing*ring=&st->reviveRing[i];
+  {extern int Port_StoryNoRevive(int),Port_StorySceneParked(int);if(Port_StoryNoRevive(i)||Port_StorySceneParked(i))continue;}
   if(!m||!rd(m,8)||rd(m,0x40)>0||rd(m,0x44)<=0||(i>=2&&Port_FightConsumed(i-2)))continue;
   p=(float*)BtlChar_GetPos(c);if(!p)continue;y=BtlCharApi_GetGroundY(rd(c,12));if(!(y>=-1000000&&y<=1000000))continue;
   ring->active=1;ring->team=Port_Team(i);
@@ -191,10 +193,10 @@ static void read_revive_rings(FpState*st){
 }
 static void read_actors(FpState *st){
  int i,q,n=Port_ModHudViewCount(),quad=Port_QuadMode();FpPoint head;
- if(n<1||n>4)n=1;st->viewCount=n;st->actorCount=BtlChar_GetCount();if(st->actorCount>12)st->actorCount=12;
+ if(n<1||n>4)n=1;st->viewCount=n;st->actorCount=BtlChar_GetCount();if(st->actorCount>FP_ACTORS)st->actorCount=FP_ACTORS;
  for(q=0;q<n;q++){
   FpView *v=&st->view[q];v->x=n==1?0:(q&1)*256;v->y=n>2&&q>=2?224:0;
-  v->w=n==1||(n==3&&q==2)?512:256;v->h=n>2?224:448;v->me=Port_HudPartFighter(q);v->target=Port_CamTarget(v->me);{extern int Port_TakeoverHud(int);v->takeover=Port_TakeoverHud(v->me);}
+  v->w=n==1||(n==3&&q==2)?512:256;v->h=n>2?224:448;v->me=Port_HudPartFighter(q);v->target=Port_CamTarget(v->me);{extern int Port_TakeoverHud(int);v->takeover=Port_TakeoverHud(v->me);{extern int Port_StoryActive(void);if(Port_StoryActive())v->takeover=0;}}
  }
  for(i=0;i<st->actorCount;i++){
   uint8_t GAME_PTR c=(uint8_t GAME_PTR)BtlChar_Get(i);uint8_t GAME_PTR m;FpActor *a=&st->actor[i];

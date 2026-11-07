@@ -24,7 +24,8 @@ extern void BtlChar_SetHeldFlag(BtlStatChr *chr, s32 flag);
 extern void BtlChar_ClearFlag(BtlStatChr *chr, s32 flag);
 extern s32 BtlChar_TestPrevFlag(BtlStatChr *chr, s32 flag);              /* the flag in the second pair of flag arrays */
 extern void BtlChar_ClearFlagRange(BtlStatChr *chr, s32 first, s32 last);  /* BtlChar_ClearFlag for first..last */
-extern s32 BtlOpp_GetObj(BtlStatChr *chr);                        /* the opponent's battle object (inferred) */
+extern BtlStatObj *BtlOpp_GetObj(BtlStatChr *chr);
+extern BtlStatChr *BtlChar_Get(s32 actor);
 extern s32 BtlCharApi_IsInRushSequence(s32 objId);
 extern void BtlObj_SetSubState(BtlStatObj *obj, s32 state, s32 arg);
 extern void BtlObjAnim_StartBlend(BtlStatObj *obj, f32 blend);            /* starts a blend of `blend` seconds */
@@ -32,7 +33,7 @@ extern void BtlObjAnim_ZeroRootAxes(void *handle, s32 a, s32 b, s32 c);
 extern void BtlObjAnim_RebaseRoot(void *handle);
 extern void BtlObjAnim_ClearNodeRot(void *handle, s32 node);
 extern void BtlObjAnim_Play(BtlStatObj *obj, s32 layer, s32 anim, s32 reset);
-extern void BtlObjAnim_PlayFrom(BtlStatObj *obj, s32 other, s32 anim, s32 arg);
+extern void BtlObjAnim_PlayFrom(BtlStatObj *obj, BtlStatObj *other, s32 anim, s32 arg);
 extern void BtlObjAnim_PromoteLayer(BtlStatObj *obj);                       /* the second layer becomes the main one */
 extern s32 BtlObjAnim_TestEvent(BtlStatObj *obj, u64 mask);              /* attribute test at the current frame */
 extern void BtlObj_SetEyeFrame(BtlStatObj *obj, s32 state);
@@ -98,6 +99,14 @@ void BtlAnim_Play(BtlStatChr *chr, s32 anim, f32 blend) {
     BtlStatObj *obj = BtlChar_GetObj(chr);
     s32 n;
 
+#ifdef PORT
+    {extern int Port_StoryMotionDonor(int);int donor=Port_StoryMotionDonor(*(s32*)chr);
+     if(donor>=0&&anim>=0x149&&anim<0x16B){
+      BtlObjAnim_PlayFrom(obj,BtlChar_GetObj(BtlChar_Get(donor)),anim,0);
+      if(BtlAnim_GetFlags(anim)&BTL_ANIM_F_20000000)BtlAnim_HideModelNode10(obj->anim.handle,obj->model);
+      goto story_motion_started;
+     }}
+#endif
     if (BtlAnim_GetFlags(anim) & BTL_ANIM_F_20000000) {
         s32 arg = 0;
         BtlStatObj *obj2;
@@ -111,6 +120,9 @@ void BtlAnim_Play(BtlStatChr *chr, s32 anim, f32 blend) {
     } else {
         BtlObjAnim_Play(obj, 0, anim, 1);
     }
+#ifdef PORT
+story_motion_started:
+#endif
     obj->flags &= ~0x20;
     obj->flags &= ~0x40;
     n = BtlObj_GetMouthMode(obj);

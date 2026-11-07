@@ -136,6 +136,8 @@ void BtlChar_PoseToObj(BtlCtlChr *chr, s32 keepRoot) {
     BtlObjXf_Update(obj);
 }
 
+
+
 /* Under flag 0x33 (and not 0x94): turns the yaw by the root node's yaw and scales the speed by its cosine. */
 void BtlChar_ApplyRootYaw(BtlCtlChr *chr) {
     BtlCtlPose *pose = BtlChar_GetPos(chr);

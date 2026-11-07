@@ -34,6 +34,9 @@ s32 ChrTbl_WrapCostume(s32 chara, s32 *costume) {
     if (costume != NULL && !(*costume < table[chara].costumes)) {
         *costume = 0;
     }
+#ifdef PORT
+    if(costume){extern int Port_Beta8CostumeSelectable(int,int);if(*costume<0||!Port_Beta8CostumeSelectable(chara,*costume))*costume=0;}
+#endif
     return table[chara].costumes;
 }
 

@@ -1,3 +1,4 @@
+#include "mod_damage_safe.h"
 #include "common.h"
 #include "battle/btl_char_flag.h"
 
@@ -83,6 +84,26 @@ static s32 sPortClashPending; /* frames for which a named pair waits for its seq
 #define CLASH_P0 gPortClash[0]
 #define CLASH_P1 gPortClash[1]
 #define CLASH_P(n) gPortClash[n]
+
+/* Dragon History (mod_story_scene.inc ST_CHOREO_CLASH): two enemies near each other go into the trading-blows clash
+   (action 0xFA) as BtlHit_CheckClash puts them there. 1 when it was admitted. */
+s32 Port_ClashPair(s32 a, s32 b);
+s32 Port_StoryForceClash(s32 a, s32 b) {
+    Vec4 *pa, *pb;
+    f32 dx, dy, dz;
+    if ((u32)a >= (u32)BtlChar_GetCount() || (u32)b >= (u32)BtlChar_GetCount() || gBtlChars->clashState != 0 || sPortClashPending > 0) {
+        return 0;
+    }
+    pa = &BtlChar_GetPos(BtlChar_Get(a))->pos;
+    pb = &BtlChar_GetPos(BtlChar_Get(b))->pos;
+    dx = pa->x - pb->x; dy = pa->y - pb->y; dz = pa->z - pb->z;
+    if (dx * dx + dy * dy + dz * dz >= 30.0f * 30.0f || !Port_ClashPair(a, b)) {
+        return 0;
+    }
+    BtlChar_SetFlag(BtlChar_Get(a), 0x61);
+    BtlChar_SetFlag(BtlChar_Get(b), 0x61);
+    return 1;
+}
 
 /* 1 while a clash runs or a pair has just been named: no other pair may start one. */
 s32 Port_ClashBusy(void) {
@@ -361,6 +382,14 @@ static void port_beam_audio_begin(s32 owner){
 /* Clash A, one frame. Returns the next state (0 when it is over). */
 #ifdef PORT
 extern int Port_Setting(const char*,int),Port_NetActive(void),BattleReplay_IsActive(void),BtlCharApi_IsInputInjected(int);
+#include "mod_clash_pace.h"
+static ModClashPace sCpuClashPace[16][2];
+void Port_ClashCpuReset(int actor,int score,int beam){if(actor>=0&&actor<16)MCP_Begin(&sCpuClashPace[actor][!!beam],score);}
+int Port_ClashCpuPoint(int actor,int frame,int beam){
+ BtlFlagChr*c;extern int BtlCharApi_GetCpuLevel(int);
+ if(Port_NetActive()||BattleReplay_IsActive()||actor<0||actor>=16||(c=BtlChar_Get(actor))==0||!BtlCharApi_IsInputInjected(c->objId))return 1;
+ return MCP_Point(&sCpuClashPace[actor][!!beam],frame,beam,BtlCharApi_GetCpuLevel(c->objId));
+}
 static int port_clash_scale(int beam){int x;if(Port_NetActive()||BattleReplay_IsActive())return 1;x=Port_Setting(beam?"beam_struggle_length":"dash_struggle_length",0);return x==1?2:x==2?4:1;}
 extern int Port_AssistScore(int,int,int);
 static int port_clash_count(BtlFlagChr*c,int n,int beam){int x;if(Port_NetActive()||BattleReplay_IsActive())return n;
@@ -493,7 +522,7 @@ s32 BtlClash_UpdateA(s32 state) {
                 EftStruggle_End(winner->objId);
             } else {
                 damage = BtlSuper_GetDamage(winner, cls, 0, 1);
-                damage += BtlSuper_GetDamage(loser, loserCls, 0, 1) / 2;
+                damage = MD_Add(damage,BtlSuper_GetDamage(loser, loserCls, 0, 1)/2);
                 switch (cls) {
                 case 2:
                     flags = 0x800000;
@@ -509,6 +538,12 @@ s32 BtlClash_UpdateA(s32 state) {
                 {extern int Port_AssistBeamClashDamage(int,int);damage=Port_AssistBeamClashDamage(winner->player,damage);}
 #endif
                 BtlMember_Damage(loser, damage, flags);
+#ifdef PORT
+                /* A decided beam struggle applies damage here rather than through
+                   projectile collision. Report its real winner to authored Story. */
+                {extern void Port_StoryAttackContact(int,int,int);
+                 Port_StoryAttackContact(winner->player,loser->player,0x100+cls);}
+#endif
                 BtlChar_PlayVoice(loser, 0x16);
                 BtlCharSnd_PlayStream(loser, 0x8D31);
                 EftStruggle_End(-1);

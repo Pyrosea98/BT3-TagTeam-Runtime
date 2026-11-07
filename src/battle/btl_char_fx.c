@@ -482,6 +482,17 @@ void BtlChar_SpawnHitFx(BtlMemberChr *chr) {
     }
 }
 
+#ifdef PORT
+/* Explicit story contact: native impact task at the actual victim's chest. */
+void Port_StoryHitFx(s32 actor){
+ extern BtlMemberChr *BtlChar_Get(s32);
+ BtlMemberChr*c=BtlChar_Get(actor);BtlMemberHitFxReq req;
+ if(!c)return;memset(&req,0,sizeof(req));req.objId=c->objId;req.kind=6;
+ BtlCharApi_GetNodePos(c->objId,3,&req.pos);req.dir.z=1.0f;
+ EftImpact_SpawnHit(&req);
+}
+#endif
+
 /* ------------------------------------------------------------------------------------------------------------
  * Effect requests (0x1D00D8..), written against the effect code's view of the fighter.
  * ------------------------------------------------------------------------------------------------------------ */
@@ -1535,3 +1546,14 @@ void BtlFx_FireKiBlast(FxChr *chr) {
         BtlChar_SetSmallVibration(chr, 0.1f);
     }
 }
+
+#ifdef PORT
+extern s32 EftBlastCharge_Stop(s32 objId);
+void Port_StoryChargeSpark(s32 actor,s32 on){
+ FxChr*c=(FxChr*)BtlChar_Get(actor);FxHitArg arg;
+ if(!c)return;
+ if(!on){EftBlastCharge_Stop(c->objId);return;}
+ memset(&arg,0,sizeof(arg));arg.objId=c->objId;arg.kind=0x10;arg.pos.z=1.f;
+ EftBlastCharge_Start(&arg); /* native node-attached glow at the charging hand */
+}
+#endif

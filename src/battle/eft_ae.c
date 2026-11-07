@@ -1,4 +1,5 @@
 #include "common.h"
+#include "battle/eft_owner.h"
 #include "battle/eft_ae.h"
 #include "sys/gfx_ot.h"
 
@@ -1243,7 +1244,7 @@ void BtlTaskList_Reset(BtlTaskList *list, s32 mask) {
                 task->cls->reset(task);
             }
 #ifdef PORT
-        } else if ((u32)mask >= 0x100000 && (task->tag & mask)) { /* (an extra fighter's own tag: EFT_OWNER_TAG) */
+        } else if (((u32)mask & EFT_OWNER_MASK) != 0 && (task->tag & EFT_OWNER_MASK) == ((u32)mask & EFT_OWNER_MASK)) { /* (an extra fighter's own tag: EFT_OWNER_TAG) */
             if (task->cls->reset != NULL) {
                 task->cls->reset(task);
             }
@@ -1546,7 +1547,11 @@ void BtlTask_SetPos(BtlTask *task, EftAeVec pos) {
 
 /* Sets bits of a task's tag word; used to tag a task with its owner (0x800 object id 0, else 0x1000). */
 void BtlTask_SetOwnerTag(BtlTask *task, s32 bits) {
+#ifdef PORT
+    task->tag = (task->tag & ~EFT_OWNER_MASK) | bits;
+#else
     task->tag |= bits;
+#endif
 }
 
 /* The root list. No caller. */

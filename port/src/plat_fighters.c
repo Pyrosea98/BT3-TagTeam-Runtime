@@ -1,4 +1,5 @@
 #include "tag_tournament_port.h"
+#include "b8_selection_rules.h"
 /*
  * Extra fighters (the experiment of more than two fighters): who they are, and whether a fight has them.
  *
@@ -43,10 +44,12 @@
 #include <string.h>
 #include "gs/menu_labels.h"
 #include "plat_beta8.h"
+#include "v05_roster_rules.h"
+#include "mod_select.h"
 #include "plat_fighters.h"
 #include "port_fighters.h"
 
-#define CHARA_COUNT 291  /* characters 0..160 (MCHR_RANDOM, include/menu/menu_d.h) */
+#define CHARA_COUNT 302  /* stock roster plus explicitly aliased native identities */
 #define NAME_COUNT CHARA_COUNT /* Beta8: the mod's named roster goes past the stock 161 */
 #define EXTRA_MAX PORT_EXTRA_MAX /* extra fighters a fight can have so far */
 #define FILE_CHARA 0x590 /* file ids of character c: c * 10 + this is its model, + 8 and + 9 its two animation files
@@ -115,6 +118,7 @@ static int fight_mode(int *forced);
 int Port_LocalQuadFight(int mode, int members0, int members1, int replay, int script) {
     int forced = 0, page = fight_mode(&forced);
 
+    if(Port_ModSelectPlanCount()&&!replay&&!script&&(mode==0||mode==6)&&Port_LocalPlayers()>=3)return 1;
     return !Port_TagTourActive() && !Port_NetActive() && Port_LocalPlayers() >= 3 && (page == PORT_MODE_TEAM || page == PORT_MODE_FFA || Port_CoopTraining()) &&
            members0 + members1 > 2 && (forced || mode == 0 || (mode == 6 && Port_CoopTraining())) && !replay && !script;
 }
@@ -163,7 +167,7 @@ static int extra_costume_ok(int chara,int costume,char *why,int size) {
     char path[1024];
     int i;
 
-    if (chara < 0 || chara >= CHARA_COUNT || (chara>=161&&chara<=164)) {
+    if (chara < 0 || chara >= CHARA_COUNT || (chara>=161&&chara<=164&&Port_Beta8StockAlias(chara)<0)) {
         snprintf(why, (size_t)size, "there is no character %d (0..%d)", chara, CHARA_COUNT - 1);
         return 0;
     }
@@ -213,6 +217,8 @@ static int fight_add(int chara, int costume, int team, int level, int member) {
     f->consumed = 0;
     return 1;
 }
+
+#include "mod_select_runtime.inc"
 
 /* BT3_EXTRA_FIGHTERS=<character>:<team>[:<level>],... (the tests): any number of extra fighters, in any fight. */
 static void fight_from_list(const char *p) {
@@ -277,6 +283,8 @@ int Port_ExtraSetup(int mode, int members0, int members1, int split, int replay,
     int page = fight_mode(&forced); /* the mode asked on the page of extra modes or by the menu flow, 0: none */
     int roster = page == PORT_MODE_TEAM || page == PORT_MODE_FFA || page == PORT_MODE_TRAINING;
 
+    if(sMsReady)Port_ModSelectResult(-1);
+    sMsFight=0;
     sFightCount = 0;
     sFightRoster = 0;
     sFightFrom = "";
@@ -290,6 +298,7 @@ int Port_ExtraSetup(int mode, int members0, int members1, int split, int replay,
         }
         return 0;
     }
+    if (list == NULL && env == NULL && ms_fight_setup(mode,replay,script)) return 0;
     if (list != NULL) {
         sFightFrom = "BT3_EXTRA_FIGHTERS";
         fight_from_list(list);
@@ -379,6 +388,7 @@ int Port_ExtraAdd(int side, int index, int chara, int costume, int level) {
 }
 void Port_ExtraDone(void) {
     int local = Port_LocalPlayers(), pad, k, pass;
+    if(sMsFight)return; /* explicit draft owners: no old side*8 member remapping */
 
     /* Local players 3 and 4 (a split-screen fight of the sides' own members): controller 3 plays team 1's second
        member, controller 4 team 2's; a team without one leaves its player the first fighter nobody plays. */
@@ -556,6 +566,7 @@ extern struct { int unk0, baseFile; } GAME_PTR gProgress;
 #define NAMES_UNPACKED_MAX (64u * 1024 * 1024)
 
 static char sNames[NAME_COUNT][72];
+static char sPowerLabels[NAME_COUNT][96];
 static int sNamesState; /* 0 not tried, 1 read, -1 could not be */
 
 static int get32(const uint8_t *p, size_t n, size_t at, uint32_t *v) {
@@ -621,6 +632,7 @@ static void names_read(void) {
             if (text_line(res + name, size - name, c, sNames[c], 40) > 0) {
                 /* as the select shows it: the form after the name when it says something else */
                 if (text_line(res + formAt, size - formAt, c, form, 24) > 0 && strcmp(form, sNames[c]) != 0) {
+                    text_line(res + formAt,size-formAt,c,sPowerLabels[c],sizeof(sPowerLabels[c]));
                     size_t len = strlen(sNames[c]);
                     snprintf(sNames[c] + len, sizeof(sNames[c]) - len, ", %s", form);
                 }
@@ -640,7 +652,19 @@ static void names_read(void) {
    window (its thread only). */
 const char *Port_CharaName(int chara) {
     static int tries;
-
+    const char *dragon=Port_Beta8DragonName(chara);if(dragon)return dragon;
+    if(chara==291)return "Super Buu (Multiverse)";
+    if(chara==292)return "Buu (Vegeta absorbed)";
+    if(chara==293)return "Buu (Goku absorbed)";
+    if(chara==294)return "Buu (Full Power)";
+    if(chara==295)return "Mecha Freezer (forma mejorada)";
+    if(chara==296)return "King Cold (Primera forma)";
+    if(chara==297)return "King Cold (Tercera forma)";
+    if(chara==298)return "King Cold (Forma final)";
+    if(chara==299)return "King Cold (Forma gigante)";
+    if(chara==300)return "Mucchi";
+    if(chara==301)return "Yajirobe";
+    if (chara == 247) return "Gokoro";
     if (chara == 210) {
         return "Spopovich"; /* the mod's Spopovich cell (costume 0 only) */
     }
@@ -707,10 +731,120 @@ const char *Port_CharaName(int chara) {
     if (chara == 244) {
         return "Vegeta Explorador SSJ4";
     }
+    if (chara == 161) return "Daima Goku";
+    if (chara == 163) return "Future Gohan";
+    if (chara == 164) return "Zeno";
+    if (chara == 170) return "Daima Vegeta";
+    if (chara == 177) return "Glorio";
+    if (chara == 178) return "Shallot";
+    if (chara == 179) return "Minotia";
+    if (chara == 181) return "Uub (end of Z)";
+    if (chara == 182) return "Gohan nino";
+    if (chara == 183) return "Mucchi Mocchi";
+    if (chara == 184) return "Grand Kaioshin";
+    if (chara == 185) return "Tamagami 2";
+    if (chara == 186) return "Pan";
+    if (chara == 187) return "Mr. Popo";
+    if (chara == 189) return "Mutaito";
+    if (chara == 190) return "Toma";
+    if (chara == 192) return "Ebifurya";
+    if (chara == 194) return "Xicor";
+    if (chara == 195) return "Pumbukin";
+    if (chara == 197) return "Tottepo";
+    if (chara == 198) return "Amond";
+    if (chara == 199) return "Bardock SSJ4";
+    if (chara == 203) return "Angila";
+    if (chara == 204) return "Dorodabo";
+    if (chara == 205) return "Pui-Pui";
+    if (chara == 206) return "Dore";
+    if (chara == 207) return "Neiz";
+    if (chara == 208) return "King Kai";
+    if (chara == 209) return "Rasin";
+    if (chara == 242) return "Kishime";
+    if (chara == 251) return "Daiz";
+    if (chara == 252) return "Android 14";
+    if (chara == 253) return "Android 15";
+    if (chara == 254) return "Bujin";
+    if (chara == 255) return "Baby";
+    if (chara == 256) return "Majin Kuu";
+    if (chara == 257) return "Kogu";
+    if (chara == 258) return "Super Sigma";
+    if (chara == 259) return "Majin Duu";
+    if (chara == 260) return "Gomah";
+    if (chara == 262) return "Yakon";
+    if (chara == 263) return "Cooler robot";
+    if (chara == 264) return "Redict";
+    if (chara == 265) return "Bido";
+    if (chara == 266) return "Llood";
+    if (chara == 267) return "Bio Broly";
+    if (chara == 268) return "Towa";
+    if (chara == 269) return "General Rilld";
+    if (chara == 270) return "South Kai";
+    if (chara == 271) return "Tamagami 1";
+    if (chara == 272) return "Baby Goku";
+    if (chara == 273) return "Mira";
+    if (chara == 274) return "Cellbuzer";
+    if (chara == 277) return "Dr. Lychee";
+    if (chara == 278) return "Tamagami 3";
+    if (chara == 279) return "Drum";
+    if (chara == 280) return "Kami";
+    if (chara == 281) return "Future Gohan Super Saiyajin";
+    if (chara == 282) return "Shallot (SSJ)";
+    if (chara == 283) return "Shallot SSJ3";
+    if (chara == 284) return "Gohan nino Super Saiyajin";
+    if (chara == 285) return "Baby (1st stage)";
+    if (chara == 286) return "Metal Rilld";
+    if (chara == 287) return "Super Gomah";
+    if (chara == 288) return "Giant Gomah";
+    if (chara == 289) return "Super Gomah (giant)";
+    if (chara == 290) return "Rilld (Final Form)";
     if (sNamesState == 0 && tries++ % 60 == 0) {
         names_read();
     }
     return chara >= 0 && chara < NAME_COUNT ? sNames[chara] : "";
+}
+
+/* Exact select-screen power label, resolved by physical costume for aliases.
+   Read only; this is presentation data, never a combat damage calculation. */
+const char *Port_CharaPower(int chara,int costume){
+ if(chara==301)return "970"; /* approved imported identity; no ISO text row */
+ static char out[96];const char *value=B8PowerText(chara),*end;int i;
+ if(!value){Port_Beta8PowerIdentity(&chara,&costume);if(!sNamesState)names_read();value=chara>=0&&chara<NAME_COUNT?sPowerLabels[chara]:NULL;}
+ if(!value||!*value)return NULL;
+ for(i=0;i<costume;i++){const char*next=strchr(value,'-');if(!next)break;value=next+1;}
+ end=strchr(value,'-');if(!end)end=value+strlen(value);
+ size_t n=(size_t)(end-value);if(n>=sizeof(out))n=sizeof(out)-1;memcpy(out,value,n);out[n]=0;return out;
+}
+
+/* The select-screen power label as a number, for the CPU's strength comparisons. "8.000" -> 8000, "12.5MM" ->
+   12.5e9, "300Mil" -> 300000, "MAX" -> the top value. A '.' is a thousands separator when exactly three digits
+   follow it and no more, a decimal point otherwise. 0 when the label is missing or unreadable (the caller then
+   falls back to the health ceiling). Read only: presentation data, never a combat calculation. */
+long long Port_CharaPowerValue(int chara,int costume){
+ const char *s=Port_CharaPower(chara,costume),*p,*q;
+ long long whole=0,fraction=0,scale=1,mult=1;
+ char suffix[6];int n=0,k,frac=0,digits=0;
+ if(s==NULL)return 0;
+ for(p=s;*p==' ';p++){}
+ if((p[0]=='m'||p[0]=='M')&&(p[1]=='a'||p[1]=='A')&&(p[2]=='x'||p[2]=='X'))return 1000000000000000000LL;
+ for(;*p;p++){
+  if(*p>='0'&&*p<='9'){digits++;if(frac){fraction=fraction*10+(*p-'0');scale*=10;}else whole=whole*10+(*p-'0');}
+  else if(*p=='.'||*p==','){
+   if(frac)break;
+   for(q=p+1,k=0;q[k]>='0'&&q[k]<='9';k++){}
+   if(k==3&&!(q[3]>='0'&&q[3]<='9'))continue;   /* thousands separator */
+   frac=1;
+  }else break;
+ }
+ if(!digits)return 0;
+ for(;*p==' ';p++){}
+ for(k=0;k<5&&p[k];k++){char c=p[k];if(c>='A'&&c<='Z')c=(char)(c-'A'+'a');suffix[k]=c;}suffix[k]=0;n=k;
+ if(n==1&&suffix[0]=='k')mult=1000;
+ else if(n==3&&suffix[0]=='m'&&suffix[1]=='i'&&suffix[2]=='l')mult=1000;      /* 300Mil */
+ else if(n==1&&suffix[0]=='m')mult=1000000;
+ else if(n==2&&suffix[0]=='m'&&suffix[1]=='m')mult=1000000000;                 /* MM = mil millones */
+ else if(n==1&&suffix[0]=='b')mult=1000000000;
+ return whole*mult+(scale>1?fraction*mult/scale:0);
 }
 
 /* Fill the game's own team-member list of the active fighter with the port's extra allies of the same side, so
@@ -719,13 +853,13 @@ const char *Port_CharaName(int chara) {
    BtlMemberChr.side +0, memberCount +0x998, members +0x9A4, BtlMember 0xA4 bytes: chara +0, costume +4,
    present +8, gauge +0x40 (health +0, unk30 +0x30). Only the fusion uses this; the port's own extra system keeps
    controlling the live ally. */
-static int sFusionMirror[12][5],sFusionOwner[12],sFusionLink[12][5]; /* sFusionMirror[side][slot]=actor+1 for rows the port mirrored in (live allies): the game's tag-switch code must never treat a mirrored row as a bench member (2026-10-26 live regression: KO'd fighter tagged a copy of the already-fighting ally in). */
-int Port_IsFusionMirror(const void *chr,int slot){int side=*(const int*)chr;return side>=0&&side<12&&slot>0&&slot<5&&sFusionMirror[side][slot]!=0;}
+static int sFusionMirror[16][5],sFusionOwner[16],sFusionLink[16][5]; /* sFusionMirror[side][slot]=actor+1 for rows the port mirrored in (live allies): the game's tag-switch code must never treat a mirrored row as a bench member (2026-10-26 live regression: KO'd fighter tagged a copy of the already-fighting ally in). */
+int Port_IsFusionMirror(const void *chr,int slot){int side=*(const int*)chr;return side>=0&&side<16&&slot>0&&slot<5&&sFusionMirror[side][slot]!=0;}
 /* Alive team members except the mirrored fusion rows: in the live mod every same-side fighter is a running
    actor already, so a mirrored row must never read as a bench member for the tag-switch code (live regression
    2026-10-26: a KO'd fighter tagged a fresh copy of the ally who was already on stage). */
 int Port_TagBenchAlive(const void *chr){const unsigned char *b=(const unsigned char *)chr;int side=*(const int*)b,i,count,n=0;
- if(side<0||side>=12)return 0;
+ if(side<0||side>=16)return 0;
  count=*(const int*)(b+0x998);
  for(i=0;i<count&&i<5;i++){const unsigned char*m=b+0x9A4+i*0xA4;
   if(sFusionMirror[side][i])continue;
@@ -736,7 +870,7 @@ void Port_TeamFillFusion(void *chr) {
     int *count = (int *)((unsigned char *)chr + 0x998);
     int i;
 
-    if(side>=2&&side<12){
+    if(side>=2&&side<16){
         extern int BtlChar_GetCount(void),Port_Team(int);extern void*BtlChar_Get(int),*BtlMember_GetActive(void*);
         int k,slot=1;memset(sFusionMirror[side],0,sizeof(sFusionMirror[side]));
         for(k=1;k<5;k++)memset((unsigned char*)chr+0x9a4+k*0xa4,0,0xa4);
@@ -844,16 +978,18 @@ int Port_ModelUsable(int chara, int costume, int variant) {
 }
 
 /* Explicit live-actor identity, separate from the copied native member row. */
-int Port_FusionPartnerActor(int who,int member){int k;if(who<0||who>=12||member<0||member>=5)return -1;
+int Port_FusionPartnerActor(int who,int member){int k;if(who<0||who>=16||member<0||member>=5)return -1;
  if(sFusionLink[who][member])return sFusionLink[who][member]-1;
  if(who>=2)return sFusionMirror[who][member]-1;
  for(k=0;k<sFightCount;k++)if(sFight[k].member==who*8+member)return k+2;return -1;}
-int Port_FusionConsumedActor(int who){return who>=0&&who<12&&sFusionOwner[who]!=0;}
-int Port_FusionViewOwner(int who){int n=0;while(who>=0&&who<12&&sFusionOwner[who]&&n++<12)who=sFusionOwner[who]-1;return who;}
+/* A Dragon History scene-only actor counts as consumed whenever no cutscene shows it (mod_scenarios_runtime.inc). */
+extern int Port_StorySceneParked(int actor);
+int Port_FusionConsumedActor(int who){return who>=0&&who<16&&(sFusionOwner[who]!=0||Port_StorySceneParked(who));}
+int Port_FusionViewOwner(int who){int n=0;while(who>=0&&who<16&&sFusionOwner[who]&&n++<16)who=sFusionOwner[who]-1;return who;}
 int Port_FusionViews(int q){extern int BtlChar_GetCount(void),Port_TargetHuman(int);extern void*BtlChar_Get(int);
  int slots[4]={-1,-1,-1,-1},out[4],i,j,n=0,merged=0;extern int Port_FusionRosterReady(void);
- for(i=0;i<12;i++)if(sFusionOwner[i])break;if(i==12||!Port_FusionRosterReady())return -1;
- for(i=0;i<BtlChar_GetCount()&&i<12;i++)if(Port_TargetHuman(i)){
+ for(i=0;i<16;i++)if(sFusionOwner[i])break;if(i==16||!Port_FusionRosterReady())return -1;
+ for(i=0;i<BtlChar_GetCount()&&i<16;i++)if(Port_TargetHuman(i)){
   void*c=BtlChar_Get(i);int pad=c?*(int*)((unsigned char*)c+4):-1,owner=Port_FusionViewOwner(i);
   if(owner!=i)merged=1;if(pad>=0&&pad<4)slots[pad]=owner;}
  if(!merged)return -1;
@@ -882,6 +1018,12 @@ void Port_ExtraFusionConsume(int who,int member){
  fprintf(stderr,"bt3: fusion: actor%d consumed by actor%d member%d\n",target,who,member);
 }
 
+/* Absorbed participants never receive a fusion link, so no timer can restore them. */
+void Port_EggConsumeActor(int source,int target){
+ extern void *BtlChar_Get(int),*BtlMember_GetActive(void*);void*c,*m;if(source<0||source>=16||target<0||target>=16||source==target)return;
+ sFusionOwner[target]=source+1;if(target>=2&&target-2<sFightCount)sFight[target-2].consumed=1;c=BtlChar_Get(target);m=c?BtlMember_GetActive(c):NULL;
+ if(m){*(int*)((unsigned char*)m+0x40)=0;*(int*)((unsigned char*)m+0x70)=1;*(int*)((unsigned char*)m+0x08)=0;}
+}
 /* BT3_DEFUSE_PREVIEW (mod_defuse_cinematic.inc): makes extra `target` member `member` of fighter `who` and merges it
    the way a dance fusion does. 1 when the fusion partner lookup now finds it. */
 int Port_DefusePreviewLink(int who,int member,int target){
@@ -892,7 +1034,7 @@ int Port_DefusePreviewLink(int who,int member,int target){
 
 /* 1 when extra k was merged away by a fusion (the HUD and the fighter update leave it out). */
 int Port_FightConsumed(int k) {
-    return k >= 0 && k < sFightCount ? sFight[k].consumed : 0;
+    return k >= 0 && k < sFightCount ? sFight[k].consumed || Port_StorySceneParked(k + 2) : 0;
 }
 
 /* Keeps a merged extra out of the picture: a knock-out change rebounds its object's model (which comes back
@@ -901,7 +1043,7 @@ int Port_FightConsumed(int k) {
 void Port_ExtraConsumedUpdate(void){
  extern int BtlChar_GetCount(void),Port_FighterObjId(int);extern void*BtlChar_Get(int),*BtlChar_GetPos(void*),*BtlMember_GetActive(void*),*BtlObj_Get(int);
  extern void BtlObj_SetPartVisible(void*,unsigned,int);int i;
- for(i=0;i<BtlChar_GetCount()&&i<12;i++)if(Port_FusionConsumedActor(i)){
+ for(i=0;i<BtlChar_GetCount()&&i<16;i++)if(Port_FusionConsumedActor(i)){
   void*c=BtlChar_Get(i),*m=c?BtlMember_GetActive(c):NULL;float*p=c?(float*)BtlChar_GetPos(c):NULL;int id=Port_FighterObjId(i);void*o=id>=0?BtlObj_Get(id):NULL;
   if(o)BtlObj_SetPartVisible(o,0,0);if(m)*(int*)((unsigned char*)m+0x40)=0;if(p){p[0]=0;p[1]=-100000;p[2]=0;}
  }
@@ -1019,7 +1161,7 @@ void Port_PatchSkillText(int chara, int costume, void *param, void *textSlot) {
     int transOnPage = 0, fusionOnPage = 0, firstFusion = -1;
     int injectTrans = -1, injectFusion = -1, prevSlot = -1, tail = -1;
     int transRenamed = 0, transIndex = 0;
-    int rewriteForms=(chara==51||chara==59||chara==224||chara==225||chara==226||chara==229||chara==230||chara==234||chara==235||chara==238||chara==239||chara==241||chara==244),skipFormDetails=0;
+    int rewriteForms=Port_Beta8HasFormPolicy(chara,costume),skipFormDetails=0;
     int len, cap, at, i, j, k, lineStart;
 
     for (i = 0; i < 10; i++) {
@@ -1028,7 +1170,7 @@ void Port_PatchSkillText(int chara, int costume, void *param, void *textSlot) {
     if (chara < 0 || param == NULL) {
         return;
     }
-    Port_Beta8PatchFormParam(chara, p);
+    Port_Beta8PatchCostumeFormParam(chara,costume,p);
     if (chara == 224 || chara == 234) {
         /* Base Gogetto carries the base aura, not the SSJ1 donor's yellow one. */
         p[0] = 1;
@@ -1120,6 +1262,7 @@ void Port_PatchSkillText(int chara, int costume, void *param, void *textSlot) {
             }
         }
     }
+    V05GokoroRecipes(chara,p);
     /* GT costume-3 Goku family: both fusion styles at matching base/SSJ1/SSJ4.
        Store logical result ids so the loader retains Vegetto GT's own routes. */
     {
@@ -1338,16 +1481,17 @@ void Port_PatchSkillText(int chara, int costume, void *param, void *textSlot) {
             if(rewriteForms){
                 static const char*dirs[]={"←＋Ｒ３","↑＋Ｒ３","→＋Ｒ３","↓＋Ｒ３"};
                 for(j=0;j<4&&at+1024<cap;j++)if(p[0x98+j]!=255){
-                    int target=Port_Beta8FormTarget(chara,p[0x98+j]),cost=p[0x9c+j];const char*nm=Port_CharaName(target);const char*glyph=(signed char)p[0xac]==j?"Ｒ３":dirs[j];
+                    int target=Port_Beta8CostumeFormTarget(chara,costume,p[0x98+j]),cost=p[0x9c+j];const char*nm=Port_CharaName(target);const char*glyph=(signed char)p[0xac]==j?"Ｒ３":dirs[j];
                     if(!nm[0]||cost>9)continue;
                     at+=skill_emit_entry(out+at,cap-at-2,0,cost,nm);out[at++]='\n';
                     at+=skill_name_units(out+at,cap-at-2,"!F%0Transformación: ");at+=skill_name_units(out+at,cap-at-2,nm);out[at++]='\n';
                     at+=skill_name_units(out+at,cap-at-2,"!D#<PAD=");at+=skill_name_units(out+at,cap-at-2,glyph);out[at++]='>';out[at++]='\n';
+                    if(p[0xa4+j]==3){at+=skill_name_units(out+at,cap-at-2,"!D#Requiere luna llena.");out[at++]='\n';}
                 }
             }else
             for (j = transOnPage; j < liveTrans && at + 1024 < cap; j++) {
                 int cost = p[0x9C + j];
-                int target = Port_Beta8FormTarget(chara, p[0x98 + j]);
+                int target = Port_Beta8CostumeFormTarget(chara,costume, p[0x98 + j]);
                 const char *nm = Port_CharaName(target);
 
                 if (nm[0] != '\0' && cost <= 9) {

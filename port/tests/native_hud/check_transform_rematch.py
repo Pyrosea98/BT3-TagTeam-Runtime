@@ -34,7 +34,7 @@ using s32=int;
 #define PORT 1
 struct Color{float r,g,b,a;};struct EftFlashArg{Color color;float in,hold,out;int objId,wait;};struct EftFlash{EftFlashArg arg;float fade,inMax,outMax;int pause,phase,frames;};struct EftQTask{void*work;int step,dead;};struct Mgr{int flags,rushState,rushBits;};struct Work{int flags;};static Mgr mgr;static Mgr*gEftFlash=&mgr;static EftFlash flash;static EftQTask live{&flash,0,0};static Work work;static int owner;static bool variants[10];
 Work*Battle_GetWork(){return &work;}int BtlScene_GetCharCount(){return 10;}int BtlCharApi_IsFlag8Action104(int i){return i==owner;}int BtlCharApi_GetMemberUnk60(int i){return variants[i];}int EftFlash_GetRushState(){return owner>=2?1:0;}void BtlTask_SetDead(EftQTask*t){t->dead=1;}
-void EftFlash_Init(EftQTask*,EftFlashArg*);void EftFlash_Start(EftFlashArg*a){live={&flash,0,0};EftFlash_Init(&live,a);}
+void EftFlash_Init(EftQTask*,EftFlashArg*);void EftFlash_Start(EftFlashArg*a){live={&flash,0,0};EftFlash_Init(&live,a);}void EftFlash_StartOwned(EftFlashArg*a){EftFlash_Start(a);}
 """
 f=(r/'src/battle/eft_q.c').read_text();fb='\n'.join(ex(f,n)for n in ['EftFlash_Init','EftFlashMgr_Update','EftFlash_Update']).replace('EftFlash *w = task->work;','EftFlash *w = (EftFlash*)task->work;')
 ff=r"""int main(){for(owner=0;owner<10;owner++){mgr={};work={};memset(variants,0,sizeof(variants));variants[owner]=true;EftFlashMgr_Update(nullptr);assert((mgr.flags>>8)==owner+1);int n=0;while(!live.dead&&n<220){mgr.rushState=EftFlash_GetRushState();EftFlash_Update(&live);n++;}assert(live.dead&&n<=62);} }

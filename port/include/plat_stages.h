@@ -5,10 +5,10 @@
 #ifndef PORT_PLAT_STAGES_H
 #define PORT_PLAT_STAGES_H
 
-/* The disc's stages are 0x00..0x23 and, in the Beta8 image, 0x27..0x29; the added stages start after those,
-   so that an added id never takes the place of one of the disc's own (0x27..0x29 are playable there). */
-#define PORT_STAGE_FIRST 0x2A /* first added stage id: 0x2A..0x3F */
-#define PORT_STAGE_MAX 22     /* ids 0x2A..0x3F (the stage-list bit field is 64 bits) */
+/* The disc's stages are 0x00..0x23 and, in the Beta8 image, 0x27..0x29. External stages use a separate ID
+   namespace beginning at 0x2A; they are appended after the native list and are not gated by the save's bitfield. */
+#define PORT_STAGE_FIRST 0x2A /* first added stage id; external IDs are outside the disc table */
+#define PORT_STAGE_MAX 128    /* recomp: manifest-backed maps; no legacy 64-bit/unlock ceiling */
 
 void PortStages_Init(void); /* reads the manifest (or the BT3_EXTRA_STAGES fallback); once */
 int PortStages_Count(void);
@@ -19,6 +19,7 @@ int Port_IsAddedStage(int id);
 /* 1 if the file the game asks for (its path under the data root, e.g. "pzs3us1/00404.bin") is served from
    somewhere else; `out` gets the replacement path (under the data root, or absolute). */
 int PortStages_Alias(const char *rel, char *out, unsigned n);
+int PortStages_Find(const char *name); /* an added stage's id by its display name, -1 when not installed */
 
 /* The game reads these (small data, a low address: see the note in menu_c_e.c). */
 extern char gPortStageNames[PORT_STAGE_MAX][64];

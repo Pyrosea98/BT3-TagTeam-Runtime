@@ -454,7 +454,7 @@ void Hud_PreUpdate(void) {
             s32 kind;
             s32 pad;
 
-            if (BtlCtrl_GetChangePrompt(side, &button, &kind, &pad)) {
+            if (BtlCtrl_GetChangePrompt(HUD_WHO(side), &button, &kind, &pad)) {
                 s32 n = button;
 
                 button = tbl[button];
@@ -464,13 +464,13 @@ void Hud_PreUpdate(void) {
             /* PC build, "Clashes: Square counts as a direction": the prompt of a clash is then the game's own
                "press this button again and again" (as when ki has run out) with Square, not the turning stick.
                In an online match only on this player's own side. */
-            } else if (Port_ClashSquare() && (!Port_NetActive() || Port_NetMe() == side) &&
-                       (BtlCtrl_TestFlagE6Pad1(side) || BtlCtrl_TestFlagE6Pad(side, &pad))) {
+            } else if (Port_Setting("mod_clash_buttons", 0) && (!Port_NetActive() || Port_NetMe() == side) &&
+                       (BtlCtrl_TestFlagE6Pad1(HUD_WHO(side)) || BtlCtrl_TestFlagE6Pad(HUD_WHO(side), &pad))) {
                 HudPrompt_SetButton(side, 1, 0); /* icon 1 = Square, style 0 = pressed and released */
 #endif
-            } else if (BtlCtrl_TestFlagE6Pad1(side)) {
+            } else if (BtlCtrl_TestFlagE6Pad1(HUD_WHO(side))) {
                 HudPrompt_SetButton(side, 12, 1);
-            } else if (BtlCtrl_TestFlagE6Pad(side, &pad)) {
+            } else if (BtlCtrl_TestFlagE6Pad(HUD_WHO(side), &pad)) {
                 HudPrompt_SetButton(side, 12, pad);
             } else {
                 HudPrompt_ClearButton(side);
@@ -490,7 +490,7 @@ void Hud_PreUpdate(void) {
             s32 count;
             s32 pad;
 
-            if (BtlCtrl_GetTechPromptPad1(side, buttons, &kind, &idx)) {
+            if (BtlCtrl_GetTechPromptPad1(HUD_WHO(side), buttons, &kind, &idx)) {
                 if (kind == 3) {
                     kinds[0] = kind;
                     buttons[0] = 5;
@@ -505,7 +505,7 @@ void Hud_PreUpdate(void) {
                     idx = -1;
                 }
                 HudPrompt_SetCommand(side, 1, buttons, kinds, idx);
-            } else if (BtlCtrl_GetSwitchPrompt(side, buttons, &count, &kind, &pad, &idx)) {
+            } else if (BtlCtrl_GetSwitchPrompt(HUD_WHO(side), buttons, &count, &kind, &pad, &idx)) {
                 s32 map[4] = { 3, 2, 1, 0 };
 
                 for (i = count - 1; i >= 0; i--) {

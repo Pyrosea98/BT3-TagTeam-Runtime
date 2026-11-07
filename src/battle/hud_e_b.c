@@ -609,6 +609,9 @@ void HudPrompt_DrawButton(void) {
 
 /* Draw of node 25 (side 0 only): base and pad icon. */
 void HudPrompt_DrawCue(void) {
+#ifdef PORT
+    {extern int Port_StoryPromptView(void);if(Port_StoryPromptView())return;}
+#endif
     if (gHudPrompt->side == 0) {
         HudPrompt_ClearIconMarks();
         HudSprite_Draw(&gHudPrompt->spr[4], gHudPrompt->res, 0);

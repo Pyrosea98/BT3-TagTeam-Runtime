@@ -689,8 +689,19 @@ void BtlObj_UpdateBounds(BtlObj *obj, BtlObjState *state) {
     while (1) {
         if (bound->enabled != 0) {
             part = BtlObj_GetNode(obj, bound->node);
-            if (BtlObj_IsNodeShown(obj, part->unk08) == 1) {
+            if (part && BtlObj_IsNodeShown(obj, part->unk08) == 1) {
                 part->active = 1;
+#ifdef PORT
+                { /* BT3_STORY_PART_DUMP=1: each object's rigid parts once (node id, world position x100), to locate e.g. tail parts */
+                  extern char *getenv(const char *);extern void Port_Dbg3(const char *, int, int, int, int);
+                  static int dump = -1;static void *seen[32];static int seenN, seenFrames[32];int k;
+                  if (dump < 0) dump = getenv("BT3_STORY_PART_DUMP") != 0;
+                  if (dump) {for (k = 0; k < seenN && seen[k] != (void *)obj; k++);
+                   if (k == seenN && seenN < 32) {seen[seenN] = obj;seenFrames[seenN++] = 0;}
+                   if (k < 32 && ++seenFrames[k] >= 30000 && seenFrames[k] < 30000 + 160) {Port_Dbg3("story part xyz", k, part->unk08 | bound->node << 16, (int)(part->mtx.m[3][0] * 100.0f), (int)(part->mtx.m[3][2] * 100.0f));
+                    Port_Dbg3("story part y", k, part->unk08, (int)(part->mtx.m[3][1] * 100.0f), 0);}}
+                }
+#endif
                 Vec3_Sub(&rel, &bound->center, &bound->unk10);
                 Mtx_MulVec4(&center, &part->mtx, &rel);
                 Mtx_Copy(&mtx, &part->mtx);
@@ -721,7 +732,7 @@ void BtlObj_UpdateBounds(BtlObj *obj, BtlObjState *state) {
                 ColBox_AddPoint(&state->box, &out[6]);
                 ColBox_AddPoint(&state->box, &out[7]);
             } else {
-                part->active = 0;
+                if(part)part->active = 0;
             }
         }
         if (bound->last != 0) {

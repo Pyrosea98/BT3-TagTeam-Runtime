@@ -4,6 +4,14 @@
 #include "sys/save.h"
 
 HistResult *gHistResult = NULL; /* 0x3B1300 */
+#ifdef PORT
+/* Custom chapters have already committed rewards once in Port_StoryResult. Reuse the
+   original movie/jingles/count-up without touching stock episodes or paying twice. */
+extern int Port_StoryActive(void), Port_StoryLastOutcome(int *, int *);
+extern int Port_StoryBalanceBefore(void), Port_StoryBalanceAfter(void);
+extern int Port_StoryGrantedBall(void), Port_StoryUnlockedChapter(void);
+static s32 sPortHistoryOutcome, sPortHistoryZeni;
+#endif
 
 /*
  * HistResult, 0x3405A0..0x341E08: the result screen after a story-mode battle (progress mode 8). An object of
@@ -70,6 +78,16 @@ void HistResult_BuildRewards(void) {
     memset(gHistResult->reward, 0, 0x88);
     gHistResult->rewardCount = 0;
 #ifdef PORT
+    if (sPortHistoryOutcome) {
+        gHistResult->pointsTotal = sPortHistoryZeni;
+        id = Port_StoryGrantedBall(); /* already saved by Port_StoryResult: shown, not granted again */
+        if (id >= 0) {
+            HR_ADD(9, id);
+        }
+        id = Port_StoryUnlockedChapter();
+        if (id >= 0) { HR_ADD(8, 0x100 + id); } /* native chapter window, custom name */
+        return;
+    }
     /* PC build: the loop below looks through all of unlock[] for the sub menu before it has set the later entries
        (an original bug: it reads what happens to be on the stack). On the console that is never the sub menu's
        number; here it can be, and then a battle that opens the first episode of a new saga does not list the saga:
@@ -174,6 +192,10 @@ void HistResult_Init(s32 section) {
     s32 bg;
 
     flags = BattleResult_GetFlags();
+#ifdef PORT
+    sPortHistoryOutcome = Port_StoryActive() ? Port_StoryLastOutcome(NULL, &sPortHistoryZeni) : 0;
+    if (sPortHistoryOutcome) flags = sPortHistoryOutcome == 1 || sPortHistoryOutcome == 2 ? 1 : 0;
+#endif
     gHistResult = Heap_Alloc(0x140, 0x20, 0, 2);
     memset(gHistResult, 0, 0x140);
     gHistResult->pack = (u32 *)MPACK_AT(gMenuArc2, section);
@@ -182,6 +204,9 @@ void HistResult_Init(s32 section) {
     gHistResult->fileRes = Sprite_Unpack(gHistResult->file, NULL, NULL);
     if (flags & 1) {
         bg = Rand_Range(3);
+#ifdef PORT
+        if (!sPortHistoryOutcome)
+#endif
         MSAVE->slot[gProgress->subMenu].val[1] |= (s32)(1U << gProgress->subMenuItem);
     } else {
         bg = 3;
@@ -227,7 +252,11 @@ void HistResult_Init(s32 section) {
         gHistResult->pointsTotal = 0;
         StreamSe_PlayPausedDefault(0, 0x10BC8);
     } else {
-        if (HistResult_IsMenuCleared() && !(MSAVE->slot[gProgress->subMenu].flags & MSLOT_OUTRO_SEEN)) {
+        if (
+#ifdef PORT
+            !sPortHistoryOutcome &&
+#endif
+            HistResult_IsMenuCleared() && !(MSAVE->slot[gProgress->subMenu].flags & MSLOT_OUTRO_SEEN)) {
             StreamSe_PlayPausedDefault(0, 0x10BC9);
         } else {
             StreamSe_PlayPausedDefault(0, 0x10BC7);
@@ -305,7 +334,13 @@ void HistResult_Draw(void) {
         Flash_ClipSetUv(flash, &ref, &uv);
     }
     Num_Draw(flash, "mc_get_point_%d", 0, 4, gHistResult->points, 0x40, 0x40, 0);
-    Num_Draw(flash, "mc_total_point_%d", 0, 7, MSAVE->money, 0x40, 0x40, 0);
+    Num_Draw(flash, "mc_total_point_%d", 0, 7,
+#ifdef PORT
+        /* Custom rewards are already credited. Show the full actual balance now,
+           instead of holding the old 9,999,999 display until a second confirm. */
+        sPortHistoryOutcome ? Port_StoryBalanceAfter() :
+#endif
+        MSAVE->money, 0x40, 0x40, 0);
     {
         f32 speed[4] = { 17.066667f, 17.066667f, 8.5333333f, 8.5333333f };
 
@@ -327,6 +362,10 @@ void HistResult_Draw(void) {
     Flash_FindLabel(flash, NULL, "mc_battle_text", &ref);
     Flash_ClipSetUv(flash, &ref, &uv);
     Flash_ClipSetTex(flash, &ref, gProgress->subMenuItem / 4);
+#ifdef PORT
+    /* The stock episode caption describes a different fight; our recap supplies this title. */
+    if (sPortHistoryOutcome) Flash_ClipSetFlags(flash, &ref, 2, 0);
+#endif
     for (i = 0; i < HISTRESULT_FLASH_NUM; i++) {
         Flash_Draw(&gHistResult->flash[i]);
     }
@@ -366,6 +405,11 @@ void HistResult_Input(s32 *result) {
         return;
     }
     if (gPad[0].gamePressed & 0x200) {
+#ifdef PORT
+        if (sPortHistoryOutcome) {
+            *result = 1;
+        } else
+#endif
         if (gHistResult->flags & HISTRESULT_LOST) {
             *result = 0;
         } else if (HistResult_IsMenuCleared()) {
@@ -408,6 +452,17 @@ void HistResult_UpdateState(void) {
         }
         break;
     case 4:
+#ifdef PORT
+        if (sPortHistoryOutcome) {
+            /* Presentation only: the battle result has already paid into the save. */
+            if (gPad[0].gamePressed & 0x200 || gHistResult->points <= 0x20) {
+                gHistResult->points = 0;
+                gHistResult->state++;
+                if (gPad[0].gamePressed & 0x200) Snd_PlaySe(1, 1);
+            } else gHistResult->points -= 0x21;
+            break;
+        }
+#endif
         if (gPad[0].gamePressed & 0x200) {
             Save_AddMoney(gHistResult->points);
             gHistResult->points = 0;
@@ -487,7 +542,11 @@ void HistResult_UpdateSe(void) {
         gHistResult->seState = 2;
         break;
     case 2:
-        if (StreamSe_GetStat(0) == 5) {
+        if (StreamSe_GetStat(0) == 5
+#ifdef PORT
+            || StreamSe_GetStat(0) == 0 /* A missing/stopped jingle must not trap the result screen. */
+#endif
+        ) {
             gHistResult->seState++;
         }
         break;

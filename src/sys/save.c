@@ -180,15 +180,90 @@ void Save_AddItem(s32 idx) {
     }
 }
 
-/* Adds amount (may be negative) to the money, clamped to 0..9,999,999. */
+/* Adds amount (may be negative), without overflowing the existing save field. */
 void Save_AddMoney(s32 amount) {
+#ifdef PORT
+    s64 total = (s64)gSaveData->money + amount;
+    gSaveData->money = total > SAVE_MONEY_MAX ? SAVE_MONEY_MAX : total < 0 ? 0 : (s32)total;
+#else
     gSaveData->money += amount;
     if (gSaveData->money > SAVE_MONEY_MAX) {
         gSaveData->money = SAVE_MONEY_MAX;
     } else if (gSaveData->money < 0) {
         gSaveData->money = 0;
     }
+#endif
 }
+
+#ifdef PORT
+/* Port Dragon History chapters (port/include/mod_story.h): their progress bits live in bits 24..31 of the first
+   sub menu's flags, which the game never sets (MSLOT_* are 0x01..0x40 and every reader masks them), so they are
+   kept in the same 0x4000-byte save as the stock Dragon History progress. Two bits per chapter, chapters 0..3. */
+s32 Save_GetMoney(void) { return gSaveData != NULL ? gSaveData->money : 0; }
+
+/* Dragon History chapters: puts a found Dragon Ball (1..7) into unlockFlags, as HistResult_BuildRewards does for
+   stock story battles. 1 when it was new, 0 when already owned or invalid. */
+s32 Save_GrantDragonBall(s32 ball) {
+    s32 mask;
+
+    if (gSaveData == NULL || ball < 1 || ball > 7) {
+        return 0;
+    }
+    mask = 1 << (ball - 1);
+    if (gSaveData->unlockFlags & mask) {
+        return 0;
+    }
+    gSaveData->unlockFlags |= mask;
+    return 1;
+}
+
+s32 Save_GetStoryBits(void) {
+    return gSaveData != NULL ? (gSaveData->slot[0].flags >> 24) & 0xFF : 0;
+}
+
+void Save_OrStoryBits(s32 bits) {
+    if (gSaveData != NULL) {
+        gSaveData->slot[0].flags |= (bits & 0xFF) << 24;
+    }
+}
+
+/* Dragon History chapter progress beyond the first four: the same byte (bits 24..31) of slot `group` - stock code
+   reads only MSLOT_* (bits 0..6) and the ranks use bits 8..23. Group 0 is Save_GetStoryBits. */
+s32 Save_GetStoryBitsGroup(s32 group) {
+    return gSaveData != NULL && group >= 0 && group < SAVE_SLOT_COUNT ? ((u32)gSaveData->slot[group].flags >> 24) & 0xFF : 0;
+}
+
+void Save_OrStoryBitsGroup(s32 group, s32 bits) {
+    if (gSaveData != NULL && group >= 0 && group < SAVE_SLOT_COUNT) {
+        gSaveData->slot[group].flags |= (s32)((u32)(bits & 0xFF) << 24);
+    }
+}
+
+/* Two-bit highest difficulty rank (0 unranked, 1 Easy, 2 Normal, 3 Hard).
+   All stock slot readers mask MSLOT_* (bits0..6); bits8..23 are unused.
+   Keep the previous outcome bits24..31 of slot0 intact. Eight chapters per
+   slot, 72 total, no save layout/version change. Chapter IDs must stay stable. */
+s32 Save_GetStoryRank(s32 chapter) {
+    if (gSaveData == NULL || chapter < 0 || chapter >= SAVE_SLOT_COUNT * 8) return 0;
+    return ((u32)gSaveData->slot[chapter / 8].flags >> (8 + (chapter % 8) * 2)) & 3u;
+}
+
+void Save_ClearStoryRank(s32 chapter) {
+    if(gSaveData && chapter>=0 && chapter<SAVE_SLOT_COUNT*8)
+        gSaveData->slot[chapter/8].flags &= ~(3u << (8+(chapter%8)*2));
+}
+
+void Save_RaiseStoryRank(s32 chapter, s32 rank) {
+    s32 shift;
+    u32 flags, mask;
+    if (gSaveData == NULL || chapter < 0 || chapter >= SAVE_SLOT_COUNT * 8 || rank < 1 || rank > 3) return;
+    if (rank <= Save_GetStoryRank(chapter)) return;
+    shift = 8 + (chapter % 8) * 2;
+    flags = (u32)gSaveData->slot[chapter / 8].flags;
+    mask = 3u << shift;
+    gSaveData->slot[chapter / 8].flags = (s32)((flags & ~mask) | ((u32)rank << shift));
+}
+#endif
 
 /* Restores the six rule settings at 0xC34 to 3, 2, 2, 0, 0, 0. */
 void Save_ResetRules(void) {

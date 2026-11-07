@@ -124,6 +124,10 @@ void DemoCam_Term(void) {
 
 /* Selects the animation to play (fixing up its pointers) and detaches the camera from any object. */
 void DemoCam_SetAnim(DemoCamAnim *anim) {
+#ifdef PORT
+    /* A technique cannot replace the Story director's owned fixed shot. */
+    {extern int Port_StoryFixedCameraOwned(void);if(gDemoCam->fixed&&Port_StoryFixedCameraOwned())return;}
+#endif
     gDemoCam->anim = anim;
     DemoCam_FixupAnim(gDemoCam->anim);
     gDemoCam->unk2F8 = 0;
@@ -386,6 +390,10 @@ s32 DemoCam_IsInUse(void) {
 
 /* Starts the selected animation; the caller steps the time. */
 void DemoCam_Start(void) {
+#ifdef PORT
+    /* A technique cannot replace the Story director's owned fixed shot. */
+    {extern int Port_StoryFixedCameraOwned(void);if(gDemoCam->fixed&&Port_StoryFixedCameraOwned())return;}
+#endif
     if (gDemoCam->anim != NULL) {
         gDemoCam->fixed = 0;
         gDemoCam->flags = DEMO_CAM_PLAYING;
@@ -394,6 +402,10 @@ void DemoCam_Start(void) {
 
 /* Starts the selected animation, advancing by itself and holding its last frame. */
 void DemoCam_StartAuto(void) {
+#ifdef PORT
+    /* A technique cannot replace the Story director's owned fixed shot. */
+    {extern int Port_StoryFixedCameraOwned(void);if(gDemoCam->fixed&&Port_StoryFixedCameraOwned())return;}
+#endif
     if (gDemoCam->anim != NULL) {
         gDemoCam->fixed = 0;
         gDemoCam->flags = DEMO_CAM_PLAYING | DEMO_CAM_AUTO;
@@ -402,6 +414,10 @@ void DemoCam_StartAuto(void) {
 
 /* Starts the selected animation, advancing by itself and ending the demo camera at its end. */
 void DemoCam_StartAutoOnce(void) {
+#ifdef PORT
+    /* A technique cannot replace the Story director's owned fixed shot. */
+    {extern int Port_StoryFixedCameraOwned(void);if(gDemoCam->fixed&&Port_StoryFixedCameraOwned())return;}
+#endif
     if (gDemoCam->anim != NULL) {
         gDemoCam->fixed = 0;
         gDemoCam->flags = DEMO_CAM_PLAYING | DEMO_CAM_AUTO | DEMO_CAM_STOP_AT_END;

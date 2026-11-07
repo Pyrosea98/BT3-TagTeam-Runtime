@@ -215,6 +215,23 @@ s32 StgObj_GetMaterial(StgObj *obj) {
 }
 
 /* For an object that may hold the hidden item: copies the position of object definition 0, returns 1. */
+#ifdef PORT
+/* Objects of the loaded stage that may hold the hidden Dragon Ball (the story fight logs it once). */
+s32 BtlStage_CountItemHolders(void) {
+    s32 i, n = 0;
+
+    if (gBtlStage == NULL || gBtlStage->objs == NULL) {
+        return -1;
+    }
+    for (i = 0; i < gBtlStage->objCount; i++) {
+        if (gBtlStage->objs[i].type & STG_OBJ_ITEM) {
+            n++;
+        }
+    }
+    return n;
+}
+#endif
+
 s32 StgObj_GetItemPos(Vec4 *out, StgObj *obj, s32 idx) {
     if (!(obj->type & STG_OBJ_ITEM)) {
         return 0;
@@ -397,7 +414,14 @@ s32 BtlStage_DestroyObj(s32 objId, s32 idx, Vec4 *hitPos) {
             if (!BtlCharApi_IsInputInjected(objId)) {
                 if (rule->unk18 != 0) {
                     if (StgObj_GetItemPos(&itemPos, &objs[idx], idx)) {
+#ifdef PORT
+                        /* Testing aid (Juan): story_dragonball_always=1 finds the story fight's ball on the first
+                           holder broken. Default 0 keeps the stock 1-in-8 roll; stock mode 1 is never affected. */
+                        extern int Port_StoryDragonBallAlways(void);
+                        if (((rand() >> 8) & 7) == 0 || Port_StoryDragonBallAlways()) {
+#else
                         if (((rand() >> 8) & 7) == 0) {
+#endif
                             result->unk44 = rule->unk18;
                             rule->unk18 = 0;
                             StreamSe_PlayDefault(0, 0x8D3A);
@@ -829,7 +853,7 @@ extern f32 Mathf_Cos(f32 angle);
 #define PORT_START_BACK 0.10f /* ... and a step back */
 #define PORT_START_SIDE_MIN 28.0f /* the step to the side is at least this (2.8 m) */
 #define PORT_START_APART 22.0f    /* no two fighters start nearer to each other than this */
-static f32 sPortStart[10][2];     /* where the extra fighters of this start were placed: x, z by roster index */
+static f32 sPortStart[16][2];     /* where the extra fighters of this start were placed: x, z by roster index */
 
 static s32 Port_StartGround(Vec4 *pos, f32 leaderY, StgGroundHit *hit) {
     s32 zone;
@@ -934,7 +958,7 @@ static s32 Port_StartPlace(s32 side, Vec4 *pos, Vec4 *rot) {
     rot->w = 1.0f;
     rot->z = 0.0f;
     rot->x = 0.0f;
-    if ((u32)side < 10) {
+    if ((u32)side < 16) {
         sPortStart[side][0] = pos->x;
         sPortStart[side][1] = pos->z;
     }
@@ -1123,20 +1147,28 @@ STG_LIST_GETTER(BtlStage_GetList80, count80, list80)
 #ifdef PORT
 /* Validate a mod helper position using the same native stage cylinder and ground probe as starts. */
 s32 Port_AssistSafePoint(s32 who,f32*point){
- Vec4 probe;StgGroundHit hit;s32 zone,j;f32 radius,body,top,bottom,len;
+ Vec4 probe;StgGroundHit hit;s32 zone,j,hasFloor;f32 radius,body,top,bottom,len;
  extern s32 Port_FighterObjId(s32);extern f32 BtlCharApi_GetRadius(s32);
  if(!BtlStage_IsReady())return 0;
  for(j=0;j<3;j++)if(!(point[j]>=-1000000&&point[j]<=1000000))return 0;
  body=BtlCharApi_GetRadius(Port_FighterObjId(who));radius=BtlStage_GetInnerRadius()-body-10;top=BtlStage_GetTop();bottom=BtlStage_GetBottom();
  if(!(body>0&&body<1000&&radius>1&&radius<1000000&&top<bottom))return 0;
  len=sqrtf(point[0]*point[0]+point[2]*point[2]);if(len>radius){point[0]*=radius/len;point[2]*=radius/len;}
- probe.x=point[0];probe.y=top-1;probe.z=point[2];probe.w=1;memset(&hit,0,sizeof(hit));
+ probe.x=point[0];probe.y=point[1]-body;probe.z=point[2];probe.w=1;memset(&hit,0,sizeof(hit));
  zone=BtlStage_ProbeGround(-1,&probe,&hit);
- if(zone<-1||!(hit.y>top&&hit.y<=bottom+1))return 0;
- /* Native Y grows downwards. Keep feet above the queried ground, below the ceiling. */
- if(point[1]>hit.y-1)point[1]=hit.y-1;
+ if(zone<-1)return 0;
+ /* The returned zone is NOT a hit flag: StgGround_Probe uses FLT_MAX for no floor. */
+ hasFloor=hit.y>=probe.y&&hit.y<=bottom+1;
+ if(!hasFloor&&!(hit.y>1e30f))return 0;
+ if(hasFloor&&point[1]>hit.y-1)point[1]=hit.y-1;
  if(point[1]<top+body)point[1]=top+body;
  if(point[1]>bottom-body)point[1]=bottom-body;
- if(point[1]>hit.y-1)return 0;point[3]=1;return 1;
+ if(hasFloor&&point[1]>hit.y-1)return 0;point[3]=1;return 1;
+}
+s32 Port_AssistPathBlocked(const float*from,const float*to){
+ /* Trace the body above the feet; the native camera sphere has radius2. */
+ Vec4 a={from[0],from[1]-2.1f,from[2],1},b={to[0],to[1]-2.1f,to[2],1},hit;f32 fraction;s32 object;
+ extern s32 BtlCam_TraceStage(Vec4*,Vec4*,Vec4*,f32*,s32*);
+ return BtlCam_TraceStage(&hit,&a,&b,&fraction,&object)!=0;
 }
 #endif

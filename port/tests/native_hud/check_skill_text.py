@@ -47,6 +47,8 @@ unsigned Port_GameBigAlloc(int size) {
 const char *Port_CharaName(int chara) {
     switch (chara) {
         case 21: return "Gohan";
+        case 23: return "Piccolo";
+        case 247: return "Gokulo";
         case 34: return "Vegeta";
         case 51: return "Vegetto";
         case 54: case 110: return "Gogeta";
@@ -135,7 +137,7 @@ with tempfile.TemporaryDirectory() as directory:
     source_path.write_text(harness + "\n".join(parts) + "\n" + footer)
     subprocess.run(
         [
-            "g++",
+            "g++", "-include", "port/include/v05_roster_rules.h",
             "-std=c++17",
             "-fsanitize=address,undefined",
             "-fno-omit-frame-pointer",

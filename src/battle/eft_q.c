@@ -1,19 +1,6 @@
 #include "common.h"
 
-#ifndef EFT_OWNER_TAG
-#ifdef PORT
-/* More than two fighters: whose a task is. The game has two tags, "object 0's" and "anybody else's", and ends a
-   fighter's effects by resetting every task of its tag: with more fighters one fighter's change of model ended
-   the techniques of all the others past the first (a beam gone, and a technique's camera cut left running with
-   its data freed under it: a crash). Every extra fighter (objects 2..9) has a tag and a reset group of its own
-   (BtlTaskList_Reset, BtlScene_Reset); any other object keeps "anybody else's". */
-#define EFT_OWNER_TAG(n) ((n) == 0 ? 0x800 : ((u32)(n) - 2 < 8) ? (0x100000 << ((n) - 2)) : 0x1000)
-#define EFT_OWNER_RESET(n) ((n) == 0 ? 2 : ((u32)(n) - 2 < 8) ? (n) + 3 : 3)
-#else
-#define EFT_OWNER_TAG(n) n == 0 ? 0x800 : 0x1000
-#define EFT_OWNER_RESET(n) n == 0 ? 2 : 3
-#endif
-#endif
+#include "battle/eft_owner.h"
 #include "battle/eft_q.h"
 #include "sys/gfx_ot.h"
 
@@ -790,7 +777,7 @@ void EftCharRoot_Term(EftQTask *task) {
     {
         s32 k;
 
-        for (k = 0; k < 8; k++) { /* (the extra fighters' own, PORT_EXTRA_MAX of them) */
+        for (k = 0; k < 14; k++) { /* (the extra fighters' own, PORT_EXTRA_MAX of them) */
             BtlPool_Reset(PORT_EXTRA_POOL(k));
         }
     }
@@ -1069,9 +1056,13 @@ void EftFlashMgr_Update(EftQTask *task) {
             EftFlashArg arg = { { 255.0f, 255.0f, 255.0f, 128.0f }, 0.5f, 1.0f, 0.5f, -1, 0 };
 
             if (!(gEftFlash->flags & 1)) {
-                EftFlash_Start(&arg);
 #ifdef PORT
+                /* Stable per-task identity: generic technique flashes stay unowned. */
+                arg.objId = i;
+                EftFlash_StartOwned(&arg);
                 gEftFlash->flags |= (i+1)<<8;
+#else
+                EftFlash_Start(&arg);
 #endif
                 if (i == 0) {
                     gEftFlash->flags |= 2;
@@ -1206,6 +1197,11 @@ void EftFlash_Draw(EftQTask *task) {
     EftQSpritePkt *p;
     OtEntry *e;
 
+#ifdef PORT
+    /* Only the costume-reload cover is hidden in authored Story fights.
+       Keep the task/resource waits running; actual attack flashes still draw. */
+    {extern int Port_StoryActive(void);if(w->arg.objId>=0&&Port_StoryActive())return;}
+#endif
     Vec4_Lerp((Vec4 *)&col, (Vec4 *)&clear, (Vec4 *)&w->arg.color, w->fade);
     p = (EftQSpritePkt *)gOtCur;
     gOtCur = (u32 *)(p + 1);

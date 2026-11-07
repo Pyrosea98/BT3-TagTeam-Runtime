@@ -553,7 +553,7 @@ int Port_ThirdChara(void) {
    settings): plat_fighters.c. Now any number of them (port/include/port_fighters.h): gPortExtraSlot[k] /
    gPortExtraObj[k] are extra fighter k's resource slot and battle object, set by the loader, and gPortExtraObjs
    says how many have an object. */
-int gPortExtraSlot[PORT_EXTRA_MAX] = {-1, -1, -1, -1, -1, -1, -1, -1}, gPortExtraObj[PORT_EXTRA_MAX] = {-1, -1, -1, -1, -1, -1, -1, -1};
+int gPortExtraSlot[PORT_EXTRA_MAX] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}, gPortExtraObj[PORT_EXTRA_MAX] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 int gPortExtraObjs;
 /* (the experiment's tool) Walks the game's heap and says where its chain of blocks first breaks: the block before
    the break is the one that was written past its end. Called with a label from points of a fight's set-up and

@@ -315,6 +315,34 @@ s32 Num_Pow(s32 base, s32 exp) {
 /* Draws |value| with the clips named fmt % (first + n), n = 0 for the last digit. The digit sheet has fou
  * w * h cells per row; cell 10 is the blank. count 0 = as many digits as the value has. mode 0 hides leading
  * zeros, 1 shows them, 2 shows the blank cell in every clip. */
+#ifdef PORT
+/* Native balance fields have seven authored clips. Larger balances reuse their own
+   digit sheet in that same space; never select an out-of-range atlas cell. */
+extern void Flash_ClipSetWideNumber(Flash *, FlashRef *, s32, s32);
+extern void Flash_ClipGetPos(Flash *, FlashRef *, s32 *, s32 *);
+static s32 Num_PortMoney(Flash *flash, char *parent, char *fmt, s32 first, s32 count,
+                        s32 value, s32 w, s32 h, s32 mode, s32 parentFmt) {
+    FlashRef ref,units; FlashUv uv; char name[64]; s32 i,x0=0,y0=0,x1=0,y1=0,pitch;
+    if (count != 7 || parentFmt || (strcmp(fmt,"mc_total_point_%d") && strcmp(fmt,"mc_pay_num_%d"))) return 0;
+    sprintf(name,fmt,first); Flash_FindLabel(flash,parent,name,&ref);
+    units=ref;Flash_ClipSetWideNumber(flash,&ref,0,0);
+    if (value <= 9999999 || mode == 2) return 0;
+    Flash_ClipGetPos(flash,&units,&x0,&y0);
+    sprintf(name,fmt,first+1);Flash_FindLabel(flash,parent,name,&ref);
+    Flash_ClipGetPos(flash,&ref,&x1,&y1);pitch=x0>x1?x0-x1:x1-x0;
+    if(pitch<1||pitch>w*2)pitch=w/2;
+    for (i=0;i<count;i++) {
+        sprintf(name,fmt,first+i); Flash_FindLabel(flash,parent,name,&ref);
+        Flash_ClipSetFlags(flash,&ref,FLASH_PROP_VISIBLE,i==0);
+        if (!i) {
+            uv.x0=uv.y0=uv.unk10=0;uv.x1=w;uv.y1=h;
+            Flash_ClipSetUv(flash,&ref,&uv);
+            Flash_ClipSetWideNumber(flash,&ref,value,pitch);
+        }
+    }
+    return 1;
+}
+#endif
 void Num_Draw(Flash *flash, char *fmt, s32 first, s32 count, s32 value, s32 w, s32 h, s32 mode) {
     FlashRef ref;
     char name[0x40];
@@ -324,6 +352,9 @@ void Num_Draw(Flash *flash, char *fmt, s32 first, s32 count, s32 value, s32 w, s
     s32 d;
     s32 digit;
 
+#ifdef PORT
+    if (Num_PortMoney(flash,NULL,fmt,first,count,value,w,h,mode,0)) return;
+#endif
     if (count == 0) {
         count = Num_CountDigits(value);
     }
@@ -378,6 +409,9 @@ void Num_DrawChild(Flash *flash, char *parent, char *fmt, s32 first, s32 count, 
     s32 d;
     s32 digit;
 
+#ifdef PORT
+    if (Num_PortMoney(flash,parent,fmt,first,count,value,w,h,mode,parentFmt)) return;
+#endif
     if (count == 0) {
         count = Num_CountDigits(value);
     }
@@ -787,7 +821,7 @@ void StgGrid_MoveUp(s32 *ids, s32 *col, s32 *row, s32 rows) {
 static s32 Port_GridCharaUnlocked(s32 id){
  if(id==54||id==59)return 1; /* the split SSJ4 entries are transformations of their base fighters */
  if(id>=CHRGRID_ID_RANDOM&&id<=CHRGRID_ID_EMPTY)return 1; /* keep authored marker cells */
- if(id>=165)return Port_Beta8HasCharacter(id);
+ if(id>=165)return Port_Beta8HasEntry(id);
  if(id<0||id>160)return 0;
  return (s32)((SAVE_CHARA_WORD(gSaveData,id)>>(id%64))&1);
 }
@@ -799,6 +833,7 @@ static s32 Port_GridCharaUnlocked(s32 id){
 #ifdef PORT
 extern int Port_Beta8HasParam(int chara);
 extern int Port_Beta8FormList(int id, int *out, int max);
+extern int Port_Beta8SelectFormOwner(int id);
 extern int Port_Beta8IsTransform(int source, int target);
 extern int Port_Beta8IsAnyTransform(int target);
 extern void Port_DlcLog(int base, int candidate, int isForm);
@@ -839,12 +874,27 @@ typedef struct {
 } PortDlcEntry;
 
 static const PortDlcEntry sDlcEntries[] = {
+    { 213, 146 }, /* Oceanus base; dragon245 stays in its reel */
+    { 247, 23 },  /* Gokoro */
     { 212, 210 }, /* Yamu (Spopovich's former costume 2), after Spopovich */
     { 167, 22 },  /* Piccoro (Medio) Saga Namek, after Piccolo (Inicio) */
     { 214, 51 },  /* Gokhan (Vegetto's former costume 3/internal 2), after Vegetto */
     { 215, 51 },  /* Vegetto GT (Vegetto's former costume 2/internal 1), after Vegetto */
     { 224, 51 },  /* Gogetto (Metamoran), after the fusion components */
-    { 234, 51 }   /* Gogetto Potara */
+    { 234, 51 },   /* Gogetto Potara */
+    { 161, 3 }, { 163, 17 }, { 164, 28 }, { 170, 34 }, { 177, 39 },
+    { 178, 41 }, { 179, 44 }, { 181, 45 }, { 182, 46 }, { 183, 55 },
+    { 300, 55 }, /* Mucchi, a separate GT fighter beside Mucchi Mocchi183 */
+    { 184, 61 }, { 185, 61 }, { 186, 63 }, { 187, 66 }, { 189, 68 },
+    { 190, 71 }, { 192, 71 }, { 194, 76 }, { 195, 77 }, { 197, 80 },
+    { 198, 80 }, { 203, 82 }, { 204, 84 }, { 205, 85 },
+    { 206, 87 }, { 207, 88 }, { 208, 90 }, { 209, 90 }, { 242, 98 },
+    { 251, 99 }, { 252, 100 }, { 253, 103 }, { 254, 103 }, { 255, 109 },
+    { 256, 109 }, { 257, 111 }, { 258, 111 }, { 259, 113 }, { 260, 118 },
+    { 261, 123 }, { 262, 124 }, { 263, 124 }, { 264, 129 }, { 265, 130 },
+    { 266, 130 }, { 267, 131 }, { 268, 134 }, { 269, 135 }, { 270, 135 },
+    { 271, 136 }, { 272, 140 }, { 273, 140 }, { 274, 145 }, { 275, 146 },
+    { 276, 146 }, { 277, 151 }, { 278, 153 }, { 279, 154 }, { 280, 155 }
 };
 #define PORT_DLC_ENTRY_COUNT ((s32)(sizeof(sDlcEntries) / sizeof(sDlcEntries[0])))
 
@@ -895,7 +945,7 @@ static s32 ChrGrid_PromoteAdded(ChrGridCell *out, s32 outMax, ChrGridCell *in, s
             randomIndex = i; /* the random cell is always the last entry */
             continue;
         }
-        if (c.id == 54 || c.id == 59) {
+        if (c.id == 54 || c.id == 59 || c.id == 160 || (c.id>=165&&Port_Beta8SelectFormOwner(c.id)>=0)) {
             continue; /* the SSJ4 results are transformations now, not select cells */
         }
         if (c.id == CHRGRID_ID_EMPTY) {
@@ -970,6 +1020,7 @@ static s32 ChrGrid_PromoteAdded(ChrGridCell *out, s32 outMax, ChrGridCell *in, s
             s32 id = sDlcEntries[k].id;
             s32 isCell = 0;
 
+            if(Port_Beta8SelectFormOwner(id)>=0){curatedDone[k]=1;continue;}
             if (curatedDone[k] || sDlcEntries[k].after != c.id) {
                 continue;
             }
@@ -992,6 +1043,7 @@ static s32 ChrGrid_PromoteAdded(ChrGridCell *out, s32 outMax, ChrGridCell *in, s
         s32 id = sDlcEntries[k].id;
         s32 isCell = 0;
 
+        if(Port_Beta8SelectFormOwner(id)>=0){curatedDone[k]=1;continue;}
         if (curatedDone[k]) {
             continue;
         }
@@ -1012,7 +1064,9 @@ static s32 ChrGrid_PromoteAdded(ChrGridCell *out, s32 outMax, ChrGridCell *in, s
     /* The split entries own their transformations as their own form entries, so their forms show the
        separated names and single-costume powers instead of the shared Vegetto slots. */
     for (k = 0; k < o; k++) {
-        s32 n = Port_Beta8FormList(out[k].id, out[k].form, CHRGRID_FORM_MAX);
+        s32 n;
+        if(out[k].id==CHRGRID_ID_CUSTOM)continue; /*163 remains the stock saved-character menu marker*/
+        n = Port_Beta8FormList(out[k].id, out[k].form, CHRGRID_FORM_MAX);
 
         if (n > 0) {
             out[k].formCount = n;

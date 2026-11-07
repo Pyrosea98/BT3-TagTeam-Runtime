@@ -514,6 +514,14 @@ f32 BtlCharApi_GetAltitude(s32 objId) {
     return BtlCharApi_GetGroundY(objId) - pos.y;
 }
 
+#ifdef PORT
+#include "mod_imported_muzzle.h"
+static int Port_ImportedMuzzle(BtlCapiObj*obj,int node,BtlCapiNode*n,Vec4*out){
+ BtlCapiNode*l,*r;if(!obj||(obj->chara!=213&&obj->chara!=245)||node!=0x36)return 0;
+ l=BtlObj_GetNode(obj,0x15);r=BtlObj_GetNode(obj,0x23);
+ return MIM_Repair(obj->chara,node,obj->pos.y,n?(float*)&n->mtx.m[3]:NULL,l?(float*)&l->mtx.m[3]:NULL,r?(float*)&r->mtx.m[3]:NULL,(float*)out);
+}
+#endif
 /* World position of a model node (translation of its matrix); the object position when the node does not exist. */
 void BtlCharApi_GetNodePos(s32 objId, s32 node, Vec4 *out) {
     BtlCapiObj *obj = BtlObj_Get(objId);
@@ -521,6 +529,9 @@ void BtlCharApi_GetNodePos(s32 objId, s32 node, Vec4 *out) {
 
     if (obj != NULL) {
         n = BtlObj_GetNode(obj, node);
+#ifdef PORT
+        if(Port_ImportedMuzzle(obj,node,n,out))return;
+#endif
         if (n != NULL) {
             Vec4_Copy(out, (Vec4 *)&n->mtx.m[3]);
             return;
@@ -561,9 +572,15 @@ void BtlCharApi_GetNodeMtx(s32 objId, s32 node, Mtx44 *out) {
         n = BtlObj_GetNode(obj, node);
         if (n != NULL) {
             Mtx_Copy(out, &n->mtx);
+#ifdef PORT
+            {Vec4 fixed;if(Port_ImportedMuzzle(obj,node,n,&fixed))Vec4_Copy((Vec4*)&out->m[3],&fixed);}
+#endif
             return;
         }
         Mtx_StoreIdentity(out);
+#ifdef PORT
+        {Vec4 fixed;if(Port_ImportedMuzzle(obj,node,NULL,&fixed))Vec4_Copy((Vec4*)&out->m[3],&fixed);}
+#endif
     }
     if (obj == NULL) {
         Mtx_StoreIdentity(out);

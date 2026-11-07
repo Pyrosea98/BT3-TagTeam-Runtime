@@ -4,6 +4,8 @@
 /* Native file-id routing into the Beta8 model volumes for the mod's added characters (ids above the stock
    roster). Reads <BT3_DATA>/beta8/bundle-map.bin once. Returns a port-only global id (0x40000000 | transport)
    for ADXF_OpenAfs(volume 3/4, entry), or -1 when the character/costume has no verified bundle. */
+int Port_Beta8CostumeSelectable(int,int);
+int Port_Beta8NextCostume(int,int,int,int);
 int Port_Beta8CostumeCount(int chara,int *costume);
 int Port_Beta8FileId(int chara, int costume, int damaged, int kind); /* kind 0 model, 1 anim16, 2 anim24 */
 
@@ -13,6 +15,7 @@ int Port_Beta8CharacterForModel(int file_id);
 int Port_Beta8PortraitFileId(int chara,int costume);
 int Port_Beta8PortraitResolve(int chara,int costume,int legacy_id);
 int Port_Beta8HasCharacter(int chara);
+int Port_Beta8HasEntry(int chara); /* bundle character OR an alias entry of one */
 int Port_Beta8SizeClass(int chara,int costume); /* exact ISO parameter byte2; -1 unavailable */
 int Port_Beta8HasParam(int chara); /* its 256-byte BtlParam is in beta8/btlparam.bin */
 int Port_Beta8IsTransform(int source, int target); /* target is one of source's four transformation targets */
@@ -23,6 +26,7 @@ void Port_Beta8FreeSmallPortrait(void *data);
 void *Port_Beta8LoadChipBundle(int chara);
 void Port_Beta8FreeChipBundle(void *data);
 int Port_Beta8StockAlias(int chara); /* stock id (0..160) an alias resolves to, or -1 */
+void Port_Beta8PowerIdentity(int *chara,int *costume);
 int Port_Beta8FormList(int id, int *out, int max); /* a split cell's entries, base first; 0 = none */
 int Port_Beta8PatchFormParam(int chara, void *param); /* writes the split form chain into a live BtlParam */
 int Port_Beta8FormTarget(int source, int target); /* the entry a transformation of `source` really loads */
@@ -40,4 +44,14 @@ float Port_Beta8ChargeScale(int obj);
 int Port_Beta8Ssj4Object(int obj);
 void Port_Beta8Ssj4Load(int obj,int chara,void*param);
 void Port_Beta8Ssj4TraceAura(int obj,int flags);
+int Port_Beta8CostumeIdentity(int,int);
+int Port_Beta8SelectFormOwner(int);
+int Port_Beta8HasFormPolicy(int,int);
+void Port_Beta8PatchCostumeFormParam(int,int,void*);
+int Port_Beta8CostumeFormTarget(int,int,int);
+int Port_Beta8FormSlotTargetForCostume(int,int,int,int);
+int Port_Beta8TransformCostume(int,int,int);
+
+const char *Port_Beta8DragonName(int);
+void Port_Beta8PatchDragonNames(void*);
 #endif

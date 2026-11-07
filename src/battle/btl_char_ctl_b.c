@@ -120,6 +120,10 @@ void BtlChange_Update(void) {
 #endif
 
 #ifdef PORT
+    /* A removed or sidelined Story actor cannot play the action that acknowledges its load.
+       Keep the real loader/commit path: grant READY, never discard an active job. */
+    {extern s32 Port_StoryRetired(s32),Port_StorySceneParked(s32);
+     if(q->cur&&q->state==BTL_CHANGE_LOADED&&(Port_StoryRetired(q->cur->player)||Port_StorySceneParked(q->cur->player)))q->state=BTL_CHANGE_READY;}
     Port_ChangeRefill();
 #endif
     if (q->state == BTL_CHANGE_DONE) {

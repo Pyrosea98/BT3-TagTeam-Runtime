@@ -436,6 +436,33 @@ s32 BtlAct_ActionE8E9(Chr *chr, s32 phase) {
 }
 
 /* Action 0xEA: loops animation 0xD4 while flag 0xBE is raised, then action 0xB. */
+#ifdef PORT
+/* Guard break with no ki: a fighter that has a way back goes to it. Slot 3 (R3 + down) is a revert only when it
+   points to a LOWER form of the fighter's own family in the mod's tier table; the slots that point to a stronger
+   form live in the same place (Goku (Fin) -> SSJ4, for example) and are left alone. */
+static int Port_GuardBreakRevert(Chr *chr) {
+    extern int Port_CpuFormTier(int, int *, int *);
+    extern s32 BtlAct_QueueTransform(Chr *, s32);
+    extern s32 BtlParam_GetSlotId(Chr *, s32);
+    s32 target = BtlParam_GetSlotId(chr, 3);
+    s32 current = *(s32 *)BtlMember_GetActive(chr); /* the member's chara (BtlMember + 0) */
+    s32 family, tier, df, dt;
+
+    if (target < 0 || target == 0xFF) {
+        return 0;
+    }
+    Port_CpuFormTier(current, &family, &tier);
+    Port_CpuFormTier(target, &df, &dt);
+    if (family == 0 || df != family || tier < 0 || dt < 0 || dt >= tier) {
+        return 0;
+    }
+    if (!BtlAct_QueueTransform(chr, 3)) {
+        return 0;
+    }
+    BtlAct_Request(chr, BtlAct_GetQueued(chr));
+    return 1;
+}
+#endif
 s32 BtlAct_ActionEA(Chr *chr, s32 phase) {
     if (phase == 0) {
         BtlAnim_Play(chr, 0xD4, 0.15f);
@@ -448,6 +475,11 @@ s32 BtlAct_ActionEA(Chr *chr, s32 phase) {
     }
     if (phase == 2) {
         if (!BtlChar_TestFlag(chr, 0xBE)) {
+#ifdef PORT
+            if (Port_GuardBreakRevert(chr)) {
+                return 0;
+            }
+#endif
             BtlAct_Request(chr, 0xB);
         }
     }

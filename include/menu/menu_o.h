@@ -144,7 +144,11 @@ extern UoSave *gSaveData;
 
 #define UO_SAVE gSaveData
 
+#ifdef PORT
+#define UO_MONEY_MAX 999999999
+#else
 #define UO_MONEY_MAX 9999999
+#endif
 
 /* ---- UbResult (menu_o.c): result screen of the two disc modes ---- */
 

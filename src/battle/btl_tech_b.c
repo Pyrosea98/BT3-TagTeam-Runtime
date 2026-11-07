@@ -1,5 +1,8 @@
 #include "common.h"
 #include "battle/btl_tech_b.h"
+#include <string.h>
+#include "mod_damage_safe.h"
+#include "mod_melee_profiles.h"
 
 /*
  * Character data accessors, 0x20F0E8..0x2129C8 (the continuation of btl_tech_a.c; see include/battle/btl_tech_b.h
@@ -73,41 +76,50 @@ s32 BtlSkill_GetShots(BtlTechBChr *chr, s32 slot);
 s32 BtlSkill_GetHitsB(BtlTechBChr *chr, s32 slot);
 s32 BtlSkill_GetHitsC(BtlTechBChr *chr, s32 slot);
 
+#include "mod_story_combat.inc"
+
+/* Story data readers: damaged clothes must not change combat power. */
+extern void *Port_StoryCombatTable(void*,int,void*);
+static BtlTechBParam *STC_param(BtlTechBChr *chr){return (BtlTechBParam*)Port_StoryCombatTable(chr,0,BtlChar_GetObj(chr)->param);}
+static BtlKiBlastData *STC_kiBlast(BtlTechBChr *chr){return (BtlKiBlastData*)Port_StoryCombatTable(chr,2,BtlChar_GetObj(chr)->kiBlast);}
+static BtlSuperData *STC_super(BtlTechBChr *chr){return (BtlSuperData*)Port_StoryCombatTable(chr,3,BtlChar_GetObj(chr)->super);}
+static BtlSkillData *STC_skill(BtlTechBChr *chr){return (BtlSkillData*)Port_StoryCombatTable(chr,4,BtlChar_GetObj(chr)->skill);}
+
 /* ---- general parameters (obj + 0x91C), continued from btl_tech_a.c ------------------------------------------- */
 
 /* Parameter +0x5C (float; no caller found). */
 f32 BtlParam_GetUnk5C(BtlTechBChr *chr) {
-    return BtlChar_GetObj(chr)->param->unk5C;
+    return STC_param(chr)->unk5C;
 }
 
 /* Parameter +0x68 (float; BtlAct_StepHandler). */
 f32 BtlParam_GetUnk68(BtlTechBChr *chr) {
-    return BtlChar_GetObj(chr)->param->unk68;
+    return STC_param(chr)->unk68;
 }
 
 /* Parameter +0x6C (float; BtlAct_StepHandler). */
 f32 BtlParam_GetUnk6C(BtlTechBChr *chr) {
-    return BtlChar_GetObj(chr)->param->unk6C;
+    return STC_param(chr)->unk6C;
 }
 
 /* Parameter +0x60: multiplies the reaction scale of a hit this character takes (BtlHit_ApplyHit). */
 f32 BtlParam_GetHitReactScale(BtlTechBChr *chr) {
-    return BtlChar_GetObj(chr)->param->hitReactScale;
+    return STC_param(chr)->hitReactScale;
 }
 
 /* Parameter +0x70 (s16): copied to fighter +0xD6C every frame. */
 s32 BtlParam_GetUnk70(BtlTechBChr *chr) {
-    return BtlChar_GetObj(chr)->param->unk70;
+    return STC_param(chr)->unk70;
 }
 
 /* Parameter +0x72 (s16): copied to fighter +0xD74 every frame. */
 s32 BtlParam_GetUnk72(BtlTechBChr *chr) {
-    return BtlChar_GetObj(chr)->param->unk72;
+    return STC_param(chr)->unk72;
 }
 
 /* Parameter +0x74: attack charge rate at gauge 0 (BtlAct_GetChargeRate); x1.2 with ability 0x4A. */
 f32 BtlParam_GetChargeRateA(BtlTechBChr *chr) {
-    f32 v = BtlChar_GetObj(chr)->param->chargeRateA;
+    f32 v = STC_param(chr)->chargeRateA;
 
     if (BtlMember_HasAbility(chr, 0x4A)) {
         v *= 1.2f;
@@ -115,19 +127,25 @@ f32 BtlParam_GetChargeRateA(BtlTechBChr *chr) {
     return v;
 }
 
+/* Logical identity owns combat scaling; shared model tables stay immutable. */
+extern int Port_NetActive(void),BattleReplay_IsActive(void);
+static int Port_CombatLocal(void){return !Port_NetActive()&&!BattleReplay_IsActive();}
+int Port_CombatScaleDamage(void *fighter,int value){BtlTechBChr*c=(BtlTechBChr*)fighter;BtlTechBMember*m;if(!c||!Port_CombatLocal()||Port_StoryActive())return value;m=BtlMember_GetActive(c);return m?MD_Offense(m->chara,m->costume,value):value;}
+static float Port_CombatDefence(BtlTechBChr*c,float original){BtlTechBMember*m;if(!c||!Port_CombatLocal()||Port_StoryActive())return original;m=BtlMember_GetActive(c);return m?MD_Defence(m->chara,m->costume,original):original;}
+
 /* Parameter +0x78: attack charge rate at a full gauge. */
 f32 BtlParam_GetChargeRateB(BtlTechBChr *chr) {
-    return BtlChar_GetObj(chr)->param->chargeRateB;
+    return STC_param(chr)->chargeRateB;
 }
 
 /* Parameter +0x7C: multiplier of the damage this character takes (BtlMember_Damage). */
 f32 BtlParam_GetDamageTakenScale(BtlTechBChr *chr) {
-    return BtlChar_GetObj(chr)->param->damageTaken;
+    return Port_CombatDefence(chr,STC_param(chr)->damageTaken);
 }
 
 /* Seconds the fighter +0x99C gauge takes to fill: parameter +0x64, / 1.2 (ability 0x34), then x2 (0x1B) or / 0.8 (0x35). */
 f32 BtlParam_GetGauge99CTime(BtlTechBChr *chr) {
-    f32 v = BtlChar_GetObj(chr)->param->gauge99CTime;
+    f32 v = STC_param(chr)->gauge99CTime;
 
     if (BtlMember_HasAbility(chr, 0x34)) {
         v /= 1.2f;
@@ -142,7 +160,7 @@ f32 BtlParam_GetGauge99CTime(BtlTechBChr *chr) {
 
 /* Parameter +0xC7 as a fraction (percent * 0.01); x0.5 with ability 0x48, x1.5 with ability 0x49. */
 f32 BtlParam_GetUnkC7Scale(BtlTechBChr *chr) {
-    f32 v = BtlChar_GetObj(chr)->param->unkC7 * 0.01f;
+    f32 v = STC_param(chr)->unkC7 * 0.01f;
 
     if (BtlMember_HasAbility(chr, 0x48)) {
         v *= 0.5f;
@@ -155,12 +173,12 @@ f32 BtlParam_GetUnkC7Scale(BtlTechBChr *chr) {
 
 /* Parameter +0xC8 (float; no caller found). */
 f32 BtlParam_GetUnkC8(BtlTechBChr *chr) {
-    return BtlChar_GetObj(chr)->param->unkC8;
+    return STC_param(chr)->unkC8;
 }
 
 /* Parameter byte +0x8F + n. */
 s32 BtlParam_GetUnk8F(BtlTechBChr *chr, s32 n) {
-    return BtlChar_GetObj(chr)->param->unk8F[n];
+    return STC_param(chr)->unk8F[n];
 }
 
 /* Common sound of a dash / burst start: 0x1D with parameter flag 0x10, else 0x1C. */
@@ -214,7 +232,7 @@ s32 BtlParam_CanFly(BtlTechBChr *chr) {
 /* Ki blast damage after abilities: +50 % (0xA), then halved (0xB). The kind argument is unused. */
 s32 BtlKiBlast_ScaleDamageByAbility(BtlTechBChr *chr, s32 damage, s32 kind) {
     if (BtlMember_HasAbility(chr, 0xA)) {
-        damage += damage / 2;
+        damage = MD_Add(damage,damage/2);
     }
     if (BtlMember_HasAbility(chr, 0xB)) {
         damage /= 2;
@@ -412,7 +430,7 @@ BtlKiBlastData *BtlKiBlast_GetCurrent(BtlTechBChr *chr, s32 *outKind) {
     if (outKind != NULL) {
         *outKind = kind;
     }
-    return &BtlChar_GetObj(chr)->kiBlast[kind];
+    return &STC_kiBlast(chr)[kind];
 }
 
 /* Record of the ki blast behind a hit record, with its owner and kind; NULL when the hit has no shot. */
@@ -431,7 +449,7 @@ BtlKiBlastData *BtlKiBlast_GetOfHit(BtlTechBHit *hit, BtlTechBChr **outChr, s32 
     if (outChr != NULL) {
         *outChr = chr;
     }
-    return &BtlChar_GetObj(chr)->kiBlast[kind];
+    return &STC_kiBlast(chr)[kind];
 }
 
 /* Record of kind `kind` (kind 0 when out of range). */
@@ -439,7 +457,7 @@ BtlKiBlastData *BtlKiBlast_Get(BtlTechBChr *chr, u32 kind) {
     if (kind >= BTL_KIBLAST_COUNT) {
         kind = 0;
     }
-    return &BtlChar_GetObj(chr)->kiBlast[kind];
+    return &STC_kiBlast(chr)[kind];
 }
 
 /* Record flags; bits 0 and 1 are dropped while BtlChar_TestMemberUnk70. */
@@ -488,7 +506,7 @@ s32 BtlKiBlast_GetDamage(BtlTechBChr *chr) {
     s32 damage = rec->damage;
     s32 hits = rec->hits;
 
-    damage = BtlKiBlast_ScaleDamageByAbility(chr, damage * BtlStat_GetKiBlastDamageScale(chr), kind);
+    damage = BtlKiBlast_ScaleDamageByAbility(chr, MD_FloatScale(Port_CombatScaleDamage(chr,damage),BtlStat_GetKiBlastDamageScale(chr)), kind);
     if (hits >= 2) {
         damage /= hits;
     }
@@ -503,7 +521,7 @@ s32 BtlKiBlast_GetDamageOfHit(BtlTechBHit *hit) {
     s32 damage = rec->damage;
     s32 hits = rec->hits;
 
-    damage = BtlKiBlast_ScaleDamageByAbility(chr, damage * BtlStat_GetKiBlastDamageScale(chr), kind);
+    damage = BtlKiBlast_ScaleDamageByAbility(chr, MD_FloatScale(Port_CombatScaleDamage(chr,damage),BtlStat_GetKiBlastDamageScale(chr)), kind);
     if (hits >= 2) {
         damage /= hits;
     }
@@ -516,7 +534,7 @@ s32 BtlKiBlast_GetDamageOf(BtlTechBChr *chr, u32 kind) {
     s32 damage = rec->damage;
     s32 hits = rec->hits;
 
-    damage = BtlKiBlast_ScaleDamageByAbility(chr, damage * BtlStat_GetKiBlastDamageScale(chr), kind);
+    damage = BtlKiBlast_ScaleDamageByAbility(chr, MD_FloatScale(Port_CombatScaleDamage(chr,damage),BtlStat_GetKiBlastDamageScale(chr)), kind);
     if (hits >= 2) {
         damage /= hits;
     }
@@ -530,7 +548,7 @@ s32 BtlKiBlast_GetGuardDamage(BtlTechBChr *chr) {
     s32 damage = rec->guardDamage;
     s32 hits = rec->hits;
 
-    damage = BtlKiBlast_ScaleDamageByAbility(chr, damage * BtlStat_GetKiBlastDamageScale(chr), kind);
+    damage = BtlKiBlast_ScaleDamageByAbility(chr, MD_FloatScale(Port_CombatScaleDamage(chr,damage),BtlStat_GetKiBlastDamageScale(chr)), kind);
     if (hits > 0) {
         damage /= hits;
     }
@@ -545,7 +563,7 @@ s32 BtlKiBlast_GetGuardDamageOfHit(BtlTechBHit *hit) {
     s32 damage = rec->guardDamage;
     s32 hits = rec->hits;
 
-    damage = BtlKiBlast_ScaleDamageByAbility(chr, damage * BtlStat_GetKiBlastDamageScale(chr), kind);
+    damage = BtlKiBlast_ScaleDamageByAbility(chr, MD_FloatScale(Port_CombatScaleDamage(chr,damage),BtlStat_GetKiBlastDamageScale(chr)), kind);
     if (hits > 0) {
         damage /= hits;
     }
@@ -558,7 +576,7 @@ s32 BtlKiBlast_GetGuardDamageOf(BtlTechBChr *chr, u32 kind) {
     s32 damage = rec->guardDamage;
     s32 hits = rec->hits;
 
-    damage = BtlKiBlast_ScaleDamageByAbility(chr, damage * BtlStat_GetKiBlastDamageScale(chr), kind);
+    damage = BtlKiBlast_ScaleDamageByAbility(chr, MD_FloatScale(Port_CombatScaleDamage(chr,damage),BtlStat_GetKiBlastDamageScale(chr)), kind);
     if (hits > 0) {
         damage /= hits;
     }
@@ -987,7 +1005,7 @@ s32 BtlSuper_GetHitCount(BtlTechBChr *chr, s32 slot) {
 
 /* First flag word of the technique. */
 u32 BtlSuper_GetFlagsA(BtlTechBChr *chr, s32 slot) {
-    BtlSuperData *tbl = BtlChar_GetObj(chr)->super;
+    BtlSuperData *tbl = STC_super(chr);
 
     slot -= 2;
     return tbl->flagsA[slot];
@@ -995,7 +1013,7 @@ u32 BtlSuper_GetFlagsA(BtlTechBChr *chr, s32 slot) {
 
 /* Second flag word of the technique. */
 u32 BtlSuper_GetFlags(BtlTechBChr *chr, s32 slot) {
-    BtlSuperData *tbl = BtlChar_GetObj(chr)->super;
+    BtlSuperData *tbl = STC_super(chr);
 
     slot -= 2;
     return tbl->flags[slot];
@@ -1003,42 +1021,42 @@ u32 BtlSuper_GetFlags(BtlTechBChr *chr, s32 slot) {
 
 /* Technique id. */
 s32 BtlSuper_GetId(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->id[slot - 2];
+    return STC_super(chr)->id[slot - 2];
 }
 
 /* Table +0x1E (s16): compared with hit +0x8 by BtlColl_TryDodge. */
 s32 BtlSuper_GetUnk1E(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->unk1E[slot - 2];
+    return STC_super(chr)->unk1E[slot - 2];
 }
 
 /* Table +0x24 (seconds). */
 f32 BtlSuper_GetShotTime(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->shotTime[slot - 2];
+    return STC_super(chr)->shotTime[slot - 2];
 }
 
 /* Speed per frame of the technique's projectile (table +0x54 in 10 km/h). */
 f32 BtlSuper_GetShotSpeed(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->shotSpeed[slot - 2] * 10.0f * BTL_KMH_PER_FRAME;
+    return STC_super(chr)->shotSpeed[slot - 2] * 10.0f * BTL_KMH_PER_FRAME;
 }
 
 /* Turn rate in radians per frame (table +0x60 in degrees per second). */
 f32 BtlSuper_GetShotTurnRate(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->shotTurn[slot - 2] * 3.14159265f / 180.0f * (1.0f / 30.0f);
+    return STC_super(chr)->shotTurn[slot - 2] * 3.14159265f / 180.0f * (1.0f / 30.0f);
 }
 
 /* Table +0x6C (float). */
 f32 BtlSuper_GetShotUnk6C(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->shotUnk6C[slot - 2];
+    return STC_super(chr)->shotUnk6C[slot - 2];
 }
 
 /* Table +0x90 (s8; no caller found). */
 s32 BtlSuper_GetUnk90(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->unk90[slot - 2];
+    return STC_super(chr)->unk90[slot - 2];
 }
 
 /* First hit factor (number of shots), at least 1. */
 s32 BtlSuper_GetShots(BtlTechBChr *chr, s32 slot) {
-    s32 n = BtlChar_GetObj(chr)->super->shots[slot - 2];
+    s32 n = STC_super(chr)->shots[slot - 2];
 
     if (n < 1) {
         n = 1;
@@ -1048,7 +1066,7 @@ s32 BtlSuper_GetShots(BtlTechBChr *chr, s32 slot) {
 
 /* Second hit factor, at least 1. */
 s32 BtlSuper_GetHitsB(BtlTechBChr *chr, s32 slot) {
-    s32 n = BtlChar_GetObj(chr)->super->hitsB[slot - 2];
+    s32 n = STC_super(chr)->hitsB[slot - 2];
 
     if (n < 1) {
         n = 1;
@@ -1058,61 +1076,61 @@ s32 BtlSuper_GetHitsB(BtlTechBChr *chr, s32 slot) {
 
 /* Third hit factor: table byte + 1. */
 s32 BtlSuper_GetHitsC(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->hitsC[slot - 2] + 1;
+    return STC_super(chr)->hitsC[slot - 2] + 1;
 }
 
 /* Table +0x13B: how the hit direction and the recoil are derived. */
 s32 BtlSuper_GetHitDirKind(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->hitDirKind[slot - 2];
+    return STC_super(chr)->hitDirKind[slot - 2];
 }
 
 /* Table +0x13E: type of the technique; picks its action block (BtlAct_GetTechniqueAction). */
 s32 BtlSuper_GetType(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->type[slot - 2];
+    return STC_super(chr)->type[slot - 2];
 }
 
 /* Reaction id of a hit. */
 s32 BtlSuper_GetReact(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->react[slot - 2];
+    return STC_super(chr)->react[slot - 2];
 }
 
 /* Reaction of the second hit variant (hit flag 0x10); the first when not positive. */
 s32 BtlSuper_GetReactAlt(BtlTechBChr *chr, s32 slot) {
-    BtlSuperData *tbl = BtlChar_GetObj(chr)->super;
+    BtlSuperData *tbl = STC_super(chr);
 
     return tbl->reactAlt[slot - 2] > 0 ? tbl->reactAlt[slot - 2] : tbl->react[slot - 2];
 }
 
 /* Reaction against a victim whose state has bit 0x800. */
 s32 BtlSuper_GetReactS800(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->reactS800[slot - 2];
+    return STC_super(chr)->reactS800[slot - 2];
 }
 
 /* The same for the second hit variant; BtlSuper_GetReactS800 when not positive. */
 s32 BtlSuper_GetReactAltS800(BtlTechBChr *chr, s32 slot) {
-    BtlSuperData *tbl = BtlChar_GetObj(chr)->super;
+    BtlSuperData *tbl = STC_super(chr);
 
     return tbl->reactAltS800[slot - 2] > 0 ? tbl->reactAltS800[slot - 2] : tbl->reactS800[slot - 2];
 }
 
 /* Table +0x14D (copied into the throw description). */
 s32 BtlSuper_GetUnk14D(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->unk14D[slot - 2];
+    return STC_super(chr)->unk14D[slot - 2];
 }
 
 /* Table +0x150: what a guard does against the technique. */
 s32 BtlSuper_GetGuardKind(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->guardKind[slot - 2];
+    return STC_super(chr)->guardKind[slot - 2];
 }
 
 /* Hit sound kind of the first / second hit variant. */
 s32 BtlSuper_GetHitSound(BtlTechBChr *chr, s32 slot, s32 alt) {
-    return BtlChar_GetObj(chr)->super->hitSound[alt][slot - 2];
+    return STC_super(chr)->hitSound[alt][slot - 2];
 }
 
 /* Number of steps of a rush, at least 1. */
 s32 BtlSuper_GetStepCount(BtlTechBChr *chr, s32 slot) {
-    s32 n = BtlChar_GetObj(chr)->super->steps[slot - 2];
+    s32 n = STC_super(chr)->steps[slot - 2];
 
     if (n < 1) {
         n = 1;
@@ -1122,25 +1140,26 @@ s32 BtlSuper_GetStepCount(BtlTechBChr *chr, s32 slot) {
 
 /* Knock-back speed per frame (table +0x16C in 10 km/h). */
 f32 BtlSuper_GetPush(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->push[slot - 2] * 10.0f * BTL_KMH_PER_FRAME;
+    return STC_super(chr)->push[slot - 2] * 10.0f * BTL_KMH_PER_FRAME;
 }
 
 /* Knock-back speed through a guard (table +0x178). */
 f32 BtlSuper_GetGuardPush(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->guardPush[slot - 2] * 10.0f * BTL_KMH_PER_FRAME;
+    return STC_super(chr)->guardPush[slot - 2] * 10.0f * BTL_KMH_PER_FRAME;
 }
 
 /* Table damage * curve row 9 (slots 2, 3) or row 10 (slot 4); per hit unless `total`. */
 s32 BtlSuper_GetBaseDamage(BtlTechBChr *chr, s32 slot, s32 total) {
-    s32 damage = BtlChar_GetObj(chr)->super->damage[slot - 2];
+    s32 damage = STC_super(chr)->damage[slot - 2];
 
+    damage=Port_CombatScaleDamage(chr,damage);
     switch (slot) {
     case 2:
     case 3:
-        damage *= BtlStat_GetBlast2DamageScale(chr);
+        damage = MD_FloatScale(damage,BtlStat_GetBlast2DamageScale(chr));
         break;
     case 4:
-        damage *= BtlStat_GetUltimateDamageScale(chr);
+        damage = MD_FloatScale(damage,BtlStat_GetUltimateDamageScale(chr));
         break;
     }
     if (!total) {
@@ -1151,15 +1170,16 @@ s32 BtlSuper_GetBaseDamage(BtlTechBChr *chr, s32 slot, s32 total) {
 
 /* The same from the guard damage column. */
 s32 BtlSuper_GetBaseGuardDamage(BtlTechBChr *chr, s32 slot, s32 total) {
-    s32 damage = BtlChar_GetObj(chr)->super->guardDamage[slot - 2];
+    s32 damage = STC_super(chr)->guardDamage[slot - 2];
 
+    damage=Port_CombatScaleDamage(chr,damage);
     switch (slot) {
     case 2:
     case 3:
-        damage *= BtlStat_GetBlast2DamageScale(chr);
+        damage = MD_FloatScale(damage,BtlStat_GetBlast2DamageScale(chr));
         break;
     case 4:
-        damage *= BtlStat_GetUltimateDamageScale(chr);
+        damage = MD_FloatScale(damage,BtlStat_GetUltimateDamageScale(chr));
         break;
     }
     if (!total) {
@@ -1170,7 +1190,7 @@ s32 BtlSuper_GetBaseGuardDamage(BtlTechBChr *chr, s32 slot, s32 total) {
 
 /* Ki the technique costs; halved with ability 0x2B. */
 s32 BtlSuper_GetKiCost(BtlTechBChr *chr, s32 slot) {
-    s32 ki = BtlChar_GetObj(chr)->super->ki[slot - 2];
+    s32 ki = STC_super(chr)->ki[slot - 2];
 
     if (BtlMember_HasAbility(chr, 0x2B)) {
         ki /= 2;
@@ -1180,49 +1200,49 @@ s32 BtlSuper_GetKiCost(BtlTechBChr *chr, s32 slot) {
 
 /* Damage the technique does to its user. */
 s32 BtlSuper_GetRecoilDamage(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->recoil[slot - 2];
+    return STC_super(chr)->recoil[slot - 2];
 }
 
 /* Table +0x1B4 (s32): amount drained during a rush. */
 s32 BtlSuper_GetDrain(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->drain[slot - 2];
+    return STC_super(chr)->drain[slot - 2];
 }
 
 /* Cooldown after the technique in frames (table +0x1C0 in seconds); stored in fighter +0xE40 on leaving. */
 s32 BtlSuper_GetCooldownFrames(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->cooldown[slot - 2] * 30.0f;
+    return STC_super(chr)->cooldown[slot - 2] * 30.0f;
 }
 
 /* Table +0x1CC (seconds) in frames: how long the charge type can be held. */
 s32 BtlSuper_GetChargeLimitFrames(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->chargeLimit[slot - 2] * 30.0f;
+    return STC_super(chr)->chargeLimit[slot - 2] * 30.0f;
 }
 
 /* Damage multiplier of a fully charged technique. */
 f32 BtlSuper_GetChargeScale(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->chargeScale[slot - 2];
+    return STC_super(chr)->chargeScale[slot - 2];
 }
 
 /* Table +0x1E4 (degrees) in radians; throw description +0x60. */
 f32 BtlSuper_GetThrowAngleA(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->throwAngleA[slot - 2] * 3.14159265f / 180.0f;
+    return STC_super(chr)->throwAngleA[slot - 2] * 3.14159265f / 180.0f;
 }
 
 /* Table +0x1F0 (degrees) in radians; throw description +0x64. */
 f32 BtlSuper_GetThrowAngleB(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->throwAngleB[slot - 2] * 3.14159265f / 180.0f;
+    return STC_super(chr)->throwAngleB[slot - 2] * 3.14159265f / 180.0f;
 }
 
 /* Speed per frame of the rush dash (table +0x1FC in 10 km/h). */
 f32 BtlSuper_GetRushSpeed(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->rushSpeed[slot - 2] * 10.0f * BTL_KMH_PER_FRAME;
+    return STC_super(chr)->rushSpeed[slot - 2] * 10.0f * BTL_KMH_PER_FRAME;
 }
 
 /* Character the technique's throw brings in: the table entry, or the alternate when the user is that character or (ids of 0x100 and above, flag 0x40000000) the user wears costume 1. */
 s32 BtlSuper_GetThrowChara(BtlTechBChr *chr, s32 slot) {
     BtlTechBObj *obj = BtlChar_GetObj(chr);
     s32 i = slot - 2;
-    BtlSuperData *tbl = obj->super;
+    BtlSuperData *tbl = STC_super(chr);
     s32 chara = tbl->throwChara[i];
     s32 alt = tbl->throwCharaAlt[i];
 
@@ -1239,7 +1259,7 @@ s32 BtlSuper_GetThrowChara(BtlTechBChr *chr, s32 slot) {
 
 /* Costume for that character: the user's with flag 0x40000000, else 1 for technique 0x27F, else 0; 0 for ids of 0x100 and above. */
 s32 BtlSuper_GetThrowCostume(BtlTechBChr *chr, s32 slot) {
-    BtlSuperData *tbl = BtlChar_GetObj(chr)->super;
+    BtlSuperData *tbl = STC_super(chr);
 
     slot -= 2;
     if (tbl->throwChara[slot] < 0x100) {
@@ -1255,7 +1275,7 @@ s32 BtlSuper_GetThrowCostume(BtlTechBChr *chr, s32 slot) {
 
 /* The user's gauge +0x20 when the entry is below 0x100 and the technique has flag 0x40000000, else 0. */
 s32 BtlSuper_GetThrowGauge20(BtlTechBChr *chr, s32 slot) {
-    BtlSuperData *tbl = BtlChar_GetObj(chr)->super;
+    BtlSuperData *tbl = STC_super(chr);
 
     slot -= 2;
     if (tbl->throwChara[slot] < 0x100) {
@@ -1268,12 +1288,12 @@ s32 BtlSuper_GetThrowGauge20(BtlTechBChr *chr, s32 slot) {
 
 /* Table +0x220 (s8; throw description +0x18). */
 s32 BtlSuper_GetUnk220(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->unk220[slot - 2];
+    return STC_super(chr)->unk220[slot - 2];
 }
 
 /* Table +0x223 (s8); 999 when negative. */
 s32 BtlSuper_GetUnk223(BtlTechBChr *chr, s32 slot) {
-    s32 n = BtlChar_GetObj(chr)->super->unk223[slot - 2];
+    s32 n = STC_super(chr)->unk223[slot - 2];
 
     if (n < 0) {
         n = 999;
@@ -1283,12 +1303,12 @@ s32 BtlSuper_GetUnk223(BtlTechBChr *chr, s32 slot) {
 
 /* Table +0x226 (s8; throw description +0x2C). */
 s32 BtlSuper_GetUnk226(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->unk226[slot - 2];
+    return STC_super(chr)->unk226[slot - 2];
 }
 
 /* Table +0x229: row of the roster's prompt table. */
 s32 BtlSuper_GetPromptRowIndex(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->promptRow[slot - 2];
+    return STC_super(chr)->promptRow[slot - 2];
 }
 
 /* That row (roster +0x34, 0x14 bytes each). */
@@ -1298,12 +1318,12 @@ BtlTechBPromptRow *BtlSuper_GetPromptRow(BtlTechBChr *chr, s32 slot) {
 
 /* Table +0x165 (s8). */
 s32 BtlSuper_GetUnk165(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->unk165[slot - 2];
+    return STC_super(chr)->unk165[slot - 2];
 }
 
 /* Table +0x168, or the step count - 1 when negative. */
 s32 BtlSuper_GetLastStep(BtlTechBChr *chr, s32 slot) {
-    s32 n = BtlChar_GetObj(chr)->super->lastStep[slot - 2];
+    s32 n = STC_super(chr)->lastStep[slot - 2];
 
     if (n < 0) {
         n = BtlSuper_GetStepCount(chr, slot) - 1;
@@ -1313,12 +1333,12 @@ s32 BtlSuper_GetLastStep(BtlTechBChr *chr, s32 slot) {
 
 /* Table +0x22C (seconds) in frames. */
 s32 BtlSuper_GetFrames22C(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->time22C[slot - 2] * 30.0f;
+    return STC_super(chr)->time22C[slot - 2] * 30.0f;
 }
 
 /* Table +0x238 (seconds) in frames. */
 s32 BtlSuper_GetFrames238(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->super->time238[slot - 2] * 30.0f;
+    return STC_super(chr)->time238[slot - 2] * 30.0f;
 }
 
 /*
@@ -1346,20 +1366,20 @@ s32 BtlSuper_GetDamage(BtlTechBChr *chr, s32 slot, s32 guard, s32 total) {
     } else {
         damage = BtlSuper_GetBaseDamage(chr, slot, total);
     }
-    damage = BtlUtil_RoundUp(damage, 10);
+    damage = MD_Round10(damage);
     if (BtlChar_TestFlag(chr, 0xA4)) {
-        damage = BtlUtil_RoundUp(damage * 3 / 10, 10);
+        damage = MD_Round10(MD_MulDiv(damage,3,10));
     }
     if (BtlChar_TestFlag(chr, 6) && slot != 4) {
-        damage = BtlUtil_RoundUp(damage + damage / 5, 10);
+        damage = MD_Round10(MD_Add(damage,damage/5));
     }
     if (BtlChar_TestFlag(chr, 0x9C)) {
-        damage = BtlUtil_RoundUp(damage + damage / 10, 10);
+        damage = MD_Round10(MD_Add(damage,damage/10));
     }
     if ((flags & 0x8000) && BtlChar_TestFlag(chr, 0x98)) {
-        damage = BtlUtil_RoundUp(damage + damage * 3 / 10, 10);
+        damage = MD_Round10(MD_Add(damage,MD_MulDiv(damage,3,10)));
     }
-    damage = damage + damage * (chr->techCharge * (BtlSuper_GetChargeScale(chr, slot) - 1.0f));
+    damage = MD_FromDouble((double)((float)damage + (float)damage * (chr->techCharge * (BtlSuper_GetChargeScale(chr, slot) - 1.0f))));
     if (flags & 0x10) {
         if (BtlOpp_HasAbility(chr, 0x37)) {
             damage = 1;
@@ -1369,31 +1389,31 @@ s32 BtlSuper_GetDamage(BtlTechBChr *chr, s32 slot, s32 guard, s32 total) {
     case 0x268:
         switch (chr->unkE5C) {
         case 1:
-            damage += damage / 2;
+            damage = MD_Add(damage,damage/2);
             break;
         case 2:
-            damage += damage * 13 / 10;
+            damage = MD_Add(damage,MD_MulDiv(damage,13,10));
             break;
         case 3:
-            damage += damage * 25 / 10;
+            damage = MD_Add(damage,MD_MulDiv(damage,25,10));
             break;
         }
-        damage = BtlUtil_RoundUp(damage, 10);
+        damage = MD_Round10(damage);
         break;
     case 0x2CD:
-        damage = BtlUtil_RoundUp(damage + damage * chr->unkE60 / 5, 10);
+        damage = MD_Round10(MD_Add(damage,MD_MulDiv(damage,chr->unkE60,5)));
         break;
     case 0x2D5:
-        damage = BtlUtil_RoundUp(damage * BtlOpp_GetUnk20F318(chr), 10);
+        damage = MD_Round10(MD_FloatScale(damage,BtlOpp_GetUnk20F318(chr)));
         break;
     }
     if (slot == 4) {
         if (BtlMember_HasAbility(chr, 0x6F)) {
-            damage = BtlUtil_RoundUp(damage + damage / 5, 10);
+            damage = MD_Round10(MD_Add(damage,damage/5));
         }
     }
-    if (BtlMember_HasAbility(chr, 0x77)) {
-        damage = 999999 / BtlSuper_GetHitCount(chr, slot);
+    if (!Port_StoryActive() && BtlMember_HasAbility(chr, 0x77)) {
+        damage = Port_CombatScaleDamage(chr,999999) / BtlSuper_GetHitCount(chr, slot);
     }
 #ifdef PORT
     {extern int Port_AssistDamage(int,int,int);if(!total)damage=Port_AssistDamage(*(int*)chr,slot,damage);}
@@ -1439,56 +1459,56 @@ s32 BtlSkill_GetHitCount(BtlTechBChr *chr, s32 slot) {
 
 /* First flag word of the skill (no caller found). */
 u32 BtlSkill_GetFlagsA(BtlTechBChr *chr, s32 slot) {
-    BtlSkillData *tbl = BtlChar_GetObj(chr)->skill;
+    BtlSkillData *tbl = STC_skill(chr);
 
     return tbl->flagsA[slot];
 }
 
 /* Second flag word of the skill. */
 u32 BtlSkill_GetFlags(BtlTechBChr *chr, s32 slot) {
-    BtlSkillData *tbl = BtlChar_GetObj(chr)->skill;
+    BtlSkillData *tbl = STC_skill(chr);
 
     return tbl->flags[slot];
 }
 
 /* Skill id. */
 s32 BtlSkill_GetId(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->id[slot];
+    return STC_skill(chr)->id[slot];
 }
 
 /* Table +0x14 (s16; no caller found). */
 s32 BtlSkill_GetUnk14(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->unk14[slot];
+    return STC_skill(chr)->unk14[slot];
 }
 
 /* Table +0x18 (float). */
 f32 BtlSkill_GetShotTime(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->shotTime[slot];
+    return STC_skill(chr)->shotTime[slot];
 }
 
 /* Speed per frame of the skill's projectile (table +0x20 in 10 km/h). */
 f32 BtlSkill_GetShotSpeed(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->shotSpeed[slot] * 10.0f * BTL_KMH_PER_FRAME;
+    return STC_skill(chr)->shotSpeed[slot] * 10.0f * BTL_KMH_PER_FRAME;
 }
 
 /* Turn rate in radians per frame (table +0x28 in degrees per second). */
 f32 BtlSkill_GetShotTurnRate(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->shotTurn[slot] * 3.14159265f / 180.0f * (1.0f / 30.0f);
+    return STC_skill(chr)->shotTurn[slot] * 3.14159265f / 180.0f * (1.0f / 30.0f);
 }
 
 /* Table +0x30 (float). */
 f32 BtlSkill_GetShotUnk30(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->shotUnk30[slot];
+    return STC_skill(chr)->shotUnk30[slot];
 }
 
 /* Table +0x38 (s8; no caller found). */
 s32 BtlSkill_GetUnk38(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->unk38[slot];
+    return STC_skill(chr)->unk38[slot];
 }
 
 /* First hit factor, at least 1. */
 s32 BtlSkill_GetShots(BtlTechBChr *chr, s32 slot) {
-    s32 n = BtlChar_GetObj(chr)->skill->shots[slot];
+    s32 n = STC_skill(chr)->shots[slot];
 
     if (n < 1) {
         n = 1;
@@ -1498,7 +1518,7 @@ s32 BtlSkill_GetShots(BtlTechBChr *chr, s32 slot) {
 
 /* Second hit factor, at least 1. */
 s32 BtlSkill_GetHitsB(BtlTechBChr *chr, s32 slot) {
-    s32 n = BtlChar_GetObj(chr)->skill->hitsB[slot];
+    s32 n = STC_skill(chr)->hitsB[slot];
 
     if (n < 1) {
         n = 1;
@@ -1508,37 +1528,37 @@ s32 BtlSkill_GetHitsB(BtlTechBChr *chr, s32 slot) {
 
 /* Third hit factor: table byte + 1. */
 s32 BtlSkill_GetHitsC(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->hitsC[slot] + 1;
+    return STC_skill(chr)->hitsC[slot] + 1;
 }
 
 /* Table +0x62: 4 = the hit direction is not taken from the attacker (BtlColl_HitByStrike). */
 s32 BtlSkill_GetHitDirKind(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->hitDirKind[slot];
+    return STC_skill(chr)->hitDirKind[slot];
 }
 
 /* Table +0x64: which action block runs the skill (BtlAct_GetSkillAction). */
 s32 BtlSkill_GetSequence(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->sequence[slot];
+    return STC_skill(chr)->sequence[slot];
 }
 
 /* Table +0x9E (s8). */
 s32 BtlSkill_GetUnk9E(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->unk9E[slot];
+    return STC_skill(chr)->unk9E[slot];
 }
 
 /* Table +0x66: how long the skill's stat modifiers last (BTL_STAT_KIND_*). */
 s32 BtlSkill_GetStatKind(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->statKind[slot];
+    return STC_skill(chr)->statKind[slot];
 }
 
 /* Reaction id of a hit. */
 s32 BtlSkill_GetReact(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->react[slot];
+    return STC_skill(chr)->react[slot];
 }
 
 /* Reaction against a victim whose state has bit 0x800; the first when not positive. */
 s32 BtlSkill_GetReactS800(BtlTechBChr *chr, s32 slot) {
-    BtlSkillData *tbl = BtlChar_GetObj(chr)->skill;
+    BtlSkillData *tbl = STC_skill(chr);
 
     s32 react = tbl->reactS800[slot];
 
@@ -1550,27 +1570,28 @@ s32 BtlSkill_GetReactS800(BtlTechBChr *chr, s32 slot) {
 
 /* Hit sound kind. */
 s32 BtlSkill_GetHitSound(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->hitSound[slot];
+    return STC_skill(chr)->hitSound[slot];
 }
 
 /* Knock-back of one hit: table +0x74 divided by the hit count. */
 f32 BtlSkill_GetPush(BtlTechBChr *chr, s32 slot) {
-    BtlSkillData *tbl = BtlChar_GetObj(chr)->skill;
+    BtlSkillData *tbl = STC_skill(chr);
 
     return tbl->push[slot] / BtlSkill_GetHitCount(chr, slot);
 }
 
 /* Knock-back of one guarded hit: table +0x7C divided by the hit count. */
 f32 BtlSkill_GetGuardPush(BtlTechBChr *chr, s32 slot) {
-    BtlSkillData *tbl = BtlChar_GetObj(chr)->skill;
+    BtlSkillData *tbl = STC_skill(chr);
 
     return tbl->guardPush[slot] / BtlSkill_GetHitCount(chr, slot);
 }
 
 /* Damage (table +0x84); per hit unless `total`. */
 s32 BtlSkill_GetDamage(BtlTechBChr *chr, s32 slot, s32 total) {
-    s32 damage = BtlChar_GetObj(chr)->skill->damage[slot];
+    s32 damage = STC_skill(chr)->damage[slot];
 
+    damage=Port_CombatScaleDamage(chr,damage);
     if (!total) {
         damage /= BtlSkill_GetHitCount(chr, slot);
     }
@@ -1579,8 +1600,9 @@ s32 BtlSkill_GetDamage(BtlTechBChr *chr, s32 slot, s32 total) {
 
 /* Damage through a guard (table +0x8C); per hit unless `total`. */
 s32 BtlSkill_GetGuardDamage(BtlTechBChr *chr, s32 slot, s32 total) {
-    s32 damage = BtlChar_GetObj(chr)->skill->guardDamage[slot];
+    s32 damage = STC_skill(chr)->guardDamage[slot];
 
+    damage=Port_CombatScaleDamage(chr,damage);
     if (!total) {
         damage /= BtlSkill_GetHitCount(chr, slot);
     }
@@ -1589,7 +1611,7 @@ s32 BtlSkill_GetGuardDamage(BtlTechBChr *chr, s32 slot, s32 total) {
 
 /* Blast gauge the skill costs: stocks (one less with ability 0x15, at least 1) * 100000. */
 s32 BtlSkill_GetBlastCost(BtlTechBChr *chr, s32 slot) {
-    s32 n = BtlChar_GetObj(chr)->skill->stocks[slot];
+    s32 n = STC_skill(chr)->stocks[slot];
 
     if (BtlMember_HasAbility(chr, 0x15)) {
         n--;
@@ -1602,49 +1624,49 @@ s32 BtlSkill_GetBlastCost(BtlTechBChr *chr, s32 slot) {
 
 /* Level the skill adds to stat 0 (table +0x96). */
 s32 BtlSkill_GetStatLevel0(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->statLevel0[slot];
+    return STC_skill(chr)->statLevel0[slot];
 }
 
 /* Level the skill adds to stat 2 (table +0x98). */
 s32 BtlSkill_GetStatLevel2(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->statLevel2[slot];
+    return STC_skill(chr)->statLevel2[slot];
 }
 
 /* Level the skill adds to stat 1 (table +0x9A). */
 s32 BtlSkill_GetStatLevel1(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->statLevel1[slot];
+    return STC_skill(chr)->statLevel1[slot];
 }
 
 /* Level the skill adds to stat 3 (table +0x9C). */
 s32 BtlSkill_GetStatLevel3(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->statLevel3[slot];
+    return STC_skill(chr)->statLevel3[slot];
 }
 
 /* Duration of the skill's effect (table +0xA0 in seconds) in frames. */
 s32 BtlSkill_GetFrames(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->time[slot] * 30.0f;
+    return STC_skill(chr)->time[slot] * 30.0f;
 }
 
 /* Health the skill gives (negative: takes): table percent of the maximum health. */
 s32 BtlSkill_GetHealthChange(BtlTechBChr *chr, s32 slot) {
-    BtlSkillData *tbl = BtlChar_GetObj(chr)->skill;
+    BtlSkillData *tbl = STC_skill(chr);
 
     return BtlMember_GetActiveGauge(chr)->healthMax * tbl->healthPct[slot] / 100;
 }
 
 /* Ki the skill gives (negative: takes). */
 s32 BtlSkill_GetKiChange(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->ki[slot];
+    return STC_skill(chr)->ki[slot];
 }
 
 /* Table +0xB8: second timed value (BtlSkill_Apply). */
 s32 BtlSkill_GetValF(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->valF[slot];
+    return STC_skill(chr)->valF[slot];
 }
 
 /* Table +0xC0: first timed value (BtlSkill_Apply). */
 s32 BtlSkill_GetValE(BtlTechBChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->skill->valE[slot];
+    return STC_skill(chr)->valE[slot];
 }
 
 /* ---- battle-level wrappers ------------------------------------------------------------------------------------

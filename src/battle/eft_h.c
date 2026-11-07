@@ -1,19 +1,6 @@
 #include "common.h"
 
-#ifndef EFT_OWNER_TAG
-#ifdef PORT
-/* More than two fighters: whose a task is. The game has two tags, "object 0's" and "anybody else's", and ends a
-   fighter's effects by resetting every task of its tag: with more fighters one fighter's change of model ended
-   the techniques of all the others past the first (a beam gone, and a technique's camera cut left running with
-   its data freed under it: a crash). Every extra fighter (objects 2..9) has a tag and a reset group of its own
-   (BtlTaskList_Reset, BtlScene_Reset); any other object keeps "anybody else's". */
-#define EFT_OWNER_TAG(n) ((n) == 0 ? 0x800 : ((u32)(n) - 2 < 8) ? (0x100000 << ((n) - 2)) : 0x1000)
-#define EFT_OWNER_RESET(n) ((n) == 0 ? 2 : ((u32)(n) - 2 < 8) ? (n) + 3 : 3)
-#else
-#define EFT_OWNER_TAG(n) n == 0 ? 0x800 : 0x1000
-#define EFT_OWNER_RESET(n) n == 0 ? 2 : 3
-#endif
-#endif
+#include "battle/eft_owner.h"
 #include "battle/eft_h.h"
 
 /*
@@ -308,6 +295,12 @@ INCLUDE_ASM("asm/nonmatchings/battle/eft_h", EftShot_BuildParam);
 
 /* The slot record of one technique of one character. */
 EftHSlot *EftShot_GetSlot(s32 chr, s32 slot) {
+#ifdef PORT
+    /* Reuse the donor's loaded effect group, but EftShot_Start below still
+       writes the requesting Krilin actor into arg.chr. No donor fighter acts. */
+    {extern int Port_StoryTechniqueDonor(int);int donor=Port_StoryTechniqueDonor(chr);
+     if(donor>=0&&slot==4)chr=donor;}
+#endif
     EftHChar *c = &gEftShot->chars[chr];
 
     return &c->slot[slot];
@@ -339,6 +332,10 @@ void EftShot_Start(EftHStartArg *arg) {
         return;
     }
     cls = gEftShotClass[TYPE_ROW(s->param->type)].inst;
+#ifdef PORT
+    {extern int Port_StoryTechniqueDonor(int);extern void Port_Dbg3(const char *,int,int,int,int);
+     if(Port_StoryTechniqueDonor(arg->chr)>=0)Port_Dbg3("story borrowed projectile type",arg->chr,arg->slot,s->param->type,s->param->id);}
+#endif
     if (cls == NULL) {
         return;
     }
@@ -346,6 +343,10 @@ void EftShot_Start(EftHStartArg *arg) {
     s->arg = *arg;
     s->unk40 = 0;
     s->param->life = arg->time * 30.0f;
+#ifdef PORT
+    {extern int Port_StoryTechniqueDonor(int);
+     if(Port_StoryTechniqueDonor(arg->chr)>=0&&s->param->life<1200.f)s->param->life=1200.f;}
+#endif
     s->param->unk34 = arg->unk14;
     s->param->unk38 = arg->unk18;
     if (s->param->kind == 0) {

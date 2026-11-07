@@ -15,6 +15,7 @@
 #include "ui.h"
 #include "namefont.h"
 #include "../port_release.h"
+#include "../../include/mod_achievements.h"
 #include "../plat_fighters.h"
 #include "menu_text.h"
 #include "../quit_dialog.h"
@@ -289,7 +290,7 @@ static bool bars_on(void) {
 
 // For the fight panels (fight_panels_ui.cpp): textures of their own and the display faces.
 static ImFont *sFontBold;
-static ImFont *sModBodyFont,*sModTitleFont;
+static ImFont *sModBodyFont,*sModTitleFont,*sStoryReadableFont;
 SDL_GPUTexture *Ui_Texture(uint8_t *pix, uint32_t w, uint32_t h) {
     return make_strip(pix, (size_t)w * h * 4, w, h, 1);
 }
@@ -494,6 +495,7 @@ int Ui_Init(SDL_Window *window, SDL_GPUDevice *device, void *gl_context, const c
         sFontBold = panel_font_load(0);
         {char path[1400];FILE *fp;
          snprintf(path,sizeof(path),"%s/tagteam-ui/menu-body.ttf",Port_FileRoot());fp=fopen(path,"rb");if(fp){fclose(fp);sModBodyFont=io.Fonts->AddFontFromFileTTF(path,48.f);}
+         snprintf(path,sizeof(path),"%s/tagteam-ui/story-readable.ttf",Port_FileRoot());fp=fopen(path,"rb");if(fp){fclose(fp);sStoryReadableFont=io.Fonts->AddFontFromFileTTF(path,28.f);}
          snprintf(path,sizeof(path),"%s/tagteam-ui/menu-title.ttf",Port_FileRoot());fp=fopen(path,"rb");if(fp){fclose(fp);sModTitleFont=io.Fonts->AddFontFromFileTTF(path,64.f);}
         }
 
@@ -1374,6 +1376,9 @@ static int update_latest(void) {
     return sUpdCheck != 0 || SDL_getenv("BT3_UPDATE_CHECK") != NULL ? Match_UpdateLatest() : 0;
 }
 
+#include "mod_pad_hints.inc"
+#include "mod_achievements_ui.inc"
+
 static void misc_tab(void) {
     mod_credits_settings();
     {
@@ -2048,40 +2053,15 @@ static void mod_fusion_settings(){
 }
 static void mod_controls_settings(){
                 bool modButtons = Port_Setting("mod_clash_buttons", 0) != 0;
-                if (ImGui::Checkbox(mod_l10n("Tag Team struggle buttons: Square / Triangle"), &modButtons)) {
+                if (ImGui::Checkbox((Port_Setting("mod_language",1)==1?"Usar botones en los choques":"Use buttons in clashes"), &modButtons)) {
                     Port_SettingSave("mod_clash_buttons", modButtons);
                     Port_SettingsWrite();
                 }
                 ImGui::SetItemTooltip("Local fights: tap Square in beam struggles, Triangle in rush struggles.\n"
                                       "Uses the controller assigned to each fighter, including players 3 and 4.\n"
                                       "Outside struggles the original buttons keep their normal actions.\n"
-                                      "Online play retains the upstream control setting below.");
-                bool cs = Port_ClashSquare() != 0;
-                if (ImGui::Checkbox(mod_l10n("Clashes: Square counts as a direction"), &cs)) {
-                    Port_ClashSquareSet(cs);
-                }
-                ImGui::SetItemTooltip("In a clash of two beams or two rushes the game counts newly pressed directions:\n"
-                                      "turning the stick, or tapping the d-pad. With this on, each press of Square\n"
-                                      "counts as one of them while the clash lasts, as a tap of the d-pad does.\n"
-                                      "It only changes your own pad, so it can be used in online play.");
-                if (cs) {
-                    static const int kQuarters[] = {4, 6, 7, 8};
-                    static const char *const kWorth[] = {"1", "1.5", "1.75", "2"};
-                    int at = 2;
-                    for (int i = 0; i < 4; i++) {
-                        if (kQuarters[i] == Port_ClashSquareX()) {
-                            at = i;
-                        }
-                    }
-                    ImGui::SameLine();
-                    ImGui::SetNextItemWidth(80.0f);
-                    if (ImGui::Combo(mod_l10n("per press"), &at, kWorth, 4)) {
-                        Port_ClashSquareXSet(kQuarters[at]);
-                    }
-                    ImGui::SetItemTooltip("What one press of Square is worth. The d-pad has four buttons to tap in turn and the\n"
-                                          "stick four directions a turn; Square is one button. 1 is a single d-pad tap.\n"
-                                          "Never more than one a frame, which is the most the game counts from any pad.");
-                }
+                                      "Online play keeps the game's own controls.");
+                {bool es=Port_Setting("mod_language",1)==1;const ModPadHint h[]={{MP_SQUARE,es?"Choque de energia":"Beam clash"},{MP_TRIANGLE,es?"Choque de golpes":"Rush clash"}};mod_pad_hint_items(h,2);}
                 ImGui::Separator();
                 controls_tab();
 
@@ -2095,21 +2075,27 @@ static void mod_giant_settings(){
  ImGui::TextWrapped("%s",mod_l10n("400% is 4x. Each giant keeps its own original size. Models and collision volumes grow together; movement and animation speed stay native. Local fights only; online and replays are unchanged."));
 }
 static void mod_training_settings(){
+ {bool egg=Port_Setting("easter_eggs",0)!=0,eggCpu=Port_Setting("easter_eggs_cpu",0)!=0;bool es=Port_Setting("mod_language",1)==1;
+ if(ImGui::Checkbox(es?"Easter eggs de combate":"Battle Easter eggs",&egg)){Port_SettingSave("easter_eggs",egg);Port_SettingsWrite();}
+ if(ImGui::Checkbox(es?"La CPU tambien puede absorber":"CPU can also absorb",&eggCpu)){Port_SettingSave("easter_eggs_cpu",eggCpu);Port_SettingsWrite();}
+ ImGui::TextWrapped("%s",es?"Algunos personajes pueden absorber a rivales o aliados para alcanzar nuevas formas. Si lo permites para la CPU, tambien podra hacerlo por su cuenta.":"Some fighters can absorb enemies or allies to reach new forms. Allow it for the CPU if you want it to do the same on its own.");
+ ImGui::TextWrapped("%s",es?"El personaje absorbido desaparece de ese combate: no puede revivir ni volver a usarse. Tambien se puede absorber a alguien que ya haya caido.":"An absorbed fighter is removed from that battle: they cannot be revived or used again. Fallen fighters can also be absorbed.");
+ ImGui::TextWrapped("%s",es?"Cada transformacion tiene sus propios requisitos de personajes y reservas.":"Each transformation has its own fighter and stock requirements.");}
  const char *policies[]={mod_l10n("Native"),mod_l10n("More often"),mod_l10n("When outmatched")};
- const char *presets[]={mod_l10n("Native thresholds"),mod_l10n("Aggressive"),mod_l10n("Relentless")};
+ const char *presets[]={mod_l10n("Standard margin"),mod_l10n("Aggressive"),mod_l10n("Always")};
  int allies=Port_Setting("cpu_transform_allies",0),enemies=Port_Setting("cpu_transform_enemies",0),preset=Port_Setting("cpu_tactics_preset",0);
  ImGui::SeparatorText(mod_l10n("CPU transformation tactics"));
  if(ImGui::Combo(mod_l10n("Allied CPU transformations"),&allies,policies,3)){Port_SettingSave("cpu_transform_allies",allies);Port_SettingsWrite();}
  if(ImGui::Combo(mod_l10n("Enemy CPU transformations"),&enemies,policies,3)){Port_SettingSave("cpu_transform_enemies",enemies);Port_SettingsWrite();}
  if(ImGui::Combo(mod_l10n("CPU tactics preset"),&preset,presets,3)){Port_SettingSave("cpu_tactics_preset",preset);Port_SettingsWrite();}
- ImGui::TextWrapped("%s",mod_l10n("When outmatched uses health, Ki, recent damage and known form tiers. Presets change pressure thresholds and cooldowns. Normal stock costs and model admission still apply. Native keeps the original AI. Training has separate behavior below; online and replays are unchanged."));
+ ImGui::TextWrapped("%s",mod_l10n("The CPU compares the opponent's power (the select-screen value) with its own and only transforms when the opponent is at least as strong and already ahead on health. A near-equal opponent makes it take one form; a much stronger one makes it jump toward its top form. The preset sets how far behind it must be: Standard a tenth of its bars, Aggressive half of that, Always any lost health. Stock costs and model admission still apply. Native keeps the original AI. Training has separate behavior below; online and replays are unchanged."));
  bool block=Port_Setting("disable_npc_transformations",0)!=0,giants=Port_Setting("disable_npc_giant_transformations",0)!=0;
  if(ImGui::Checkbox(mod_l10n("Disable CPU transformations"),&block)){Port_SettingSave("disable_npc_transformations",block);Port_SettingsWrite();}
  if(ImGui::Checkbox(mod_l10n("Disable CPU giant transformations"),&giants)){Port_SettingSave("disable_npc_giant_transformations",giants);Port_SettingsWrite();}
  int chance=Port_Setting("npc_transform_chance_percent",100);
  if(ImGui::SliderInt(mod_l10n("CPU transformation chance"),&chance,0,100,"%d%%")){Port_SettingSave("npc_transform_chance_percent",chance);Port_SettingsWrite();}
  static int policyCid;const char *exceptionLabels[]={mod_l10n("Follow global rules"),mod_l10n("Allow this character"),mod_l10n("Block this character")};
- if(ImGui::BeginCombo(mod_l10n("Character transformation exception"),Port_CharaName(policyCid))){for(int i=0;i<291;i++){ImGui::PushID(i);if(ImGui::Selectable(Port_CharaName(i),i==policyCid))policyCid=i;ImGui::PopID();}ImGui::EndCombo();}
+ if(ImGui::BeginCombo(mod_l10n("Character transformation exception"),Port_CharaName(policyCid))){for(int i=0;i<295;i++){ImGui::PushID(i);if(ImGui::Selectable(Port_CharaName(i),i==policyCid))policyCid=i;ImGui::PopID();}ImGui::EndCombo();}
  char exceptionKey[48];snprintf(exceptionKey,sizeof(exceptionKey),"cpu_transform_%d",policyCid);int exception=Port_Setting(exceptionKey,0);
  if(ImGui::Combo(mod_l10n("Character policy"),&exception,exceptionLabels,3)){Port_SettingSave(exceptionKey,exception);Port_SettingsWrite();}
  ImGui::TextWrapped("%s",mod_l10n("Character exceptions override global bans. Chance still applies. Only CPU ordinary transformations are restricted; player transformations and fusion are unchanged."));
@@ -2129,7 +2115,7 @@ static void mod_training_settings(){
  const char*takeLabels[]={"Enable teammate takeover","Spectate after being defeated","Show takeover hints","Show takeover confirmation"};
  for(int i=0;i<4;i++){bool on=Port_Setting(takeKeys[i],1)!=0;if(ImGui::Checkbox(mod_l10n(takeLabels[i]),&on)){Port_SettingSave(takeKeys[i],on);Port_SettingsWrite();}}
  int notice=Port_Setting("takeover_confirmation_seconds",3);if(ImGui::SliderInt(mod_l10n("Takeover confirmation time"),&notice,1,10,"%d s")){Port_SettingSave("takeover_confirmation_seconds",notice);Port_SettingsWrite();}
- ImGui::TextWrapped("%s",mod_l10n("After being defeated, spectate a living CPU teammate and press L2 + Square to control them. A teammate already controlled by another player cannot be taken over. Ownership resets for the next match."));
+ {bool es=Port_Setting("mod_language",1)==1;ImGui::TextWrapped("%s",es?"Si caes en combate, observa a un aliado CPU que siga en pie para tomar su lugar. No puedes controlar al companero de otro jugador.":"If you fall in battle, spectate a living CPU teammate to take their place. You cannot take over another player's teammate.");const ModPadHint h[]={{MP_L2,"+"},{MP_SQUARE,es?"Tomar el control":"Take control"}};mod_pad_hint_items(h,2);}
  ImGui::SeparatorText(mod_l10n("Team revival"));
  bool revive=Port_Setting("revive_enabled",1)!=0;
  if(ImGui::Checkbox(mod_l10n("Enable teammate revival"),&revive)){Port_SettingSave("revive_enabled",revive);Port_SettingsWrite();}
@@ -2154,13 +2140,14 @@ static void mod_struggle_settings(){
  int bp=Port_Setting("beam_struggle_cpu_power_percent",100),rp=Port_Setting("dash_struggle_cpu_power_percent",100);
  if(ImGui::SliderInt(mod_l10n("CPU beam strength"),&bp,25,200,"%d%%")){Port_SettingSave("beam_struggle_cpu_power_percent",bp);Port_SettingsWrite();}
  if(ImGui::SliderInt(mod_l10n("CPU rush strength"),&rp,25,200,"%d%%")){Port_SettingSave("dash_struggle_cpu_power_percent",rp);Port_SettingsWrite();}
- bool buttons=Port_Setting("mod_clash_buttons",0)!=0;if(ImGui::Checkbox(mod_l10n("Square for beam / Triangle for rush"),&buttons)){Port_SettingSave("mod_clash_buttons",buttons);Port_SettingsWrite();}
+ bool buttons=Port_Setting("mod_clash_buttons",0)!=0;if(ImGui::Checkbox((Port_Setting("mod_language",1)==1?"Usar botones en los choques":"Use buttons in clashes"),&buttons)){Port_SettingSave("mod_clash_buttons",buttons);Port_SettingsWrite();}
  ImGui::TextWrapped(mod_l10n("Local fights only. CPU strength changes CPU scoring, never a human player's inputs. Online and recorded replays keep their original rules."));
  ImGui::SeparatorText(mod_l10n("Team assists"));
  bool formation=Port_Setting("assist_formation_enabled",1)!=0,follow=Port_Setting("assist_follow_camera",1)!=0;
  if(ImGui::Checkbox(mod_l10n("Helpers fly into formation"),&formation)){Port_SettingSave("assist_formation_enabled",formation);Port_SettingsWrite();}
  if(ImGui::Checkbox(mod_l10n("Follow the assisted fighter's camera"),&follow)){Port_SettingSave("assist_follow_camera",follow);Port_SettingsWrite();}
 
+ {bool es=Port_Setting("mod_language",1)==1;const ModPadHint h[]={{MP_SQUARE,es?"Choque de energia":"Beam clash"},{MP_TRIANGLE,es?"Choque de golpes":"Rush clash"}};mod_pad_hint_items(h,2);}
  const char*enableKeys[]={"beam_assist_enabled","rush_assist_enabled","ultimate_boost_enabled"};
  const char*cpuKeys[]={"beam_assist_cpu","rush_assist_cpu","ultimate_boost_cpu"};
  const char*rangeKeys[]={"beam_assist_range","rush_assist_range","ultimate_boost_range"};
@@ -2193,7 +2180,7 @@ static void mod_struggle_settings(){
   if(i==1)ImGui::TextWrapped("%s",mod_l10n("Rush finisher damage scales with confirmed winning participants, up to 10,000 per losing fighter. Joined losing helpers are knocked away too."));
   ImGui::PopID();
  }
- ImGui::TextWrapped("%s",mod_l10n("Press R3 when invited. Beam and rush assistance spend Ki once; ultimate assistance spends one stock, without requiring Sparking. Helpers stop assisting when interrupted or when the attack ends. Local team fights only."));
+ {bool es=Port_Setting("mod_language",1)==1;const ModPadHint h[]={{MP_R3,es?"Ayudar cuando aparezca la invitacion":"Help when invited"}};mod_pad_hint_items(h,1);ImGui::TextWrapped("%s",es?"Ayudar en un choque consume Ki; ayudar en un definitivo consume una reserva. La ayuda termina si te interrumpen o finaliza el ataque.":"Helping in a clash costs Ki; helping an ultimate costs one stock. Assistance ends if you are interrupted or the attack finishes.");}
 
 }
 // F1 and Select > Settings share one full-screen mod shell and the same live consumers.
@@ -2254,18 +2241,20 @@ static void build(void) {
         ImGui::SameLine();if(ImGui::Button(es?"Volver":"Back"))open=false;
         ImGui::SameLine();if(ImGui::Button(es?"Salir del juego":"Exit game"))Ui_QuitAsk();
         if(savedUntil>ImGui::GetTime()){ImGui::SameLine();ImGui::TextColored(savedOk?ImVec4(.45f,1,.66f,1):ImVec4(1,.46f,.38f,1),"%s",savedOk?(es?"Ajustes guardados":"Settings saved"):(es?"No se pudo guardar. Reintenta.":"Save failed. Please retry."));}
-        // Native geometry avoids unsupported font glyphs in PlayStation hints.
-        ImVec2 pos=ImGui::GetCursorScreenPos();ImDrawList *dl=ImGui::GetWindowDrawList();float y=pos.y+10*scale,x=pos.x;
-        dl->AddRect(ImVec2(x,y-5*scale),ImVec2(x+10*scale,y+5*scale),IM_COL32(235,135,207,255),0,0,1.5f);ImGui::SetCursorPosX(ImGui::GetCursorPosX()+18*scale);ImGui::TextDisabled(es?"Guardar    Derecha / X: opciones    X: editar\nIzquierda: categorias    Triangulo: volver":"Save    Right / Cross: options    Cross: edit\nLeft: categories    Triangle: back");
+        const ModPadHint hints[]={{MP_DPAD,es?"Elegir":"Choose"},{MP_RIGHT,es?"Opciones":"Options"},{MP_CROSS,es?"Editar":"Edit"},{MP_SQUARE,es?"Guardar":"Save"},{MP_LEFT,es?"Categorias":"Categories"},{MP_TRIANGLE,es?"Volver":"Back"},{MP_L1R1,es?"Cambiar categoria":"Change category"}};
+        mod_pad_hint_items(hints,7,scale,15);
         if(sModBodyFont)ImGui::PopFont();
     }ImGui::End();ImGui::PopStyleVar(2);ImGui::PopStyleColor(11);
     if(memcmp(&v,&was,sizeof(v)))GsGpu_SetSettings(&v);
     if(!open)set_open(false);
 }
 
+#include "mod_select_art.inc"
 #include "mod_menu_ui.inc"
 #include "mod_tournament_ui.inc"
 #include "mod_battle_hud.inc"
+#include "mod_story_subtitle.inc"
+#include "mod_select_ui.inc"
 
 // ---- the hint of the extra modes -----------------------------------------------------------------------------------
 // SELECT on the game's main menu switches the menu to the extra modes' entries and back (src/menu/menu_a.c,
@@ -2726,9 +2715,13 @@ static bool frame_build(void) {
     bool startup = sReady && sStartupCreditsFrame.load(std::memory_order_acquire) > 0;
     bool bars = sReady && bars_on();
     bool battleHud=sReady&&mod_battle_hud_visible();
+    bool storySubtitle=sReady&&mod_story_subtitle_visible();
     PortModesView modes; // the main menu's hint of the extra modes
     Port_ModesView(&modes);
     bool tournament = sReady && tournament_visible();
+    bool modSelect=sReady&&Port_ModSelectActive();
+    extern int Port_ModernStageActive(void);
+    bool modernStage=sReady&&Port_ModernStageActive();
     bool modMenu = sReady && Port_ModMenuActive();
     int modSettings = sModMenuSettings.exchange(-1, std::memory_order_acq_rel);
     if (sReady && modSettings >= 0 && modSettings < 12) { set_open(true); sForceTab = modSettings; }
@@ -2740,7 +2733,7 @@ static bool frame_build(void) {
     bool chat = online && (sChat || chat_recent());
     meter_count();
     sBuilt = false;
-    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !modesOn && !chat && !startup && !modMenu && !tournament && !battleHud)) {
+    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !modesOn && !chat && !startup && !modMenu && !tournament && !battleHud && !storySubtitle && !modSelect && !modernStage)) {
         return false;
     }
     if (sPadHold && sCapKind != 2) { // a binding was taken: the controller works the window again once nothing is held
@@ -2772,6 +2765,7 @@ static bool frame_build(void) {
     ImGui_ImplSDL3_NewFrame();
     fonts_apply(); // (a face chosen for the fight panels, between two frames)
     ImGui::NewFrame();
+    achievement_notifications();
     if (startup) { mod_startup_draw(); ImGui::Render(); return true; }
     if (bars) {
         bars_draw();
@@ -2779,9 +2773,12 @@ static bool frame_build(void) {
     if (modesOn) {
         modes_draw(modes);
     }
+    if(modSelect&&!sOpen&&!sQuit){mod_select_draw();ImGui::Render();return true;}
+    if(modernStage&&!sOpen&&!sQuit){mod_stage_draw();ImGui::Render();return true;}
     if (modMenu) { mod_menu_draw(); }
     if (tournament) { tournament_draw(); }
-    if(battleHud&&!modMenu&&!tournament&&!sOpen)mod_battle_hud_draw();
+    if(battleHud&&!modMenu&&!tournament&&!sOpen&&!Port_StoryPresentationView(nullptr,nullptr,nullptr)){mod_battle_hud_draw();mod_select_result_draw();}
+    if(storySubtitle&&!modMenu&&!sOpen)mod_story_subtitle_draw();
     if (sOpen) {
         if (sNet) {
             build_net();

@@ -483,7 +483,11 @@ void BtlMenu_Draw(u64 **pkt, BtlMenu *menu) {
                 i = 0;
                 Font_PushStyle();
                 Font_PushCursor();
+                #ifdef PORT
+                {extern int Port_StoryActive(void);Font_SetHome(0x100, ty + (Port_StoryActive()&&menu==PauseMenu_GetMenu(0) ? 14 : 0x2A));}
+#else
                 Font_SetHome(0x100, ty + 0x2A);
+#endif
                 Font_SetScale(menu->scale);
                 Font_SetSpacing(0, 0x1C - Font_GetGlyphHeight());
                 Font_SetAlign(1);

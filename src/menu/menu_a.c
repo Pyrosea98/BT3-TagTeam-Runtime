@@ -575,9 +575,15 @@ void MainMenu_Update(void) {
             }
         }
     }
+#ifdef PORT
+    {Pad saved;int owned=Port_ModMenuActive();if(owned){saved=gPad[0];memset(&gPad[0],0,sizeof(gPad[0]));}
+#endif
     for (i = 0; i < MAINMENU_FLASH_NUM; i++) {
         Flash_Advance(&gMainMenu->flash[i]);
     }
+#ifdef PORT
+    if(owned)gPad[0]=saved;}
+#endif
 }
 
 /* What a choice does: marks the screen as leaving, sets the next mode and plays the movie out. */
@@ -597,6 +603,9 @@ void MainMenu_Update(void) {
 
 /* Pad 0: up / down move the cursor (the ring scrolls at the ends), confirm enters a mode, cancel leaves. */
 void MainMenu_Input(s32 *result) {
+#ifdef PORT
+    if(Port_ModMenuActive())return;
+#endif
     if (!(gMainMenu->flash[0].flags & MFLASH_PAD)) {
         return;
     }
@@ -802,13 +811,34 @@ static void MainMenu_PortPlayersSwitch(s32 players, s32 pick) {
    Circle or SELECT goes back to the menu's own entries. A choice is made the way an entry's is (MAINMENU_CHOOSE), but for
    the character select behind the versus menu (40, the team select) or behind the training menu (45), and what
    that menu would have left in gProgress is set here. Returns 1 when this frame's input was taken. */
+/* Own only the special-menu ambience, on the game thread. Reuse verified native IDs:
+   HistSel waterfall 10BDB, Namek/Freezer saga ambience 10BDD; History BGM10B18,
+   episode-selection BGM10B1C. Never run an audio player from the render thread. */
+static s32 sPortSceneAudio,sPortSceneRetry;
+static void MainMenu_PortSceneAudio(s32 leaving) {
+    extern s32 Port_ModMenuAtmosphere(void);
+    extern void StreamSe_Play(s32,s32,s32,s32),StreamSe_Stop(s32);
+    extern s32 StreamSe_IsStopped(s32);
+    s32 scene=leaving?0:Port_ModMenuAtmosphere();
+    if(scene!=sPortSceneAudio){
+        if(sPortSceneAudio)StreamSe_Stop(0);
+        if(scene){Bgm_Play(scene==1?0x10B18:0x10B1C);StreamSe_Play(0,scene==1?0x10BDB:0x10BDD,0x28,0);}
+        else if(!leaving&&sPortSceneAudio)Bgm_Play(0x10B16);
+        sPortSceneAudio=scene;sPortSceneRetry=0;
+    }
+    if(scene&&++sPortSceneRetry>=120){sPortSceneRetry=0;if(StreamSe_IsStopped(0))StreamSe_Play(0,scene==1?0x10BDB:0x10BDD,0x28,0);}
+}
+
 static s32 MainMenu_PortModes(void) {
     s32 next, players = 1, sound = -1, result, was;
-    if (!(gMainMenu->flash[0].flags & MFLASH_PAD) || !(gMainMenu->flags & MAINMENU_STARTED)) return 0;
-    if (Port_NetSession()) { Port_ModMenuReset(); return 0; }
+    /* An active custom result/menu owns input independently of native Flash readiness.
+       Neutralising Flash input must not make our result wait on the hidden menu. */
+    if (!Port_ModMenuActive() && (!(gMainMenu->flash[0].flags & MFLASH_PAD) || !(gMainMenu->flags & MAINMENU_STARTED))) return 0;
+    if (Port_NetSession()) { MainMenu_PortSceneAudio(1);Port_ModMenuReset(); return 0; }
     Port_ModesMenu(); /* renew hint; custom UI does not depend on relabelled sheets */
     was = Port_ModMenuActive();
     result = Port_ModMenuStep(gPad[0].gamePressed, gPad[0].gameRepeat, &players, &sound);
+    MainMenu_PortSceneAudio(result>0);
     if (sound >= 0) Snd_PlaySe(1, sound);
     if (!was && Port_ModMenuActive()) {
         extern void Voice_StopWithLip(void);
@@ -851,6 +881,9 @@ s32 MainMenu_Run(s32 section) {
     Port_ModMenuEnterMain();
 #endif
     MainMenu_Init(section);
+#ifdef PORT
+    MainMenu_PortSceneAudio(0);
+#endif
     ColorFade_StartIn(0, 0, 0, 0x14);
     while (1) {
         Gfx_BeginFrame();
@@ -910,6 +943,8 @@ s32 MainMenu_Run(s32 section) {
         Port_ModesShow(NULL);
     }
     sPortModes = 0;
+    MainMenu_PortSceneAudio(1);
+    Port_ModMenuReset();
     Port_ModMenuReset();
 #endif
     MainMenu_Term();

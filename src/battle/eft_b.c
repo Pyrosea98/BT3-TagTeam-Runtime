@@ -924,6 +924,12 @@ void EftBubble_UpdateAmbient(void) {
     s32 views;
     s32 i;
 
+#ifdef PORT
+    /* Menu/Story summoning viewers have a DemoCam, no battle camera or
+       fighters. Water scenery is still rendered; body/camera bubbles are not. */
+    if (gBtlCam == NULL) return;
+#endif
+
     if (Battle_GetWork()->flags & EFTB_BATTLE_PAUSE) {
         return;
     }

@@ -1242,6 +1242,9 @@ void BtlCtrl_PlayMotion(s32 player, s32 motion, s32 loop, f32 blend) {
     BtlCapiBChr *chr = BtlChar_Get(player);
 
     if (chr != NULL) {
+#ifdef PORT
+        {extern int Port_StoryActive(void);if(Port_StoryActive())BtlChar_ClearFlag(chr,0xFB);}
+#endif
         chr->motion = motion;
         chr->motionBlend = blend;
         chr->motionLoop = loop;
@@ -1256,6 +1259,19 @@ void BtlCtrl_SetPos(s32 player, Vec4 *pos) {
     if (chr != NULL) {
         Vec4_Copy(&chr->warpPos, pos);
         BtlChar_SetHeldFlag(chr, 0xFC);
+#ifdef PORT
+        /* Story placement precedes an immediate authored technique. The normal
+           deferred warp only runs in action4/7..10, so cannot follow that request. */
+        {extern int Port_StoryActive(void);extern s32 BtlStage_FindZoneNear(s32,Vec4*);
+         extern void BtlChar_Place(void*,Vec4*,Vec4*,s32);
+         if(Port_StoryActive()){
+          /* GetPos adds pose+0x20 (display/move offset). Native Place clears
+             velocity, not that offset: the preceding rush left Nappa64 units
+             above a correctly reset root. CH7's authored warp owns both. */
+          extern int Port_StoryChapter(void);
+          if(Port_StoryChapter()==6){Vec4*offset=(Vec4*)chr->pose.unk20;offset->x=offset->y=offset->z=offset->w=0;}
+          BtlChar_Place(chr,pos,&BtlChar_GetPos(chr)->rot,BtlStage_FindZoneNear(-1,pos));BtlChar_ClearFlag(chr,0xFC);}}
+#endif
     }
 }
 
@@ -1275,6 +1291,11 @@ void BtlCtrl_SetRot(s32 player, Vec4 *rot) {
     if (chr != NULL) {
         Vec4_Copy(&chr->warpRot, rot);
         BtlChar_SetHeldFlag(chr, 0xFD);
+#ifdef PORT
+        {extern int Port_StoryActive(void);extern s32 BtlStage_FindZoneNear(s32,Vec4*);
+         extern void BtlChar_Place(void*,Vec4*,Vec4*,s32);
+         if(Port_StoryActive()){Vec4*p=&BtlChar_GetPos(chr)->pos;BtlChar_Place(chr,p,rot,BtlStage_FindZoneNear(-1,p));BtlChar_ClearFlag(chr,0xFD);}}
+#endif
     }
 }
 
@@ -1604,13 +1625,27 @@ s32 BtlCtrl_Transform(s32 player, s32 id) {
             }
         }
         if (slot < 0) {
+#ifdef PORT
+            {extern void Port_Dbg3(const char*,s32,s32,s32,s32);Port_Dbg3("story transform no slot",player,id,BtlParam_GetSlotId(chr,0),BtlParam_GetSlotId(chr,3));}
+#endif
             return 0;
         }
         if (!BtlAct_CanTransform(chr, slot, 0, 0)) {
+#ifdef PORT
+            {extern void Port_Dbg3(const char*,s32,s32,s32,s32);Port_Dbg3("story transform rejected",player,id,slot,BtlAct_GetCurrent(chr));}
+#endif
             return 0;
         }
         g = BtlMember_GetActiveGauge(chr);
         g->blast = BtlUtil_Clamp(BtlParam_GetSlotCost(chr, slot), g->blast, g->blastMax);
+#ifdef PORT
+        {extern int Port_StoryFormGranted(int,int);if(Port_StoryFormGranted(player,id)){
+            extern void BtlAct_Request(void*,s32);extern s32 BtlAct_GetQueued(void*);
+            BtlChar_ClearFlag(chr,0xFA);BtlChar_ClearFlag(chr,0xFB);
+            if(!BtlAct_QueueTransform(chr,slot))return 0;
+            BtlAct_Request(chr,BtlAct_GetQueued(chr));return 1;
+        }}
+#endif
         BtlChar_SetHeldFlag(chr, slot + 0x116);
         BtlChar_ClearFlag(chr, 0xBE);
         chr->stunTimer = 0;
@@ -2242,3 +2277,101 @@ s32 BtlSide_IsComboHitNew(s32 side) {
     }
     return 0;
 }
+
+#ifdef PORT
+/* Authored Story attacks start at an already-safe cinematic boundary. Do not
+   leave a virtual pad command waiting behind action4, CPU decisions or charge delay. */
+s32 Port_StoryUseTechnique(s32 player,s32 slot){
+    BtlCapiBChr*c=BtlChar_Get(player);s32 f,action;
+    extern int Port_StoryActive(void);extern s32 BtlAct_GetTechniqueAction(void*,s32);
+    extern void BtlAct_Request(void*,s32);
+    if(!Port_StoryActive()||!c||slot<2||slot>4)return 0;
+    if(!BtlCtrl_UseTechnique(player,slot))return 0;
+    BtlChar_ClearFlag(c,0xFA);BtlChar_ClearFlag(c,0xFB);
+    for(f=0x120;f<=0x124;f++)BtlChar_ClearFlag(c,f);
+    /* The normal virtual-command query consumes11E. Direct dispatch replaces
+       that query too: leaving it set blocks every later human input, including clashes. */
+    BtlChar_ClearFlag(c,0x11E);
+    action=BtlAct_GetTechniqueAction(c,slot);
+    {extern int Port_StoryUltimatePrelude(int);extern void BtlAct_SetQueue(void*,u32,s32);
+     if(slot==4&&Port_StoryUltimatePrelude(player)){
+      /* Match BtlAct_CheckTechniqueInput: native ultimate startup, THEN its
+         queued beam. Skipping105 bypasses the technique's start-effect setup. */
+      BtlAct_SetQueue(c,0,0x105);BtlAct_SetQueue(c,1,action);BtlAct_Request(c,0x105);
+     }else BtlAct_Request(c,action);}
+
+    {extern void Port_Dbg3(const char*,int,int,int,int);Port_Dbg3("story direct technique",player,slot,action,0);}
+    return 1;
+}
+#endif
+
+#ifdef PORT
+/* Release only the Story-owned pose at scene/entry boundaries, never a live attack. */
+void Port_StoryReleaseActor(s32 player){
+ BtlCapiBChr*c=BtlChar_Get(player);s32 f;extern int Port_StoryActive(void),Port_TargetHuman(s32);
+ if(!Port_StoryActive()||!c||BtlChar_IsDead(c))return;
+ BtlCtrl_StopMotion(player);BtlChar_ClearFlag(c,0x11E);
+ /* Story dialogue can interrupt any native action. Rebuild a CPU's plan on
+    every release; limiting this to action 4 leaves other CPUs stranded idle. */
+ if(!Port_TargetHuman(player)){extern void BtlAiMgr_ResetSide(s32);BtlAiMgr_ResetSide(player);}
+ if(BtlAct_GetCurrent(c)==4){
+  /* Scene teardown runs after action dispatch. Its one-frame FB pulse can expire
+     before DECIDE; queue the native exit as well, or action4 reasserts immunity. */
+  {extern void BtlAct_Request(void*,s32);BtlAct_Request(c,0xB);}
+  for(f=0x42;f<=0x46;f++)BtlChar_ClearFlag(c,f);
+  BtlChar_ClearFlag(c,0x128);BtlChar_ClearFlag(c,0x30);
+  BtlChar_ClearFlag(c,0xFE);BtlChar_ClearFlag(c,0xFF);BtlChar_ClearFlag(c,0x101);BtlChar_ClearFlag(c,0x102);
+ }
+}
+#endif
+#ifdef PORT
+/* A free Story CPU can retain a completed native AI plan after a scene or
+   hit reaction. Retry only a stationary neutral CPU, never a human, charge,
+   attack, knockdown, frozen fighter or a live paired sequence. */
+void Port_StoryResumeCombatActor(s32 player,s32 enemy){
+ static s32 wait[16];static Vec4 last[16];
+ BtlCapiBChr*c;Vec4 p;s32 action;extern int Port_TargetHuman(s32),Port_SequencePartner(s32);
+ extern s32 BtlChar_IsFrozen(BtlCapiBChr*);extern void BtlAiMgr_ResetSide(s32);
+ if((u32)player>=16)return;c=BtlChar_Get(player);
+ if(!c||BtlChar_IsDead(c)||Port_TargetHuman(player)||enemy<0||Port_SequencePartner(player)>=0||BtlChar_IsFrozen(c)){wait[player]=0;return;}
+ action=BtlAct_GetCurrent(c);BtlCharApi_GetPos(c->objId,&p);
+ if(action==4){Port_StoryReleaseActor(player);wait[player]=0;last[player]=p;return;}
+ if((action!=0xB&&action!=0xC)||Vec3_Length(&(Vec4){p.x-last[player].x,p.y-last[player].y,p.z-last[player].z,0})>.05f){wait[player]=0;last[player]=p;return;}
+ last[player]=p;
+ if(++wait[player]>=90){wait[player]=0;BtlAiMgr_ResetSide(player);
+  {extern void Port_Dbg3(const char*,int,int,int,int);Port_Dbg3("story stationary CPU plan resumed",player,enemy,action,0);}}
+}
+#endif
+
+#ifdef PORT
+/* Story diagnostics (env-gated by the callers): one actor's state, and the authored beam pair's actions/classes. */
+extern f32 BtlCharApi_GetGroundY(s32 obj);
+extern void BtlCharApi_GetRot(s32 obj, Vec4 *rot);
+extern s32 Port_FighterObjId(s32 i);
+void Port_StoryActorProbe(s32 player, s32 frame){
+ BtlCapiBChr*c=BtlChar_Get(player);s32 o=Port_FighterObjId(player);Vec4 p,r;extern void Port_Dbg3(const char*,int,int,int,int);
+ if(!c||o<0)return;BtlCharApi_GetPos(o,&p);BtlCharApi_GetRot(o,&r);
+ Port_Dbg3("story actor pos",player|frame<<8,(int)(p.x*10.0f),(int)(p.y*10.0f),(int)(p.z*10.0f));
+ Port_Dbg3("story actor state",player|frame<<8,(int)((p.y-BtlCharApi_GetGroundY(o))*10.0f),(int)(r.y*1000.0f),BtlAct_GetCurrent(c)|c->pad<<16);
+}
+void Port_StoryBeamProbe(s32 a, s32 b, s32 frame){
+ BtlCapiBChr*x=BtlChar_Get(a),*y=BtlChar_Get(b);extern void Port_Dbg3(const char*,int,int,int,int);
+ if(!x||!y)return;
+ Port_Dbg3("story beam pair",frame,BtlAct_GetCurrent(x)|BtlAct_GetCurrentClass(x)<<12|BtlChar_TestFlag(x,0xAA)<<16,BtlAct_GetCurrent(y)|BtlAct_GetCurrentClass(y)<<12|BtlChar_TestFlag(y,0xAA)<<16,BtlAct_IsTechniqueId(BtlAct_GetCurrent(x))|BtlAct_IsTechniqueId(BtlAct_GetCurrent(y))<<1);
+}
+#endif
+#ifdef PORT
+#include "sys/pad.h"
+void Port_StoryControlProbe(s32 player){BtlCapiBChr*c=BtlChar_Get(player);Pad*p;int f;
+ extern Pad*BtlChar_GetPad(BtlCapiBChr*);extern s32 BtlInput_IsHeld(BtlCapiBChr*,u32);extern void Port_Dbg3(const char*,int,int,int,int);
+ if(!c)return;p=BtlChar_GetPad(c);f=BtlChar_TestFlag(c,0x11E)|BtlChar_TestFlag(c,0x11F)<<1|BtlChar_TestFlag(c,0xB1)<<2|BtlChar_TestFlag(c,0xFA)<<3;
+ Port_Dbg3("story hero control",player,c->pad,*(int*)((u8*)c+0x1278),f);
+ Port_Dbg3("story hero pad",player,p?p->held:0,BtlInput_IsHeld(c,0xffffffffu),BtlAct_GetCurrent(c));
+}
+#endif
+
+#ifdef PORT
+void Port_StoryHoldPose(s32 player,s32 motion){BtlCapiBChr*c=BtlChar_Get(player);extern int Port_StoryActive(void);
+ if(c&&Port_StoryActive()&&BtlAct_GetCurrent(c)!=4)BtlCtrl_PlayMotion(player,motion,1,.1f);
+}
+#endif

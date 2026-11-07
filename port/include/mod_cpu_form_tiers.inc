@@ -158,4 +158,10 @@ case 238:*family=60;*tier=2;break;
 case 239:*family=60;*tier=3;break;
 case 241:*family=60;*tier=5;break;
 case 244:*family=16;*tier=5;break;
+case 213:*family=213;*tier=0;break;
+case 245:*family=213;*tier=1;break;
+case 291:*family=291;*tier=0;break;case 292:*family=291;*tier=1;break;case 293:*family=291;*tier=2;break;case 294:*family=291;*tier=3;break;
+case 295:*family=41;*tier=5;break;
+case 97:*family=97;*tier=0;break;
+case 296:*family=97;*tier=1;break;case 297:*family=97;*tier=2;break;case 298:*family=97;*tier=3;break;case 299:*family=97;*tier=4;break;
 default:break;}}

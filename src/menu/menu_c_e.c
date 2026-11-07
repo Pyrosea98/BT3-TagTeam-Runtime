@@ -1,3 +1,4 @@
+extern void Port_TextPatch(void*,int,const char*);
 #ifdef PORT
 #include "plat_beta8.h"
 #endif
@@ -578,7 +579,13 @@ void CharSel_Init(s32 section) {
     gCharSel->nameText = MPACK_AT(gCharSel->res, 43);
     gCharSel->formText = MPACK_AT(gCharSel->res, 44);
 #ifdef PORT
+        Port_TextPatch(gCharSel->nameText,213,"Oceanus Shenron");
+        Port_TextPatch(gCharSel->nameText,245,"Oceanus Shenron (Dragon)");
+        Port_TextPatch(gCharSel->nameText,247,"Gokoro");
+        Port_TextPatch(gCharSel->formText,213,"3.5B");
+        Port_TextPatch(gCharSel->formText,245,"7B");
     Port_Beta8PatchPowerText(gCharSel->formText);
+    Port_Beta8PatchDragonNames(gCharSel->nameText);
 #endif
 #ifdef PORT
     {
@@ -673,18 +680,18 @@ void CharSel_Init(s32 section) {
         /* Room for the disc's 36 and all 26 added ones, and the padding of the last row: 62 are 11 rows of 6, 66
            cells. (It was 64 cells with the adding stopped at 60, the last whole row that fits: with every disc
            stage unlocked only 24 of 26 added stages were listed. Reported by a player.) */
-        static s32 sAllIds[96];
+        static s32 sAllIds[192];
         extern int Port_NetSession(void); /* port/src/gs/net.c */
         s32 extra = Port_NetSession() ? 0 : gPortExtraStageCount;
         s32 swaps = Port_NetSession() ? 0 : gPortStageReplaceCount;
         s32 n = gCharSel->stageCount, i, rows, r;
-        if (n > 64) {
-            n = 64;
+        if (n > 128) {
+            n = 128;
         }
         for (i = 0; i < n; i++) {
             sAllIds[i] = gCharSel->stageIds[i];
         }
-        for (i = 0; i < extra && n < 90; i++) {
+        for (i = 0; i < extra && n < 192; i++) {
             sAllIds[n++] = (s32)gPortExtraStages[i];
         }
         for (r = 0; r < swaps; r++) {
@@ -699,7 +706,7 @@ void CharSel_Init(s32 section) {
         sPortStagesAdded = extra > 0 || swaps > 0;
         if (sPortStagesAdded) {
             rows = (n + STGGRID_COLS - 1) / STGGRID_COLS;
-            for (i = n; i < rows * STGGRID_COLS && i < 96; i++) {
+            for (i = n; i < rows * STGGRID_COLS && i < 192; i++) {
                 sAllIds[i] = STGGRID_ID_EMPTY;
             }
             gCharSel->stageIds = sAllIds;
@@ -751,10 +758,10 @@ void CharSel_Init(s32 section) {
         added = Port_NetSession() ? 0 : gPortSongCount;
         sPortSongsAdded = 0;
         if (added > 0) {
-            static s32 sBgmIds[72];
+            static s32 sBgmIds[160];
             s32 n = gCharSel->bgmCount, k, last = gCharSel->bgmIds[n - 1];
-            if (n > 30) {
-                n = 30;
+            if (n > 128) {
+                n = 128;
             }
             if (added > PORT_SONG_MAX) {
                 added = PORT_SONG_MAX;

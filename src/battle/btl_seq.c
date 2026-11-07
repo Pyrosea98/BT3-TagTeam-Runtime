@@ -4,6 +4,11 @@
 #include "battle/battle_work.h"
 #include "sys/heap.h"
 #include "sys/adx.h"
+#include "sys/pad.h"
+#ifdef PORT
+unsigned Port_StoryPresentationClock(void){extern unsigned long long SDL_GetTicks(void);return (unsigned)SDL_GetTicks();}
+int Port_StoryPresentationInput(void){return gPad[0].gamePressed;}
+#endif
 
 /* ---- Skill-list text of the pause menu, 0x215420-0x216AC0 ----
  * The list is a UTF-16 script. Every line starts with two characters whose second one is a hex digit (a mask
@@ -588,6 +593,7 @@ extern int Port_NetActive(void); /* port/src/gs/net.c: 1 in an online match */
 extern int Port_NetMe(void);     /* which player this copy plays (0 or 1) */
 extern s32 gPortSeSilent;        /* src/sys/snd.c */
 extern void PauseMenu_Reset(void);
+#include "mod_story_scene.inc"
 #endif
 extern void PauseMenu_Draw(void);
 extern void Snd_SetPause(s32 a, s32 b);
@@ -875,6 +881,9 @@ s32 BtlSeqIntroTalk_Enter(BtlSeqTalkCtx *ctx) {
         ctx->skip = 0;
         ctx->step = 99;
     } else {
+#ifdef PORT
+        if(!st_intro_enter(ctx))
+#endif
         BtlSeqIntroTalk_Setup(ctx);
     }
     Battle_GetWork()->flags |= BATTLE_FLAG_DEMO;
@@ -944,6 +953,13 @@ static void Port_IntroEnd(void) {
 /* State 1 preUpdate: at steps 0 and 2 starts a speaker's pose, camera cut, voice line and talk animation. */
 s32 BtlSeqIntroTalk_PreUpdate(BtlSeqTalkCtx *ctx) {
 #ifdef PORT
+    if(ctx->step==ST_STEP_PREFIGHT){st_prefight_tick(ctx);return 1;}
+#endif
+#ifdef PORT
+    if (ctx->step >= ST_STEP_BEAT && ctx->step <= ST_STEP_HOLD) { /* a Dragon History scene */
+        st_scene_beat(ctx);
+        return 1;
+    }
     if (ctx->step == 0 && Port_IntroOn()) {
         Port_IntroQueue(ctx);
     }
@@ -987,6 +1003,30 @@ s32 BtlSeqIntroTalk_PreUpdate(BtlSeqTalkCtx *ctx) {
 /* State 1 update: waits for each line to end (voice stopped or 10 s), or for the skip; then goes to state 2. */
 s32 BtlSeqIntroTalk_Update(BtlSeqTalkCtx *ctx) {
 #ifdef PORT
+    if(ctx->step==ST_STEP_PREFIGHT)return 1;
+    if(sStPreludeJustFinished){sStPreludeJustFinished=0;return 1;}
+#endif
+#ifdef PORT
+    if (ctx->step >= ST_STEP_BEAT && ctx->step <= ST_STEP_HOLD) { /* a Dragon History scene (mod_story_scene.inc) */
+        if (!st_scene_hold(ctx)) {
+            if(ST_Interlude(st_chapter())){BattleResult_Set(1,1);st_ending_finish();return 6;}
+            st_scene_end();
+            BtlSeq_StopTalk();
+            return 2;
+        }
+        if (ctx->poll != NULL && ctx->poll()) {
+            if(st_chapter()==3&&!(sStEventsDone&1u)){
+                sStRun.index=sStRun.count;ctx->step=ST_STEP_HOLD;Ramp_Start(&ctx->timer,1.f/30.f,0,1);return 1;
+            }
+            ScrXfade_RequestCapture();
+            ScrXfade_Start(1, 1.0f);
+            if(ST_Interlude(st_chapter())){BattleResult_Set(1,1);st_ending_finish();return 6;}
+            st_scene_end();
+            BtlSeq_StopTalk();
+            return 2;
+        }
+        return 1;
+    }
     Port_IntroDivert(ctx);
     if (ctx->step == PORT_INTRO_TURN + 1 && BtlCtrl_IsPoseReached(sPortIntroCur)) {
         if (Voice_IsStopped(sPortIntroVoice) || Ramp_Step(&ctx->timer)) {
@@ -1052,7 +1092,13 @@ done:
 
 /* State 1 exit: stops the camera cut and ends both entrance poses (not in mode 1). */
 s32 BtlSeqIntroTalk_Exit(BtlSeqTalkCtx *ctx) {
+#ifdef PORT
+    if(ST_Interlude(st_chapter()))return 1; /* preserve the final shot through its black fade */
+#endif
     if (Battle_GetMode() != 1) {
+#ifdef PORT
+        st_scene_end();
+#endif
         DemoCam_Stop();
         BtlCtrl_EndEntrance(ctx->side[0]);
         BtlCtrl_EndEntrance(ctx->side[1]);
@@ -1079,6 +1125,9 @@ s32 BtlSeqIntroTalk_Skip(BtlSeqTalkCtx *ctx) {
 s32 BtlSeqWinTalk_Setup(BtlSeqTalkCtx *ctx) {
     s32 winner = BattleResult_GetWinnerSide();
     s32 loser = winner == 0;
+#ifdef PORT
+    {extern int Port_StoryHumanActor(void);if(Port_StoryActive()&&!BattleResult_IsPlayerWin()){int human=Port_StoryHumanActor();if(human>=0)loser=human;}}
+#endif
     BtlSeqObj *winObj = BtlObj_Get(BattleSide_GetObjId(winner));
     u8 *winTbl = winObj->talkTbl;
     BtlSeqObj *loseObj = BtlObj_Get(BattleSide_GetObjId(loser));
@@ -1141,6 +1190,9 @@ s32 BtlSeqWinTalk_Enter(BtlSeqTalkCtx *ctx) {
         Hud_ShowPrompt(0);
         Hud_ShowNotice(0);
     } else {
+#ifdef PORT
+        if(!st_ending_enter(ctx))
+#endif
         BtlSeqWinTalk_Setup(ctx);
         Hud_ShowGauges(0);
         Hud_ShowTimer(0);
@@ -1152,6 +1204,12 @@ s32 BtlSeqWinTalk_Enter(BtlSeqTalkCtx *ctx) {
 
 /* State 5 preUpdate: step 0 starts the pose, camera cut and voice line; step 2 starts a 1.5 s hold. */
 s32 BtlSeqWinTalk_PreUpdate(BtlSeqTalkCtx *ctx) {
+#ifdef PORT
+    if (ctx->step >= ST_STEP_BEAT && ctx->step <= ST_STEP_HOLD) { /* a Dragon History ending */
+        st_scene_beat(ctx);
+        return 5;
+    }
+#endif
     switch (ctx->step) {
     case 0:
         if (BattleResult_IsPlayerWin()) {
@@ -1179,6 +1237,21 @@ s32 BtlSeqWinTalk_PreUpdate(BtlSeqTalkCtx *ctx) {
 
 /* State 5 update: waits for the line (or 10 s), holds 1.5 s, then goes to state 6; the poll callback skips. */
 s32 BtlSeqWinTalk_Update(BtlSeqTalkCtx *ctx) {
+#ifdef PORT
+    if (ctx->step >= ST_STEP_BEAT && ctx->step <= ST_STEP_HOLD) { /* a Dragon History scene (mod_story_scene.inc) */
+        if (!st_scene_hold(ctx)) {
+            st_ending_finish();
+            BtlSeq_StopTalk();
+            return 6;
+        }
+        if (ctx->poll != NULL && ctx->poll()) {
+            st_ending_finish();
+            BtlSeq_StopTalk();
+            return 6;
+        }
+        return 5;
+    }
+#endif
     switch (ctx->step) {
     case 0:
     case 1:
@@ -1215,6 +1288,9 @@ done:
 /* State 5 exit: stops the talk (not in mode 1). */
 s32 BtlSeqWinTalk_Exit(BtlSeqTalkCtx *ctx) {
     if (Battle_GetMode() != 1) {
+#ifdef PORT
+        if(!sStRun.finishing)st_scene_end();
+#endif
         BtlSeq_StopTalk();
     }
     return 1;
@@ -1233,6 +1309,9 @@ s32 BtlSeqWinTalk_Skip(BtlSeqTalkCtx *ctx) {
 /* State 0 enter: restarts the step counter and holds the fighters. */
 s32 BtlSeqStageIntro_Enter(BtlSeqWaitCtx *ctx) {
     ctx->step = 0;
+#ifdef PORT
+    if(st_chapter()>=0)ctx->step=6; /* begin with the authored scene, no Duel fly-through */
+#endif
     Battle_GetWork()->flags |= BATTLE_FLAG_DEMO;
     return 1;
 }
@@ -1351,20 +1430,22 @@ extern void Port_Dbg2(const char *what, int a, int b); /* port/src/plat_stub.c (
 extern s32 BtlChar_GetCount(void);
 extern s32 Port_Team(s32 i); /* btl_char_flag_opp.c */
 #define PORT_ENDDBG(n) (Port_Dbg2("the fight ends by rule", n, (int)result->reason), Port_Dbg2("the fight ends: winner (1 player 1, 2 player 2) / fighters", (int)result->winner, BtlChar_GetCount()))
-#define PORT_SEQ_TEAMS 10 /* (PORT_TEAM_MAX, port/include/port_fighters.h) */
+#include "mod_select.h"
+#define PORT_SEQ_TEAMS 16 /* (PORT_TEAM_MAX, port/include/port_fighters.h) */
 extern s32 BtlCharApi_GetHp(s32 objId);
 /* More than two fighters, the time is up: the team with the most health left in all its fighters has won (the
    game compares the two sides' fighters). Player 1's team = player 1 wins, any other = player 2 wins. 0: two
    fighters, or the best teams are level: the game's own rule decides. */
 static s32 Port_JudgeTeams(BattleResult *result) {
-    s32 hp[PORT_SEQ_TEAMS], i, best = 0, level = 0;
+    long long hp[PORT_SEQ_TEAMS];s32 i, best = 0, level = 0;
 
     if (BtlChar_GetCount() <= 2) {
         return 0;
     }
     memset(hp, 0, sizeof(hp));
     for (i = 0; i < BtlChar_GetCount(); i++) {
-        if ((u32)Port_Team(i) < PORT_SEQ_TEAMS && BtlCharApi_GetHp(i) > 0) {
+        extern s32 Port_FusionConsumedActor(s32);
+        if ((u32)Port_Team(i) < PORT_SEQ_TEAMS && BtlCharApi_GetHp(i) > 0 && !Port_FusionConsumedActor(i)) {
             hp[Port_Team(i)] += BtlCharApi_GetHp(i);
         }
     }
@@ -1377,8 +1458,10 @@ static s32 Port_JudgeTeams(BattleResult *result) {
         }
     }
     if (level) {
+        if(Port_ModSelectMulti()){result->winner=BTL_RESULT_DRAW;Port_ModSelectResult(-1);return 1;}
         return 0;
     }
+    if(Port_ModSelectMulti())Port_ModSelectResult(best);
     result->winner = best == 0 ? BTL_RESULT_WIN_P1 : BTL_RESULT_WIN_P2;
     return 1;
 }
@@ -1392,6 +1475,9 @@ s32 BtlSeq_CheckBattleEnd(void) {
     if (result->winner & 0x1F) {
         { PORT_ENDDBG(1); return 1; }
     }
+#ifdef PORT
+    /* Story phase gating follows the clock tick below. */
+#endif
     if (BtlSeq_GetEndCheckOff()) {
         return 0;
     }
@@ -1404,7 +1490,14 @@ s32 BtlSeq_CheckBattleEnd(void) {
     if (BtlCharApi_AnyHasFlag128()) {
         return 0;
     }
+#ifdef PORT
+    {extern int Port_ScenarioIndependentTeams(void),Port_ScenarioObjectiveEnd(const int*,int);
+     if(Port_ScenarioIndependentTeams()){int hp[16],i,n=BtlChar_GetCount(),verdict;if(n>0&&n<=16){for(i=0;i<n;i++)hp[i]=BtlCharApi_GetHp(i);verdict=Port_ScenarioObjectiveEnd(hp,n);if(verdict){result->winner=verdict;result->reason=BTL_REASON_KO;return 1;}}}}
+#endif
     timeUp = BtlSeq_TickClocksExt();
+#ifdef PORT
+    if(Port_StoryEndPending()&&!timeUp)return 0;
+#endif
     if (Battle_GetMode() == 1) {
         return 0;
     }
@@ -1457,6 +1550,7 @@ s32 BtlSeq_CheckBattleEnd(void) {
             { PORT_ENDDBG(10); return 1; }
         }
         if (teams == 1) {
+            if(Port_ModSelectMulti()){for(i=0;i<PORT_SEQ_TEAMS;i++)if(alive[i]){Port_ModSelectResult(i);break;}}
             result->winner = alive[0] ? BTL_RESULT_WIN_P1 : BTL_RESULT_WIN_P2;
             result->reason = BTL_REASON_KO;
             { PORT_ENDDBG(11); return 1; }
@@ -1501,6 +1595,7 @@ s32 BtlSeqFight_Enter(BtlSeqWaitCtx *ctx) {
         extern void Port_TestHealth(void); /* btl_capi_b.c (the experiment's tool) */
         Port_TestHealth();
     }
+    st_fight_enter();
 #endif
     if (Battle_GetMode() == 8) {
         Hud_ShowAll(1);
@@ -1515,6 +1610,9 @@ s32 BtlSeqFight_PreUpdate(BtlSeqWaitCtx *ctx) {
 
 /* State 3 update: opens / runs the pause menu, then checks for the end of the battle (-> 4, or 6 without a finish scene). */
 s32 BtlSeqFight_Update(BtlSeqWaitCtx *ctx) {
+#ifdef PORT
+    st_fight_update(); /* Dragon History lines during the fight */
+#endif
     if (Battle_GetMode() != 8) {
         if (ctx->poll != NULL && !(Battle_GetWork()->flags & BATTLE_FLAG_PAUSE_MENU) && ctx->poll()) {
             if (Battle_GetMode() == 7) {
@@ -1572,6 +1670,9 @@ s32 BtlSeqFight_Update(BtlSeqWaitCtx *ctx) {
         if (Battle_GetMode() == 7) {
             return 6;
         }
+#ifdef PORT
+        if(Port_StoryActive()&&st_direct_ending()&&!BattleResult_IsAborted())return 5; /* no Duel FINISH between resolved Story choreography and its ending */
+#endif
         return BattleResult_IsAborted() ? 6 : 4;
     }
     return 3;
@@ -1579,6 +1680,9 @@ s32 BtlSeqFight_Update(BtlSeqWaitCtx *ctx) {
 
 /* State 3 exit: nothing. */
 s32 BtlSeqFight_Exit(BtlSeqWaitCtx *ctx) {
+#ifdef PORT
+    st_scene_end();
+#endif
     return 1;
 }
 
@@ -1598,6 +1702,9 @@ s32 BtlSeqReady_PreUpdate(BtlSeqWaitCtx *ctx) {
 
 /* State 2 update: after 0.8 s shows announcement 0 and releases the fighters; 2 s later goes to state 3. */
 s32 BtlSeqReady_Update(BtlSeqWaitCtx *ctx) {
+#ifdef PORT
+    if(!st_opening_ready())return 2;
+#endif
     switch (ctx->step) {
     case 0:
         if (Ramp_Step(&ctx->timer)) {
@@ -1625,6 +1732,9 @@ s32 BtlSeqReady_Exit(BtlSeqWaitCtx *ctx) {
 
 /* Gives the result menu to pad 0 when one pad plays, else to the winning side. */
 void BtlSeq_SetResultPad(void) {
+#ifdef PORT
+    if(Port_ModSelectMulti()){BtlPause_SetPad(Port_ModSelectWinnerPad());return;}
+#endif
     if (BtlPause_GetPadCount() == 1) {
         BtlPause_SetPad(0);
     } else {
@@ -1639,12 +1749,19 @@ s32 BtlSeq_IsModeZero(void) {
 
 /* State 6 enter: mode 0 with a finished battle opens the result menu (step 0); otherwise starts the 1.2 s fade out (step 1). */
 s32 BtlSeqEnd_Enter(BtlSeqWaitCtx *ctx) {
+#ifdef PORT
+    extern int Port_StoryActive(void);
+#endif
     Battle_GetWork()->flags |= BATTLE_FLAG_DEMO;
     if (BattleResult_IsAborted()) {
         Fade_Start(0, 0, 1.0f);
         Ramp_Start(&ctx->timer, 1.2f, 0.0f, 1.0f);
         ctx->step = 1;
-    } else if (BtlSeq_IsModeZero()) {
+    } else if (BtlSeq_IsModeZero()
+#ifdef PORT
+               && !Port_StoryActive()
+#endif
+    ) {
         ctx->step = 0;
         BtlSeq_SetResultPad();
     } else {
@@ -1657,6 +1774,9 @@ s32 BtlSeqEnd_Enter(BtlSeqWaitCtx *ctx) {
 
 /* State 6 preUpdate: nothing. */
 s32 BtlSeqEnd_PreUpdate(BtlSeqWaitCtx *ctx) {
+#ifdef PORT
+    st_ending_fade_hold();
+#endif
     return 6;
 }
 
@@ -1683,6 +1803,9 @@ s32 BtlSeqEnd_Update(BtlSeqWaitCtx *ctx) {
 
 /* State 6 exit: stops the camera cut. */
 s32 BtlSeqEnd_Exit(BtlSeqWaitCtx *ctx) {
+#ifdef PORT
+    st_scene_end(); /* Native1.2s wait has finished; its1s fade is opaque. */
+#endif
     if (DemoCam_IsInUse()) {
         DemoCam_Stop();
     }
@@ -1693,6 +1816,9 @@ s32 BtlSeqEnd_Exit(BtlSeqWaitCtx *ctx) {
 /* State 4 enter: holds the fighters, starts the 3.5 s wait and shows the announcement for the finish reason. */
 s32 BtlSeqFinish_Enter(BtlSeqWaitCtx *ctx) {
     BtlSeqTimer *timer;
+#ifdef PORT
+    { extern void Port_AchievementBattleResult(void);Port_AchievementBattleResult(); }
+#endif
 
     Battle_GetWork()->flags |= BATTLE_FLAG_DEMO;
     timer = &ctx->timer;
@@ -1722,6 +1848,9 @@ s32 BtlSeqFinish_PreUpdate(BtlSeqWaitCtx *ctx) {
 s32 BtlSeqFinish_Update(BtlSeqWaitCtx *ctx) {
     if (Ramp_Step(&ctx->timer)) {
         if (Battle_GetMode() != 8 && BattleResult_HasWinner()) {
+#ifdef PORT
+            if(Port_ModSelectMulti())return 6;
+#endif
             return 5;
         }
         return 6;

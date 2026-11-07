@@ -107,6 +107,9 @@ ShenScene *gShenScene = NULL;
 
 #define SHEN_OBJ_FLAGS(obj) (*(u32 *)((obj) + 0xA40))
 #define SHEN_OBJ_CAMS(obj) ((void **)((obj) + 0x908))
+#ifdef PORT
+extern s32 gPortStoryWishFilm;
+#endif
 #define SHEN_RAMP(actor) ((Ramp *)(actor)->ramp)
 
 /* The sequence, one call per frame; returns 1 when it is over.
@@ -365,7 +368,16 @@ s32 ShenScene_StepLoad(ShenJob *job) {
     case 0: {
         s32 files[3][SHENSCENE_ACTOR_COUNT] = {{0xD3C, 0xD46}, {0xD3D, 0xD46}, {0xD45, 0xD47}};
 
+#ifdef PORT
+        if(gPortStoryWishFilm&&gShenScene->dragon==0){files[0][0]=0x43001AF4;files[0][1]=0x43001AF5;} /* original Shenlong / balls, scene-only imported IDs6900/6901 */
+#endif
+#ifdef PORT
+        /* The mod replaces the old summon backdrop with a battlefield. Story's
+           Roshi/balls/dragon sequence belongs at Kame House (normal stage12). */
+        res->stage = File_Request3(gPortStoryWishFilm ? 0x171 + 12 : gShenScene->dragon + SHENSCENE_FILE_STAGE, NULL, 0);
+#else
         res->stage = File_Request3(gShenScene->dragon + SHENSCENE_FILE_STAGE, NULL, 0);
+#endif
         for (i = 0; i < SHENSCENE_ACTOR_COUNT; i++) {
             ShenActor *a = &gShenScene->actor[i];
 
@@ -402,7 +414,11 @@ void ShenScene_InitCams(ShenSeq *seq) {
     s32 i;
 
     for (i = 0; i < 2; i++) {
+#ifdef PORT
+        {void**cams=SHEN_OBJ_CAMS(actor->obj);if(gPortStoryWishFilm&&!cams[0])cams=(void**)(actor->obj+0xB0);seq->cams[i]=cams[i];}
+#else
         seq->cams[i] = SHEN_OBJ_CAMS(actor->obj)[i];
+#endif
     }
     seq->camIdx = 0;
     seq->cam = *cams;
@@ -558,6 +574,10 @@ void ShenScene_Init(s32 dragon) {
     Load_RunBlocking();
     Battle_ClearWork();
     DemoCam_Init();
+#ifdef PORT
+    {Vec4 eye={.86f,-90.987f,-19.111f,1},rot={.1871f,0,0,1};
+     DemoCam_SetFixedPose(&eye,&rot);DemoCam_Update();} /* valid first-frame view even when an edited model has no camera track */
+#endif
     StgModel_InitStage();
     StgFx_Init();
     Ot_Init();

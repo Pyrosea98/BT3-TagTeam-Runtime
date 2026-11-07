@@ -541,11 +541,26 @@ void BtlCam_UpdateView(s32 side) {
 #endif
 #ifdef PORT
     if (side == 0 || side == 1) {
+        /* Story's borrowed Genkidama belongs to CPU Krilin, while the human
+           still controls Gohan. Borrow the technique camera, never the pad. */
+        extern int Port_StoryCameraActor(void);
+        extern s32 Port_FighterObjId(s32);
+        int actor=Port_StoryCameraActor();
+        if(actor>=0&&side==0)objId=Port_FighterObjId(actor);
         sPortViewObj[side] = objId;
     }
 #endif
     BtlCharApi_GetCamPose(objId, &view->pos, &view->rot);
     view->priority = BtlCharApi_HasCamPriority(objId);
+#ifdef PORT
+    {static s32 trace=-1,ticks[2];extern char*getenv(const char*);extern s32 Port_StoryActive(void);
+     if(trace<0)trace=getenv("BT3_STORY_CAMERA_LOG")!=0;
+     if(trace&&Port_StoryActive()&&(u32)side<2&&!(ticks[side]++%30)){
+      extern void Port_Dbg3(const char*,s32,s32,s32,s32);
+      Port_Dbg3("story view subject",side,objId,view->priority,(s32)view->pos.x);
+      Port_Dbg3("story view position",side,(s32)view->pos.x,(s32)view->pos.y,(s32)view->pos.z);
+     }}
+#endif
     BtlCam_BuildView(view, 1);
 }
 
@@ -684,6 +699,11 @@ void BtlCam_SelectView(s32 idx) {
 
 /* Loads the selected view's matrices (and scissor) for drawing. */
 void BtlCam_ApplyView(s32 scissor) {
+#ifdef PORT
+    /* Battle_Draw reapplies each player view after UpdateOverride. The Story
+       director must own this actual draw boundary as well. */
+    {extern int Port_StoryApplyFixedCamera(void);if(Port_StoryApplyFixedCamera()){DemoCam_Update();gBtlCamView=&gDemoCam->view;return;}}
+#endif
     View_Apply(&gBtlCam->cur->view, scissor);
 }
 
@@ -743,6 +763,11 @@ s32 BtlCam_UpdateOverride(void) {
             BtlCam_SetLayout(0, 1);
         }
     }
+#ifdef PORT
+    /* Reassert the Story director after fighter/effect camera updates, immediately
+       before choosing the view actually submitted to the renderer. */
+    {extern int Port_StoryApplyFixedCamera(void);Port_StoryApplyFixedCamera();}
+#endif
     if (DemoCam_IsActive() != 0) {
         DemoCam_Update();
         ret = 1;

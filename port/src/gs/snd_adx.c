@@ -597,6 +597,12 @@ void ADXT_StartFname(void *adxt, char *fname) {
 /* A beam struggle owns this explicit repeat request, never a voice or music
    heuristic. Keep the decoder's authored loop when present, otherwise repeat
    whole ADX frames at original pitch until the game stops the SE at outcome. */
+void Port_AdxOnce(void *adxt){Player*p=adxt;
+ if(!p||(uintptr_t)p<(uintptr_t)sPlayers||(uintptr_t)p>=(uintptr_t)(sPlayers+MAX_PLAYERS)||((uintptr_t)p-(uintptr_t)sPlayers)%sizeof(Player))return;
+ if(p->stream)SDL_LockAudioStream(p->stream);
+ p->loop=0;gPortAdxView[p-sPlayers].left=p->rate&&p->total>p->pos?(int)(((uint64_t)(p->total-p->pos)*60+p->rate-1)/p->rate):0;
+ if(p->stream)SDL_UnlockAudioStream(p->stream);
+}
 void Port_AdxRepeat(void *adxt){Player*p=adxt;
  if(!p||(uintptr_t)p<(uintptr_t)sPlayers||(uintptr_t)p>=(uintptr_t)(sPlayers+MAX_PLAYERS)||((uintptr_t)p-(uintptr_t)sPlayers)%sizeof(Player))return;
  if(p->stream)SDL_LockAudioStream(p->stream);

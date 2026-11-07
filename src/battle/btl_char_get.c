@@ -158,6 +158,10 @@ s32 BtlUtil_AngleToSector(f32 a) {
 
 /* Number of fighters. */
 s32 BtlChar_GetCount(void) {
+#ifdef PORT
+    /* The native character viewer has objects/stage rendering, but no battle roster. */
+    if(gBtlChars==NULL)return 0;
+#endif
     return gBtlChars->count;
 }
 
@@ -232,6 +236,7 @@ Pad *BtlChar_GetPad(BtlCharGetChr *chr) {
 s32 BtlChar_IsFrozen(BtlCharGetChr *chr) {
 #ifdef PORT
     {extern int Port_FusionConsumedActor(int);if(Port_FusionConsumedActor(chr->player))return 1;}
+    /* Story grips use motion/position holds, not IsFrozen: beams must hit them. */
 #endif
     return chr->freeze > 0;
 }

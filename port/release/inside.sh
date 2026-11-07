@@ -19,6 +19,7 @@ python3 port/tests/iso_compat/check_bracket_cache.py
 python3 port/tests/native_hud/check.py
 sh port/tests/settings/run.sh
 sh port/tests/mod_menu/run.sh
+sh port/tests/mod_select/run.sh
 python3 port/tests/settings/check_shell.py
 mkdir -p port/build
 # the build key (port/tools/buildkey.py reads it from the environment; it is never printed)

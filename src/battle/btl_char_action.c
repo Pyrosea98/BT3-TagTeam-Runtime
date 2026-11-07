@@ -696,6 +696,14 @@ extern s32 BtlChar_SetFlagRet(BtlActChr *chr, s32 bit) __asm__("BtlChar_SetFlag"
 void BtlAct_CheckForced(BtlActChr *chr) {
     BtlActState *act = &chr->act;
 
+#ifdef PORT
+    /* A defeated actor may still hold its KO action. Only an owned story scene
+       may replace that hold with its explicitly requested scripted pose. */
+    {extern s32 Port_StorySceneActorShown(s32 actor);
+     if(act->current!=4 && Port_StorySceneActorShown(chr->player) && BtlChar_TestFlag(chr,0xFA)){
+         BtlAct_Request(chr,4);return;
+     }}
+#endif
     if (chr->holdAction != 0) {
         return;
     }

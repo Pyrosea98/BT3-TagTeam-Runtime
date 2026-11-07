@@ -1,19 +1,6 @@
 #include "common.h"
 
-#ifndef EFT_OWNER_TAG
-#ifdef PORT
-/* More than two fighters: whose a task is. The game has two tags, "object 0's" and "anybody else's", and ends a
-   fighter's effects by resetting every task of its tag: with more fighters one fighter's change of model ended
-   the techniques of all the others past the first (a beam gone, and a technique's camera cut left running with
-   its data freed under it: a crash). Every extra fighter (objects 2..9) has a tag and a reset group of its own
-   (BtlTaskList_Reset, BtlScene_Reset); any other object keeps "anybody else's". */
-#define EFT_OWNER_TAG(n) ((n) == 0 ? 0x800 : ((u32)(n) - 2 < 8) ? (0x100000 << ((n) - 2)) : 0x1000)
-#define EFT_OWNER_RESET(n) ((n) == 0 ? 2 : ((u32)(n) - 2 < 8) ? (n) + 3 : 3)
-#else
-#define EFT_OWNER_TAG(n) n == 0 ? 0x800 : 0x1000
-#define EFT_OWNER_RESET(n) n == 0 ? 2 : 3
-#endif
-#endif
+#include "battle/eft_owner.h"
 #include "battle/eft_k.h"
 
 /*
@@ -2369,6 +2356,11 @@ void EftRushShot_Update(EftTask *task) {
                 }
                 if (!(w->arg->def->flags & 2)) {
                     if (!(w->flags & EFT_RUSHSHOT_HIT_MOVED)) {
+#ifdef PORT
+                        /* Only CH8's authored Genkidama rebound overrides this straight shot. */
+                        extern int Port_StorySpiritBallVelocity(int,float *,float *,float *);
+                        if(!Port_StorySpiritBallVelocity(arg->objId,(float *)&w->pos,(float *)&w->vel,(float *)&w->dir))
+#endif
                         if (arg->def->unk38 > 0.0f) {
                             EftAim_Home(&w->dir, &w->pos, &w->dir, arg->objId, w->speed, arg->def->unk38);
                             Vec3_Scale(&w->vel, &w->dir, w->speed);

@@ -94,6 +94,17 @@ s32 BtlGame_IsReplay(void) {
 BtlMenu *PauseMenu_GetMenu(s32 which) {
     BtlMenu *menu = NULL;
 
+#ifdef PORT
+    {extern int Port_StoryActive(void);
+     if(Port_StoryActive()&&which==0){
+      static BtlMenu tree;static BtlMenuItem items[3];int n=0,i;
+      if(tree.items==NULL){tree=gPauseMenuMode1;
+       for(i=0;i<gPauseMenuMode1.count&&n<3;i++){BtlMenuItem it=gPauseMenuMode1.items[i];
+        if(!it.disabled&&(it.type==BTL_MENU_ITEM_BACK||it.func==PauseMenu_SkillListFunc||it.id==0x14))items[n++]=it;}
+       if(n==3){tree.items=items;tree.count=3;tree.open=-1;}}
+      if(tree.count==3&&tree.items==items)return &tree;
+     }}
+#endif
     switch (which) {
     case 0:
         switch (Battle_GetMode()) {

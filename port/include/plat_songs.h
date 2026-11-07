@@ -9,7 +9,7 @@
    carries 0x14..0x17, which the menu drops. Added tracks take 0x1A onward, so they never touch a disc entry. */
 #define PORT_SONG_FIRST_OFFSET 0x1A
 #define PORT_SONG_BGM_FIRST 0x10B16 /* Bgm_Play id of music-list offset 0 */
-#define PORT_SONG_MAX 40            /* the menu's list (64 places of ours) less the disc's songs and "random" */
+#define PORT_SONG_MAX 128           /* recomp: manifest-backed songs; no legacy 40-track ceiling */
 /* An added song's file. NOT 0x10B16 + its entry: those ids are disc files (0x10B30..0x10B33 are silent, 0x10B34
    and 0x10B35 are the first two lines of the announcer), and the fifth and sixth added song stood in their place
    (releases 0.1.8 to 0.1.11, found 2026-10-08). Past the end of the second archive (65,201 files) instead. The
@@ -20,6 +20,8 @@
                                                                                     : PORT_SONG_BGM_FIRST + (n))
 
 void PortSongs_Init(void);
+int PortSongs_StoryDurationMs(const char *chapter,int saga,int title);
+int PortSongs_StoryBgm(const char *chapter,int saga,int title); /* private presentation resource, chapter override then saga */
 void PortSongs_Refresh(void);       /* before a select screen's music list is made: songs converted from MP3 since */
 int PortSongs_Count(void);
 int PortSongs_Offset(int index);    /* the music-list entry value of the index-th added track */

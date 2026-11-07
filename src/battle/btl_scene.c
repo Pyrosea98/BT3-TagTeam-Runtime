@@ -1,4 +1,5 @@
 #include "common.h"
+#include "battle/eft_owner.h"
 #include "battle/battle.h"
 #include "battle/battle_setup.h"
 #include "battle/btl_pool.h"
@@ -241,8 +242,8 @@ void BtlScene_Reset(s32 mode) {
         break;
 #ifdef PORT
     default:
-        if (mode >= 5 && mode < 13) { /* (an extra fighter's own tasks: EFT_OWNER_RESET in the effect files) */
-            BtlTaskList_Reset(gBtlScene->root, 0x100000 << (mode - 5));
+        if (mode >= 5 && mode < 19) { /* (an extra fighter's own tasks: EFT_OWNER_RESET in the effect files) */
+            BtlTaskList_Reset(gBtlScene->root, EFT_OWNER_TAG(mode - 3));
         }
         break;
 #endif
@@ -294,6 +295,12 @@ s32 BtlScene_TestCharPackBit(s32 side, s32 bit) {
 
 /* Returns entry idx of a character's pack (0x2053B0), or NULL when the character has none. */
 s32 *BtlScene_GetCharPackEntry(s32 side, s32 idx) {
+#ifdef PORT
+    /* Story's borrowed throw keeps Krilin's actor/model while looking up the
+       already-loaded Goku technique's emitters, projectile model and cameras. */
+    {extern int Port_StoryTechniqueDonor(int);int donor=Port_StoryTechniqueDonor(side);
+     if(donor>=0&&idx>=1&&idx<=11)side=donor;}
+#endif
     s32 *base = BtlCharApi_GetPlayerObjUnk58(side);
 
     if (base != NULL) {

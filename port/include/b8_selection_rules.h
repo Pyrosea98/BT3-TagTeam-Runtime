@@ -6,6 +6,9 @@
 static int B8CostumeCountRule(int chara,int isAlias,int *costume) {
     int n=-1;
     switch(chara) {
+    case 159:case 160:case 13:n=5;break;
+    case 186:n=2;break;
+    case 110:n=3;break; /* physical3 is now Gokoro; retain0,1,2 */
     case 29:n=5;break;
     case 122:n=2;break;
     case 59:case 54:n=2;break;
@@ -18,10 +21,24 @@ static int B8CostumeCountRule(int chara,int isAlias,int *costume) {
 }
 typedef struct {int chara;const char *text;} B8PowerTextCandidate;
 static const B8PowerTextCandidate b8PowerTextCandidate[]={
+ {164,"MAX"},{194,"100B"},{201,"50B"},
+ {218,"48B"},{219,"120B"},{220,"1.000B"},{221,"2.000B"},{222,"8.000B"},{223,"80.000B"},
+ {225,"2.900B"},{226,"5.800B"},{229,"23.200B"},{230,"40.000B"},
+ {235,"5.800B"},{238,"11.600B"},{239,"46.400B"},{241,"80.000B"},{294,"30B"},
+ {261,"5.4B"},{275,"5.4B"},{276,"5.4B"},{213,"3.5B"},{245,"7B"},{247,"40MM"},
  {51,"100.000M"},{52,"5B"},{166,"10B"},{149,"40B"},
  {59,"80.000B-80.000B"},{53,"2.25B"},{249,"4.5B"},{172,"18B"},
  {54,"40.000B-40.000B"},{29,"18K-18K-24K-30K-18K"},{244,"320M"}
 };
+/* The modern selector uses the same promoted roster identities as the native
+   form-text patch.  Keep this lookup tiny and data-only so the preview can
+   show the actual power label without parsing the rendered text section. */
+static const char *B8PowerText(int chara){
+    unsigned i;
+    for(i=0;i<sizeof(b8PowerTextCandidate)/sizeof(b8PowerTextCandidate[0]);i++)
+        if(b8PowerTextCandidate[i].chara==chara)return b8PowerTextCandidate[i].text;
+    return NULL;
+}
 
 /* Stage missing base/Oozaru/SSJ4 ids atomically; never drop an existing form.
    Integrate after the existing split-form list override so244 cannot be lost. */

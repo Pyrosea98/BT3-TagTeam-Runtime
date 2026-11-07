@@ -11,7 +11,8 @@ head=r"""#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 extern "C" {int Port_Setting(const char*,int);void Port_SettingSave(const char*,int);void Port_SettingsWrite(void);int Port_SettingsFlush(void);}
-static int tour,sEntered;
+static int tour,sEntered,select_players,select_clears;
+void Port_ModSelectPlayers(int n){select_players=n;}void Port_ModSelectClear(void){select_clears++;}
 int Port_TagTourActive(){return tour;}int Port_TagTourConfig(int){return 2;}
 const char *Port_ModesName(int){return "mode";}const char *Port_ModesPlayersName(int){return "players";}
 int Port_ModesChoose(int n){return n;}
@@ -20,10 +21,10 @@ static int sMatchPlayers;
 body='void Port_CoopReset(void){}\n'+'\n'.join(extract(f,n) for n in ['Port_LocalPlayersPreference','Port_LocalPlayersMatchSet','Port_LocalPlayers','Port_LocalPlayersSet'])+'\n'+extract(m,'Port_ModesChoosePlayers')+'\n'+extract(m,'Port_ModesLeave')
 foot=r"""int main(int argc,char **argv){assert(argc==2);if(!strcmp(argv[1],"write")){
  Port_LocalPlayersSet(4);assert(Port_LocalPlayersPreference()==4);assert(Port_LocalPlayers()==4);
- Port_ModesChoosePlayers(0,1);assert(Port_LocalPlayers()==2&&Port_LocalPlayersPreference()==4);
- Port_ModesChoosePlayers(0,3);assert(Port_LocalPlayers()==3&&Port_LocalPlayersPreference()==4);
+ Port_ModesChoosePlayers(0,1);assert(select_players==1);assert(Port_LocalPlayers()==2&&Port_LocalPlayersPreference()==4);
+ Port_ModesChoosePlayers(0,3);assert(select_players==3);assert(Port_LocalPlayers()==3&&Port_LocalPlayersPreference()==4);
  tour=1;assert(Port_LocalPlayers()==2&&Port_LocalPlayersPreference()==4);tour=0;
- Port_ModesLeave();assert(Port_LocalPlayers()==4);assert(Port_SettingsFlush());
+ Port_ModesLeave();assert(select_clears==1);assert(Port_LocalPlayers()==4);assert(Port_SettingsFlush());
  }else{assert(Port_LocalPlayersPreference()==4&&Port_LocalPlayers()==4);}
  puts("PASS actual local-player preference survives match1/3/tournament2/main-menu and process restart");}
 """

@@ -1,3 +1,7 @@
+#ifdef PORT
+#include "port_body_contacts.h"
+#endif
+#include "mod_damage_safe.h"
 #include "common.h"
 #include "battle/btl_char_hit.h"
 
@@ -1070,14 +1074,14 @@ void BtlHit_TestHit(HitChr *chr) {
         if (BtlChar_GetCount() >= 3) {
             extern void Port_TargetHit(s32 attacker, s32 victim); /* btl_char_flag_opp.c */
             extern s32 Port_IsEnemy(s32 a, s32 b);
-            extern u16 gPortBodyTouch[];
+
             s32 k;
-            s32 touched = (u32)chr->objId < 12 ? gPortBodyTouch[chr->objId] : 0;
-            s32 hit = (touched & (1 << opp->objId)) != 0;
+            unsigned int touched = Port_BodyObjectValid(chr->objId) ? gPortBodyTouch[chr->objId] : 0;
+            s32 hit = (touched & Port_BodyObjectBit(opp->objId)) != 0;
             if (!hit) {
                 for (k = 0; k < BtlChar_GetCount(); k++) {
                     HitChr *c = BtlChar_Get(k);
-                    if (k != oppIdx && Port_IsEnemy(chr->player, k) && (touched & (1 << c->objId))) {
+                    if (k != oppIdx && Port_IsEnemy(chr->player, k) && (touched & Port_BodyObjectBit(c->objId))) {
                         oppIdx = k;
                         opp = c;
                         other = 1;
@@ -1304,6 +1308,19 @@ void BtlHit_ApplyHit(HitChr *atk) {
         }
         break;
     }
+#ifdef PORT
+    /* Story: some rivals take a listed ally's blows without reacting (mod_story.h stPunchArmor). Grabs and throws
+       (0x55, 0x56) keep their paired native motions. Damage below is unchanged. */
+    if (react != 2 && kind != 0x55 && kind != 0x56) {
+        extern int Port_StoryPunchArmor(int by, int at, int kind, int react, int byChara);
+        HitMember *m = BtlMember_GetActive(atk);
+        /* player = the fighter index (side is the team/view for fighters 2 and up) */
+        if (Port_StoryPunchArmor(atk->player, def->player, kind, react, m ? m->chara : -1)) {
+            react = 2;
+            launch = 0;
+        }
+    }
+#endif
     def->react.reaction = react;
     if (react != 2) {
         def->react.unk4 = BtlAtk_GetReactionSub(atk);
@@ -1440,12 +1457,12 @@ void BtlHit_ApplyHit(HitChr *atk) {
         case 0x76:
         case 0x77:
         case 0x78:
-            dmg += dmg * BtlUtil_Clamp(atk->unkD88 + def->unkD88 - 1, 0, 5) / 5;
+            dmg = MD_Add(dmg,MD_MulDiv(dmg,BtlUtil_Clamp(atk->unkD88 + def->unkD88 - 1, 0, 5),5));
             break;
         default:
             if (def->react.back) {
                 if (!(af & 0x8000000) && !(st & 0x800)) {
-                    dmg += dmg / 5;
+                    dmg = MD_Add(dmg,dmg/5);
                 }
             }
             break;
@@ -1465,6 +1482,9 @@ void BtlHit_ApplyHit(HitChr *atk) {
         break;
     }
     }
+#ifdef PORT
+    {extern void Port_StoryAttackContact(int,int,int);Port_StoryAttackContact(atk->side,def->side,kind);}
+#endif
     if (!BtlChar_TestFlag(atk, 0x98)) {
         BtlMember_AddKi(atk, BtlAtk_GetKiGain(atk));
     }

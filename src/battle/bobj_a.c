@@ -1,3 +1,6 @@
+#ifdef PORT
+#include "port_body_contacts.h"
+#endif
 /*
  * This file is 0x24BBE8..0x250B28: bobj_a.c + bobj_b.c, merged at integration (the second part starts at the
  * separator comment further down; btl_obj.c is in front, bobj_b_b.c follows).
@@ -358,6 +361,30 @@ void BtlObjAnim_SamplePosRot(BobjTrack *trk, Vec4 *pos, Quat *rot, u16 *cursor, 
     }
 }
 
+#ifdef PORT
+/* Imported costumes may add bones whose legacy motion slots contain stale
+   offsets. Validate the decoded channels once, before any sampler/retargeter
+   sees them. A missing channel uses that bone's own rest pose. */
+static int Port_AnimValidateChannels(BobjAnim *a, u32 size) {
+    u32 i, off, bytes;
+    BobjTrack *t;
+    if (size < 0x94 || size > BOBJ_WORK_LAYER_SIZE ||
+        (u32)a->eventCount * 16 > size - 0x94) return 0;
+    for (i = 0; i < BOBJ_NODE_MAX; i++) {
+        off = (u32)a->track[i] * 4;
+        if (!off) continue;
+        if (off < 0x94 || off > size - 4) {
+            a->track[i] = 0;
+            continue;
+        }
+        t = TRACK_AT(a, a->track[i]);
+        bytes = 4 + (u32)t->count * (BOBJ_TRACK_ROT_ONLY(t) ? 10 : 24);
+        if (!t->count || bytes > size - off) a->track[i] = 0;
+    }
+    return 1;
+}
+#endif
+
 /* Returns motion `anim` of an object: ids below 0x19E are decompressed into buf, the others (the model's own
    motions, which follow in the same table) are returned in place. */
 BobjAnim *BtlObjAnim_Load(BobjObj *obj, void *buf, s32 anim, s32 *size) {
@@ -368,7 +395,19 @@ BobjAnim *BtlObjAnim_Load(BobjObj *obj, void *buf, s32 anim, s32 *size) {
         ret = (tbl + anim)[0x2A]; /* mdl->anims[anim]: runs on into modelAnims[] and the tables behind it */
         *size = 1;
     } else if (obj->mdl.anims[anim] != NULL) {
+#ifdef PORT
+        /* BPE's first word is the decoded size; reject before writing past
+           either 48 KiB native animation layer. */
+        if (*(u32 *)obj->mdl.anims[anim] < 0x94 ||
+            *(u32 *)obj->mdl.anims[anim] > BOBJ_WORK_LAYER_SIZE) {
+            *size = 0;
+            return NULL;
+        }
+#endif
         Bpe_Decode(obj->mdl.anims[anim], buf, size);
+#ifdef PORT
+        if (!Port_AnimValidateChannels((BobjAnim *)buf, (u32)*size)) return NULL;
+#endif
         ret = buf;
     } else {
         ret = NULL;
@@ -528,6 +567,11 @@ void BtlObjAnim_SamplePose(BobjObj *obj) {
     layer[1] = &obj->anim.layer[1];
     layer[0] = &ap->layer[0];
     if (ap->layer[0].data == NULL) {
+#ifdef PORT
+        /* A mod model can omit embedded menu motions. Zeroed joints collapse it into its head. */
+        bone=obj->mdl.nodes;
+        while(bone){part=BtlObj_GetNode(obj,bone->id);if(part){Vec4_Copy(&part->pos,&bone->rest);part->rot.x=part->rot.y=part->rot.z=0;part->rot.w=1;}if(bone->last||bone->next<=0)break;bone=(BobjBone *)((u8*)bone+bone->next);}
+#endif
         return;
     }
     w = 0.0f;
@@ -831,6 +875,33 @@ void BtlObjAnim_PlayAuto(BobjObj *obj, s32 anim, s32 mode) {
     ap->mode = m;
 }
 
+/* Model files in the wild do not all populate the eight optional self-motion entries.  A few
+ * otherwise valid stock models carry a non-empty entry whose track table is not a BobjAnim
+ * (character 58 / entry 36 is one example).  The old viewer played slot 7 unconditionally,
+ * so the first pose sample interpreted that payload as a track and walked into invalid data. */
+static int BtlObjAnim_ModelDataUsable(BobjAnim *data) {
+    int i;
+    if (data == NULL || data->length == 0 || data->length > 0x1000) {
+        return 0;
+    }
+    for (i = 0; i < BOBJ_NODE_MAX; i++) {
+        u32 off = data->track[i];
+        BobjTrack *trk;
+        if (off == 0) {
+            continue;
+        }
+        if (off > 0x3FFF) {
+            return 0;
+        }
+        trk = TRACK_AT(data, off);
+        if ((trk->flags & ~1u) != 0 || trk->count == 0 || trk->count > 0x400) {
+            return 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 /* Starts one of the eight motions of the model file itself, in the given mode. */
 void BtlObjAnim_PlayModel(BobjObj *obj, s32 anim, s32 mode) {
     BobjMdl *mdl = &obj->mdl;
@@ -841,15 +912,19 @@ void BtlObjAnim_PlayModel(BobjObj *obj, s32 anim, s32 mode) {
     }
     if (anim >= 0) {
         ap->layer[0].data = mdl->modelAnims[anim];
-        if (ap->layer[0].data != NULL) {
+#ifdef PORT
+        if(anim==7&&!BtlObjAnim_ModelDataUsable(ap->layer[0].data)&&BtlObjAnim_ModelDataUsable(mdl->modelAnims[0]))ap->layer[0].data=mdl->modelAnims[0];
+#endif
+        if (!BtlObjAnim_ModelDataUsable(ap->layer[0].data)) {
+            ap->layer[0].data = NULL;
+            ap->mode = 0;
+        } else {
             ap->layer[0].id = anim;
             ap->frame = 0.0f;
             ap->prevFrame = 0.0f;
             ap->layer[0].length = ap->layer[0].data->length;
             ap->mode = mode;
             memset(ap->layer[0].cursor, 0, sizeof(ap->layer[0].cursor));
-        } else {
-            ap->mode = 0;
         }
     }
 }
@@ -1267,9 +1342,9 @@ void BtlObjHit_BuildVolumes(BobjObj *obj) {
     work->contact &= 0xFFFFFF;
 #ifdef PORT
     {
-        extern u16 gPortBodyTouch[]; /* eft_det_a.c: who this object's strike touched, for more than four fighters */
+        /* Shared full-capacity contact table: port_body_contacts.h. */
         s32 id = *(s32 *)((u8 *)obj + 0x10); /* (the object's index in gBtlObjTbl: BtlObj.id, inside unk04 here) */
-        if ((u32)id < 12) {
+        if (Port_BodyObjectValid(id)) {
             gPortBodyTouch[id] = 0;
         }
     }
@@ -1425,6 +1500,15 @@ void BtlObjPose_CalcMatrices(BobjObj *obj) {
         Vu0Cur_Push();
         Vu0Cur_StoreMtx(&part->parent);
         BtlObjPose_GetNodeMtx(obj, &local, part);
+#ifdef PORT
+        { /* Story: a cut tail collapses with its whole chain (children inherit this node's scale). */
+            extern int Port_StoryNodeHidden(void *obj, int node);
+            if (Port_StoryNodeHidden(obj, bone->id)) {
+                s32 r_, c_;
+                for (r_ = 0; r_ < 3; r_++) for (c_ = 0; c_ < 3; c_++) local.m[r_][c_] *= 0.001f;
+            }
+        }
+#endif
         Vec3_Copy((Vec4 *)local.m[3], &part->pos);
         Mtx_Mul(&part->mtx, &part->parent, &local);
         Vu0Cur_LoadMtx(&part->mtx);
@@ -1439,6 +1523,19 @@ void BtlObjPose_CalcMatrices(BobjObj *obj) {
     }
 end:
     Vec4_Copy(&xf->rootPos, (Vec4 *)BtlObj_GetNode(obj, 0)->mtx.m[3]);
+#ifdef PORT
+    { /* BT3_STORY_NODE_DUMP=1: every skeleton node of each object once (id, depth change, world pos x100 relative to node 0) */
+        extern char *getenv(const char *);extern void Port_Dbg3(const char *, int, int, int, int);
+        static int dump = -1, n;static void *seen[32];static int calls[32];int k;
+        if (dump < 0) dump = getenv("BT3_STORY_NODE_DUMP") != 0;
+        if (dump) {for (k = 0; k < n && seen[k] != (void *)obj; k++);
+         if (k == n && n < 32) {seen[n] = obj;calls[n++] = 0;}
+         if (k < 32 && ++calls[k] == 400) {BobjBone *b = obj->mdl.nodes;Vec4 *r = (Vec4 *)BtlObj_GetNode(obj, 0)->mtx.m[3];
+          while (1) {BobjPart *q = BtlObj_GetNode(obj, b->id);Vec4 *p = (Vec4 *)q->mtx.m[3];
+           Port_Dbg3("story node", k | b->id << 8 | b->pop << 20, (int)((p->x - r->x) * 100.0f), (int)((p->y - r->y) * 100.0f), (int)((p->z - r->z) * 100.0f));
+           if (b->last != 0) break;b = (BobjBone *)((u8 *)b + b->next);}}}
+    }
+#endif
 }
 
 /* Whether the object has the fighter buffer. */
@@ -1601,13 +1698,22 @@ void BtlObjMdl_CopyTexAlpha(BobjMdl *mdl, BobjTexTable *src, BobjTexTable *dst) 
 
 #ifdef PORT /* the original passes no third argument: a2 still holds this function's own `dst` at the call.
                Written out, the compiler copies it through v0 (no explicit form reproduces the code). */
+    if (!mdl || !mdl->model || !src || !dst || !src->rec || mdl->model->faceTex >= src->count) return;
     Res_RelocateOffsets(&hdr, dst, dst);
 #else
     Res_RelocateOffsets(&hdr, dst);
 #endif
-    from = *(u8 **)(src->rec + mdl->model->faceTex * 0x40 + 0x3C) + 0x60;
+    from = *(u8 **)(src->rec + mdl->model->faceTex * 0x40 + 0x3C);
+#ifdef PORT
+    if (!from || !hdr || !hdr->rec || hdr->count > 4096) return;
+#endif
+    from += 0x60;
     for (i = 0; i < hdr->count; i++) {
-        to = *(u8 **)(hdr->rec + i * 0x40 + 0x3C) + 0x60;
+        to = *(u8 **)(hdr->rec + i * 0x40 + 0x3C);
+#ifdef PORT
+        if (!to) continue;
+#endif
+        to += 0x60;
         for (j = 0; j < 16; j++) {
             to[j * 4 + 3] = from[j * 4 + 3];
         }
@@ -2709,16 +2815,28 @@ BObjBound *BtlObj_FindBound(BObj *obj, s32 node) {
 
 /* Returns model node `node`, NULL when the model does not have it. */
 BObjNode *BtlObj_GetNode(BObj *obj, s32 node) {
+#ifdef PORT
+    extern void *Port_ModelNodeEnsure(void*,int);
+    BObjNode *part;
+    if(node<0)return NULL;
+    if(node>=162)return (BObjNode*)Port_ModelNodeEnsure(obj,node);
+    part=*(BObjNode **)((u8*)obj+BOBJ_NODE_TABLE+node*4);
+    return part?part:(BObjNode*)Port_ModelNodeEnsure(obj,node);
+#else
     BObjNode **p = (BObjNode **)((u8 *)obj + node * 4);
-
     return p[BOBJ_NODE_TABLE / 4];
+#endif
 }
 
 /* 1 when the model has node `node`. */
 s32 BtlObj_HasNode(BObj *obj, s32 node) {
+#ifdef PORT
+    return BtlObj_GetNode(obj,node)!=NULL;
+#else
     BObjNode **p = (BObjNode **)((u8 *)obj + node * 4);
 
     return p[BOBJ_NODE_TABLE / 4] != NULL;
+#endif
 }
 
 /* 1 when the geometry hanging on node `node` is drawn, given the part bits and the model's layout class. */
@@ -2817,6 +2935,15 @@ s32 BtlObj_IsNodeShown(BObj *obj, s32 node) {
             shown = 0;
         }
     }
+#ifdef PORT
+    /* Story: a tail that was cut stays gone (mod_story_scene.inc Port_StoryNodeHidden). */
+    if (shown) {
+        extern int Port_StoryNodeHidden(void *obj, int node);
+        if (Port_StoryNodeHidden(obj, node)) {
+            shown = 0;
+        }
+    }
+#endif
     return shown;
 }
 
@@ -2855,16 +2982,23 @@ void BtlObj_SaveNodePositions(BObj *obj, s32 relative) {
 
     bound = obj->mdl.bounds;
     pose = &obj->pose;
-    if (relative) {
+    if (!bound) return;
+    if (relative && BtlObj_GetNode(obj,0)) {
         Vec4_Copy(&ref, &BtlObj_GetNode(obj, 0)->unk90);
     } else {
         Vec4_SetZero(&ref);
     }
     while (1) {
         node = BtlObj_GetNode(obj, bound->node);
-        Mtx_MulVec4(&node->prevPos, &pose->worldInv, (Vec4 *)node->world.m[3]);
-        Vec4_Sub(&node->prevPos, &node->prevPos, &ref);
-        if (bound->last != 0) {
+        if(node){
+            Mtx_MulVec4(&node->prevPos, &pose->worldInv, (Vec4 *)node->world.m[3]);
+            Vec4_Sub(&node->prevPos, &node->prevPos, &ref);
+        }else {
+#ifdef PORT
+            bound->enabled=0; /* imported bounds may refer to an absent optional bone */
+#endif
+        }
+        if (bound->last != 0 || bound->next<=0) {
             break;
         }
         bound = (BObjBound *)((u8 *)bound + bound->next);

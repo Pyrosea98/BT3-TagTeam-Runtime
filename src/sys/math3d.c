@@ -305,6 +305,11 @@ void Quat_Unpack(Quat *out, u64 packed) {
     float w;
 
     largest = packed >> 60;
+#ifdef PORT
+    /* Only two selector bits are valid. An invalid index overwrites saved native pointers.
+       Do not reinterpret malformed animation data as another component. */
+    if(largest>3){out->x=out->y=out->z=0.0f;out->w=1.0f;return;}
+#endif
     for (i = 0; i < 3; i++) {
         sum = (u32)(packed >> (i * 20)) & 0xFFFFF;
         v[i] = (sum * (1.0f / 1048575.0f) - 0.5f) * 1.41421356f;
@@ -313,6 +318,11 @@ void Quat_Unpack(Quat *out, u64 packed) {
     for (i = 0; i < 3; i++) {
         sum += v[i] * v[i];
     }
+#ifdef PORT
+    /* Quantisation can overshoot one very slightly; a grossly invalid key is not a rotation. */
+    if(!(sum>=0.0f&&sum<=1.00001f)){out->x=out->y=out->z=0.0f;out->w=1.0f;return;}
+    if(sum>1.0f)sum=1.0f;
+#endif
     w = sqrtf(1.0f - sum);
     for (i = 3; i > largest; i--) {
         v[i] = v[i - 1];

@@ -105,6 +105,12 @@ s32 BtlCharApi_AnyHasFlag128(void) {
         return 0;
     }
     for (i = 0; i < BtlChar_GetCount(); i++) {
+#ifdef PORT
+        /* A parked Story extra is no longer performing its scripted pose.
+           Its last action4 frame may retain128 because parking freezes its update.
+           It must not block combat admission or battle-end forever. Visible actors still wait. */
+        {extern s32 Port_StorySceneParked(s32);if(Port_StorySceneParked(i))continue;}
+#endif
         if (BtlChar_TestFlag(BtlChar_Get(i), 0x128)) {
             return 1;
         }
@@ -661,6 +667,9 @@ s32 Port_AboutPlayer(s32 i) {
 }
 static s32 Port_CutShown(s32 i) {
     s32 shown;
+    {extern s32 Port_StorySceneParked(s32);if(Port_StorySceneParked(i))return 0;}
+    {extern int Port_StoryCameraActor(void);int actor=Port_StoryCameraActor();
+     if(actor>=0&&(i==actor||i==gPortTarget[actor]))return 1;}
 
     if (BtlChar_GetCount() < 3 || (u32)i >= (u32)BtlChar_GetCount()) {
         return 1;

@@ -103,6 +103,17 @@ static LONG WINAPI on_crash(EXCEPTION_POINTERS *e) {
         crash_put("\r\n");
         crash_put(Port_DataSummary());
     }
+#if defined(__x86_64__)
+    {char enabled[8];if(GetEnvironmentVariableA("BT3_CRASH_STACK",enabled,sizeof(enabled))>0){
+        uint64_t words[128];SIZE_T got=0;uintptr_t sp=e->ContextRecord->Rsp,base=(uintptr_t)tib->StackBase;
+        if(sp>=(uintptr_t)tib->StackLimit&&sp<base){SIZE_T n=base-sp;if(n>sizeof(words))n=sizeof(words);
+            if(ReadProcessMemory(GetCurrentProcess(),(void*)sp,words,n,&got)){
+                crash_put("\r\nnative stack candidates (bounded diagnostic, not an unwind):\r\n");
+                for(SIZE_T q=0;q<got/8;q++)if(words[q]>=0x20000000ULL&&words[q]<0x21000000ULL){crash_hex(q*8);crash_put(" ");crash_hex(words[q]);crash_put("\r\n");}
+            }
+        }
+    }}
+#endif
     crash_put("\r\nbacktrace (innermost first; addresses in Tenkaichi3Decomp.exe are looked up in the build's map file):\r\n");
     n = RtlCaptureStackBackTrace(0, 32, frames, NULL);
     for (i = 0; i < n; i++) {

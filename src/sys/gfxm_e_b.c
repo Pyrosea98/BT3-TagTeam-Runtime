@@ -194,6 +194,15 @@ void BtlObjMdl_BindFiles(ObjMdlObj *obj) {
     }
 }
 
+#ifdef PORT
+/* Imported models can use IDs beyond the inline162-pointer table. Keep them away from scale/chain data. */
+typedef struct PortModelNode {void *obj;int id;void *part;}PortModelNode;
+static PortModelNode sPortModelNodes[512];
+void *Port_ModelNodeGet(void *obj,int id){int i;for(i=0;i<512;i++)if(sPortModelNodes[i].obj==obj&&sPortModelNodes[i].id==id)return sPortModelNodes[i].part;return NULL;}
+void Port_ModelNodeClear(void *obj){int i;for(i=0;i<512;i++)if(sPortModelNodes[i].obj==obj)memset(&sPortModelNodes[i],0,sizeof(sPortModelNodes[i]));}
+static void Port_ModelNodeSet(void *obj,int id,void *part){int i;for(i=0;i<512;i++)if(sPortModelNodes[i].obj==obj&&sPortModelNodes[i].id==id)return;for(i=0;i<512;i++)if(!sPortModelNodes[i].obj){sPortModelNodes[i].obj=obj;sPortModelNodes[i].id=id;sPortModelNodes[i].part=part;return;}}
+#endif
+
 /* Takes one part from the pool for every mesh record and remembers the first part of each node. */
 void BtlObjMdl_AllocParts(ObjMdlObj *obj) {
     SList *list = &obj->parts.list;
@@ -207,10 +216,13 @@ void BtlObjMdl_AllocParts(ObjMdlObj *obj) {
         part->unk04 = 0;
         part->active = 0;
         SList_PushBack(list, &part->link);
-        slot = obj->parts.first;
-        slot += part->node;
-        if (*slot == NULL) {
-            *slot = part;
+#ifdef PORT
+        if(part->node>=162){Port_ModelNodeSet(obj,part->node,part);}else
+#endif
+        {
+            slot = obj->parts.first;
+            slot += part->node;
+            if (*slot == NULL) *slot = part;
         }
         if (mesh->last != 0) {
             break;
@@ -219,8 +231,25 @@ void BtlObjMdl_AllocParts(ObjMdlObj *obj) {
     }
 }
 
+#ifdef PORT
+/* Skeleton-only records may omit a render part. They still need a transform for animation and children. */
+void *Port_ModelNodeEnsure(void *owner,int id){
+ ObjMdlObj *obj=(ObjMdlObj*)owner;ObjMdlMesh *mesh=obj->mdl.meshes;ObjMdlPart *part;int n=0;
+ if(id<0)return NULL;
+ if(id<162&&obj->parts.first[id])return obj->parts.first[id];
+ if(id>=162&&(part=(ObjMdlPart*)Port_ModelNodeGet(obj,id)))return part;
+ while(mesh&&n++<4096){
+  if(mesh->node==id){part=BtlObjPoolE0_Alloc();if(!part)return NULL;memset(part,0,0xE0);part->node=id;SList_PushBack(&obj->parts.list,&part->link);if(id<162)obj->parts.first[id]=part;else Port_ModelNodeSet(obj,id,part);return part;}
+  if(mesh->last||mesh->next<=0)break;mesh=(ObjMdlMesh*)((u8*)mesh+mesh->next);
+ }return NULL;
+}
+#endif
+
 /* Gives the object's parts back to the pool. */
 s32 BtlObjMdl_FreeParts(ObjMdlObj *obj) {
+#ifdef PORT
+    Port_ModelNodeClear(obj);
+#endif
     return BtlObjPoolE0_FreeList(&obj->parts.list);
 }
 

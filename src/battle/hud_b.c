@@ -1766,7 +1766,7 @@ void HudGauge_Init(HudBGroup **out, void *res) {
  * (damage) bar falls towards the health at the side's speeds. At no health the row is drawn dark and the bar is
  * empty. Rows stack downwards, four to a column and two columns to a side, so eight fit under one side.
  * Nothing here is drawn, and nothing is added to the frame, while the roster has two fighters. */
-#define PORT_FIGHTER_MAX 10 /* fighters a fight may have one day; the two sides are the first two */
+#define PORT_FIGHTER_MAX 16 /* fighters a fight may have; the two sides are the first two */
 #define HUDX_ROWS 4         /* rows of a column */
 #define HUDX_SLOTS 8        /* rows under one side */
 #define HUDX_BAR_W 80      /* the health bar: half the side's 160 */

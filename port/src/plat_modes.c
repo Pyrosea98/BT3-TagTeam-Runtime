@@ -28,6 +28,8 @@
 #include <string.h>
 #include "plat_fighters.h"
 #include "coop_selection.h"
+#include "mod_select.h"
+#include "mod_scenarios.h"
 
 /* the progress modes a choice asks the main menu for (src/menu/menu_a_b.c) */
 #define PROGRESS_TEAM_SELECT 40
@@ -162,6 +164,7 @@ void Port_ModesShowPlayers(const int *rows) {
    from it (3 or 4: players 3 and 4 play the teams' second members; 1 or 2: the game's own), and the mode is chosen
    as Port_ModesChoose does. */
 int Port_ModesChoosePlayers(int entry, int n) {
+    Port_ModSelectPlayers(n);
     Port_LocalPlayersMatchSet(n >= 3 ? n : 2);
     fprintf(stderr, "bt3: modes: %s for %s\n", Port_ModesName(entry + 1), Port_ModesPlayersName(n));
     return Port_ModesChoose(entry);
@@ -203,6 +206,8 @@ int Port_ModesLeave(void) {
     int entered = sEntered;
 
     sEntered = 0;
+    Port_ModSelectClear();
+    Port_ScenarioClear();
     Port_CoopReset();
     Port_LocalPlayersMatchSet(0);
     if (Port_Setting("modes_fight", 0) != 0 || Port_Setting("modes_extras", 0) != 0) {

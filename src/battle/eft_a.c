@@ -149,6 +149,9 @@ void EftHit_Add(EftHitRec *rec) {
         rec->seenByAi = 0;
         rec->shape.scale = EftHit_GetScale(rec);
     }
+#ifdef PORT
+    {extern s32 Port_StorySkyShot(s32);if(Port_StorySkyShot(rec->objId))return;}
+#endif
     *(gEftHitList->rec + gEftHitList->count) = *rec;
     gEftHitList->count++;
 }
@@ -1013,6 +1016,9 @@ s32 Port_EftCamOwner(void) {
 /* Starts a camera cut: plays arg->anim on the demo camera, timed by fighter arg->objId's technique timer if any. */
 void EftCam_Start(EftCamArg *arg) {
 #ifdef PORT
+    {extern s32 Port_StoryOwnAttackCamera(s32);if(arg&&Port_StoryOwnAttackCamera(arg->objId))return;}
+#endif
+#ifdef PORT
     /* A modded technique may have no camera; preserve the gameplay view. */
     if (arg == NULL || arg->anim == NULL) return;
 #endif
@@ -1024,7 +1030,8 @@ void EftCam_Start(EftCamArg *arg) {
            about a player is started, as with the fighter cameras (btl_char_api.c, Port_CutShown). The technique
            keeps its own time from its fighter, not from this camera. */
         extern s32 Port_CutShownObj(s32 objId);
-        if (!Port_CutShownObj(arg->objId)) {
+        extern int Port_StoryNativeImpactCamera(int);
+        if (!Port_CutShownObj(arg->objId)&&!Port_StoryNativeImpactCamera(arg->objId)) {
             return;
         }
     }
@@ -1463,6 +1470,9 @@ void EftGfx_UpdateClipPlanes(void) {
 
 /* Direction a projectile of fighter objId starts in: at the locked target, else straight ahead (yaw only). */
 s32 EftAim_GetDir(EftVec *out, s32 arg, s32 objId) {
+#ifdef PORT
+    {extern s32 Port_StorySkyAim(s32,float*);if(Port_StorySkyAim(objId,(float*)out))return 1;}
+#endif
     EftVec rot;
 
     if (BtlCharApi_IsLockedOn(objId)) {
@@ -1483,6 +1493,9 @@ s32 EftAim_GetDir(EftVec *out, s32 arg, s32 objId) {
  * than 60 degrees off the fighter's facing (flat dot < 0.5) falls back to straight ahead.
  */
 s32 EftAim_GetDirKeep(EftHitSrc *src, EftVec *out, s32 arg, s32 objId) {
+#ifdef PORT
+    {extern s32 Port_StorySkyAim(s32,float*);if(Port_StorySkyAim(objId,(float*)out))return 1;}
+#endif
     EftVec rot;
     EftVec fwd;
     EftVec flat;
@@ -1552,6 +1565,9 @@ void EftAim_Home(EftVec *out, EftVec *pos, EftVec *dir, s32 objId, f32 speed, f3
     f32 d;
     f32 angle;
 
+#ifdef PORT /* Dragon History: the Spirit Bomb choreography follows (and once turns round) its ball */
+    {extern void Port_StoryShotSteer(int, float *, float *);Port_StoryShotSteer(objId, (float *)pos, (float *)dir);}
+#endif
     Vec3_Normalize(dir, dir);
     if (!BtlCharApi_IsLockedOn(objId)) {
         Vec4_Copy(out, dir);

@@ -3,8 +3,8 @@
 #define MOD_CLASH_INPUT_H
 typedef struct { int action, dir, held, blocked; } ModClashInput;
 static unsigned ModClash_Button(int action) {
-    if (action >= 0x130 && action <= 0x132) return 0x8000; /* Square: beam */
-    if (action == 0xFA) return 0x1000; /* Triangle: rush */
+    if (action >= 0x130 && action <= 0x132) return 0x9000; /* Square or Triangle */
+    if (action == 0xFA) return 0x9000; /* Square or Triangle */
     return 0;
 }
 static int ModClash_Apply(ModClashInput *s, int action, unsigned *btn,

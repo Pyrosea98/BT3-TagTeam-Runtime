@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-/* How many extra fighters a fight can have in this build, PORT_EXTRA_MAX (eight: ten fighters in all). THE one
+/* How many extra fighters a fight can have in this build, PORT_EXTRA_MAX (fourteen: sixteen fighters in all). THE one
    number: the battle code's tables, the settings' rows, the page's count control and the Experiments tab are all
    held to it. */
 #include "../include/port_fighters.h"

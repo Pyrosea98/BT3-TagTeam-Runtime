@@ -344,6 +344,8 @@ with tempfile.TemporaryDirectory() as directory:
     binary = work / "test"
     source.write_text(
         "#include <initializer_list>\n"
+        + "#include \"" + str(ROOT / "port/include/mod_damage_safe.h") + "\"\n"
+        + "int Port_CombatScaleDamage(void*,int damage){return damage;}\n"
         + head
         + harness
         + (ROOT / "port/src/mod_assists_native.inc").read_text()
@@ -355,6 +357,7 @@ with tempfile.TemporaryDirectory() as directory:
         + setup_rush
         + "\n"
         + queued_wrapper
+        + "\nvoid Port_StoryAttackContact(int,int,int){}\n"
         + "\n"
         + update_queued
         + "\n"

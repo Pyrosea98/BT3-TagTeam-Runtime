@@ -92,7 +92,8 @@ typedef struct BtlAtkRecord {
     /* 0x2A */ s8 guardE;       /* BtlAtk_GetGuardKindE: raw; against guard kind 5 */
     /* 0x2B */ s8 guardFlagSel; /* BtlAtk_GetGuardFlagSel: raw; 0 / 1 -> defender flag 0x66 / 0x67 on a guard */
     /* 0x2C */ s8 armorIgnore;  /* BtlAtk_GetUnk2C / BtlAtk_GetUnk2COf: raw; armour levels the attack ignores */
-    /* 0x2D */ u8 unk2D[3];     /* no reader in this module */
+    /* 0x2D */ u8 unk2D;        /* unused */
+    /* 0x2E */ u16 damageHi;    /* high word of the melee damage: BtlAtk_GetDamage reads damage | damageHi << 16 */
 } BtlAtkRecord; /* size 0x30 */
 
 /* ---- character parameter block --------------------------------------------------------------------------------- */

@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef PORT
+extern int Port_StoryHeld(int);
+#endif
 #include "battle/battle.h"
 #include "battle/battle_setup.h"
 #include "battle/btl_char_mgr.h"
@@ -332,7 +335,19 @@ static void Port_CopyMemberItems(BtlMgrChr *chr, BattleMember *src) {
 #endif
 
 #ifdef PORT
+#include "mod_shadow_balance.h"
 /* Initial load and later changes must install the same live recipes. */
+#include "mod_dragon_absorb.h"
+static int sEggDragonHeal[16];
+void Port_EggDragonAbsorbBegin(int who,int count){if(who>=0&&who<16)sEggDragonHeal[who]=count;}
+
+/* Admission/payment has already verified the source, target and feature gate. */
+void Port_EggMergeDragonBonus(int who,int donor){
+ BtlMgrChr *c=BtlChar_Get(who),*d=BtlChar_Get(donor);BtlMgrMember *m,*other;
+ if(!c||!d||who==donor)return;m=BtlMember_GetActive(c);other=BtlMember_GetActive(d);
+ if(!m||!other||m->chara!=146)return;
+ DA_Merge(m->bonus,other->bonus);
+}
 static void Port_PatchFighterSkillData(BtlMgrChr *chr){
     extern void Port_PatchSkillText(int,int,void*,void*);
     BtlMgrObj *obj=BtlChar_GetObj(chr);BtlMgrMember *m=BtlMember_GetActive(chr);
@@ -340,6 +355,7 @@ static void Port_PatchFighterSkillData(BtlMgrChr *chr){
         extern void Port_Beta8Ssj4Load(int,int,void*);
         Port_Beta8Ssj4Load(chr->objId,m->chara,*(void**)((u8*)obj+0x91c));
         Port_PatchSkillText(m->chara,m->costume,*(void**)((u8*)obj+0x91c),(u8*)obj+0xbc);
+        SB_Apply(m->chara,*(void**)((u8*)obj+0x91c),*(void**)((u8*)obj+0x920),*(void**)((u8*)obj+0x924),*(void**)((u8*)obj+0x92c));
     }
 }
 #endif
@@ -347,6 +363,17 @@ static void Port_PatchFighterSkillData(BtlMgrChr *chr){
 /* Resets one fighter from its side of the battle setup. */
 #ifdef PORT
 #include <stdio.h>
+static void Port_EggDragonAbsorbFinish(BtlMgrChr *chr){
+    if(chr->side>=0&&chr->side<16&&sEggDragonHeal[chr->side]){
+        BtlMgrMember *absorber=BtlMember_GetActive(chr);
+        if(absorber&&absorber->chara==147){
+            absorber->gauge.health=absorber->gauge.healthMax;
+            absorber->gauge.lowHealth=absorber->gauge.lowHealthIdle=0;
+            fprintf(stderr,"bt3: Omega absorption actor%d siblings%d HP%d/%d bonus melee%d defence%d beam%d ultimate%d\n",chr->side,sEggDragonHeal[chr->side],absorber->gauge.health,absorber->gauge.healthMax,absorber->bonus[1],absorber->bonus[2],absorber->bonus[5],absorber->bonus[6]);
+            sEggDragonHeal[chr->side]=0;
+        }
+    }
+}
 #include "mod_fusion_combat_trace.inc"
 #endif
 
@@ -358,6 +385,9 @@ void BtlChar_Reset(BtlMgrChr *chr) {
     BtlMgrMember *mem;
     BattleResult *res;
 
+#ifdef PORT
+    if(chr->side>=0&&chr->side<16)sEggDragonHeal[chr->side]=0;
+#endif
     BtlChar_SetStage(chr, BTL_CHR_STAGE_RESET);
     chr->optA = BattleSide_GetOptionA(side);
     chr->optBOff = BattleSide_GetOptionB(side) == 0;
@@ -428,6 +458,10 @@ void BtlChar_Reset(BtlMgrChr *chr) {
                 mem->aiType = m->aiType;
                 Port_CopyMemberItems(chr, m);
             }
+            {
+                extern int Port_ModSelectItems(int,unsigned short*);BattleItemSet set;
+                if(Port_ModSelectItems(side,set.id)){BattleMember custom;BtlMember_Init(&custom,mem->chara,mem->costume,0,m->cpuLevel,m->health,&set);Port_CopyMemberItems(chr,&custom);mem->aiType=custom.aiType;}
+            }
             BtlMember_LoadParams(chr, i, 1, m->health, 0);
             continue;
         }
@@ -446,6 +480,7 @@ void BtlChar_Reset(BtlMgrChr *chr) {
     }
 #ifdef PORT
     Port_PatchFighterSkillData(chr);
+    {extern void Port_StoryCombatBind(void*,int);Port_StoryCombatBind(chr,1);}
     Port_FusionCombatTrace(chr,"bind");
 #endif
 }
@@ -487,7 +522,7 @@ void BtlChar_OnModelLoaded(BtlMgrChr *chr) {
        with no earlier BtlChange_RequestChara, e.g. the fight's first model). */
     { extern int Port_ChangeWaited(s32); extern void Port_FusionStageLog(const char*,int,int,int,int,int,int,int,int);
       s32 p = *(s32*)chr;
-      if (p >= 0 && p < 12) {
+      if (p >= 0 && p < 16) {
           Port_FusionStageLog("change-wait",p,BtlAct_GetCurrent(chr),Port_ChangeWaited(p),0,0,0,0,-1);
       } }
 #endif
@@ -639,6 +674,16 @@ void BtlChar_OnModelLoaded(BtlMgrChr *chr) {
     }
 #ifdef PORT
     Port_PatchFighterSkillData(chr);
+    Port_EggDragonAbsorbFinish(chr);
+    {extern void Port_StoryCombatBind(void*,int);extern int Port_StoryEraPower(int,int),Port_StoryEraHealth(int,int),Port_StoryTune(int,int*,int*,int*);
+     BtlMgrMember*sm=BtlMember_GetActive(chr);Port_StoryCombatBind(chr,1);
+     if(sm&&Port_StoryEraPower(chr->side,sm->chara)>0){int hp=100,atk=0,def=0,k;static const int slots[]={1,5,6};long long max;float ratio;
+      BtlMgrGauge*sg=&sm->gauge;ratio=sg->healthMax>0?(float)sg->health/sg->healthMax:0;
+      Port_StoryTune(chr->side,&hp,&atk,&def);max=(long long)Port_StoryEraHealth(chr->side,sg->healthMax)*hp/100;
+      if(max<10000)max=10000;if(max>2000000000)max=2000000000;sg->healthMax=(int)max;sg->health=(int)(max*ratio+.5f);
+      for(k=0;k<3;k++)sm->bonus[slots[k]]=atk;sm->bonus[2]=def;
+     }}
+    {extern void Port_ScenarioObserve(int,int);Port_ScenarioObserve(chr->side,BtlMember_GetActive(chr)->chara);}
     Port_FusionCombatTrace(chr,"bind");
 #endif
 #ifdef PORT
@@ -717,7 +762,7 @@ int Port_FormPresentationOwner(void){
  /* A prior damage/super model request must drain before a newly queued form
     presentation can freeze its owner. Otherwise both wait on each other. */
  loadOwner=Port_ChangeOwner();
- for(pass=0;pass<6;pass++)for(i=0;i<n&&i<10;i++){
+ for(pass=0;pass<6;pass++)for(i=0;i<n&&i<16;i++){
   BtlMgrChr*c=BtlChar_Get(i);int a;if(!c)continue;
   if(!pass&&Port_DefusionPresenting(i))return loadOwner>=0&&loadOwner<n?loadOwner:i;
   a=pass?*(s32*)((u8*)c+pending[pass-1]):BtlAct_GetCurrent(c);
@@ -729,8 +774,11 @@ int Port_FormPresentationOwner(void){
 /* Decides which fighters are frozen (hit-stop) and counts the freeze timers down. */
 void BtlChars_UpdateFreeze(void) {
 #ifdef PORT
-    s32 level[10]; /* (PORT_FIGHTER_MAX: one per fighter; the third's was written past the two) */
-    s32 local[10]; /* (a hold that is not about a player: its target only) */
+    extern int Port_StoryActive(void),Port_StoryBeamPairActor(int);
+#endif
+#ifdef PORT
+    s32 level[16]; /* (PORT_FIGHTER_MAX: one per fighter; the third's was written past the two) */
+    s32 local[16]; /* (a hold that is not about a player: its target only) */
     extern s32 Port_AboutPlayer(s32 i); /* btl_char_api.c */
     extern s32 gPortTarget[];           /* btl_char_flag_opp.c */
 #else
@@ -746,6 +794,12 @@ void BtlChars_UpdateFreeze(void) {
     memset(bytes, 0, sizeof(level));
     for (i = 0; i < BtlChar_GetCount(); i++) {
         chr = BtlChar_Get(i);
+#ifdef PORT
+        /* Removed/parked Story actors no longer update actions, so their old
+           super-start flags must not hold a living fighter forever. */
+        {extern int Port_StorySceneParked(int);
+         if(Port_StorySceneParked(i)){local[i]=0;continue;}}
+#endif
         if (BtlChar_TestFlag(chr, 0x125)) {
             level[i] = 2;
         } else if (BtlChar_TestFlag(chr, 0x126)) {
@@ -766,7 +820,7 @@ void BtlChars_UpdateFreeze(void) {
                attacker and the target are frozen"). Its camera still has the screen only when it is about a
                player (btl_char_api.c). */
             local[i] = 0;
-            if (level[i] != 0 && BtlChar_GetCount() > 2) {
+            if (level[i] != 0 && BtlChar_GetCount() > 2 && !Port_StoryActive()) {
                 local[i] = level[i];
                 level[i] = 0;
             }
@@ -809,7 +863,7 @@ void BtlChars_UpdateFreeze(void) {
         }
     }
 #ifdef PORT
-    for (i = 0; i < BtlChar_GetCount() && i < 10; i++) {
+    for (i = 0; i < BtlChar_GetCount() && i < 16; i++) {
         s32 t = gPortTarget[i];
 
         if (local[i] > 0 && (u32)t < (u32)BtlChar_GetCount() && t != i && level[t] + local[t] < local[i]) {
@@ -828,9 +882,16 @@ void BtlChars_UpdateFreeze(void) {
 #endif
 #ifdef PORT
     { int owner=Port_FormPresentationOwner();
-      if(owner>=0&&!Port_DefusionPresenting(owner))for(i=0;i<BtlChar_GetCount()&&i<10;i++){
+      if(owner>=0&&!Port_DefusionPresenting(owner))for(i=0;i<BtlChar_GetCount()&&i<16;i++){
        chr=BtlChar_Get(i);chr->freezeNext=i!=owner;chr->freezeDelay=0;
       }
+    }
+#endif
+#ifdef PORT
+    /* Both authored beam owners must advance through their different startup
+       actions together; freezing either one deadlocks the two-party charge gate. */
+    for(i=0;i<BtlChar_GetCount()&&i<16;i++)if(Port_StoryBeamPairActor(i)){
+      chr=BtlChar_Get(i);chr->freezeNext=chr->freezeDelay=chr->freeze=0;
     }
 #endif
 #ifdef PORT
@@ -869,6 +930,49 @@ void BtlChars_UpdateObjFlag2(void) {
     s32 i;
     s32 found = -1;
     BtlMgrChr *chr;
+#ifdef PORT
+    /* More than two fighters (v0.4.2 B1/B2; the user: "all models disappear when an attack is being charged", and
+       the ultimate assist's helpers vanished instead of standing behind the caster). The rule below draws only the
+       fighter with flag 0x12A (the start of a super, a rush, a change) and hides every other one: in the game that
+       is its one opponent. With more fighters it hid the whole field, the caster's own helpers, and anyone who was
+       transforming meanwhile (its model looked empty). Here such a start hides only its target (gPortTarget, the
+       one BtlChars_UpdateFreeze holds), as the game hides the opponent, and never a fighter that is starting a
+       technique itself or changing (actions 0xEC..0xF8, or the form presentation's owner). 0x30 / 0xB as before. */
+    if (BtlChar_GetCount() > 2) {
+        extern s32 gPortTarget[];           /* btl_char_flag_opp.c */
+        extern s32 Port_AboutPlayer(s32 i); /* btl_char_api.c */
+        extern int Port_FormPresentationOwner(void);
+        u8 hide[16];
+        s32 owner = Port_FormPresentationOwner();
+
+        memset(hide, 0, sizeof(hide));
+        for (i = 0; i < BtlChar_GetCount() && i < 16; i++) {
+            s32 t = gPortTarget[i];
+            s32 a;
+
+            if (!BtlChar_TestFlag(BtlChar_Get(i), 0x12A) || !Port_AboutPlayer(i)) {
+                continue;
+            }
+            if ((u32)t >= (u32)BtlChar_GetCount() || t >= 16 || t == i || t == owner) {
+                continue;
+            }
+            chr = BtlChar_Get(t);
+            a = BtlAct_GetCurrent(chr);
+            if (!BtlChar_TestFlag(chr, 0x12A) && !(a >= 0xEC && a <= 0xF8)) {
+                hide[t] = 1;
+            }
+        }
+        for (i = 0; i < BtlChar_GetCount(); i++) {
+            chr = BtlChar_Get(i);
+            if ((i < 16 && hide[i]) || BtlChar_TestFlag(chr, 0x30) || BtlChar_TestFlag(chr, 0xB)) {
+                BtlChar_GetObj(chr)->flags &= ~2;
+            } else {
+                BtlChar_GetObj(chr)->flags |= 2;
+            }
+        }
+        goto qte;
+    }
+#endif
 
     for (i = 0; i < BtlChar_GetCount(); i++) {
 #ifdef PORT
@@ -906,6 +1010,17 @@ void BtlChars_UpdateObjFlag2(void) {
         }
     }
 #ifdef PORT
+qte:
+    /* An ending can show its defeated actor without reviving him. The next normal
+       visibility pass restores KO hiding as soon as this scoped scene ends. */
+    {extern s32 Port_StorySceneActorShown(s32 side);
+     for(i=0;i<BtlChar_GetCount();i++)if(Port_StorySceneActorShown(i))
+       BtlChar_GetObj(BtlChar_Get(i))->flags|=2;}
+    /* The native technique restores visibility late in the frame. Its hidden
+       projectile donor must remain hidden after that pass, including charge shots. */
+    {extern int Port_StoryHiddenAttackHelper(int);
+     for(i=0;i<BtlChar_GetCount();i++)if(Port_StoryHiddenAttackHelper(i))
+       BtlChar_GetObj(BtlChar_Get(i))->flags&=~2;}
     /* Only suppress a QTE helper when its leader vanishes. Native visibility
        is recalculated above each frame, so release needs no sticky restore. */
     {extern int Port_AssistQteLeader(int);int leader;
@@ -1345,7 +1460,22 @@ void BtlChar_UpdateMotion(BtlMgrChr *chr) {
     if (BtlChar_IsFrozen(chr)) {
         return;
     }
+#ifdef PORT
+    /* A cinematic position hold must NOT skip the action dispatcher: action4 owns
+       scripted motions and advances their animation/FX. Preserve only world position;
+       the native warp pass below still applies this frame's authored placement. */
+    { u64 at[2];int held=Port_StoryHeld(chr->side);
+      if(held)memcpy(at,BtlChar_GetPos(chr),sizeof(at));
+      BtlMove_UpdateAction(chr);
+      if(held)memcpy(BtlChar_GetPos(chr),at,sizeof(at));
+      {static int trace=-1,tick[16];extern char*getenv(const char*);extern void Port_Dbg3(const char*,int,int,int,int);extern float BtlAnim_GetProgress(BtlMgrChr*);
+       if(trace<0)trace=getenv("BT3_STORY_SCENE_LOG")!=0;
+       if(trace&&held&&chr->side>=0&&chr->side<16&&++tick[chr->side]%15==0)
+         Port_Dbg3("story held animation",chr->side,BtlAct_GetCurrent(chr),BtlAnim_GetId(chr),(int)(BtlAnim_GetProgress(chr)*1000));}
+    }
+#else
     BtlMove_UpdateAction(chr);
+#endif
     if (BtlChar_TestFlag(chr, 0x2B)) {
         BtlObj_SaveNodePositions(obj, 1);
     } else {
@@ -1358,6 +1488,9 @@ void BtlChar_UpdateMotion(BtlMgrChr *chr) {
     BtlChar_PlaceCenterHigh(chr);
     BtlChar_PlaceSaved(chr);
     BtlChar_PlaceWarp(chr);
+#ifdef PORT
+    {extern void Port_StoryRestoreEndingPlacement(int);Port_StoryRestoreEndingPlacement(chr->side);}
+#endif
     BtlChar_PoseToObj(chr, 1);
     BtlObjAnim_SamplePose(obj);
     BtlObjAnim_UpdateEvents(obj);
@@ -1381,7 +1514,11 @@ void BtlChar_UpdateStage6(BtlMgrChr *chr) {
 void BtlChar_UpdateStage7(BtlMgrChr *chr) {
     BtlMgrObj *obj = BtlChar_GetObj(chr);
 
-    if (!BtlChar_IsFrozen(chr)) {
+    if (!BtlChar_IsFrozen(chr)
+#ifdef PORT
+        && !Port_StoryHeld(chr->side)
+#endif
+    ) {
         BtlChar_SetStage(chr, BTL_CHR_STAGE_7);
         BtlMove_PushOut(chr);
         BtlMove_ApplyOrbit(chr);
@@ -1401,6 +1538,9 @@ void BtlChar_UpdateStage8(BtlMgrChr *chr) {
     if (BtlChar_IsFrozen(chr)) {
         return;
     }
+#ifdef PORT
+    if(Port_StoryHeld(chr->side))return; /* retain authored position; projectiles still collide */
+#endif
     BtlChar_SetStage(chr, BTL_CHR_STAGE_8);
     BtlMove_ClampToStage(chr);
     BtlChar_PoseToObj(chr, 0);
@@ -1427,7 +1567,19 @@ void BtlChar_UpdateStage9(BtlMgrChr *chr) {
 
     if (!BtlChar_IsFrozen(chr)) {
         BtlChar_SetStage(chr, BTL_CHR_STAGE_9);
+#ifdef PORT
+        /* A staged/held actor has not run Stage8's ground query at its new
+           location. Do not snap it onto the cached floor of its old location. */
+        {extern int Port_StoryScenePlacementOwned(int);
+         if(!Port_StoryScenePlacementOwned(chr->side))BtlColl_UpdateGround(chr);}
+#else
         BtlColl_UpdateGround(chr);
+#endif
+        { /* Restore authored roots after every native ground/placement writer. */
+#ifdef PORT
+          extern void Port_StoryRestoreEndingPlacement(int);Port_StoryRestoreEndingPlacement(chr->side);
+#endif
+        }
         BtlChar_PoseToObj(chr, 0);
         BtlObjPose_CalcMatrices(obj);
     }
@@ -1455,6 +1607,9 @@ void BtlChar_UpdateCamera(BtlMgrChr *chr) {
         BtlObj_UpdateChains(obj);
         BtlChar_UpdateHead(chr);
         BtlObjPose_CalcMatrices(obj);
+#ifdef PORT
+        {extern void Port_StoryFxFrame(int);Port_StoryFxFrame(chr->side);}
+#endif
         BtlFx_UpdateAll(chr);
         BtlObjHit_BuildVolumes(obj);
     }
@@ -1577,6 +1732,7 @@ void BtlChar_AllocAll(s32 count) {
 #ifdef PORT
     { extern void Port_Beta8ApplyMemberStats(void*,int);
       Port_Beta8ApplyMemberStats(gBtlChars->tbl[4],((u8*)gBtlChars->tbl[5]-(u8*)gBtlChars->tbl[4])/16); }
+    {extern int *Port_Beta8MultiverseGaugeRows(int*,int);gBtlChars->tbl[4]=Port_Beta8MultiverseGaugeRows(gBtlChars->tbl[4],((u8*)gBtlChars->tbl[5]-(u8*)gBtlChars->tbl[4])/16);}
 #endif
     BtlChar_ResetAll();
     BtlCharSnd_Init();
@@ -1603,6 +1759,9 @@ void BtlChar_ResetAll(void) {
     for (i = 0; i < BtlChar_GetCount(); i++) {
         BtlPartner_Release(BtlChar_Get(i));
     }
+#ifdef PORT
+    {extern void Port_ScenarioRoundReset(void),Port_StoryCombatReset(void);Port_ScenarioRoundReset();Port_StoryCombatReset();}
+#endif
     gBtlChars->frame = 0;
     gBtlChars->unk18 = 0;
     gBtlChars->flags = 0;
@@ -1634,6 +1793,21 @@ void BtlChar_ResetAll(void) {
 #endif
         BtlChar_BindObject(chr);
         BtlChar_Reset(chr);
+#ifdef PORT
+        {extern int Port_ScenarioWeak(int);extern void Port_ScenarioObserve(int,int);BtlMgrGauge*g=BtlMember_GetActiveGauge(chr);
+         if(Port_ScenarioWeak(i))g->health=g->healthMax<25000?g->healthMax:25000;
+         /* Dragon History story tune + difficulty (mod_story.h stTunes / stDifficulty): max HP (rounded to 1,000, at
+            least 10,000, full health), attack and technique levels (the boss buff's slots 1, 5, 6) and defence
+            (slot 2), kept in -20..40. Applied to this reset's fresh values, so a retry never compounds. */
+         {extern int Port_StoryTune(int,int*,int*,int*);int hp,atk,def,j;
+          if(Port_StoryTune(i,&hp,&atk,&def)){static const int slot[]={1,5,6};BtlMgrMember*mm=BtlMember_GetActive(chr);long long v=(long long)g->healthMax*hp/100;
+           v=(v+500)/1000*1000;if(v<10000)v=10000;if(v>2000000000)v=2000000000;g->healthMax=(int)v;g->health=(int)v;
+           for(j=0;j<3;j++){int b=mm->bonus[slot[j]]+atk;{extern int Port_StoryChapter(void);if(Port_StoryChapter()>=0)b=atk;}mm->bonus[slot[j]]=b<-20?-20:b>40?40:b;}
+           {int b=mm->bonus[2]+def;{extern int Port_StoryChapter(void);if(Port_StoryChapter()>=0)b=def;}mm->bonus[2]=b<-20?-20:b>40?40:b;}
+           fprintf(stderr,"bt3: story tune actor %d health %d attack %+d defence %+d\n",i,g->healthMax,atk,def);}}
+         {extern int Port_ScenarioBossBuff(int);if(Port_ScenarioBossBuff(i)){static const int slots[]={1,2,5,6};BtlMgrMember*m=BtlMember_GetActive(chr);int j;for(j=0;j<4;j++){int value=m->bonus[slots[j]]+10;m->bonus[slots[j]]=value>40?40:value;}fprintf(stderr,"bt3: Scenario Cell boss HP%d/%d, attack/defence/techniques +10 native levels\n",g->health,g->healthMax);}}
+         Port_ScenarioObserve(i,BtlMember_GetActive(chr)->chara);}
+#endif
     }
 }
 
@@ -1643,6 +1817,12 @@ void BtlChars_OnModelLoaded(s32 side) {
 
     if (chr != NULL) {
         BtlChar_OnModelLoaded(chr);
+#ifdef PORT
+        /* Only after the native loader actually bound the files may a retired/parked
+           Story owner's request finish. Its model remains hidden/removed. */
+        {extern s32 Port_StoryRetired(s32),Port_StorySceneParked(s32);extern void BtlChange_SetDone(s32);
+         if(Port_StoryRetired(side)||Port_StorySceneParked(side))BtlChange_SetDone(side);}
+#endif
     }
 }
 
@@ -1677,8 +1857,13 @@ s32 BtlChars_CheckStart(void) {
     if (BtlSeq_GetState() == 2 || BtlSeq_GetState() == 3) {
         if (!(gBtlChars->flags & BTL_CHARS_STARTED)) {
             if (Battle_GetMode() != 1) {
-                BtlChar_ResetAll();
-                ret = 1;
+#ifdef PORT
+                /* Like native History, an authored opening may already have changed
+                   the actual cast/form. Do not reset it back to the duel draft. */
+                extern int Port_StoryActive(void);extern unsigned Port_StoryEvents(void);
+                if(!(Port_StoryActive()&&Port_StoryEvents()!=0))
+#endif
+                {BtlChar_ResetAll();ret=1;}
             }
         }
         gBtlChars->flags |= BTL_CHARS_STARTED;
@@ -1752,6 +1937,12 @@ void BtlChars_UpdateMain(void) {
             for (i = 0; i < BtlChar_GetCount(); i++) {
                 BtlMgrChr *c = BtlChar_Get(i);
                 Port_Dbg3("fighter / action / animation / frozen", i, BtlAct_GetCurrent(c), BtlAnim_GetId(c), BtlChar_IsFrozen(c));
+                {static int probe=-1;extern char*getenv(const char*);if(probe<0)probe=getenv("BT3_STORY_WAVE_PROBE")!=0;
+                 if(probe){int f,mask=0;BtlMgrMember*m=BtlMember_GetActive(c);
+                  const int bits[]={3,0x42,0x43,0x44,0x45,0x46,0x128,0xFA,0xFB};
+                  for(f=0;f<9;f++)if(BtlChar_TestFlag(c,bits[f]))mask|=1<<f;
+                  Port_Dbg3("story wave flags/hp/target",i,mask,m?m->gauge.health:-1,gPortTarget[i]);}}
+
             }
             Port_Dbg3("targets of 0, 1, 2 / time stopped", gPortTarget[0], gPortTarget[1], gPortTarget[2], BtlChars_IsTimeStopped());
             Port_Dbg3("fighters / the battle's flags / the sequence's state / -", BtlChar_GetCount(), (s32)Battle_GetWork()->flags, BtlSeq_GetState(), 0);
@@ -1893,4 +2084,7 @@ int Port_AssistQteSample(int objectId,int*anim,float*ratio){
  p=BtlAnim_GetProgress(c);if(!(p>=0&&p<=1000000))return 0;
  *anim=a;*ratio=p>1?1:p;return 1;
 }
+#endif
+#ifdef PORT
+int Port_ScenarioActorForm(int who){BtlMgrChr*c=who>=0&&who<BtlChar_GetCount()?BtlChar_Get(who):NULL;return c?BtlMember_GetActive(c)->chara:-1;}
 #endif

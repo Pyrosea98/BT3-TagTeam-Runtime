@@ -16,7 +16,7 @@ MTexRes *Port_MenuChip(s32 chara, s32 costume) {
     void *raw;
     MTexRes *res;
 
-    if (chara < 0xA5 || chara > 0x122) {
+    if (chara < 0xA1 || chara > 0x122) {
         return NULL;
     }
     for (i = 0; i < sMenuChipCount; i++) {
@@ -107,12 +107,55 @@ s32 Progress_Main(s32 arg) {
     s32 ret;
 
     Pad_SetRepeat(0x28, 3);
+#ifdef PORT
+    {extern char*getenv(const char*);extern int atoi(const char*),Port_ModesChoosePlayers(int,int);extern void Port_StoryChoose(int);static int probed;
+     char*p=getenv("BT3_STORY_PROBE");if(p&&!probed){probed=1;gProgress->flags&=~MPROG_FIRST_RUN;if(getenv("BT3_STORY_CHAIN_PROBE")){extern void Port_StoryFightStarted(void);extern unsigned Port_StoryResult(int,int,int);Port_StoryChoose(4);Port_StoryFightStarted();Port_StoryResult(0,1,1);}else Port_StoryChoose(atoi(p));gProgress->mode=Port_ModesChoosePlayers(0,1);*(s32*)((u8*)gProgress+0x620)=0;*(s32*)((u8*)gProgress+0x624)=1;}}
+#endif
+#ifdef PORT
+    {extern char*getenv(const char*);extern void Port_StoryWishScene(void);static int done;if(getenv("BT3_STORY_WISH_PROBE")&&!done){done=1;gProgress->flags&=~MPROG_FIRST_RUN;Port_StoryWishScene();}}
+#endif
     if (gProgress->flags & MPROG_FIRST_RUN) {
         FirstRun_Main();
         gProgress->flags &= ~MPROG_FIRST_RUN;
     }
     flags = BattleResult_GetFlags();
     reason = BattleResult_GetReason();
+#ifdef PORT
+    { extern int Port_StoryInterludeAdvance(void),Port_ModesChoosePlayers(int,int);
+      for(;;){
+        extern int Port_StoryWishPending(void);extern void Port_StoryWishScene(void);
+        if(Port_StoryWishPending())Port_StoryWishScene();
+        if(!Port_StoryInterludeAdvance())break;
+        gProgress->mode=Port_ModesChoosePlayers(0,1);*(s32*)((u8*)gProgress+0x620)=0;*(s32*)((u8*)gProgress+0x624)=1;
+        if(Duel_Main())return 0;
+      }
+    }
+    {extern int Port_StoryWishPending(void);extern void Port_StoryWishScene(void);if(Port_StoryWishPending())Port_StoryWishScene();}
+    { extern int Port_StoryTakeReturn(void);
+      extern void Port_ModMenuReturnFromStory(void);
+      if(Port_StoryTakeReturn()){
+          {extern void Port_StoryMusicEnd(void);Port_StoryMusicEnd();}
+          gProgress->mode=4;
+          Port_ModMenuReturnFromStory();
+          /* Use the original Dragon History memory-card flow: same save and Zeni balance. */
+          { extern s32 HistSave_Run(s32 section);
+            if(gMenuArc2==NULL)gMenuArc2=File_LoadSync(gProgress->baseFile+0xC,NULL,0);
+            if(gMenuArc2!=NULL){
+                extern s32 HistResult_Run(s32 section);
+                s32 oldSaga=gProgress->subMenu,oldEpisode=gProgress->subMenuItem;
+                /* The native success/failure movie precedes the card save, then our recap.
+                   Chapter 1 uses the first Saiyan title; custom rewards are already committed. */
+                gProgress->subMenu=0;gProgress->subMenuItem=0;
+                HistResult_Run(3);
+                gProgress->prevMode=8;HistSave_Run(4);
+                gProgress->subMenu=oldSaga;gProgress->subMenuItem=oldEpisode;
+                MENU_ARC_FREE(gMenuArc2);
+            }
+          }
+          flags=0; /* A chapter returns to its result page, never Duel's rematch menu. */
+      }
+    }
+#endif
     if (flags & 8) {
         if (reason & 8) {
             gProgress->flags &= ~MPROG_FLAG10;

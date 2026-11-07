@@ -9,7 +9,9 @@ head=r'''#include <cassert>
 using s32=int;
 struct EftCamArg{void*anim;int objId,unk8;};struct Cam{EftCamArg arg;int objId,active,hold;};
 Cam cam;Cam*gEftCam=&cam;int calls,shown=1;
-int Port_CutShownObj(int){return shown;}
+int impact;int Port_CutShownObj(int){return shown;}
+int Port_StoryOwnAttackCamera(int){return 0;}
+int Port_StoryNativeImpactCamera(int){return impact;}
 void DemoCam_SetAnim(void*p){assert(p);++calls;}void DemoCam_SetChr(void*){}
 void*BtlObj_Get(int){return &cam;}float BtlCharApi_GetChargedUnkC78(int){return 0;}
 void DemoCam_SetTime(float){}void DemoCam_Start(){++calls;}
@@ -17,7 +19,9 @@ void DemoCam_SetTime(float){}void DemoCam_Start(){++calls;}
 test=r'''int main(){EftCamArg a={nullptr,0,0};EftCam_Start(nullptr);EftCam_Start(&a);assert(!calls&&!cam.active);
 a.anim=&a;shown=0;EftCam_Start(&a);assert(!calls&&!cam.active);
 shown=1;EftCam_Start(&a);assert(calls==2&&cam.active&&cam.objId==0);
-cam.active=0;a.objId=-1;EftCam_Start(&a);assert(calls==4&&cam.active&&cam.objId==-1);}
+cam.active=0;a.objId=-1;EftCam_Start(&a);assert(calls==4&&cam.active&&cam.objId==-1);
+cam.active=0;shown=0;impact=1;a.objId=3;EftCam_Start(&a);assert(calls==6&&cam.active&&cam.objId==3);
+cam.active=0;impact=0;EftCam_Start(&a);assert(calls==6&&!cam.active);}
 '''
 with tempfile.TemporaryDirectory() as d:
  p=Path(d);(p/'test.cpp').write_text(head+body+test);subprocess.run(['c++',str(p/'test.cpp'),'-o',str(p/'test')],check=True);subprocess.run([str(p/'test')],check=True)

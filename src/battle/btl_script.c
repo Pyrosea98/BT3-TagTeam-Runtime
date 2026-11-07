@@ -644,6 +644,18 @@ void BtlScript_StartPending(void) {
 void BtlScript_UpdateHud(void) {
     BtlScriptWork *work = &gBtlScript;
 
+#ifdef PORT
+    {   /* a Dragon History R3 event on offer (mod_story_scene.inc): the same cue, the same R3 read */
+        extern s32 Port_StoryEventCue(s32 pressed);
+        extern int Port_StoryActive(void);
+        if(Port_StoryActive()){extern s32 Port_StoryR3Pressed(void);Port_StoryEventCue(Port_StoryR3Pressed());HudPrompt_HideCue();return;}
+        if (Port_StoryEventCue(BtlEvent_IsNew(0, 0x50))) {
+            HudPrompt_ShowCue();
+            HudPrompt_SetCueDim(BtlFacade_CanCharAct(0));
+            return;
+        }
+    }
+#endif
     if (work->pending != NULL) {
         if (!BtlCtrl_IsActiveDead(0) && !BtlCtrl_IsActiveDead(1)) {
             if (!work->pending->u.start.event->side) {

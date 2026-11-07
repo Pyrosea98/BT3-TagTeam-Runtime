@@ -1,6 +1,6 @@
 #include <math.h>
 // Scalable menu symbols. Each icon owns its geometry: no atlas cells or crop guesses.
-enum {MI_VIDEO,MI_EFFECTS,MI_AUDIO,MI_INTERFACE,MI_CONTROLS,MI_CHEATS,MI_SYSTEM,MI_EXTRAS,MI_HUD,MI_FUSION,MI_PLAY,MI_CREDITS,MI_RETURN,MI_TEAM,MI_COOP,MI_FFA,MI_TRAINING,MI_TROPHY,MI_STORY,MI_STRUGGLES};
+enum {MI_VIDEO,MI_EFFECTS,MI_AUDIO,MI_INTERFACE,MI_CONTROLS,MI_CHEATS,MI_SYSTEM,MI_EXTRAS,MI_HUD,MI_FUSION,MI_PLAY,MI_CREDITS,MI_RETURN,MI_TEAM,MI_COOP,MI_FFA,MI_TRAINING,MI_TROPHY,MI_STORY,MI_STRUGGLES,MI_DRAGON_HISTORY,MI_ACHIEVEMENTS,MI_COUNT};
 // Approved previous-port DBZ artwork, exact whole atlas cells with a half-texel inset.
 static SDL_GPUTexture *mod_parity_art(const char *name){
  char path[1000];snprintf(path,sizeof(path),"%s/tagteam-ui/%s.rgba",Port_FileRoot(),name);FILE *f=fopen(path,"rb");if(!f)return nullptr;
@@ -9,9 +9,10 @@ static SDL_GPUTexture *mod_parity_art(const char *name){
 }
 // One texture per symbol: UV0..1 can never sample a neighbouring atlas icon.
 static bool mod_dbz_icon(ImDrawList *d,int kind,ImVec2 c,float r){
- static SDL_GPUTexture *textures[20];static bool tried[20];
- static const char *names[]={"video","effects","audio","interface","controls","cheats","system","extra-fighters","battle-hud","fusion","play","credits","return","team-battle","coop-battle","free-for-all","cpu-training","tournament","scenarios","struggles"};
- if(kind<0||kind>=20)return false;
+ static SDL_GPUTexture *textures[MI_COUNT];static bool tried[MI_COUNT];
+ static const char *names[]={"video","effects","audio","interface","controls","cheats","system","extra-fighters","battle-hud","fusion","play","credits","return","team-battle","coop-battle","free-for-all","cpu-training","tournament","scenarios","struggles","dragon-history-v1","achievements-v1"};
+ static_assert(sizeof(names)/sizeof(names[0])==MI_COUNT,"Every menu icon needs a resource name");
+ if(kind<0||kind>=MI_COUNT)return false;
  if(!tried[kind]){tried[kind]=true;char path[100];snprintf(path,sizeof(path),"menu-hd/%s",names[kind]);textures[kind]=mod_parity_art(path);}
  if(!textures[kind])return false;
  d->AddImage(ImTextureRef((ImTextureID)(intptr_t)textures[kind]),ImVec2(c.x-r,c.y-r),ImVec2(c.x+r,c.y+r),ImVec2(0,0),ImVec2(1,1));return true;
@@ -19,6 +20,8 @@ static bool mod_dbz_icon(ImDrawList *d,int kind,ImVec2 c,float r){
 
 static void mod_icon_draw(ImDrawList *d,int kind,ImVec2 c,float r,ImU32 col){
  if(mod_dbz_icon(d,kind,c,r))return;
+ if(kind==MI_DRAGON_HISTORY)kind=MI_STORY;
+ if(kind==MI_ACHIEVEMENTS)kind=MI_TROPHY;
  auto p=[&](float x,float y){return ImVec2(c.x+x*r,c.y+y*r);};float w=SDL_max(1.f,r*.10f);
  auto line=[&](float x,float y,float a,float b){d->AddLine(p(x,y),p(a,b),col,w);};
  auto circle=[&](float x,float y,float rad){d->AddCircle(p(x,y),rad*r,col,24,w);};

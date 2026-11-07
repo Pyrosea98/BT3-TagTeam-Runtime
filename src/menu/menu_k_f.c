@@ -598,7 +598,7 @@ void Bracket_FillEntrants(LBracket *b) {
                 cell = (LChrCell *)(Rand_Range(b->gridCount) * sizeof(LChrCell) + (u32)b->grid);
                 if (cell->id <= LCHR_ID_MAX
 #ifdef PORT
-                    || Port_Beta8HasCharacter(cell->id)
+                    || Port_Beta8HasEntry(cell->id)
 #endif
                 ) {
                     chara = cell->id;

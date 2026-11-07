@@ -8,6 +8,7 @@ def function(name):
 a=s.index('#ifdef PORT\n#define HUD_COMBO_DAMAGE_DIGITS');b=s.index('/* Combo part work',a);defines=s[a:b]
 a=s.index('typedef struct HudCombo {');b=s.index('} HudCombo;',a)+len('} HudCombo;');struct=s[a:b]
 head=r"""#include <cassert>
+#include "mod_damage_safe.h"
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -37,13 +38,14 @@ void HudCombo_UpdateMessage(HudCNode*){}void HudCombo_UpdateText(HudCNode*){}voi
 body='\n'.join(function(n) for n in ['HudCombo_ExtraWidth','HudCombo_SetHitDigits','HudCombo_SetDamageDigits','HudCombo_UpdateDamage','HudCombo_UpdateHits','HudCombo_SetDamage','HudCombo_SetHits','HudCombo_Init','HudCombo_Term'])
 foot=r"""
 u32 read(HudCNode *n,int digits){u32 value=0,mul=1;for(int i=0;i<digits;i++){auto *s=n->sprites[i+1];if(!s->hidden){u32 digit=(s->v0/32)*4+(s->u0-1)/32;assert(digit<10);value+=digit*mul;}mul*=10;}return value;}
-int main(){HudCNode *root;HudCRes res;HudCombo_Init(&root,&res);auto *hit=&gHudCombo->nodes[HUD_COMBO_NODE_HITS],*dmg=&gHudCombo->nodes[HUD_COMBO_NODE_DAMAGE];assert(hit->spriteCount==7&&dmg->spriteCount==10);
+int main(){HudCNode *root;HudCRes res;HudCombo_Init(&root,&res);auto *hit=&gHudCombo->nodes[HUD_COMBO_NODE_HITS],*dmg=&gHudCombo->nodes[HUD_COMBO_NODE_DAMAGE];assert(hit->spriteCount==7&&dmg->spriteCount==11);
  for(u32 value:{0u,2u,999u,1000u,999999u,1000000u}){HudCombo_SetHits(0,value);HudCombo_SetHitDigits(hit);assert(read(hit,6)==(value>999999?999999:value));}
- for(int value:{0,1,99999,100000,199998,200000,16777217,999999999,2147483647}){HudCombo_SetDamage(0,value,1);gHudCombo->countRamp[0].value=gHudCombo->countRamp[0].target;HudCombo_SetDamageDigits(dmg);assert(read(dmg,9)==(u32)(value>999999999?999999999:value));}
- for(int side=0;side<2;side++){gHudCombo->side=side;HudCombo_SetHits(side,999999);HudCombo_SetDamage(side,999999999,1);gHudCombo->hitState[side]=gHudCombo->dmgState[side]=HUD_COMBO_ST_SHOWN;HudCombo_UpdateHits(hit);HudCombo_UpdateDamage(dmg);assert(read(hit,6)==999999&&read(dmg,9)==999999999);assert(hit->ofsX==(side?367:71));assert(dmg->ofsX==(side?367:53));for(u32 i=0;i<hit->spriteCount;i++){assert(hit->sprites[i]>=gHudCombo->sprites&&hit->sprites[i]<gHudCombo->sprites+HUD_COMBO_SPR_COUNT);}for(u32 i=0;i<dmg->spriteCount;i++){assert(dmg->sprites[i]>=gHudCombo->sprites&&dmg->sprites[i]<gHudCombo->sprites+HUD_COMBO_SPR_COUNT);}}
- paused=1;steps=0;HudCombo_SetDamageDigits(dmg);assert(!steps);HudCombo_SetHits(1,1);assert(gHudCombo->hitState[1]==HUD_COMBO_ST_OUT);HudCombo_SetDamage(1,-1,0);assert(gHudCombo->dmgState[1]==HUD_COMBO_ST_OUT);HudCombo_Term();puts("PASS actual native counters: extra sprite allocation,6/9digit boundaries, 1000hits/100000damage, exact16777217 and999999999, side layout, pause and slide-out; ASan/UBSan");}
+ for(int value:{0,1,99999,100000,199998,200000,16777217,999999999,2147483647}){HudCombo_SetDamage(0,value,1);gHudCombo->countRamp[0].value=gHudCombo->countRamp[0].target;HudCombo_SetDamageDigits(dmg);assert(read(dmg,10)==(u32)value);}
+ for(int side=0;side<2;side++){gHudCombo->side=side;HudCombo_SetHits(side,999999);HudCombo_SetDamage(side,999999999,1);gHudCombo->hitState[side]=gHudCombo->dmgState[side]=HUD_COMBO_ST_SHOWN;HudCombo_UpdateHits(hit);HudCombo_UpdateDamage(dmg);assert(read(hit,6)==999999&&read(dmg,10)==999999999);assert(hit->ofsX==(side?367:71));assert(dmg->ofsX==(side?367:53));for(u32 i=0;i<hit->spriteCount;i++){assert(hit->sprites[i]>=gHudCombo->sprites&&hit->sprites[i]<gHudCombo->sprites+HUD_COMBO_SPR_COUNT);}for(u32 i=0;i<dmg->spriteCount;i++){assert(dmg->sprites[i]>=gHudCombo->sprites&&dmg->sprites[i]<gHudCombo->sprites+HUD_COMBO_SPR_COUNT);}}
+ for(int side=0;side<2;side++){gHudCombo->side=side;HudCombo_SetDamage(side,2147483647,1);gHudCombo->dmgState[side]=HUD_COMBO_ST_SHOWN;gHudCombo->countRamp[side].value=gHudCombo->countRamp[side].target;HudCombo_UpdateDamage(dmg);assert(read(dmg,10)==2147483647u);assert(dmg->ofsX==(side?367:65));}
+ paused=1;steps=0;HudCombo_SetDamageDigits(dmg);assert(!steps);HudCombo_SetHits(1,1);assert(gHudCombo->hitState[1]==HUD_COMBO_ST_OUT);HudCombo_SetDamage(1,-1,0);assert(gHudCombo->dmgState[1]==HUD_COMBO_ST_OUT);HudCombo_Term();puts("PASS actual native counters: extra sprite allocation,6/10digit boundaries, full signed32 display, 1000hits/100000damage, exact16777217 and999999999, side layout, pause and slide-out; ASan/UBSan");}
 """
 head='#include <initializer_list>\n'+head
 with tempfile.TemporaryDirectory() as tmp:
  p=Path(tmp);(p/'test.cpp').write_text(head+defines+struct+'\nstatic HudCombo *gHudCombo;\n'+body+foot)
- subprocess.run(['g++','-std=c++17','-fsanitize=address,undefined','-fno-omit-frame-pointer',str(p/'test.cpp'),'-o',str(p/'test')],check=True);subprocess.run([str(p/'test')],check=True)
+ subprocess.run(['g++','-Iport/include','-std=c++17','-fsanitize=address,undefined','-fno-omit-frame-pointer',str(p/'test.cpp'),'-o',str(p/'test')],check=True);subprocess.run([str(p/'test')],check=True)

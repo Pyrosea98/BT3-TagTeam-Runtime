@@ -30,7 +30,7 @@ typedef struct FpSide {
     FpMember m[FP_MEMBERS];
 } FpSide;
 
-#define FP_ACTORS 12
+#define FP_ACTORS 16
 #define FP_VIEWS 4
 typedef struct FpActor {
  int assistKind,assistState,assistHelpers;

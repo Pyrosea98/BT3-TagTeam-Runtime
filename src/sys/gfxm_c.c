@@ -1286,6 +1286,41 @@ void Flash_ClipSetUv(Flash *flash, FlashRef *ref, void *rect) {
     }
 }
 
+#ifdef PORT
+/* Port-only override; no file/clip/save structure grows. UV.tex carries the integer
+   only while bit 0x4000 is set, and is cleared before texture upload. */
+void Flash_ClipSetWideNumber(Flash *flash, FlashRef *ref, s32 value, s32 pitch) {
+    if (ref->index >= 0 && (u32)ref->index < flash->clips->count) {
+        FlashProp *p=&flash->clips->items[ref->index].prop;
+        p->flags &= ~0x4000u;
+        if (value>9999999) { p->flags |= 0x4000u; p->uv.tex=value; p->uv.u0=pitch; }
+        else if (p->uv.tex>9999999) p->uv.tex=0;
+    }
+}
+
+static void FlashDraw_WideNumber(FlashTex *tex, FlashQuad *base, s32 value, s32 w, s32 h, s32 pitch) {
+    s32 digits=1,n=value,i,j; FlashQuad q;
+    f32 right[2],edge[2],fraction,advance;
+    while(n>=10){n/=10;digits++;}
+    /* Right aligned in the same seven-cell field, preserving height and animation. */
+    fraction=7.0f/digits;
+    advance=(f32)pitch/w;
+    for(j=0;j<2;j++) {right[j]=base->pt[1][j];edge[j]=base->pt[1][j]-base->pt[0][j];}
+    for(i=0;i<digits;i++,value/=10){
+        s32 digit=value%10;q=*base;
+        q.uv.u0=w*(digit%4);q.uv.u1=q.uv.u0+w;
+        q.uv.v0=h*(digit/4);q.uv.v1=q.uv.v0+h;q.uv.tex=0;
+        for(j=0;j<2;j++){
+            q.pt[1][j]=right[j]-edge[j]*fraction*advance*i;
+            q.pt[0][j]=q.pt[1][j]-edge[j]*fraction;
+            q.pt[2][j]=q.pt[0][j]+base->pt[2][j]-base->pt[0][j];
+            q.pt[3][j]=q.pt[1][j]+base->pt[3][j]-base->pt[1][j];
+        }
+        FlashDraw_Quad(tex,&q);
+    }
+}
+#endif
+
 /* Returns a clip's screen position. */
 void Flash_ClipGetPos(Flash *flash, FlashRef *ref, s32 *x, s32 *y) {
     if (ref->index >= 0) {
@@ -1428,6 +1463,15 @@ void FlashShape_Draw(FlashShape *shape, FlashProp *prop, Flash *flash) {
         quad.rgba[1] = (rec.rgba >> 16) & 0xFF;
         quad.rgba[2] = (rec.rgba & 0xFF00) >> 8;
         quad.rgba[3] = rec.rgba & 0xFF;
+#ifdef PORT
+        if (prop && (prop->flags & 0x4000u) && tex) {
+            FlashProp regular=*prop;s32 value=prop->uv.tex;
+            regular.flags &= ~0x4000u; regular.uv.tex=0;regular.uv.u0=0;
+            FlashDraw_TransformQuad(pq, &shape->mtx, &shape->cx, &regular, flash->ofs);
+            FlashDraw_WideNumber(tex,pq,value,prop->uv.u1,prop->uv.v1-prop->uv.v0,prop->uv.u0);
+            continue;
+        }
+#endif
         FlashDraw_TransformQuad(pq, &shape->mtx, &shape->cx, prop, flash->ofs);
         FlashDraw_Quad(tex, pq);
     }

@@ -1,5 +1,12 @@
 #include "common.h"
 #include "battle/btl_tech_a.h"
+#ifdef PORT
+extern int Port_StoryActive(void);
+#endif
+#ifdef PORT
+#include "mod_damage_safe.h"
+#include "mod_melee_profiles.h"
+#endif
 
 /*
  * Fighter queries by side, the attack records and the character parameter block, 0x20BA80..0x20F0E8 (124 functions).
@@ -66,6 +73,9 @@ extern s32 BtlUtil_Max(s32 a, s32 b);
 extern BtlTechWork *Battle_GetWork(void);
 extern BtlTechWork5A8 *Battle_GetWork5A8(void);
 extern s32 Battle_GetMode(void);
+#ifdef PORT
+extern int Port_NetActive(void),BattleReplay_IsActive(void);
+#endif
 extern s32 BtlSeq_GetState(void);
 
 extern s32 BtlAct_CanUseTechnique(BtlTechChr *chr, s32 slot); /* slots 2..4 */
@@ -912,6 +922,12 @@ s32 BtlAtk_GetId(BtlTechChr *chr) {
     return -1;
 }
 
+/* Story data readers: damaged clothes must not change combat power. */
+extern int Port_StoryActive(void);
+extern void *Port_StoryCombatTable(void*,int,void*);
+static BtlParam *STC_param(BtlTechChr *chr){return (BtlParam*)Port_StoryCombatTable(chr,0,BtlChar_GetObj(chr)->param);}
+static BtlAtkRecord *STC_atk(BtlTechChr *chr){return (BtlAtkRecord*)Port_StoryCombatTable(chr,1,BtlChar_GetObj(chr)->atk);}
+
 /* The fighter's current attack record; ids outside 0..0xA2 (and -1) give record 0. The id used goes to *id. */
 BtlAtkRecord *BtlAtk_GetRecord(BtlTechChr *chr, s32 *id) {
     u32 n = BtlAtk_GetId(chr);
@@ -922,7 +938,7 @@ BtlAtkRecord *BtlAtk_GetRecord(BtlTechChr *chr, s32 *id) {
     if (id != NULL) {
         *id = n;
     }
-    return &BtlChar_GetObj(chr)->atk[n];
+    return &STC_atk(chr)[n];
 }
 
 /* Record `id` of the fighter's character. */
@@ -930,37 +946,41 @@ BtlAtkRecord *BtlAtk_GetRecordOf(BtlTechChr *chr, u32 id) {
     if (id >= BTL_ATK_COUNT) {
         id = 0;
     }
-    return &BtlChar_GetObj(chr)->atk[id];
+    return &STC_atk(chr)[id];
 }
 
 /* Damage changes by ability: ids 0..9 +10% (4) / -10% (5); ids 0x13..0x21 +10% (6) / -10% (7); ids 0x55, 0x56
    x2 (8) / halved (9). */
 s32 BtlAtk_ApplyAbilities(BtlTechChr *chr, s32 val, u32 id) {
+    long long wide = val;
     if (id < 10) {
         if (BtlMember_HasAbility(chr, 4)) {
-            val += val / 10;
+            wide += wide / 10;
         }
         if (BtlMember_HasAbility(chr, 5)) {
-            val -= val / 10;
+            wide -= wide / 10;
         }
     }
     if (id - 0x13 < 0xF) {
         if (BtlMember_HasAbility(chr, 6)) {
-            val += val / 10;
+            wide += wide / 10;
         }
         if (BtlMember_HasAbility(chr, 7)) {
-            val -= val / 10;
+            wide -= wide / 10;
         }
     }
     if (id - 0x55 < 2) {
         if (BtlMember_HasAbility(chr, 8)) {
-            val *= 2;
+            wide *= 2;
         }
         if (BtlMember_HasAbility(chr, 9)) {
-            val -= val / 2;
+            wide -= wide / 2;
         }
     }
-    return val;
+    /* Extended records can exceed signed32 after Potara bonuses. */
+    if (wide > 2147483647LL) wide = 2147483647LL;
+    if (wide < -2147483647LL - 1) wide = -2147483647LL - 1;
+    return (s32)wide;
 }
 
 /* Whether an attack id is one of 0x13..0x21. */
@@ -977,10 +997,27 @@ s32 BtlAtk_GetPriority(BtlTechChr *chr) {
 s32 BtlAtk_GetDamage(BtlTechChr *chr) {
     s32 id;
     BtlTechObj *obj = BtlChar_GetObj(chr);
-    s32 val = BtlAtk_GetRecord(chr, &id)->damage;
+    BtlAtkRecord *rec = BtlAtk_GetRecord(chr, &id);
+    /* 32-bit melee damage: the low word is the stock field, the high word lives in the bytes the
+       stock game never reads (record +0x2E). Stock data has 0 there, so nothing changes for it. */
+    u32 raw = (u32)rec->damage | ((u32)rec->damageHi << 16);
+    double scaled;
+    s32 val;
     s32 hits;
 
-    val = val * BtlStat_GetMeleeDamageScale(chr);
+#ifdef PORT
+    {BtlTechMember*m=BtlMember_GetActive(chr);if(m&&!Port_StoryActive()&&!Port_NetActive()&&!BattleReplay_IsActive())raw=MD_Profile(m->chara,m->costume,id,raw);}
+#endif
+    if (raw > 0x7FFFFFFFu) {
+        raw = 0x7FFFFFFFu;
+    }
+    /* Preserve original float rounding for every stock (16-bit) record. */
+    scaled = (raw != (u32)rec->damage || rec->damageHi) ? (double)raw * (double)BtlStat_GetMeleeDamageScale(chr)
+                           : (double)(rec->damage * BtlStat_GetMeleeDamageScale(chr));
+    if (scaled > 2147483647.0) {
+        scaled = 2147483647.0;
+    }
+    val = scaled!=scaled?0:scaled<=0.0?0:(s32)scaled;
     val = BtlAtk_ApplyAbilities(chr, val, id);
     hits = BtlObjAnim_QueryEvent(obj, 1, 0, 3);
     if (hits >= 2) {
@@ -996,7 +1033,8 @@ s32 BtlAtk_GetGuardDamage(BtlTechChr *chr) {
     s32 val = BtlAtk_GetRecord(chr, &id)->guardDamage;
     s32 hits;
 
-    val = val * BtlStat_GetMeleeDamageScale(chr);
+    {BtlTechMember*m=BtlMember_GetActive(chr);if(m&&!Port_NetActive()&&!BattleReplay_IsActive())val=MD_Offense(m->chara,m->costume,val);}
+    val = MD_FloatScale(val,BtlStat_GetMeleeDamageScale(chr));
     if (BtlAct_TestPoweredSkill(chr, 0x10)) {
         if ((u32)id < 0xB) {
             val -= val * 3 / 10;
@@ -1322,67 +1360,67 @@ s32 BtlParam_ScaleKiCharge(BtlTechChr *chr, s32 val) {
 
 /* Parameter +0x10: flag word. */
 u32 BtlParam_GetFlags(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->flags;
+    return STC_param(chr)->flags;
 }
 
 /* Parameter +0x14: skill bits. */
 u32 BtlParam_GetFlags2(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->flags2;
+    return STC_param(chr)->flags2;
 }
 
 /* Parameter +0x18: skill bits that also need the powered-up mode. */
 u32 BtlParam_GetFlags3(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->flags3;
+    return STC_param(chr)->flags3;
 }
 
 /* Parameter +0x00 (u16). */
 s32 BtlParam_GetUnk0(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->unk0;
+    return STC_param(chr)->unk0;
 }
 
 /* Parameter +0x02: 4 is tested by the hit code (not thrown, not rushed). */
 s32 BtlParam_GetUnk2(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->unk2;
+    return STC_param(chr)->unk2;
 }
 
 /* Parameter +0xAC: the transformation slot a neutral input picks. */
 s32 BtlParam_GetUnkAC(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->transDefault;
+    return STC_param(chr)->transDefault;
 }
 
 /* Parameter +0x98 + slot: transformation target, 0xFF = none. */
 s32 BtlParam_GetSlotId(BtlTechChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->param->transTarget[slot];
+    return STC_param(chr)->transTarget[slot];
 }
 
 /* Parameter +0x9C + slot, times 100000: blast gauge a transformation costs. */
 s32 BtlParam_GetSlotCost(BtlTechChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->param->transCost[slot] * 100000;
+    return STC_param(chr)->transCost[slot] * 100000;
 }
 
 /* Parameter +0xA0 + slot. */
 s32 BtlParam_GetSlotA0(BtlTechChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->param->transSeq[slot];
+    return STC_param(chr)->transSeq[slot];
 }
 
 /* Parameter +0xA4 + slot. */
 s32 BtlParam_GetSlotA4(BtlTechChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->param->transKind[slot];
+    return STC_param(chr)->transKind[slot];
 }
 
 /* Parameter +0xA8 + slot. */
 s32 BtlParam_GetSlotA8(BtlTechChr *chr, s32 slot) {
-    return BtlChar_GetObj(chr)->param->transA8[slot];
+    return STC_param(chr)->transA8[slot];
 }
 
 /* Parameter +0xAD. */
 s32 BtlParam_GetUnkAD(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->unkAD;
+    return STC_param(chr)->unkAD;
 }
 
 /* How many of the four transformation targets at +0x98 are not 0xFF. */
 s32 BtlParam_CountSlots(BtlTechChr *chr) {
-    BtlParam *param = BtlChar_GetObj(chr)->param;
+    BtlParam *param = STC_param(chr);
     s32 n = 0;
     s32 i;
 
@@ -1396,43 +1434,43 @@ s32 BtlParam_CountSlots(BtlTechChr *chr) {
 
 /* Bit 4 + n of parameter +0xAD. */
 s32 BtlParam_TestUnkADBit(BtlTechChr *chr, s32 n) {
-    return (BtlChar_GetObj(chr)->param->unkAD & (0x10 << n)) != 0;
+    return (STC_param(chr)->unkAD & (0x10 << n)) != 0;
 }
 
 /* Parameter +0xB4 + n: fusion n. */
 s32 BtlParam_GetUnkB4(BtlTechChr *chr, s32 n) {
-    return BtlChar_GetObj(chr)->param->fusionResult[n];
+    return STC_param(chr)->fusionResult[n];
 }
 
 /* Parameter +0xB7 + n: fusion n. */
 s32 BtlParam_GetUnkB7(BtlTechChr *chr, s32 n) {
-    return BtlChar_GetObj(chr)->param->fusionB7[n];
+    return STC_param(chr)->fusionB7[n];
 }
 
 /* Parameter +0xBA + n * 4 + m: partner m of fusion n. */
 s32 BtlParam_GetUnkBA(BtlTechChr *chr, s32 n, s32 m) {
-    return BtlChar_GetObj(chr)->param->fusionPartner[n][m];
+    return STC_param(chr)->fusionPartner[n][m];
 }
 
 /* Parameter +0xAE + n, times 100000: blast gauge fusion n costs. */
 s32 BtlParam_GetCostAE(BtlTechChr *chr, s32 n) {
-    return BtlChar_GetObj(chr)->param->fusionCost[n] * 100000;
+    return STC_param(chr)->fusionCost[n] * 100000;
 }
 
 /* Parameter +0xC6. */
 s32 BtlParam_GetUnkC6(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->unkC6;
+    return STC_param(chr)->unkC6;
 }
 
 /* Parameter +0xB1 + n: fusion n. */
 s32 BtlParam_GetUnkB1(BtlTechChr *chr, s32 n) {
-    return BtlChar_GetObj(chr)->param->fusionSeq[n];
+    return STC_param(chr)->fusionSeq[n];
 }
 
 /* Aura kind (passed to BtlObj_SetColorPreset on the object): parameter +0x03, replaced by 0..10 when the member has one of
    abilities 0x4D..0x53, 0x74, 0x54..0x56 (first match in that order). */
 s32 BtlParam_GetAuraKind(BtlTechChr *chr) {
-    s32 v = BtlChar_GetObj(chr)->param->auraKind;
+    s32 v = STC_param(chr)->auraKind;
 
     if (BtlMember_HasAbility(chr, 0x4D)) {
         v = 0;
@@ -1463,7 +1501,7 @@ s32 BtlParam_GetAuraKind(BtlTechChr *chr) {
 /* Search type 0..9 of the active member's costume (parameter +0x58 + costume, costume above 3 reads 0); types 2..4
    become 7 (8 for type 4) while the member's gauge word +0x20 is set. */
 s32 BtlParam_GetType(BtlTechChr *chr) {
-    BtlParam *param = BtlChar_GetObj(chr)->param;
+    BtlParam *param = STC_param(chr);
     u32 costume = BtlMember_GetActive(chr)->costume;
     s32 type;
 
@@ -1568,7 +1606,7 @@ s32 BtlParam_IsTypeSetB(BtlTechChr *chr) {
 /* How many class-0 ki blasts may be alive at once: parameter +0x80 less 3 / 2 / 1 by ability 0x11 / 0x10 / 0xF, but
    at least 1 when the raw value is positive. */
 s32 BtlParam_GetCount80(BtlTechChr *chr) {
-    BtlParam *param = BtlChar_GetObj(chr)->param;
+    BtlParam *param = STC_param(chr);
     s32 v = param->blastLimitA;
 
     if (BtlMember_HasAbility(chr, 0x11)) {
@@ -1588,12 +1626,12 @@ s32 BtlParam_GetCount80(BtlTechChr *chr) {
 
 /* Parameter +0x82: the same limit for class-1 blasts. */
 s32 BtlParam_GetUnk82(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->blastLimitB;
+    return STC_param(chr)->blastLimitB;
 }
 
 /* Parameter +0x84 + n (n above 3 reads entry 0). */
 s32 BtlParam_GetUnk84(BtlTechChr *chr, u32 n) {
-    BtlParam *param = BtlChar_GetObj(chr)->param;
+    BtlParam *param = STC_param(chr);
 
     if (n >= 4) {
         n = 0;
@@ -1603,7 +1641,7 @@ s32 BtlParam_GetUnk84(BtlTechChr *chr, u32 n) {
 
 /* Parameter +0x88 + n (n above 1 reads entry 0). */
 s32 BtlParam_GetUnk88(BtlTechChr *chr, u32 n) {
-    BtlParam *param = BtlChar_GetObj(chr)->param;
+    BtlParam *param = STC_param(chr);
 
     if (n >= 2) {
         n = 0;
@@ -1613,7 +1651,7 @@ s32 BtlParam_GetUnk88(BtlTechChr *chr, u32 n) {
 
 /* Parameter +0x8A + n (n above 4 reads entry 0). */
 s32 BtlParam_GetUnk8A(BtlTechChr *chr, u32 n) {
-    BtlParam *param = BtlChar_GetObj(chr)->param;
+    BtlParam *param = STC_param(chr);
 
     if (n >= 5) {
         n = 0;
@@ -1623,23 +1661,23 @@ s32 BtlParam_GetUnk8A(BtlTechChr *chr, u32 n) {
 
 /* Parameter +0x1C. */
 s32 BtlParam_GetUnk1C(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->unk1C;
+    return STC_param(chr)->unk1C;
 }
 
 /* Parameter +0x20. */
 s32 BtlParam_GetUnk20(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->unk20;
+    return STC_param(chr)->unk20;
 }
 
 /* Parameter +0x24. */
 s32 BtlParam_GetUnk24(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->unk24;
+    return STC_param(chr)->unk24;
 }
 
 /* Ki level below which ki regenerates by itself: parameter +0x28 plus 60000 / 40000 / 20000 by ability 0x2E / 0x2D /
    0x2C, at most 100000. */
 s32 BtlParam_GetKiRegenLimit(BtlTechChr *chr) {
-    s32 v = BtlChar_GetObj(chr)->param->kiRegenLimit;
+    s32 v = STC_param(chr)->kiRegenLimit;
 
     if (BtlMember_HasAbility(chr, 0x2E)) {
         v += 60000;
@@ -1656,18 +1694,18 @@ s32 BtlParam_GetKiRegenLimit(BtlTechChr *chr) {
 
 /* Parameter +0x2C: ki level that ends the ki-exhausted state (flag 0xBE). */
 s32 BtlParam_GetGaugeB(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->kiRecoverGoal;
+    return STC_param(chr)->kiRecoverGoal;
 }
 
 /* Parameter +0x40. */
 s32 BtlParam_GetUnk40(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->unk40;
+    return STC_param(chr)->unk40;
 }
 
 /* Ki gained per frame of charging: ((parameter +0x30) / 30 + curve row 0 + (fighter +0xE28) / 30) scaled by
    BtlParam_ScaleKiCharge, at least 200. */
 s32 BtlParam_GetRateA(BtlTechChr *chr) {
-    s32 v = BtlChar_GetObj(chr)->param->kiCharge / 30;
+    s32 v = STC_param(chr)->kiCharge / 30;
 
     v += BtlStat_GetKiChargeBonus(chr);
     return BtlUtil_Max(BtlParam_ScaleKiCharge(chr, v + chr->rateBonus / 30), 200);
@@ -1675,7 +1713,7 @@ s32 BtlParam_GetRateA(BtlTechChr *chr) {
 
 /* The same from parameter +0x34: used while the fighter has flag 0x11. */
 s32 BtlParam_GetRateB(BtlTechChr *chr) {
-    s32 v = BtlChar_GetObj(chr)->param->kiChargeWater / 30;
+    s32 v = STC_param(chr)->kiChargeWater / 30;
 
     v += BtlStat_GetKiChargeBonus(chr);
     return BtlUtil_Max(BtlParam_ScaleKiCharge(chr, v + chr->rateBonus / 30), 200);
@@ -1683,7 +1721,7 @@ s32 BtlParam_GetRateB(BtlTechChr *chr) {
 
 /* Ki regenerated per frame below BtlParam_GetKiRegenLimit: (parameter +0x38) / 30 + curve row 1, at least 0. */
 s32 BtlParam_GetKiRegenRate(BtlTechChr *chr) {
-    s32 v = BtlChar_GetObj(chr)->param->kiRegen / 30;
+    s32 v = STC_param(chr)->kiRegen / 30;
 
     return BtlUtil_Max(v + BtlStat_GetKiRegenBonus(chr), 0);
 }
@@ -1691,7 +1729,7 @@ s32 BtlParam_GetKiRegenRate(BtlTechChr *chr) {
 /* Ki recovered per frame in the ki-exhausted state (x4 by the caller on a button press): (parameter +0x3C) / 30 +
    curve row 2, doubled by ability 0x3C, at least 10. */
 s32 BtlParam_GetKiRecoverRate(BtlTechChr *chr) {
-    s32 v = BtlChar_GetObj(chr)->param->kiRecover / 30;
+    s32 v = STC_param(chr)->kiRecover / 30;
 
     v += BtlStat_GetKiRecoverBonus(chr);
     if (BtlMember_HasAbility(chr, 0x3C)) {
@@ -1702,7 +1740,7 @@ s32 BtlParam_GetKiRecoverRate(BtlTechChr *chr) {
 
 /* Ki actions 0x67..0x69 spend per frame: (parameter +0x4C) / 30, halved by ability 0x28. */
 s32 BtlParam_GetKiDrain67(BtlTechChr *chr) {
-    s32 v = BtlChar_GetObj(chr)->param->kiDrain67 / 30;
+    s32 v = STC_param(chr)->kiDrain67 / 30;
 
     if (BtlMember_HasAbility(chr, 0x28)) {
         v /= 2;
@@ -1712,7 +1750,7 @@ s32 BtlParam_GetKiDrain67(BtlTechChr *chr) {
 
 /* Parameter +0x48: ki an air recovery (actions 0x25..0x2A) costs; also tested by action 0xD5 / 0xD6 / 0xDF. */
 s32 BtlParam_GetRecoverKiCost(BtlTechChr *chr) {
-    return BtlChar_GetObj(chr)->param->recoverKiCost;
+    return STC_param(chr)->recoverKiCost;
 }
 
 /* Ki a vanishing step costs: 10000; 5000 with ability 0x23; 0 with ability 0x24. */
@@ -1742,7 +1780,7 @@ s32 BtlParam_GetAmountB(BtlTechChr *chr) {
 /* Blast gauge gained per frame: (parameter +0x44) / 30 + curve row 3; x1.2 (ability 0x32), halved (0x1A), x0.8
    (0x33); at least 20. */
 s32 BtlParam_GetBlastGainRate(BtlTechChr *chr) {
-    s32 v = BtlChar_GetObj(chr)->param->blastGain / 30;
+    s32 v = STC_param(chr)->blastGain / 30;
 
     v += BtlStat_GetBlastGainBonus(chr);
     if (BtlMember_HasAbility(chr, 0x32)) {
@@ -1760,7 +1798,7 @@ s32 BtlParam_GetBlastGainRate(BtlTechChr *chr) {
 /* Max power gained per frame of charging at full ki: 30000 (the whole gauge) divided by the frames in
    (parameter +0x50 seconds / curve row 11). */
 s32 BtlParam_GetStepA(BtlTechChr *chr) {
-    f32 t = BtlChar_GetObj(chr)->param->maxPowerChargeTime;
+    f32 t = STC_param(chr)->maxPowerChargeTime;
 
     t /= BtlStat_GetMaxPowerChargeScale(chr);
     return 30000 / (s32)(t * 30.0f);
@@ -1769,7 +1807,7 @@ s32 BtlParam_GetStepA(BtlTechChr *chr) {
 /* Max power lost per frame: 30000 divided by the frames in (parameter +0x54 + curve row 12) seconds, the time
    being at least one frame. */
 s32 BtlParam_GetMaxPowerDrain(BtlTechChr *chr) {
-    f32 t = BtlChar_GetObj(chr)->param->maxPowerTime;
+    f32 t = STC_param(chr)->maxPowerTime;
 
     t += BtlStat_GetMaxPowerExtraTime(chr);
     if (t < 1.0f / 30.0f) {

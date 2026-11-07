@@ -25,6 +25,9 @@ extern AdxSaveView *gSaveData;
 #ifdef PORT
 /* Own only the struggle effect. Replacing this SE with another file must not
    loop that file or let the clash cleanup stop an unrelated ending sound. */
+static s32 sStoryMusicHeld;
+void Port_StoryMusicStart(s32 id){extern void Port_AdxOnce(void*);if(sStoryMusicHeld)return;if(id>=0){Bgm_Play(id);Port_AdxOnce(gAdxPlayerTbl[ADX_CH_BGM].adxt);}sStoryMusicHeld=1;}
+void Port_StoryMusicEnd(void){if(sStoryMusicHeld){sStoryMusicHeld=0;Bgm_Stop();}}
 static s32 sBeamSeWant[2],sBeamSeId[2]={-1,-1};
 extern void Port_AdxRepeat(void*);
 void Port_StreamBeamLoop(s32 se,s32 on){
@@ -110,6 +113,9 @@ void Adx_StopAll(void) {
     while (1) {
         done = 1;
         for (i = 0; i < ADX_PLAYER_COUNT; i++) {
+#ifdef PORT
+            if(i==ADX_CH_BGM&&sStoryMusicHeld)continue;
+#endif
             if (Adx_GetStat(i) != ADXT_STAT_STOP) {
                 done = 0;
                 break;
@@ -140,6 +146,9 @@ void Adx_ResumeSeVoice(void) {
 
 /* Starts file `id` on a player with the given volume and pan; a voice channel that is reserved is left alone. */
 void Adx_Play(s32 ch, s32 id, s32 vol, s32 pan) {
+#ifdef PORT
+    if(ch==ADX_CH_BGM&&sStoryMusicHeld)return;
+#endif
     switch (ch) {
     case ADX_CH_VOICE0:
         if (BtlScript_IsSlotBusy(0, 0)) {
@@ -169,6 +178,9 @@ void Adx_Play(s32 ch, s32 id, s32 vol, s32 pan) {
 
 /* Stops a player. */
 void Adx_Stop(s32 ch) {
+#ifdef PORT
+    if(ch==ADX_CH_BGM&&sStoryMusicHeld)return;
+#endif
 #ifdef PORT
     if(ch>=ADX_CH_SE0&&ch<=ADX_CH_SE1){sBeamSeWant[ch-ADX_CH_SE0]=0;sBeamSeId[ch-ADX_CH_SE0]=-1;}
 #endif
@@ -238,6 +250,9 @@ void Adx_SetPan(s32 ch, s32 pan0, s32 pan1) {
 
 /* One fade-out step: lowers a player's output level by 12 dB until it reaches mute. */
 void Adx_FadeOutStep(s32 ch) {
+#ifdef PORT
+    if(ch==ADX_CH_BGM&&sStoryMusicHeld)return;
+#endif
     s32 min = ADX_OUTVOL_MUTE;
     s32 vol = ADXT_GetOutVol(gAdxPlayerTbl[ch].adxt);
 

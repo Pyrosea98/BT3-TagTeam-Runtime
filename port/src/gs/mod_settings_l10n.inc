@@ -216,14 +216,14 @@ static const ModTranslation sModTranslations[]={
  {"Native","Original"},
  {"More often","Más seguido"},
  {"When outmatched","Cuando está en desventaja"},
- {"Native thresholds","Umbrales originales"},
+ {"Standard margin","Margen estándar"},
  {"Aggressive","Agresivo"},
- {"Relentless","Implacable"},
+ {"Always","Siempre"},
  {"CPU transformation tactics","Tácticas de transformación de CPU"},
  {"Allied CPU transformations","Transformaciones de la CPU aliada"},
  {"Enemy CPU transformations","Transformaciones de la CPU enemiga"},
  {"CPU tactics preset","Perfil de tácticas de CPU"},
- {"When outmatched uses health, Ki, recent damage and known form tiers. Presets change pressure thresholds and cooldowns. Normal stock costs and model admission still apply. Native keeps the original AI. Training has separate behavior below; online and replays are unchanged.","La desventaja considera salud, Ki, daño reciente y niveles de formas conocidos. El perfil cambia los umbrales y tiempos de espera. Se mantienen costos normales y modelos válidos. Original conserva la IA del juego. El entrenamiento se configura abajo; no se modifica el juego en línea ni las repeticiones."},
+ {"The CPU compares the opponent's power (the select-screen value) with its own and only transforms when the opponent is at least as strong and already ahead on health. A near-equal opponent makes it take one form; a much stronger one makes it jump toward its top form. The preset sets how far behind it must be. Stock costs and model admission still apply. Native keeps the original AI. Training has separate behavior below; online and replays are unchanged.","La CPU compara el poder del rival (el valor de la pantalla de selección) con el suyo y solo se transforma si el rival es al menos igual de fuerte y ya va adelante en vida. Un rival parejo la hace subir una sola forma; uno mucho más fuerte la hace saltar hacia su forma más alta. El perfil define cuánta vida debe ir perdiendo. Se mantienen los costos y los modelos válidos. Original conserva la IA del juego. El entrenamiento se configura abajo; no se modifica el juego en línea ni las repeticiones."},
  {"Training behavior","Comportamiento en entrenamiento"},
 };
 static const char *mod_l10n(const char *text){

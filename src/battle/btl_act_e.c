@@ -1351,6 +1351,15 @@ void Port_AssistRushVictim(int who,int winner,int damage){
  else BtlMove_SetHeading(c,atan2f(q->pos.x-p->pos.x,q->pos.z-p->pos.z),0.0f);
  BtlAct_Request(c,0xD5);
 }
+void Port_StoryBeamVictim(int who,int winner,int damage){
+ extern BtlActEChr*BtlChar_Get(s32);BtlActEChr*c=BtlChar_Get(who);if(!c)return;
+ extern s32 gPortTarget[];s32 old=gPortTarget[who];
+ BtlChar_ClearFlag(c,0xFA);BtlChar_ClearFlag(c,0xFB);
+ /* A story beam is a real hit, not assist-only damage (NO_HIT). */
+ gPortTarget[who]=winner;if(damage>0)BtlMember_Damage(c,damage,0x1C3);gPortTarget[who]=old;
+ Port_AssistRushVictim(who,winner,0);
+}
+
 #endif
 
 /*
@@ -1380,6 +1389,12 @@ void BtlAct_ClashBlowsHandler(BtlActEChr *chr, s32 phase) {
         }
         BtlChar_ClearFlagRange(chr, 0xBF, 0xC3);
     }
+#ifdef PORT
+    if(phase==0){extern void Port_ClashCpuReset(int,int,int);Port_ClashCpuReset(chr->player,chr->clashCountB,0);}
+#endif
+#ifdef PORT
+    extern int Port_ClashCpuPoint(int,int,int);
+#endif
     if (phase == 1) {
         switch (BtlAnim_GetId(chr)) {
             case 0x173:
@@ -1388,9 +1403,14 @@ void BtlAct_ClashBlowsHandler(BtlActEChr *chr, s32 phase) {
                 BtlChar_SetFlag(chr, 0xE6);
                 BtlChar_SetFlag(chr, 0xED);
                 if (BtlInput_TestAction(chr, 0x33, 1)) {
+#ifdef PORT
+                    /* Reject only the CPU press; never turn it into a passive bonus. */
+                    if(Port_ClashCpuPoint(chr->player,chr->actionFrame,0)){
+#endif
                     BtlAct_CountAndMarkOpponent(chr);
 #ifdef PORT /* PC build: BT3_CLASH_LOG=1 */
                     Port_ClashLog(chr->player, "blow clash", 1, chr->clashCountB, chr->actionFrame);
+                    }
 #endif
                 } else if (BtlMember_HasAbility(chr, 0x6A)) {
                     if (chr->actionFrame % 28 == 0) {
