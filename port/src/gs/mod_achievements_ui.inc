@@ -42,9 +42,9 @@ static const char *achievement_description(int i,bool es){
  if(i==24)return es?"Gana todos los combates de la saga Saiyajin en Normal o superior.":"Win every Saiyan Saga battle on Normal or above.";
  if(i==25)return es?"Gana todos los combates de la saga Saiyajin en Dif\303\255cil.":"Win every Saiyan Saga battle on Hard.";
  if(i==18)return es?"Completa el primer cap\303\255tulo de Historia Drag\303\263n, siguiendo la historia o venciendo a Raditz.":"Clear the first Dragon History chapter, following history or defeating Raditz.";
- if(i==19)return es?"Vence a Raditz con Piccolo en el primer cap\303\255tulo de Historia Drag\303\263n.":"Defeat Raditz as Piccolo in the first Dragon History chapter.";
+ if(i==19)return es?"Vence a Raditz con Piccoro en el primer capítulo de Historia Dragón.":"Defeat Raditz as Piccolo in the first Dragon History chapter.";
  if(i>=2){for(int r=0;r<SC_COUNT;r++)if(scRoutes[r].achievement==i)return scRoutes[r].brief[es];return "";}
- return i==0?(es?"Gana por KO, en solitario, contra los siete dragones: uno de cada estrella. Sus transformaciones y la absorcion de Omega no invalidan el reto.":"Win by KO, solo, against the seven Shadow Dragons: one of each star. Their transformations and Omega's absorption do not invalidate the challenge."):(es?"Completa el mismo reto terminando como cualquier Goku Super Saiyan 4. Puedes empezar en base y transformarte durante el combate.":"Complete the same challenge, finishing as any Super Saiyan 4 Goku. You can start in base and transform during the fight.");
+ return i==0?(es?"Gana por KO, en solitario, contra los siete dragones: uno de cada estrella. Sus transformaciones y la absorción de Omega no invalidan el reto.":"Win by KO, solo, against the seven Shadow Dragons: one of each star. Their transformations and Omega's absorption do not invalidate the challenge."):(es?"Completa el mismo reto terminando como cualquier Goku Super Saiyan 4. Puedes empezar en base y transformarte durante el combate.":"Complete the same challenge, finishing as any Super Saiyan 4 Goku. You can start in base and transform during the fight.");
 }
 static void achievement_gallery(int selected){
  bool es=Port_Setting("mod_language",1)==1;ImGuiIO &io=ImGui::GetIO();
@@ -85,8 +85,8 @@ static void achievement_gallery(int selected){
    ImGui::TextColored(achievement_rank_colour(Port_AchievementRank(selected)),"%s | %s",achievement_rank_name(Port_AchievementRank(selected),es),achievement_name(selected,es));
    ImGui::TextWrapped("%s",achievement_description(selected,es));ImGui::Spacing();
    ImGui::TextColored(earned?ImVec4(.5f,1,.7f,1):ImVec4(.8f,.73f,.84f,1),"%s",earned?(es?"Trofeo conseguido":"Trophy earned"):(es?"Trofeo por conseguir":"Trophy not yet earned"));
-   ImGui::TextWrapped("%s",es?"Combates locales. Guardado automatico. Entrenamiento y repeticiones no cuentan.":"Local battles. Saved automatically. Training and replays do not count.");
-   if(!Port_AchievementSaveOk())ImGui::TextWrapped("%s",es?"No se pudo guardar; se reintentara.":"Save failed; retrying automatically.");
+   ImGui::TextWrapped("%s",es?"Combates locales. Guardado automático. Entrenamiento y repeticiones no cuentan.":"Local battles. Saved automatically. Training and replays do not count.");
+   if(!Port_AchievementSaveOk())ImGui::TextWrapped("%s",es?"No se pudo guardar; se reintentará.":"Save failed; retrying automatically.");
   }ImGui::EndChild();ImGui::Separator();const ModPadHint hints[]={{MP_DPAD,es?"Elegir trofeo":"Choose trophy"},{MP_CROSS,es?"Ver":"View"},{MP_TRIANGLE,es?"Volver":"Back"}};mod_pad_hint_items(hints,3,k,16);
   if(sModBodyFont)ImGui::PopFont();
  }ImGui::End();ImGui::PopStyleVar();ImGui::PopStyleColor();

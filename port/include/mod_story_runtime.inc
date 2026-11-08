@@ -1,3 +1,4 @@
+#include <stdlib.h> /* getenv declaration for native and standalone Story builds. */
 /* Dragon History chapters: game-thread state. Included by mod_scenarios_runtime.inc, whose
    fixed-draft fight path a chapter rides on (Port_ScenarioActive is true while one is chosen). */
 #include "mod_story.h"

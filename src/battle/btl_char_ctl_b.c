@@ -94,12 +94,16 @@ void BtlChange_Reset(void) {
     memset(&gBtlChars->change, 0, sizeof(BtlChangeQueue));
 #ifdef PORT
     sPortChangeMoreCount = 0;
+    {extern void Port_BodyChangeReset(void);Port_BodyChangeReset();}
 #endif
 }
 
 /* Once per frame: retires a finished request, starts the next one, and sets the time-stop word while one is active. */
 void BtlChange_Update(void) {
     BtlChangeQueue *q = &gBtlChars->change;
+#ifdef PORT
+    {extern void Port_BodyChangeQueue(int,int);Port_BodyChangeQueue(q->cur?q->cur->player:-1,q->state);}
+#endif
 
 #ifdef PORT
     {extern void Port_FusionChangeLog(int,int,int,int);

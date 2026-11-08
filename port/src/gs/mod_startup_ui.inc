@@ -80,7 +80,7 @@ static void mod_startup_draw(void) {
 // Same credit source as the startup and installer assets; keyboard/gamepad links.
 static void mod_credits_settings(void) {
     bool es=Port_Setting("mod_language",1)==1;
-    if(!ImGui::CollapsingHeader(es?"Creditos y agradecimientos":"Credits and thanks"))return;
+    if(!ImGui::CollapsingHeader(es?"Créditos y agradecimientos":"Credits and thanks"))return;
     for(int i=0;i<4;i++){
         ImGui::PushID(i);
         ImGui::TextColored(ImVec4(1,.77f,.28f,1),"%s: %s",es?kModCreditRolesEs[i]:kModCreditRoles[i],kModCreditNames[i]);

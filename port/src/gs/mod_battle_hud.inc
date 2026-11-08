@@ -105,18 +105,18 @@ static void mh_gauge(ImDrawList *d,const FpActor &a,ImVec2 c,float r,bool hex,bo
  if(a.fusionAccept){
   ImVec2 button(c.x,c.y-r-21*k);d->AddCircleFilled(button,8*k,IM_COL32(12,22,38,220),20);d->AddCircle(button,8*k,IM_COL32(255,218,120,245),20,1.2f*k);
   mh_text(d,ImVec2(button.x,button.y-3*k),6*k,IM_COL32(255,240,195,255),"R3",true);
-  mh_text(d,ImVec2(button.x,button.y-18*k),7*k,IM_COL32(255,224,145,245),sMhConfig.es?"Aceptar fusiÃƒÂ³n":"Accept fusion",true,110*k);
+  mh_text(d,ImVec2(button.x,button.y-18*k),7*k,IM_COL32(255,224,145,245),sMhConfig.es?"Aceptar fusión":"Accept fusion",true,110*k);
  }
  if(a.assistKind&&(a.assistState||a.assistHelpers)){
   bool es=sMhConfig.es;char msg[96];const char*kind=a.assistKind==1?(es?"Rayo":"Beam"):a.assistKind==2?(es?"Acometida":"Rush"):(es?"Definitivo":"Ultimate");
   if(a.assistState==1)snprintf(msg,sizeof(msg),es?"R3: ayudar (%s)":"R3: assist (%s)",kind);
-  else if(a.assistState)snprintf(msg,sizeof(msg),es?"%s: %s":"%s: %s",kind,a.assistState==2?(es?"uniÃƒÂ©ndose":"joining"):(es?"asistiendo":"assisting"));
+  else if(a.assistState)snprintf(msg,sizeof(msg),es?"%s: %s":"%s: %s",kind,a.assistState==2?(es?"uniéndose":"joining"):(es?"asistiendo":"assisting"));
   else snprintf(msg,sizeof(msg),es?"%s +%d aliados":"%s +%d helpers",kind,a.assistHelpers);
   mh_text(d,ImVec2(c.x,infoY),9*k,IM_COL32(255,221,135,245),msg,true,145*k);
  }
  if(a.reviveProgress>0||a.reviveInsufficient||a.reviveRecovering){
   bool es=sMhConfig.es;
-  const char *hint=a.reviveRecovering?(es?"RecuperÃƒÂ¡ndose":"Recovering"):a.reviveInsufficient?(es?"Faltan reservas":"Need stocks"):(es?"Reanimando":"Reviving");
+  const char *hint=a.reviveRecovering?(es?"Recuperándose":"Recovering"):a.reviveInsufficient?(es?"Faltan reservas":"Need stocks"):(es?"Reanimando":"Reviving");
   mh_text(d,ImVec2(c.x,c.y-r-28*k),7*k,IM_COL32(124,255,192,255),hint,true,100*k);
   if(!a.reviveRecovering){ImVec2 lo(c.x-22*k,c.y-r-19*k);d->AddRectFilled(lo,ImVec2(lo.x+44*k,lo.y+2*k),IM_COL32(12,24,35,190));d->AddRectFilled(lo,ImVec2(lo.x+44*k*mh_clamp(a.reviveProgress/1000.f),lo.y+2*k),IM_COL32(124,255,192,240));}
  }
@@ -199,8 +199,8 @@ static void mod_battle_hud_draw(){
   }}
   if(mode==0&&v.me>=0&&v.me<st.actorCount){const FpActor &a=st.actor[v.me];
    if(a.reviveProgress>0||a.reviveInsufficient||a.reviveRecovering){bool es=sMhConfig.es;char hint[96];
-    if(a.reviveRecovering)snprintf(hint,sizeof(hint),"%s",es?"RecuperÃƒÂ¡ndose":"Recovering");
-    else if(a.reviveInsufficient)snprintf(hint,sizeof(hint),"%s",es?"ReanimaciÃƒÂ³n: faltan reservas":"Revival: need stocks");
+    if(a.reviveRecovering)snprintf(hint,sizeof(hint),"%s",es?"Recuperándose":"Recovering");
+    else if(a.reviveInsufficient)snprintf(hint,sizeof(hint),"%s",es?"Reanimación: faltan reservas":"Revival: need stocks");
     else snprintf(hint,sizeof(hint),es?"Reanimando %d%%":"Reviving %d%%",a.reviveProgress/10);
     mh_text(d,ImVec2(lo.x+8*sy,hi.y-26*sy),10*sy,IM_COL32(124,255,192,255),hint,false,hi.x-lo.x-16*sy);
    }

@@ -15,7 +15,7 @@ static void mod_scenario_chapters(int page,int cursor,int family,int variant){
   d->AddText(f,fs,ImVec2(x+k,y+k),IM_COL32(0,0,0,220),t,nullptr,wrap?width:0);
   d->AddText(f,fs,ImVec2(x,y),col,t,nullptr,wrap?width:0);
  };
- auto name=[&](int id,char*out,size_t size){const char*n=id<0?(es?"Tu eleccion":"Your choice"):Port_CharaName(id);snprintf(out,size,"%s",n?n:"");char*p=strchr(out,'[');if(!p)p=strchr(out,',');if(p)*p=0;};
+ auto name=[&](int id,char*out,size_t size){const char*n=id<0?(es?"Tu elección":"Your choice"):Port_CharaName(id);snprintf(out,size,"%s",n?n:"");char*p=strchr(out,'[');if(!p)p=strchr(out,',');if(p)*p=0;};
  static const int bosses[]={105,129,114,255,146,291};
  auto stageForRoute=[](int r){char key[40];snprintf(key,sizeof(key),"scenario_stage_%d",r);return Port_Setting(key,SC_DefaultStage(r));};
  if(auto*t=ms_art(stageForRoute(route),true))d->AddImage(ImTextureRef((ImTextureID)(intptr_t)t),ImVec2(0,0),screen);
@@ -35,14 +35,14 @@ static void mod_scenario_chapters(int page,int cursor,int family,int variant){
    if(auto*t=ms_art(stageForRoute(a),true))d->AddImage(ImTextureRef((ImTextureID)(intptr_t)t),ImVec2(x+2*k,y+2*k),ImVec2(x+cw-2*k,y+ch*.61f),ImVec2(0,0),ImVec2(1,1),IM_COL32(255,255,255,150));
    d->AddRectFilledMultiColor(ImVec2(x,y),ImVec2(x+cw,y+ch*.65f),IM_COL32(30,10,30,20),IM_COL32(30,10,30,20),IM_COL32(30,10,30,200),IM_COL32(30,10,30,200));
    if(auto*t=ms_art(bosses[n],false)){float side=ch*.44f;d->AddImage(ImTextureRef((ImTextureID)(intptr_t)t),ImVec2(x+cw-side-6*k,y+6*k),ImVec2(x+cw-6*k,y+side+6*k));}
-   char chapter[32];snprintf(chapter,sizeof(chapter),es?"CAPITULO %02d":"CHAPTER %02d",n+1);text(chapter,x+8*k,y+9*k,11,white,cw-16*k);
+   char chapter[32];snprintf(chapter,sizeof(chapter),es?"CAPÍTULO %02d":"CHAPTER %02d",n+1);text(chapter,x+8*k,y+9*k,11,white,cw-16*k);
    text(scFamilies[es][n],x+9*k,y+ch*.66f,15,selected?gold:white,cw-18*k);
    char status[64];snprintf(status,sizeof(status),es?"Trofeos %d / %d":"Trophies %d / %d",done,nn);text(status,x+9*k,y+ch-23*k,12,done?green:muted,cw-18*k);
    d->AddRect(ImVec2(x,y),ImVec2(x+cw,y+ch),selected?gold:IM_COL32(140,87,117,150),7*k,0,(selected?2.2f:1.f)*k);
    if(selected)ms_kit_sprite(d,13,ImVec2(x+cw-58*k,y+ch-26*k),ImVec2(62*k,33*k));
   }
  }else{
-  text(es?"ELIGE TU DESAFIO":"CHOOSE YOUR CHALLENGE",pad,top,16,gold,leftW);
+  text(es?"ELIGE TU DESAFÍO":"CHOOSE YOUR CHALLENGE",pad,top,16,gold,leftW);
   float rowH=(bottom-top-30*k-gap*(count-1))/count;
   for(int n=0;n<count;n++){
    int id=first+n,bit=scRoutes[id].achievement,rank=scRoutes[id].rank;float y=top+30*k+n*(rowH+gap);bool done=(earned&(1u<<bit))!=0,selected=n==cursor;
@@ -71,12 +71,12 @@ static void mod_scenario_chapters(int page,int cursor,int family,int variant){
    if(cid<0)ms_random_icon(d,ImVec2(x+cw*.5f,yy+side*.5f),side*.44f);
    else if(auto*t=ms_art(cid,false))d->AddImage(ImTextureRef((ImTextureID)(intptr_t)t),ImVec2(x+(cw-side)*.5f,yy),ImVec2(x+(cw+side)*.5f,yy+side));
    text(label,x+5*k,yy+side+3*k,12,white,cw-10*k);
-   if(slot==0)text(es?"TU":"YOU",x+4*k,yy-12*k,10,gold,cw-8*k);
+   if(slot==0)text(es?"TÚ":"YOU",x+4*k,yy-12*k,10,gold,cw-8*k);
    else if(weak&(1u<<slot))text(es?"Sin fuerzas":"Exhausted",x+4*k,yy-12*k,10,muted,cw-8*k);
   }
  };
  if(preview.team_count>2){text(es?"Tres bandos. Tu objetivo es derrotar a Cell.":"Three teams. Your objective is to defeat Cell.",rx,top+135*k,12,gold,rw);roster(0,top+174*k);roster(1,top+290*k);roster(2,top+406*k);}else{roster(0,top+174*k);roster(1,top+315*k);}
  d->AddRectFilled(ImVec2(0,screen.y-56*k),screen,IM_COL32(21,9,28,245));d->AddLine(ImVec2(pad,screen.y-56*k),ImVec2(screen.x-pad,screen.y-56*k),gold,k);
- const ModPadHint hints[]={{MP_DPAD,es?"Elegir":"Choose"},{MP_CROSS,chapters?(es?"Ver desafios":"View challenges"):(es?"Continuar":"Continue")},{MP_TRIANGLE,es?"Volver":"Back"},{MP_SELECT,es?"Cerrar":"Close"}};
+ const ModPadHint hints[]={{MP_DPAD,es?"Elegir":"Choose"},{MP_CROSS,chapters?(es?"Ver desafíos":"View challenges"):(es?"Continuar":"Continue")},{MP_TRIANGLE,es?"Volver":"Back"},{MP_SELECT,es?"Cerrar":"Close"}};
  mod_pad_hints(d,ImVec2(pad,screen.y-39*k),screen.x-pad*2,k,hints,4,14);
 }

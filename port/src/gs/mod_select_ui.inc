@@ -51,13 +51,13 @@ static const char* const sMsStageNames[]={
     "Desert - Night", "Mountain Road - Evening", "Planet - Evening", "Random",
 };
 static const char* const sMsStageNamesEs[]={
- "Paramo - Mediodia", "Area rocosa - Mediodia", "Planeta Namek", "Planeta Namek agonizante",
+ "Páramo - Mediodía", "Área rocosa - Mediodía", "Planeta Namek", "Planeta Namek agonizante",
  "Torneo de Artes Marciales", "Templo de Kamisama", "Juegos de Cell - Tarde", "Planeta Supremo",
- "Habitacion del tiempo", "Ciudad en ruinas - Mediodia", "Carretera montana - Mediodia", "Islas",
- "Kame House", "Planeta - Noche", "Glaciar", "Tierra en ruinas", "Espacio exterior", "Aldea Pinguino",
- "Infierno", "Desierto - Mediodia", "Castillo del Rey", "Torre Muscle", "Montana Paoz", "Yermos - Tarde",
- "Yermos - Noche", "Area rocosa - Tarde", "Area rocosa - Noche", "Torneo de Artes Marciales - Tarde",
- "Juegos de Cell - Mediodia", "Ciudad en ruinas GT", "Ciudad en ruinas - Noche", "Desierto - Tarde",
+ "Habitación del tiempo", "Ciudad en ruinas - Mediodía", "Camino de montaña - Mediodía", "Islas",
+ "Kame House", "Planeta - Noche", "Glaciar", "Tierra en ruinas", "Espacio exterior", "Aldea Pingüino",
+ "Infierno", "Desierto - Mediodía", "Castillo del Rey", "Torre Muscle", "Montaña Paoz", "Yermos - Tarde",
+ "Yermos - Noche", "Área rocosa - Tarde", "Área rocosa - Noche", "Torneo de Artes Marciales - Tarde",
+ "Juegos de Cell - Mediodía", "Ciudad en ruinas GT", "Ciudad en ruinas - Noche", "Desierto - Tarde",
  "Desierto - Noche", "Torneo Multiverse", "Planeta - Tarde", "Aleatorio"
 };
 static const char* const sMsSongNames[]={
@@ -98,8 +98,8 @@ static void mod_stage_draw(){
  if(v.preview)d->AddRectFilledMultiColor(ImVec2(0,0),sz,IM_COL32(22,10,31,220),IM_COL32(22,10,31,115),IM_COL32(22,10,31,150),IM_COL32(22,10,31,230));
  else d->AddRectFilled(ImVec2(0,0),sz,IM_COL32(29,15,37,252));
  d->AddRectFilled(ImVec2(0,sz.y-66*k),sz,IM_COL32(22,10,31,205));
- text(v.music?(es?"ELIGE LA MUSICA":"CHOOSE YOUR MUSIC"):(es?"ELIGE EL ESCENARIO":"CHOOSE YOUR STAGE"),edge,25*k,27,gold,sz.x-edge*2);
- text(v.music?(es?"La musica seleccionada tambien sonara durante el combate.":"The selected music also plays during the match."):(es?"Elige el lugar del combate.":"Choose your battlefield."),edge,69*k,15,white,sz.x-edge*2);
+ text(v.music?(es?"ELIGE LA MÚSICA":"CHOOSE YOUR MUSIC"):(es?"ELIGE EL ESCENARIO":"CHOOSE YOUR STAGE"),edge,25*k,27,gold,sz.x-edge*2);
+ text(v.music?(es?"La música seleccionada también sonará durante el combate.":"The selected music also plays during the match."):(es?"Elige el lugar del combate.":"Choose your battlefield."),edge,69*k,15,white,sz.x-edge*2);
  int count=v.music?v.bgmCount:v.count,cursor=v.music?v.bgmCursor:v.cursor,cols=v.music?4:6,pageSize=v.music?16:18,first=cursor/pageSize*pageSize;
  float gridW=sz.x*.66f-edge*2,gap=10*k,cw=(gridW-(cols-1)*gap)/cols,ch=v.music?100*k:145*k,top=118*k;
  char line[180];
@@ -113,8 +113,8 @@ static void mod_stage_draw(){
  float px=sz.x*.69f,pw=sz.x-px-edge;
  if(!v.music&&cursor>=0&&cursor<v.count)text(ms_stage_name(v.stages[cursor],line,sizeof(line),es),px,170*k,27,gold,pw);
  char name[160];int song=v.bgmCursor>=0&&v.bgmCursor<v.bgmCount?v.songs[v.bgmCursor]:0;text(es?"BANDA SONORA":"SOUNDTRACK",px,490*k,16,pink,pw);text(ms_song_name(song,name,sizeof(name),es),px,520*k,20,gold,pw);
- snprintf(line,sizeof(line),es?"Pagina %d / %d":"Page %d / %d",cursor/pageSize+1,(count+pageSize-1)/pageSize);text(line,edge,620*k,14,white,sz.x-edge*2);
- {float y=684*k,x=edge+7*k,step=SDL_min(240*k,(sz.x-edge*2)/4);const char*labels[]={v.music?(es?"Pista":"Track"):(es?"Escenario":"Stage"),v.music?(es?"Guardar":"Save"):(es?"Combatir":"Fight"),v.music?(es?"Volver":"Back"):(es?"Equipo":"Team"),es?"Musica":"Music"};int buttons[]={3,0,1,2};for(int j=0;j<(v.music?3:4);j++){ms_button(d,buttons[j],x+j*step,y,k);text(labels[j],x+j*step+15*k,y-10*k,16,white,step-26*k);}}
+ snprintf(line,sizeof(line),es?"Página %d / %d":"Page %d / %d",cursor/pageSize+1,(count+pageSize-1)/pageSize);text(line,edge,620*k,14,white,sz.x-edge*2);
+ {float y=684*k,x=edge+7*k,step=SDL_min(240*k,(sz.x-edge*2)/4);const char*labels[]={v.music?(es?"Pista":"Track"):(es?"Escenario":"Stage"),v.music?(es?"Guardar":"Save"):(es?"Combatir":"Fight"),v.music?(es?"Volver":"Back"):(es?"Equipo":"Team"),es?"Música":"Music"};int buttons[]={3,0,1,2};for(int j=0;j<(v.music?3:4);j++){ms_button(d,buttons[j],x+j*step,y,k);text(labels[j],x+j*step+15*k,y-10*k,16,white,step-26*k);}}
 }
 static void mod_select_result_draw(){MsView v;if(sOpen||!ms_snapshot(v)||v.active)return;
  if(v.result_team>0){char label[96];snprintf(label,sizeof(label),Port_Setting("mod_language",1)==1?"VICTORIA DEL EQUIPO %d":"TEAM %d WINS",v.result_team);ImVec2 sz=ImGui::GetIO().DisplaySize;ImFont*f=Ui_FontBold();if(!f)f=ImGui::GetFont();float fs=sz.y*.036f,w=f->CalcTextSizeA(fs,10000,0,label).x;ImGui::GetForegroundDrawList()->AddText(f,fs,ImVec2((sz.x-w)*.5f,sz.y*.12f),IM_COL32(255,209,83,255),label);}}
@@ -159,7 +159,7 @@ static void mod_select_draw(){
   text(es?"OK · CONTINUAR":"OK · CONTINUE",a.x+58*k,a.y+15*k,20,gold,b.x-a.x-66*k);
   if(hover&&ImGui::IsMouseClicked(0))sMsMouse.store(-1,std::memory_order_release);
  }else if(!v.phase){
-  text(es?"TAMANO DE LOS EQUIPOS":"TEAM SIZE",edge,117*k,21,white,left-edge*2);
+  text(es?"TAMAÑO DE LOS EQUIPOS":"TEAM SIZE",edge,117*k,21,white,left-edge*2);
   if(v.mode==2){text("10 x 1",edge,173*k,40,gold,left-edge*2);}
   else{
    int teams=MS_Teams(&v),players=v.player_count>0?v.player_count:1,rows=1+teams+players;
@@ -252,11 +252,11 @@ static void mod_select_draw(){
    if(p.pad>=0){snprintf(line,sizeof(line),"P%d",p.pad+1);text(line,px+2*k,py+w-13*k,11,gold,w-3*k);}
   }
  }
- if(v.error==2)text(es?"Este personaje ya esta en tu equipo.":"This fighter is already on your team.",edge,sz.y-44*k,15,pink,sz.x-edge*2);
+ if(v.error==2)text(es?"Este personaje ya está en tu equipo.":"This fighter is already on your team.",edge,sz.y-44*k,15,pink,sz.x-edge*2);
  else if(v.error)text(es?"La distribucion no tiene espacio para todos los jugadores.":"This split has no space for all assigned players.",edge,sz.y-44*k,15,pink,sz.x-edge*2);
  else if(v.phase==3){const ModPadHint h[]={{MP_CROSS,es?"Confirmar":"Confirm"},{MP_TRIANGLE,es?"Volver / editar":"Back / edit"},{MP_CIRCLE,es?"Salir":"Cancel"}};mod_pad_hints(dl,ImVec2(edge,sz.y-39*k),sz.x-edge*2,k,h,3,15);}
  else {
-  {const ModPadHint h[]={{MP_L1R1,es?"Pagina":"Page"},{MP_L2R2,es?"Traje":"Costume"},{MP_R3,es?"Potaras":"Potaras"}};mod_pad_hints(dl,ImVec2(edge,sz.y-46*k),sz.x-edge*2,k,h,3,13);}
+  {const ModPadHint h[]={{MP_L1R1,es?"Página":"Page"},{MP_L2R2,es?"Traje":"Costume"},{MP_R3,es?"Potaras":"Potaras"}};mod_pad_hints(dl,ImVec2(edge,sz.y-46*k),sz.x-edge*2,k,h,3,13);}
   const char *labels[2][4]={{"Choose","Auto-fill","Back","Cancel"},{"Elegir","Completar","Atras","Salir"}};
   float yy=sz.y-17*k,step=SDL_min(145*k,(sz.x-edge*2)/4);
   for(int n=0;n<4;n++){float x=edge+n*step;ImU32 c=n==0?IM_COL32(100,174,255,255):n==1?pink:n==2?IM_COL32(92,222,145,255):IM_COL32(247,110,106,255);

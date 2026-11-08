@@ -527,6 +527,9 @@ void BtlChar_OnModelLoaded(BtlMgrChr *chr) {
       } }
 #endif
 
+#ifdef PORT
+    {extern void Port_BodyChangeBeforeLoaded(void*);Port_BodyChangeBeforeLoaded(chr);}
+#endif
     BtlChar_BindObject(chr);
     obj = BtlChar_GetObj(chr);
     BtlChar_SetFlag(chr, 0x12B);
@@ -685,6 +688,7 @@ void BtlChar_OnModelLoaded(BtlMgrChr *chr) {
      }}
     {extern void Port_ScenarioObserve(int,int);Port_ScenarioObserve(chr->side,BtlMember_GetActive(chr)->chara);}
     Port_FusionCombatTrace(chr,"bind");
+    {extern void Port_BodyChangeLoaded(void*);Port_BodyChangeLoaded(chr);}
 #endif
 #ifdef PORT
     { extern void Port_FusionClockOnReload(void*);Port_FusionClockOnReload(chr); }

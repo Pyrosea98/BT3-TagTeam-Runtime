@@ -22,6 +22,7 @@ static int active=1,parked[16],retired[16],binds,doneBeforeBind;static BtlChange
 int Port_StoryRetired(int i){return active&&i>=0&&i<16&&retired[i];}
 int Port_StorySceneParked(int i){return active&&i>=0&&i<16&&parked[i];}
 void Port_FusionChangeLog(int a,int b,int c,int d){}void Port_Dbg3(const char*s,int a,int b,int c,int d){}
+void Port_BodyChangeQueue(int a,int b){}
 void Port_ChangeRefill(void){}BtlChangeReq*BtlChange_Pop(void){BtlChangeReq*p=next;next=0;return p;}
 typedef struct{int id;}BtlMgrChr;static BtlMgrChr chars[16];
 BtlMgrChr*BtlChar_Get(int i){return i>=0&&i<16?chars+i:0;}

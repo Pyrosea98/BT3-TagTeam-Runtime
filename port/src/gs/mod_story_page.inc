@@ -175,7 +175,7 @@ static void mod_story_page(unsigned view,int page,int cursor){
   text(storySagaNames[L][selected],margin,390*k,36,sagaOpen?gold:IM_COL32(191,181,201,255),leftW);
   panel(margin,441*k,leftW,75*k,false);
   char available[128];int first=ST_SagaFirst(selected);
-  if(!sagaOpen)snprintf(available,sizeof(available),es?"Pr\303\263ximamente. Completa %s para descubrir esta aventura.":"Coming soon. Complete %s to discover this adventure.",storySagaNames[L][selected-1]);
+  if(!sagaOpen)snprintf(available,sizeof(available),es?"Próximamente. Completa %s para descubrir esta aventura.":"Coming soon. Complete %s to discover this adventure.",storySagaNames[L][selected-1]);
   else if(sagaAuthored)snprintf(available,sizeof(available),es?"%d cap\303\255tulos disponibles. La saga sigue creciendo.":"%d chapters available. More of this saga is on the way.",ST_SagaChapterCount(selected));
   else snprintf(available,sizeof(available),"%s",es?"Esta saga a\303\272n est\303\241 en preparaci\303\263n.":"This saga is still in preparation.");
   text(!sagaOpen?(es?"Una aventura por descubrir":"An adventure to discover"):sagaAuthored&&first>=0?stChapters[first].title[L]:(es?"La aventura continuar\303\241...":"The adventure will continue..."),margin+18*k,454*k,22,ink,leftW-36*k);
@@ -258,7 +258,7 @@ static void mod_story_page(unsigned view,int page,int cursor){
   snprintf(label,sizeof(label),es?"Zeni obtenidos   +%d":"Zeni earned   +%d",zeni);text(label,x,379*k,32,ink,w);
   snprintf(label,sizeof(label),es?"Saldo anterior: %d":"Previous balance: %d",sStoryBalance[0].load());text(label,x,425*k,17,ink,w);
   snprintf(label,sizeof(label),es?"Saldo actual: %d":"Current balance: %d",sStoryBalance[1].load());text(label,x,454*k,26,ink,w);
-  if(!clear&&sStoryCheckpoint.load())text(es?"Punto de control disponible durante esta sesi\303\263n":"Checkpoint available for this session",x,479*k,14,ink,w);
+  if(!clear&&sStoryCheckpoint.load())text(es?"Punto de control disponible durante esta sesión":"Checkpoint available for this session",x,479*k,14,ink,w);
   text(clear?(sStoryClearRank.load()>0?(es?"Victoria registrada en esta dificultad y las inferiores":"Victory recorded for this difficulty and below"):(es?"Historia completada: sin trofeo de victoria":"Story passed: no victory trophy")):(es?"Vuelve a intentarlo":"Try again"),x,505*k,15,ink,w);
 
  }

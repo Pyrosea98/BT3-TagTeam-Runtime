@@ -628,6 +628,9 @@ void BtlAct_SetFormCurrent(BtlActChr *chr) {
 
 /* Fills the form-change request with one of six fixed {chara, costume} pairs, picked by the frame counter. */
 void BtlAct_SetFormRandom(BtlActChr *chr) {
+#ifdef PORT
+    {extern int Port_BodyChangeForm(void*);if(Port_BodyChangeForm(chr))return;}
+#endif
     s32 forms[6][2] = { { 1, 0 }, { 0xD, 2 }, { 0x19, 1 }, { 0x1D, 1 }, { 0x18, 0 }, { 0x59, 0 } };
     s32 i = BtlChar_FrameMod(6);
 
