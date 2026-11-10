@@ -4,7 +4,7 @@
 /* Dragon History revamp: port-side story chapters. Story progress is separate
    from Scenario trophies. Text of record: SAIYAN-SAGA-SCRIPT-ES-EN.md.
    Chapter ids and progress bits are stable: never renumber or reuse them. */
-#define ST_COUNT 21 /* (+2 scene-only interludes after chapter 5) */ /* chapters 4-17: Saiyan saga script nodes 05-17 (Claude, 2026-11-02, proposals for Juan) */
+#define ST_COUNT 22 /* (+2 scene-only interludes after chapter 5) */ /* chapters 4-17: Saiyan saga script nodes 05-17 (Claude, 2026-11-02, proposals for Juan) */
 /* Flip only once the complete authored campaign is present. Future chapters
    must be appended, never renumbered; a demo chapter is not a campaign clear. */
 #define ST_CAMPAIGN_FINALIZED 0
@@ -130,7 +130,7 @@ static const StChapter stChapters[ST_COUNT]={
    {"Goku",{"Hold on a little longer! I'm coming!","\302\241Resistan un poco m\303\241s! \302\241Ya voy!"}} /* SS06_022 */},
   {{0,{0,0}}},
   1000,200,3000,500},
- {"saiyan_07_saiyans_arrive",0,7,
+ {"saiyan_07_saiyans_arrive",0,8,
   {"Earth's last defense","La \303\272ltima defensa de la Tierra"},
   {"The year of preparation is over. Two pods cross the sky, and Goku is still far away.","El a\303\261o de preparaci\303\263n ha terminado. Dos c\303\241psulas atraviesan el cielo y Goku a\303\272n est\303\241 lejos."},
   {"Hold the line until Goku arrives.","Resiste hasta que llegue Goku."},
@@ -209,7 +209,7 @@ static const StChapter stChapters[ST_COUNT]={
    {"Vegeta",{"And now I'm your problem.","Y ahora tu problema soy yo."}} /* SS11_011 */},
   {{0,{0,0}}},
   1000,200,3000,500},
- {"saiyan_12_kaioken",0,8,
+ {"saiyan_12_kaioken",0,9,
   {"The battle for Earth","La batalla por la Tierra"},
   {"With Nappa gone, Vegeta stops watching. Goku must push his new power beyond its limits.","Sin Nappa, Vegeta deja de observar. Goku tendr\303\241 que superar los l\303\255mites de su nuevo poder."},
   {"Stop Vegeta.","Det\303\251n a Vegeta."},
@@ -332,6 +332,22 @@ static const StChapter stChapters[ST_COUNT]={
   {"Hurry, Goku!","\302\241Apres\303\272rate, Goku!"},{"",""},{"",""},0,0,208,0,7,"Saga de los Saiyajin",2,0,0,
   {{"King Kai",{"They've arrived sooner than expected. Hurry!","Han llegado antes de lo previsto. \302\241Apres\303\272rate!"}},
    {"Goku",{"Hold on a little longer! I'm coming!","\302\241Resistan un poco m\303\241s! \302\241Ya voy!"}}},{{0}},{{0}},0,0,0,0}
+
+,
+ {"saiyan_06d_pendulum_saiyans",0,7,
+ {"Saiyans from the past","Los Saiyajin del pasado"},
+ {"Kami's next trial takes the warriors to the ruins of a distant world. Two Saiyans are waiting, and this time teamwork is their only way home.","La siguiente prueba de Kami lleva a los guerreros a las ruinas de un mundo lejano. Dos Saiyajin los esperan; solo luchando juntos podr\303\241n regresar."},
+ {"Defeat Shorty and Scarface. Protect your teammates.","Derrota a Shorty y Scarface. Protege a tus compa\303\261eros."},
+ 25,0,323,0,15,"Saga de los Saiyajin",5,3,0,
+ {{"Krillin",{"Where did the Lookout go? Is this really another planet?","\302\277D\303\263nde est\303\241 el Templo? \302\277De verdad estamos en otro planeta?"}},
+  {"Yamcha",{"Stay together. I don't like those two watching us.","Sigamos juntos. No me gusta c\303\263mo nos miran esos dos."}},
+  {"Shorty",{"Look at this! Weaklings came all this way to die.","\302\241Mira esto! Unos debiluchos vinieron hasta aqu\303\255 para morir."}},
+  {"Scarface",{"Don't finish them too quickly. Let them fight back.","No acabes con ellos tan deprisa. Deja que se defiendan."}},
+  {"Tenshinhan",{"Cover each other. We didn't come here to run away!","Cubramos nuestras espaldas. \302\241No vinimos a huir!"}}},
+ {{"Krillin",{"We did it... but I could barely keep up with them!","Lo logramos... \302\241pero apenas pod\303\255a seguirles el ritmo!"}},
+  {"Tenshinhan",{"Remember that feeling. The Saiyans coming to Earth will be stronger.","Recuerden esta sensaci\303\263n. Los Saiyajin que vienen a la Tierra ser\303\241n m\303\241s fuertes."}},
+  {"Yamcha",{"Then we keep training. Next time, none of us fights alone.","Entonces seguiremos entrenando. La pr\303\263xima vez, nadie luchar\303\241 solo."}}},
+ {{0}},1500,300,3500,600}
 };
 /* A saga is complete only once its full authored arc is finalized, not when
    the last currently available demo chapter has been cleared. */
@@ -341,7 +357,7 @@ static int ST_SagaFirst(int saga){int i;for(i=0;i<ST_COUNT;i++)if(stChapters[i].
 static int ST_SagaChapterCount(int saga){int i,n=0;for(i=0;i<ST_COUNT;i++)if(stChapters[i].saga==saga)n++;return n;}
 static int ST_SagaCanOpen(int saga,unsigned completed){unsigned need;if(saga<0||saga>=ST_SAGA_COUNT)return 0;need=(1u<<saga)-1u;return (completed&need)==need;}
 static int ST_SagaCleared(int saga,int finalized,const unsigned*progress){int i,n=0;if(!finalized||!progress)return 0;for(i=0;i<ST_COUNT;i++)if(stChapters[i].saga==saga){n++;if(!progress[i])return 0;}return n>0;}
-static int ST_SagaNextChapter(int chapter,int delta){int i,next=chapter;if(chapter<0||chapter>=ST_COUNT)return 0;for(i=0;i<ST_COUNT;i++){next=(next+delta+ST_COUNT)%ST_COUNT;if(stChapters[next].saga==stChapters[chapter].saga)return next;}return chapter;}
+static int ST_SagaNextChapter(int chapter,int delta){int i,best=-1,wrap=-1,seq;if(chapter<0||chapter>=ST_COUNT)return 0;seq=stChapters[chapter].sequence;for(i=0;i<ST_COUNT;i++)if(stChapters[i].saga==stChapters[chapter].saga){int n=stChapters[i].sequence;if(wrap<0||(delta>0?n<stChapters[wrap].sequence:n>stChapters[wrap].sequence))wrap=i;if((delta>0?n>seq:n<seq)&&(best<0||(delta>0?n<stChapters[best].sequence:n>stChapters[best].sequence)))best=i;}return best>=0?best:wrap>=0?wrap:chapter;}
 
 /* Who is in a chapter, in draft order: team 0 first (the first of them is the human), then team 1. A scene actor
    is loaded with the fight but kept out of it (parked like a fusion-consumed partner, mod_story_runtime.inc) and
@@ -429,6 +445,10 @@ static const StCast stCasts[ST_COUNT]={
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x0u,0x0u,0x0u,0x0u,0x0u,0,0x0u,0x0u} /* saiyan_05c_king_kai */,
  {2,{{"Roshi",66,0,0,0},{"Offscreen",0,0,1,ST_ACTOR_SCENE}},-1,-1,0,{{0}},-1,{0,0},1,1},
  {2,{{"Goku",0,0,0,0},{"King Kai",208,0,1,0}},-1,-1,0,{{0}},-1,{0,0},1,1}
+
+,
+ {7,{{"Krillin",25,0,0,0},{"Yamcha",26,1,0,0},{"Tenshinhan",27,1,0,0},{"Chaozu",28,1,0,0},{"Yajirobe",301,0,0,0},{"Shorty",323,0,1,0},{"Scarface",324,0,1,0}},
+ -1,-1,0,{{0}},-1,{0,0},1,1}
 };
 /* Chapter presentation uses the story-era reading, not a borrowed costume's label.
    Cast order matches stCasts; -1 is scene-only/not displayed. Raditz: manga reading1,200.
@@ -458,6 +478,11 @@ static const int stChapterPower[ST_COUNT][ST_ACTORS]={
  {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1},
  {1770,1480,1830,610,970,-1,-1,-1,-1,-1},
  {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1}
+
+,
+{0},
+{0},
+ {1770,1480,1830,610,970,3000,3000}
 };
 /* Juan 2026-11-05: in these chapters the listed allies' melee hits (punches, kicks, rush and smash blows) still deal
    their damage but never make the rival react (native reaction 2, "no flinch"). Bits are stCasts indices, so a
@@ -550,6 +575,14 @@ static const StScene stScenes[ST_COUNT]={
  {"Vegeta",0,0,{{0}}},
  {"Tenshinhan",0,0,{{0}}},
  {"King Kai",0,0,{{0}}}
+
+,
+{0},
+{0},
+ {"Shorty",0,3,{
+ {ST_CUE_TIME,8,{"Shorty",{"You call that a team? You're getting in each other's way!","\302\277Eso es un equipo? \302\241No hacen m\303\241s que estorbarse!"}}},
+ {ST_CUE_RIVAL_HP,50,{"Tenshinhan",{"They can be hurt. Keep the pressure on together!","Podemos herirlos. \302\241Mantengamos la presi\303\263n entre todos!"}}},
+ {ST_CUE_PLAYER_HP,40,{"Yamcha",{"Don't let them separate us! Cover Krillin!","\302\241No dejen que nos separen! \302\241Cubran a Krilin!"}}}}}
 };
 /* Authored R3 events (chapter 3): offered when the rival's HP falls to an ABSOLUTE value (no difficulty scaling), in
    story order, each once; accepted with R3 (battle event 0x50) when the fighters can be interrupted. Juan: the prompt
@@ -861,6 +894,11 @@ static const StEvents stEvents[ST_COUNT]={
    {"Krillin",{"We will too.","Nosotros tambi\303\251n."}} /* SS17_009 */},
    ST_TRIG_TIME,1,0,0x0u,0x0u,0x0u,1,0}}},
  {0},{0}
+
+,
+{0},
+{0},
+ {0}
 };
 /* Outcome policy per chapter. LEGACY (chapters 1-2): the rival winning is the canonical story beat, the player winning
    the alternative. EVENT: the canonical clear is a player win after a canonical event (ST_CanonMask); a player win
@@ -870,14 +908,23 @@ enum { ST_POL_LEGACY, ST_POL_EVENT, ST_POL_WIN };
 /* Phased chapters: events strictly in order (never superseded by extra damage), a KO of a phase enemy plays his event
    instead of ending the battle, the battle ends only through the canonical event or the player's defeat. */
 static int ST_Phased(int chapter);
-static const unsigned char stPolicy[ST_COUNT]={ST_POL_LEGACY,ST_POL_LEGACY,ST_POL_EVENT,ST_POL_EVENT,ST_POL_WIN,ST_POL_WIN,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_WIN,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_WIN,ST_POL_WIN,ST_POL_WIN,ST_POL_WIN};
+static const unsigned char stPolicy[ST_COUNT]={ST_POL_LEGACY,ST_POL_LEGACY,ST_POL_EVENT,ST_POL_EVENT,ST_POL_WIN,ST_POL_WIN,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_WIN,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_EVENT,ST_POL_WIN,ST_POL_WIN,ST_POL_WIN,ST_POL_WIN
+,
+ ST_POL_WIN
+};
 /* The interlude played after a chapter is cleared, and the next one after it (-1: back to the story list, on
    ST_INTERLUDE_RETURN). Chapter 5 -> Kami's Lookout -> King Kai's planet -> chapter 6. */
-static const signed char stInterludeNext[ST_COUNT]={-1,-1,-1,-1,17,19,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,18,-1,20,-1};
+static const signed char stInterludeNext[ST_COUNT]={-1,-1,-1,-1,17,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,18,-1,20,-1
+,
+ 19
+};
 #define ST_INTERLUDE_RETURN 5
 /* A chapter's stage from outside the disc (stages/<name with underscores>.unk), used when installed; the chapter's own
    disc stage otherwise. King Kai's planet is BT4's map (Juan, 2026-11-03). */
-static const char *const stAddedStage[ST_COUNT]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"King Kai Planet",0,"King Kai Planet"};
+static const char *const stAddedStage[ST_COUNT]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"King Kai Planet",0,"King Kai Planet"
+,
+ 0
+};
 static int ST_Interlude(int ch){return ch>=0&&ch<ST_COUNT&&stChapters[ch].saga==ST_SAGA_INTERLUDE;}
 /* No libc here: the header is also compiled into game files with their own declarations (src/battle/btl_seq.c). */
 static int ST_StrEq(const char*a,const char*b){if(!a||!b)return 0;while(*a&&*a==*b){a++;b++;}return *a==*b;}
@@ -927,7 +974,7 @@ static int ST_Outcome(int winner,int reason){
 /* Chapters whose canonical ending is a PLAYER win (chapter 3: after the Special Beam Cannon). */
 static int ST_Phased(int chapter){return chapter==6||chapter==11;}
 /* The next chapter of the same (visible) saga after `chapter`, or -1. */
-static int ST_NextVisible(int chapter){int i;if(chapter<0||chapter>=ST_COUNT)return -1;for(i=chapter+1;i<ST_COUNT;i++)if(stChapters[i].saga==stChapters[chapter].saga)return i;return -1;}
+static int ST_NextVisible(int chapter){int i,best=-1;if(chapter<0||chapter>=ST_COUNT)return -1;for(i=0;i<ST_COUNT;i++)if(stChapters[i].saga==stChapters[chapter].saga&&stChapters[i].sequence>stChapters[chapter].sequence&&(best<0||stChapters[i].sequence<stChapters[best].sequence))best=i;return best;}
 static int ST_CanonIsWin(int chapter){return chapter>=0&&chapter<ST_COUNT&&stPolicy[chapter]!=ST_POL_LEGACY;}
 /* The events whose completion is the chapter's canonical clear (bit k = event k). */
 static unsigned ST_CanonMask(int chapter){unsigned m=0;int k;if(chapter<0||chapter>=ST_COUNT)return 0;for(k=0;k<stEvents[chapter].count;k++)if(stEvents[chapter].event[k].canon)m|=1u<<k;return m;}
@@ -976,6 +1023,11 @@ static const StDifficulty stDifficulty[ST_COUNT]={
  {{90,100,140},{-1,0,4}},
  {{100,100,100},{0,0,0}},
  {{100,100,100},{0,0,0}}
+
+,
+{0},
+{0},
+ {{85,100,120},{-1,0,1}}
 };
 /* Story tune (Juan, 2026-11-02): per chapter and cast entry, on top of the costume, for every difficulty: max HP
    percent, attack levels (attack + technique slots) and defence levels. Canon power gaps of the Saiyan saga were
@@ -1004,6 +1056,11 @@ static const StTune stTunes[ST_COUNT][ST_ACTORS]={
  {{100,0,0},{30,-10,-10},{100,0,0},{100,0,0}} /* saiyan_17_let_him_live */,
  {{100,0,0},{100,0,0},{100,0,0},{100,0,0},{100,0,0}} /* saiyan_05b_lookout_training */,
  {{100,0,0},{100,0,0}} /* saiyan_05c_king_kai */
+
+,
+{0},
+{0},
+ {{100,0,0},{100,0,0},{100,0,0},{100,0,0},{100,0,0},{140,0,2},{140,0,2}}
 };
 /* Max HP after the difficulty: rounded to 1,000, at least 10,000. */
 static int ST_ScaleHealth(int chapter,int difficulty,int base){

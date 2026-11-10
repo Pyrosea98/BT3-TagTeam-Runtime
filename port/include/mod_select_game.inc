@@ -1,19 +1,12 @@
+#include "tag_tournament_port.h"
+#include "tag_tournament_theme.h"
+static MsPick *sMsTourOutput;static int sMsTourSize;
+extern void Port_ChrViewTournament(int);
 #include "mod_scenarios.h"
 extern int Port_StoryActive(void);
 static TsCell sMsCatalog[MS_ROSTER];
-/* Familiar stock-family order; stable insertion keeps added siblings together. */
-static int ms_roster_key(int cid){
- /* Era/family anchors follow authored menu cells, not numerical donor IDs. */
- static const int order[]={11,0,1,3,7,161,13,14,17,159,20,12,29,31,34,122,39,44,46,81,74,51,110,210,22,23,25,26,27,28,66,68,69,70,63,186,187,58,55,61,73,75,77,79,80,82,84,85,87,88,90,91,97,98,99,100,101,102,103,105,109,111,113,114,117,118,121,123,124,126,129,131,134,135,140,144,261,275,276,213,145,76,146,151,152,154,155,156,157};
- int i,anchor=cid,added=0;
- for(i=0;i<(int)(sizeof(sMsFamily)/sizeof(sMsFamily[0]));i++)if(sMsFamily[i][0]==cid){anchor=sMsFamily[i][1];added=1;break;}
- /* These are independent GT dragons, not the donor characters they borrow. */
- if(cid==261||cid==275||cid==276||cid==213)anchor=cid;
- if(cid==291){anchor=114;added=2;}
- if(cid==300){anchor=55;added=2;}
- for(i=0;i<(int)(sizeof(order)/sizeof(order[0]));i++)if(order[i]==anchor)return i*32+added;
- return 10000+cid;
-}
+#include "roster_era_order.h"
+static int ms_roster_key(int cid){return RosterEraKey(cid);}
 static void ms_sort_catalog(MsView *v){
  int i,j;for(i=1;i<v->roster_count;i++){
   int cid=v->roster[i],key=ms_roster_key(cid);TsCell cell=sMsCatalog[i];
@@ -36,6 +29,12 @@ extern int Port_Beta8FormList(int,int*,int);
 extern int Port_Beta8IsAnyTransform(int);
 static int ms_next_costume(int c,int current,int delta){int n=ChrTbl_WrapCostume(c,NULL),next=current,k;if(n<1||n>8)return current;for(k=0;k<n;k++){next=(next+(delta<0?-1:1)+n)%n;if(Port_Beta8CostumeSelectable(c,next)&&Port_ModSelectCostumeOk(c,next))return next;}return current;}
 static int ms_first_empty(MsView *v){int i;for(i=0;i<v->total;i++)if(v->pick[i].chara<0)return i;return -1;}
+static void ms_refresh_forms(MsView*v,int source,int outfit,int keep){
+ int all[MS_FORMS],n=Port_Beta8FormList(v->roster[v->cursor],all,MS_FORMS),i,count=0;
+ if(!n){n=sMsCatalog[v->cursor].formCount;if(n>MS_FORMS)n=MS_FORMS;for(i=0;i<n;i++)all[i]=sMsCatalog[v->cursor].form[i];}
+ for(i=0;i<n;i++)if(Port_Beta8FormAllowed(source,outfit,all[i])&&Port_ModSelectCostumeOk(all[i],0))v->forms[count++]=all[i];
+ v->form_count=count;v->form_cursor=0;for(i=0;i<count;i++)if(v->forms[i]==keep)v->form_cursor=i;
+}
 static int ms_view_chara(const MsView *v){return v->phase==0?-1:v->phase==3?v->pick[0].chara:v->phase==2?v->forms[v->form_cursor]:v->roster[v->cursor];}
 static void ms_review(MsView*v){v->phase=3;v->slot=-1;v->cursor=0;v->form_count=0;v->error=0;}
 /* Save slots are keyed by the original authored cell, never the sorted roster index. */
@@ -112,7 +111,39 @@ static void ms_layout(MsView *v,int a,int b){
  for(i=0;i<MS_MAX;i++){v->pick[i].chara=-1;v->pick[i].costume=0;memset(v->pick[i].items,0,sizeof(v->pick[i].items));}
  if(!ms_owners(v))v->error=1;
 }
-static int ms_fill(MsView *v){int i,saved=v->slot;if(v->roster_count<1)return 0;for(i=0;i<v->total;i++)if(v->pick[i].chara<0){int c;v->slot=i;c=ms_random(v);if(c<0){v->slot=saved;return 0;}v->pick[i].chara=c;v->pick[i].costume=0;memset(v->pick[i].items,0,sizeof(v->pick[i].items));}v->slot=saved;return MS_Valid(v);}
+static int ms_fill(MsView *v){int i,saved=v->slot;if(v->roster_count<1)return 0;for(i=0;i<v->total;i++)if(v->pick[i].chara<0){int c;v->slot=i;c=ms_random(v);if(c<0){v->slot=saved;return 0;}v->pick[i].chara=c;v->pick[i].costume=0;memset(v->pick[i].items,0,sizeof(v->pick[i].items));}v->slot=saved;return v->mode==4?MS_TournamentValid(v):MS_Valid(v);}
+
+static int ms_tour_init(MsView *v){
+ struct TTTeam team;int i,t=Port_TagTourDraftTeam();
+ if(!Port_TagTourActive()||t<0||!Port_TagTourTeam(t,&team)||team.count!=sMsTourSize)return 0;
+ v->mode=4;v->phase=1;v->a=v->total=team.count;v->team_count=0;v->stage=t;
+ v->slot=0;v->cursor=0;v->player_count=Port_TagTourConfig(0);
+ for(i=0;i<MS_MAX;i++){memset(&v->pick[i],0,sizeof(v->pick[i]));v->pick[i].chara=-1;v->pick[i].pad=i<team.count?team.owner[i]:-1;}
+ return 1;
+}
+static int ms_yamcha_catalog(MsView*v){
+ static struct TTRandomChoice pool[TT_RANDOM_MAX];int n=0,i,k,j,q;
+ for(i=0;i<v->roster_count;i++)if(v->roster[i]>=0){
+  int root=v->roster[i],nc=ChrTbl_WrapCostume(v->roster[i],NULL),forms[MS_FORMS],nf=Port_Beta8FormList(root,forms,MS_FORMS);if(nf<1){forms[0]=root;nf=1;}
+  for(k=0;k<nc&&k<8;k++)if(Port_ModSelectCostumeOk(root,k))for(j=0;j<nf;j++){
+   int c=forms[j],co;if(!Port_Beta8FormAllowed(root,k,c))continue;co=c==root?k:Port_Beta8TransformCostume(root,k,c);
+   if(co<0||co>=ChrTbl_WrapCostume(c,NULL)||!Port_ModSelectCostumeOk(c,co))continue;
+   for(q=0;q<n;q++)if(pool[q].family==root&&pool[q].character==c&&pool[q].costume==co)break;
+   if(q==n){if(n>=TT_RANDOM_MAX)return 0;pool[n].family=root;pool[n].character=c;pool[n++].costume=co;}
+  }
+ }
+ return Port_TagTourRandomCatalog(pool,n,0x59414d43u+(unsigned)Rand_Range(65536));
+}
+static int ms_yamcha_draw(MsView*v){
+ int i,used[5];for(i=0;i<v->total;i++){struct TTFighter f;int j;for(j=0;j<i;j++)used[j]=v->pick[j].chara;if(!Port_TagTourRandomFighter(used,i,&f))return 0;v->pick[i].chara=f.character;v->pick[i].costume=f.costume;memset(v->pick[i].items,0,sizeof(v->pick[i].items));}
+ ms_review(v);return 1;
+}
+static int ms_commit_draft(MsView *v){
+ int i;if(!sMsTourOutput)return Port_ModSelectCommit(v);
+ if(!MS_TournamentValid(v))return 0;
+ for(i=0;i<v->total;i++)if(!Port_ModSelectCostumeOk(v->pick[i].chara,v->pick[i].costume))return 0;
+ memcpy(sMsTourOutput,v->pick,v->total*sizeof(MsPick));return 1;
+}
 
 /* Story casts are immutable. Commit them before publishing ANY active selector
    snapshot or initializing its viewer; auto-confirming inside phase3 is too late
@@ -138,28 +169,31 @@ int Port_ModSelectRun(void){
     stock menu update, not for this self-contained loop: holding it would draw the new select while
     ignoring every button until the screen is abandoned. The draft owns its loader (Job_Run below). */
  gProgress->flags&=~MPROG_FREEZE;
- {int fixed=ms_story_fixed(&v);if(fixed>=0)return fixed;}
- v.a=MS_Size(Port_Setting("mod_team_a",5));
+ {int fixed=sMsTourOutput?-1:ms_story_fixed(&v);if(fixed>=0)return fixed;}
+ v.a=MS_Size(Port_Setting("mod_team_a",5));if(sMsTourOutput)v.mode=4;
  {static TsCell cells[MS_ROSTER],custom[14];int count=0,customCount=0,n=sizeof(sMsAuthored)/sizeof(sMsAuthored[0]);
   ChrGrid_Build(&count,cells,&n,sMsAuthored,&customCount,custom);
   for(i=0;i<count&&v.roster_count<MS_ROSTER;i++){
-   int cid=cells[i].id;if(cid<0||cid>=MS_ROSTER||(cid>=161&&cid<=164)||Port_Beta8SelectFormOwner(cid)>=0||!Port_ModSelectCostumeOk(cid,0))continue;
+   int cid=cells[i].id;if(cid<0||cid>=MS_CHARACTERS||(cid>=161&&cid<=164)||Port_Beta8SelectFormOwner(cid)>=0||!Port_ModSelectCostumeOk(cid,0))continue;
    sMsCatalog[v.roster_count]=cells[i];v.roster[v.roster_count++]=cid;
   }
  }
  /* Verified fighters share IDs with stock menu markers: insert only after marker filtering. */
- {static const int ids[]={161,163,164,291,300,301};int k,j,have;for(k=0;k<6;k++){ /* 301: Yajirobe (Juan approved, power 970) */have=0;for(j=0;j<v.roster_count;j++)if(v.roster[j]==ids[k])have=1;if(!have&&Port_Beta8SelectFormOwner(ids[k])<0&&v.roster_count<MS_ROSTER&&Port_ModSelectCostumeOk(ids[k],0)){int at=v.roster_count++;v.roster[at]=ids[k];memset(&sMsCatalog[at],0,sizeof(sMsCatalog[at]));sMsCatalog[at].id=ids[k];sMsCatalog[at].formCount=Port_Beta8FormList(ids[k],sMsCatalog[at].form,MS_FORMS);}}}
+ {static const int ids[]={161,163,164,291,300,301,317,319,320,321,322,185,271,278,323,324,325};int k,j,have;for(k=0;k<(int)(sizeof(ids)/sizeof(ids[0]));k++){ /* 301: Yajirobe (Juan approved, power 970) */have=0;for(j=0;j<v.roster_count;j++)if(v.roster[j]==ids[k])have=1;if(!have&&Port_Beta8SelectFormOwner(ids[k])<0&&v.roster_count<MS_ROSTER&&Port_ModSelectCostumeOk(ids[k],0)){int at=v.roster_count++;v.roster[at]=ids[k];memset(&sMsCatalog[at],0,sizeof(sMsCatalog[at]));sMsCatalog[at].id=ids[k];sMsCatalog[at].formCount=Port_Beta8FormList(ids[k],sMsCatalog[at].form,MS_FORMS);}}}
  ms_sort_catalog(&v);
  if(!v.roster_count)return 0;
  if(v.roster_count<MS_ROSTER){memmove(v.roster+1,v.roster,v.roster_count*sizeof(int));memmove(sMsCatalog+1,sMsCatalog,v.roster_count*sizeof(TsCell));v.roster[0]=-1;memset(sMsCatalog,0,sizeof(TsCell));v.roster_count++;}
  Port_ModSelectTrace(0,v.mode,v.roster_count);
  {int p;for(p=0;p<4;p++){int team=p&1;if(Port_CoopActive()){int t,m;for(t=0;t<2;t++)for(m=0;m<10;m++)if(Port_CoopMemberPad(t,m)==p)team=t;}v.human_team[p]=team;}}
+ if(sMsTourOutput){if(!ms_tour_init(&v))return 0;if(Port_TagTourConfig(2)==4&&(!ms_yamcha_catalog(&v)||!ms_yamcha_draw(&v)))return 0;Port_ModSelectPublish(&v);}
+ else{
  ms_layout(&v,v.mode==2?5:v.a,v.mode==2?5:Port_Setting("mod_team_b",5));Port_ModSelectPublish(&v);
  if(v.mode!=2&&!Port_ScenarioActive()){int n=Port_Setting("mod_team_count",2),sizes[10],p;char key[40];if(n>=2&&n<=10){for(p=0;p<n;p++){snprintf(key,sizeof(key),"mod_team_size_%d",p);sizes[p]=Port_Setting(key,p==0?v.a:p==1?v.total-v.a:1);}if(MS_Layout(&v,sizes,n)){for(p=0;p<4;p++){snprintf(key,sizeof(key),"mod_human_team_%d",p);int t=Port_Setting(key,v.human_team[p]);v.human_team[p]=t>=0&&t<n?t:0;}if(!ms_owners(&v))v.error=1;}}}
 
  if(Port_ScenarioActive()){int fixed=Port_ScenarioDraft(&v);if(fixed==2)ms_review(&v);Port_ModSelectPublish(&v);}
+ }
  /* Init owns the viewer's jobs/resources only until the draft ends. No battle is running. */
- ChrView_Init();if(!File_IsPartitionLoaded(2)){File_LoadPartitionNw(2);File_WaitPartition(2);}Bgm_Play(PORT_BGM_FILE(Port_ModSelectMusic()));viewer=1;Port_ModSelectTrace(1,0,0);OrbitCam_SetPadLocked(1);Port_MenuScene3D(1);
+ Port_ChrViewTournament(v.mode==4?Port_TagTourConfig(2)+1:0);ChrView_Init();if(!File_IsPartitionLoaded(2)){File_LoadPartitionNw(2);File_WaitPartition(2);}Bgm_Play(v.mode==4?TT_ThemeMusic(Port_TagTourConfig(2)):PORT_BGM_FILE(Port_ModSelectMusic()));viewer=1;Port_ModSelectTrace(1,0,0);OrbitCam_SetPadLocked(1);Port_MenuScene3D(1);
  ColorFade_StartIn(0,0,0,0x14);
  for(;;){
   i=(v.phase==1||v.phase==2)?ms_owner(&v):0;
@@ -167,7 +201,7 @@ int Port_ModSelectRun(void){
   v.pad=i;PortInput_KeyboardContext(1u<<v.pad);
   Gfx_BeginFrame();Pad_Update();Snd_Update();ColorFade_Update();
   if(v.phase==1){
-   int p;for(p=0;p<Port_ModSelectPlayerCount();p++)if(p!=v.pad&&PortInput_PlayerAvailable(p)){
+   int p;for(p=0;p<v.player_count;p++)if(p!=v.pad&&PortInput_PlayerAvailable(p)){
     Pad *other=Port_Pad(p);int slot=ms_slot_for_pad(&v,p);
     if(slot>=0&&(other->pressed||other->repeat)){
      cursors[v.pad]=v.cursor;costumes[v.pad]=v.costume;
@@ -198,19 +232,20 @@ int Port_ModSelectRun(void){
     if(pressed&PAD_TRIANGLE){quitting=1;goto ms_end_frame;}
   }else if(v.phase==3){
    int click=Port_ModSelectTakeMouse();
+   if(v.mode==4&&Port_TagTourConfig(2)==4){if(pressed&PAD_SQUARE){if(!ms_yamcha_draw(&v))v.error=1;goto ms_publish;}if((pressed&PAD_TRIANGLE)||click==-2){quitting=1;goto ms_end_frame;}}
    if((pressed&PAD_TRIANGLE)||click==-2){
     if(Port_ScenarioActive()){quitting=1;goto ms_end_frame;}
     v.slot=v.total-1;v.pick[v.slot].chara=-1;v.phase=1;v.cursor=0;v.costume=0;
-   }else if((pressed&PAD_CROSS)||click==-1){if(Port_ModSelectCommit(&v)){ret=1;quitting=1;goto ms_end_frame;}v.error=1;}
+   }else if((pressed&PAD_CROSS)||click==-1){if(ms_commit_draft(&v)){ret=1;quitting=1;goto ms_end_frame;}v.error=1;}
   }else if(v.phase==2){
    int delta=0;
    if(repeat&(PAD_LEFT|PAD_LSTICK_LEFT))delta=-1;
    else if(repeat&(PAD_RIGHT|PAD_LSTICK_RIGHT))delta=1;
    else if(repeat&(PAD_UP|PAD_LSTICK_UP))delta=-3;
    else if(repeat&(PAD_DOWN|PAD_LSTICK_DOWN))delta=3;
-   if(delta){int c=v.costume;v.form_cursor=MS_Move(v.form_cursor,delta,v.form_count);ChrTbl_WrapCostume(v.forms[v.form_cursor],&c);v.costume=c;}
+   if(delta){int c=v.costume;v.form_cursor=MS_Move(v.form_cursor,delta,v.form_count);ChrTbl_WrapCostume(v.forms[v.form_cursor],&c);if(!Port_Beta8CostumeSelectable(v.forms[v.form_cursor],c))c=ms_next_costume(v.forms[v.form_cursor],c,1);v.costume=c;}
    if(pressed&(PAD_L2|PAD_R2)){
-    int c=ms_next_costume(v.forms[v.form_cursor],v.costume,pressed&PAD_R2?1:-1);if(c>=0&&Port_ModSelectCostumeOk(v.forms[v.form_cursor],c))v.costume=c;
+    int root=v.forms[v.form_cursor],c=ms_next_costume(root,v.costume,pressed&PAD_R2?1:-1);if(c>=0&&Port_ModSelectCostumeOk(root,c)){v.costume=c;ms_refresh_forms(&v,root,c,root);}
    }
    if(pressed&PAD_TRIANGLE){v.phase=1;v.form_count=0;v.costume=0;}
    else if(pressed&PAD_CROSS){
@@ -232,17 +267,18 @@ int Port_ModSelectRun(void){
      int count=1,c=ms_next_costume(v.roster[v.cursor],v.costume,pressed&PAD_R2?1:-1);
      if(count>0&&Port_ModSelectCostumeOk(v.roster[v.cursor],c))v.costume=c;
     }
-    if(pressed&PAD_TRIANGLE){if(v.slot>0){v.slot--;v.pick[v.slot].chara=-1;}else {if(Port_ScenarioActive()){quitting=1;goto ms_end_frame;}v.phase=0;v.cursor=0;}}
+    if(pressed&PAD_TRIANGLE){if(v.slot>0){v.slot--;v.pick[v.slot].chara=-1;}else {if(v.mode==4||Port_ScenarioActive()){quitting=1;goto ms_end_frame;}v.phase=0;v.cursor=0;}}
     else if(pressed&PAD_SQUARE){if(ms_fill(&v))ms_review(&v);else v.error=1;}
     else if(pressed&PAD_CROSS){
      if(ms_taken(&v,v.roster[v.cursor])){v.error=2;goto ms_publish;}
      if(v.roster[v.cursor]<0){int random=ms_random(&v);if(random<0){v.error=2;goto ms_publish;}ms_accept(&v,random,0);if(v.slot<0)ms_review(&v);goto ms_publish;}
-     v.form_count=sMsCatalog[v.cursor].formCount;
+     v.form_count=Port_Beta8FormList(v.roster[v.cursor],v.forms,MS_FORMS);
+     if(!v.form_count){v.form_count=sMsCatalog[v.cursor].formCount;
      if(v.form_count>MS_FORMS)v.form_count=MS_FORMS;
      for(i=0;i<v.form_count;i++)v.forms[i]=sMsCatalog[v.cursor].form[i];
-     if(!v.form_count)v.form_count=Port_Beta8FormList(v.roster[v.cursor],v.forms,MS_FORMS);
+     }
      /* Never offer a form whose model is missing. */
-     {int n=0,f;for(f=0;f<v.form_count;f++)if(Port_ModSelectCostumeOk(v.forms[f],0))v.forms[n++]=v.forms[f];v.form_count=n;}
+     {int n=0,f;for(f=0;f<v.form_count;f++)if(Port_Beta8FormAllowed(v.roster[v.cursor],v.costume,v.forms[f])&&Port_ModSelectCostumeOk(v.forms[f],0))v.forms[n++]=v.forms[f];v.form_count=n;}
      if(v.form_count>0){v.form_cursor=0;v.phase=2;}
      else{
       ms_accept(&v,v.roster[v.cursor],v.costume);
@@ -272,8 +308,14 @@ int Port_ModSelectRun(void){
   if(quitting)break;
  }
  if(viewer){ChrView_Hide();ChrView_Term();}
- Port_MenuScene3D(0);PortInput_KeyboardContext(0);v.active=0;Port_ModSelectPublish(&v);
+ Port_ChrViewTournament(0);Port_MenuScene3D(0);PortInput_KeyboardContext(0);v.active=0;Port_ModSelectPublish(&v);
  Port_ModSelectTrace(ret?3:4,v.a,v.total-v.a);
  if(!ret)Port_ModSelectClear();
  return ret;
+}
+
+int Port_ModSelectTournamentRun(MsPick *out,int count){
+ int ret;if(!out||count<1||count>5||!Port_TagTourActive())return 0;
+ Port_TagTourDraftStop();sMsTourOutput=out;sMsTourSize=count;
+ ret=Port_ModSelectRun();sMsTourOutput=NULL;sMsTourSize=0;return ret;
 }

@@ -696,6 +696,10 @@ void EftVolley_UpdateParts(s32 objId, EftHTask *task, EftSet *set, s32 reset) {
     for (type = 0; type < EFT_SET_KIND_COUNT; type++) {
         if (set->head->mask & (1U << type)) {
             EftSetGroupDef *def = set->group[type].entry;
+#ifdef PORT
+            /* Some expanded effects advertise an empty group. Keep valid groups. */
+            if (def == NULL) continue;
+#endif
 
             for (i = 0; i < def->nParts; i++) {
                 s32 flags;

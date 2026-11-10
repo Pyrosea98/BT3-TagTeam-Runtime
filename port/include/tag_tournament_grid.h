@@ -3,6 +3,14 @@
 /* Same 36-byte cell as the game's grid. Retain playable unlocked entries;
    remove disabled/custom placeholders and pad only the last seven-cell row. */
 struct TTGridCell {int id,count,form[7];};
+/* ChrGrid_Build promotes DLC into a 165-cell scratch roster, then rounds to
+   seven columns. Capacity must cover that output, not just the ISO master
+   list (109 cells in the current tournament archive). */
+static int TT_GridCapacity(int masterCount){
+ int cells=masterCount<165?165:masterCount;
+ return (cells+6)/7*7;
+}
+
 static int TT_CompactGrid(struct TTGridCell *grid,int count,int capacity){
  int i,n=0,pad;if(!grid||count<0||count>capacity)return -1;
  for(i=0;i<count;i++)if(grid[i].id>=0&&(grid[i].id<=161||(grid[i].id>=165&&grid[i].id<=250))){if(n!=i)grid[n]=grid[i];n++;}

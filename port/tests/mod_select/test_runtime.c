@@ -5,6 +5,10 @@
 #include "../../src/plat_fighters.c"
 int Port_Beta8CostumeSelectable(int c,int s){return B8CostumeSelectable(c,s);}
 int Port_ScenarioActive(void){return 0;}
+int Port_ScenarioStage(void){return -1;}
+int Port_ScenarioBgm(void){return -1;}
+void Battle_SetStartStage(int stage){(void)stage;assert(0);}
+void Battle_SetBgm(int bgm){(void)bgm;assert(0);}
 void Port_ModSelectPublish(const MsView*v){}
 static int test_mode=1,test_online,test_tour,test_missing;
 int Port_Setting(const char *name,int def){if(!strcmp(name,"modes_fight"))return test_mode;return def;}
@@ -29,6 +33,7 @@ static void verify_partition(int*sizes,int count){MsView v={0};MsPick p;int at=0
  partitions++;}
 static void enumerate_partitions(int*sizes,int n,int left){if(n>=2)verify_partition(sizes,n);if(n==10)return;for(int size=1;size<=left;size++){sizes[n]=size;enumerate_partitions(sizes,n+1,left-size);}}
 int main(void){
+ Port_ModSelectPlayers(0);assert(Port_ModSelectPlayerCount()==0);Port_ModSelectPlayers(1);assert(Port_ModSelectPlayerCount()==1);
  MsView v;MsPick p;int mode,a,b,i,k;FILE*f=fopen("/tmp/ms-model.bin","wb");assert(f);for(i=0;i<256;i++)fputc(0,f);fclose(f);
  for(mode=1;mode<=3;mode++)for(a=1;a<=9;a++)for(b=1;b<=10-a;b++){
   memset(&v,0,sizeof(v));v.mode=test_mode=mode;v.total=a+b;v.a=a;
@@ -41,6 +46,19 @@ int main(void){
   assert(Port_ExtraSetup(0,1,1,0,1,0)==0&&Port_FightExtras()==0); /* replay excludes draft */
   assert(Port_ExtraSetup(0,1,1,0,0,1)==0&&Port_FightExtras()==0); /* scripted excludes draft */
  }
+ /* CPU-only plans: roots and extras stay CPU across repeated loader/rematch setup. */
+ Port_ModSelectPlayers(0);
+ for(mode=1;mode<=2;mode++)for(a=1;a<=9;a++){
+  memset(&v,0,sizeof(v));v.mode=test_mode=mode;v.a=a;v.total=10;v.player_count=0;
+  for(i=0;i<10;i++){v.pick[i].chara=i+3;v.pick[i].team=MS_Side(&v,i);v.pick[i].pad=-1;}
+  assert(Port_ModSelectCommit(&v));
+  for(k=0;k<2;k++){
+   assert(!Port_ExtraSetup(0,1,1,1,0,0)&&Port_FightExtras()==8);Port_ExtraDone();
+   for(i=0;i<10;i++){assert(Port_ModSelectPlan(&p,i)&&p.pad==-1);if(i>=2)assert(Port_FightPad(i-2)==-1);}
+   Port_ModSelectResult(0);assert(!Port_ModSelectPlayerWin());
+  }
+ }
+ Port_ModSelectPlayers(1);
  v.mode=test_mode=1;v.a=1;v.total=8;for(i=0;i<8;i++)v.pick[i].team=MS_Side(&v,i);assert(Port_ModSelectCommit(&v));assert(!Port_ExtraSetup(0,1,1,0,0,0)&&Port_FightExtras()==6);
  test_online=1;assert(!Port_ModSelectCommit(&v));assert(!Port_ExtraSetup(0,1,1,0,0,0)&&!Port_FightExtras());test_online=0;
  test_tour=1;assert(!Port_ModSelectEnabled()&&!Port_ModSelectPlanCount());test_tour=0;

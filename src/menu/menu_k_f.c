@@ -1,6 +1,7 @@
 #ifdef PORT
 #include "tag_tournament_port.h"
 #include "plat_beta8.h"
+#include "plat_stages.h"
 #endif
 #include "common.h"
 #include "menu/menu_l.h"
@@ -568,6 +569,15 @@ void Bracket_FillEntrants(LBracket *b) {
     s32 boss = -1;
     s32 i;
 
+#ifdef PORT
+    if(Port_TagTourActive()&&Port_TagTourConfig(2)==4){
+        int used[17]={0},id;for(i=0;i<LTOUR_PROG->entryNum;i++){memcpy(&b->entrant[i],&LTOUR_PROG->entrant[i],sizeof(LTourEntrant));if((b->entrant[i].unk2&0xFF00)==0x5400)used[b->entrant[i].unk2&255]=1;}
+        if(!Port_TagTourSeed(NULL,0,0x59414d43u+(unsigned)Rand_Range(65536))){Port_TagTourCancel();return;}
+        for(i=0;i<17;i++){struct TTTeam team;if(i<LTOUR_PROG->entryNum)id=b->entrant[i].unk2-0x5400;else{for(id=0;id<17&&used[id];id++);if(id>=17){Port_TagTourCancel();return;}used[id]=1;memset(&b->entrant[i],0,sizeof(b->entrant[i]));}
+            if(!Port_TagTourTeam(id,&team)){Port_TagTourCancel();return;}b->entrant[i].unk2=0x5400+id;b->entrant[i].chara=team.fighter[0].character;b->entrant[i].costume=team.fighter[0].costume;memcpy(b->entrant[i].item.id,team.fighter[0].items,sizeof(team.fighter[0].items));}
+        b->entrant[16].pos=30;b->entrant[16].flags|=LTOUR_ENT_BOSS;return;
+    }
+#endif
     switch (LTOUR_PROG->tour) {
     case LTOUR_WORLD:
         boss = Rand_Range(2) ? 0x42 : 0x38;
@@ -1079,6 +1089,9 @@ void Bracket_SetupBattle(LBracket *b) {
             for(m=0;m<5;m++)humans+=(a.owner[m]>=0)+(c.owner[m]>=0);
         screenMode=humans>=2?1:0;
     }
+#endif
+#ifdef PORT
+    if(Port_TagTourActive()&&LTOUR_PROG->tour==LTOUR_OTHERWORLD){int other=PortStages_Find("Other World Tournament");if(other>=0)stage=other;}
 #endif
     BattleSetup_SetRule(screenMode, 4, bgm, 0, announcer, stage, 1);
     for (i = 0; i < 2; i++) {

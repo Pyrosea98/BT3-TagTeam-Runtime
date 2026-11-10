@@ -9,8 +9,12 @@
 #include "plat_beta8.h"
 #include "mod_select.h"
 #include "mod_preview_frame.h"
+#include "plat_stages.h"
+#include "tag_tournament_theme.h"
 static int sChrViewFitPending,sChrViewFitChara;
 static int sChrViewDynamic;
+static int sChrViewTournament;
+void Port_ChrViewTournament(int on){sChrViewTournament=on;}
 static int sStagePreviewFile=-1,sStagePreviewId=-1;static float sStagePreviewAngle,sStagePreviewPitch;
 extern void BtlRes_FreeSingle(void *);
 #endif
@@ -110,6 +114,10 @@ ChrViewInfo *ChrView_GetCharaInfo(u32 chara) {
 #ifdef PORT
     /* SSJ4 Scouter Vegeta borrows a model, not its donor's giant camera. */
     if(chara==244)chara=29;
+    /* Daima bodies are children, even though their costume donors are adults.
+       Apply to every viewer caller, including the original character selector. */
+    if(chara==161||(chara>=302&&chara<=305))chara=11;
+    if(chara==170||(chara>=306&&chara<=308))chara=28;
     if(chara>=CHRVIEW_CHARA_COUNT){int alias=Port_Beta8StockAlias(chara);chara=alias>=0?(u32)alias:0;}
 #endif
     if (chara >= CHRVIEW_CHARA_COUNT) {
@@ -268,7 +276,8 @@ s32 ChrView_StepLoadStage(ChrViewJob *job) {
     case 0:
         res->stage = File_Request3(
 #ifdef PORT
- sStagePreviewFile>=0?sStagePreviewFile:
+ sStagePreviewFile>=0?sStagePreviewFile:sChrViewTournament?
+ (sChrViewTournament==4&&PortStages_Find("Other World Tournament")>=0?0xD48+70000+PortStages_Find("Other World Tournament")-PORT_STAGE_FIRST:1142+TT_ThemeStage(sChrViewTournament-1,-1)):
 #endif
  CHRVIEW_FILE_STAGE, NULL, 0);
         job->state++;
@@ -285,7 +294,14 @@ s32 ChrView_StepLoadStage(ChrViewJob *job) {
 s32 ChrView_CancelLoad(void) {
     if (ChrView_IsLoading() == 1) {
 #ifdef PORT
-        if(sChrViewDynamic)File_CancelRequests(); /* release outstanding writes before freeing dynamic storage */
+        if(sChrViewDynamic){
+            s32 i;
+            /* A pending File_Request owns its allocation too. Transfer that
+               ownership before stopping it, then FreeSlot releases it once. */
+            if(gChrView->job.slot!=NULL)for(i=0;i<3;i++)
+                Port_FileKeepRequestBuffer(gChrView->job.slot->file[i].buf);
+            File_CancelRequests(); /* stop outstanding writes before resource free */
+        }
 #endif
         if (gChrView->job.slot != NULL) {
             if (gChrView->job.state >= 3) {
@@ -370,7 +386,7 @@ void ChrView_Update(void) {
         extern f32 Port_WideFactor(void);extern void Port_ModSelectTrace(int,int,int);
         extern u8 *ChrView_Node(u8*,s32) __asm__("BtlObj_GetNode");
         extern void BtlObjXf_Update(u8*),BtlObjPose_CalcMatrices(u8*),BtlObj_UpdateBounds(u8*,u8*);
-        u8 *obj=BtlObj_Get(gChrView->cur->obj);f32 *box=(f32 *)(obj+0xAF4),dist,y,wide=Port_WideFactor();
+        u8 *obj=BtlObj_Get(gChrView->cur->obj);f32 *box=(f32 *)(obj+0xAF4),dist,y,wide=Port_WideFactor(),frameBox[6];
         u8 *left=ChrView_Node(obj,0xB),*right=ChrView_Node(obj,0xF);
         if(left&&right){
             /* The native foot-dust path uses these nodes. Matrix row3.y is +0x44. */
@@ -383,7 +399,26 @@ void ChrView_Update(void) {
                 Port_ModSelectTrace(6,sChrViewFitChara,(int)(lift*100));
             }
         }
-        if(MPF_FitBody(box,box+3,wide,&dist,&y)){
+        if(sChrViewTournament){
+            /* The ring surface is elevated relative to the menu backdrop's y=0.
+               Query the loaded arena, so normal/2x resources use their actual floor. */
+            struct ChrViewGround {f32 x,y,z;u8 rest[0x24];} hit;
+            extern s32 BtlStage_ProbeGround(s32,Vec4*,void*);
+            Vec4 probe={0,-1000,0,1};memset(&hit,0,sizeof(hit));
+            BtlStage_ProbeGround(-1,&probe,&hit);
+            if(hit.y>-999&&hit.y<10000){
+                *(f32 *)(obj+0x954)+=hit.y;
+                BtlObjXf_Update(obj);BtlObjPose_CalcMatrices(obj);BtlObj_UpdateBounds(obj,obj+0xA40);
+                Port_ModSelectTrace(6,sChrViewFitChara,(int)(hit.y*100));
+            }
+        }
+        /* Use joint-constrained bounds only for the Daima CHILD identities. */
+        {int k;for(k=0;k<6;k++)frameBox[k]=box[k];}
+        if(sChrViewFitChara==161||sChrViewFitChara==170||(sChrViewFitChara>=302&&sChrViewFitChara<=308)){
+            u8 *head=ChrView_Node(obj,0x30);
+            if(head&&left&&right)MPF_ChildBounds(frameBox,*(f32*)(head+0x44),*(f32*)(left+0x44),*(f32*)(right+0x44));
+        }
+        if(MPF_FitBody(frameBox,frameBox+3,wide,&dist,&y)){
             if(sChrViewFitChara==275||sChrViewFitChara==276){float body=box[4]-box[1],width=(box[3]-box[0])/(wide*.7f);dist=(body>width?body:width)*1.9f+(box[5]-box[2])*.15f;}
             /* Rage's huge bounds put the camera behind the backdrop pillars. Normalize this
                viewer instance only; the fighter's combat scale and model file remain untouched. */

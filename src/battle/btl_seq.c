@@ -1429,6 +1429,7 @@ extern s32 BtlSeq_TickClocksExt(void) __asm__("BtlSeq_TickClocks");
 extern void Port_Dbg2(const char *what, int a, int b); /* port/src/plat_stub.c (the experiment's tool) */
 extern s32 BtlChar_GetCount(void);
 extern s32 Port_Team(s32 i); /* btl_char_flag_opp.c */
+extern int Port_TagTourActive(void);
 #define PORT_ENDDBG(n) (Port_Dbg2("the fight ends by rule", n, (int)result->reason), Port_Dbg2("the fight ends: winner (1 player 1, 2 player 2) / fighters", (int)result->winner, BtlChar_GetCount()))
 #include "mod_select.h"
 #define PORT_SEQ_TEAMS 16 /* (PORT_TEAM_MAX, port/include/port_fighters.h) */
@@ -1509,6 +1510,17 @@ s32 BtlSeq_CheckBattleEnd(void) {
         BtlSeq_JudgeByHealth(result);
         { PORT_ENDDBG(2); return 1; }
     }
+#ifdef PORT
+    if(Port_TagTourActive()) {
+        s32 i;
+        extern void BtlCtrl_LowerHp(s32,s32,f32);
+        extern s32 BtlCtrl_GetActiveMember(s32);
+        for(i=0;i<BtlChar_GetCount();i++)if(BtlCtrl_TestFlag7(i)&&BtlCharApi_GetHp(i)>0){
+            BtlCtrl_LowerHp(i,BtlCtrl_GetActiveMember(i),0.0f);
+            Port_Dbg2("tag tournament: ring-out fighter / team",i,Port_Team(i));
+        }
+     } else {
+#endif
     if (BtlCtrl_TestFlag7(0) && BtlCtrl_TestFlag7(1)) {
         result->reason = BTL_REASON_FLAG7;
         BtlSeq_JudgeByHealth(result);
@@ -1525,10 +1537,11 @@ s32 BtlSeq_CheckBattleEnd(void) {
         { PORT_ENDDBG(5); return 1; }
     }
 #ifdef PORT
+    }
     /* More than two fighters: a knock-out ends the fight when one team is left (teams: btl_char_flag_opp.c;
        a Team Battle ends when every fighter of a team is down, a Free-for-All when one fighter is left). The
        result only knows two sides: player 1's team left = player 1 wins, any other team left = player 2 wins. */
-    if (BtlChar_GetCount() > 2) {
+    if (BtlChar_GetCount() > 2 || Port_TagTourActive()) {
         s32 alive[PORT_SEQ_TEAMS], i, teams = 0;
 
         memset(alive, 0, sizeof(alive));

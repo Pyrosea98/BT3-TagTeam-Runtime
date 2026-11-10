@@ -18,7 +18,7 @@ typedef int Pad;
 static struct{unsigned flags;}progress,*gProgress=&progress;
 #define MPROG_FREEZE 8
 static int story,chapter,assetOk=1,fixedResult=2,publishes,activePublishes,commits,viewer,clears,lastEvent;
-static MsView plan;
+static MsView plan;static MsPick *sMsTourOutput;
 int Port_StoryActive(void){return story;}
 int Port_ModesFight(void){return 1;}int Port_ModSelectPlayerCount(void){return 1;}
 int Port_ScenarioDraft(MsView*v){ST_BuildDraft(v,chapter);return fixedResult;}

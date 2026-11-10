@@ -10,6 +10,7 @@ code=r"""
 #include "mod_story.h"
 unsigned progress[ST_COUNT];int seen[8],writes;
 unsigned Port_StoryProgress(int c){return progress[c];}
+int Port_StoryLegacyClear(int){return 0;}
 int Port_StorySagaState(int saga){return saga==0?3:0;}
 int Port_Setting(const char*k,int d){int n=k[strlen(k)-1]-'0';return !strncmp(k,"story_guide_seen_saga",20)&&n>=0&&n<8?seen[n]:d;}
 void Port_SettingSave(const char*k,int v){seen[k[strlen(k)-1]-'0']=v;}
@@ -19,7 +20,7 @@ int main(){
  assert(ST_SagaCanOpen(0,0)&&!ST_SagaCanOpen(1,0));
  assert(ST_SagaCanOpen(1,1)&&!ST_SagaCanOpen(2,1)&&ST_SagaCanOpen(2,3));
  assert(!ST_SagaCanOpen(-1,255)&&!ST_SagaCanOpen(8,255));
- assert(ST_SagaChapterCount(0)==ST_COUNT&&ST_SagaFirst(1)==-1);
+ assert(ST_SagaChapterCount(0)==9&&ST_SagaFirst(1)==-1);
  unsigned p[ST_COUNT];for(int i=0;i<ST_COUNT;i++)p[i]=1;assert(!ST_SagaCleared(0,0,p));assert(ST_SagaCleared(0,1,p));p[1]=0;assert(!ST_SagaCleared(0,1,p));assert(!ST_SagaCleared(1,1,p));
  mod_story_sagas_publish();assert(sStoryWelcomeRequest[0]==1&&!writes&&seen[0]==0);
  sStoryWelcomeAck[0]=1;mod_story_sagas_publish();assert(seen[0]==1&&writes==1&&sStoryWelcomeRequest[0]==0);
@@ -27,6 +28,12 @@ int main(){
  progress[0]=1;mod_story_sagas_publish();assert(sStoryWelcomeRequest[0]==2);
  sStoryWelcomeAck[0]=2;mod_story_sagas_publish();assert(seen[0]==2&&writes==2);
  for(int n=1;n<8;n++)assert(!sStoryWelcomeRequest[n]);
+ assert(ST_SagaNextChapter(5,1)==21&&ST_SagaNextChapter(21,1)==6);
+ for(int n=0;n<=5;n++)progress[n]=1;
+ assert(mod_story_unlocked(21)&&!mod_story_unlocked(6));
+ progress[21]=1;assert(mod_story_unlocked(6));
+ progress[21]=0;progress[6]=1;assert(mod_story_unlocked(6)); // retain existing clears
+
  puts("PASS saga gates: all prior finalized arcs required, partial demo never completes saga, unavailable saga stays closed; welcome acknowledged/persisted once, repeats quiet, next chapter gets new conversation");
 }
 """

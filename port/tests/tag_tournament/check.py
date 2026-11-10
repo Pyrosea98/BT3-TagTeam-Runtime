@@ -22,9 +22,10 @@ enum {LTOUR_ENT_LOST=2,LBRK_PLAYER_OUT=0x4000,LTOUR_MATCH_DONE=1,LTOUR_ENT_PLAYE
 struct Side {int control,pad,count,chara[5],costume[5];uint16_t items[5][8];} sides[2];
 int skipAnimations;void Bracket_StartWin(LBracket*){skipAnimations++;}
 int Bracket_IsPlayerOut(LBracket *b){for(int n=0;n<17;n++)if((b->entrant[n].flags&1)&&!(b->entrant[n].flags&2))return 0;return 1;}
-int split;void Battle_ClearWork(){memset(sides,0,sizeof(sides));}
+int PortStages_Find(const char*){return 43;}
+int split,stageRule;void Battle_ClearWork(){memset(sides,0,sizeof(sides));}
 void BattleSetup_SetSide(int s,int c,int p,int n,int,int,int,void*){sides[s].control=c;sides[s].pad=p;sides[s].count=n;}
-void BattleSetup_SetRule(int s,int,int,int,int,int,int){split=s;}
+void BattleSetup_SetRule(int s,int,int,int,int,int stage,int){split=s;stageRule=stage;}
 void BattleSetup_SetMember(int s,int m,int c,int costume,int,int,float,void *items){sides[s].chara[m]=c;sides[s].costume[m]=costume;if(items)memcpy(sides[s].items[m],items,16);}
 void BattleSetup_Finish(){}int Bracket_PickStage(int){return 4;}int Rand_Range(int){return 0;}
 extern "C" int Port_NetActive(){return 0;}
@@ -56,6 +57,7 @@ int main(){
  c={0,3,0,1,{0,1,2,3}};draft(c);b=bracket(0,2,1,0);assert(Port_TagTourCpuMatch(&b));Port_TagTourSkip(&b);
  TTTeam losing;assert(skipAnimations==1&&b.winSide==0&&(b.match_[0].flags&LTOUR_MATCH_DONE));assert(Port_TagTourTeam(2,&losing)&&losing.eliminated);
  c={1,3,0,1,{0,1,2,3}};draft(c);b=bracket(0,2,1,0);assert(!Port_TagTourCpuMatch(&b));Port_TagTourSkip(&b);assert(skipAnimations==1);
+ c={1,3,3,1,{0,1,2,3}};draft(c);prog.tour=LTOUR_OTHERWORLD;b=bracket(0,2,1,0);Bracket_SetupBattle(&b);assert(stageRule==43);
  Port_TagTourCancel();assert(!Port_TagTourActive()&&Port_TagTourPadRoute(3)==3);
 }
 """

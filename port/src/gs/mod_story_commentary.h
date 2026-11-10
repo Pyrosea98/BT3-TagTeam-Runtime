@@ -9,6 +9,14 @@ typedef struct StGuideChapter {
  const char *idle[2][STG_IDLE_LINES];
 } StGuideChapter;
 static const StGuideChapter stGuideChapters[]={
+ {"saiyan_06d_pendulum_saiyans",
+ {"Kami has prepared a harsher trial. Keep the group together: those two Saiyans will punish anyone left alone.","Kami ha preparado una prueba m\303\241s dura. Mantengan el grupo unido: esos dos Saiyajin no perdonar\303\241n a quien se quede solo."},
+ {"They survived because they fought together. Remember that lesson when the real invaders arrive.","Sobrevivieron porque lucharon juntos. Recuerden esa lecci\303\263n cuando lleguen los verdaderos invasores."},
+ {"A different outcome, but the lesson stands: no one can protect Earth alone.","El resultado fue distinto, pero la lecci\303\263n sigue en pie: nadie puede proteger la Tierra solo."},
+ {"Those were only echoes of the past. Learn their movements and protect each other on the next attempt.","Solo eran ecos del pasado. Aprendan sus movimientos y prot\303\251janse en el siguiente intento."},
+ {{"A scouter measures power, not the opening a teammate can create.","Do not chase both enemies in opposite directions.","Kami wants you to return stronger, not reckless."},
+  {"Un rastreador mide el poder, no la oportunidad que crea un compa\303\261ero.","No persigan a los dos enemigos en direcciones opuestas.","Kami quiere que regresen m\303\241s fuertes, no m\303\241s imprudentes."}}},
+
  {"saiyan_01_raditz_wasteland",
   {"That power just appeared. It isn't Goku. The stranger is looking for someone... and I won't let him pass.","Esa energ\303\255a acaba de llegar. No es Goku. El desconocido busca a alguien... y no pienso dejarlo pasar."},
   {"Now you see why I followed him. An enemy like that cannot be left wandering around Earth.","Ahora entiendes por qu\303\251 fui tras \303\251l. No podemos dejar que un enemigo as\303\255 ande suelto por la Tierra."},

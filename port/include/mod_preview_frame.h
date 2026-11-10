@@ -19,6 +19,16 @@ static int MPF_FitBody(const float *lo,const float *hi,float wide,float *dist,fl
  w/=wide*.7f;*dist=(h>w?h:w)*2.6f+d*.5f;
  *height=(lo[1]+hi[1])*.5f+h*.05f;return *dist>1&&*dist<100000;
 }
+/* Menu framing only: imported child models may retain donor collision boxes
+   below their feet. Clip that framing box to measured head/ankle joints;
+   never change the object's real bounds, scale or combat collision. */
+static int MPF_ChildBounds(float *box,float head,float left,float right){
+ float foot=left>right?left:right,h=foot-head,top,bottom;
+ if(!(h>.5f&&h<50&&head>-100000&&foot<100000))return 0;
+ top=head-h*.8f;bottom=foot+h*.16f;
+ if(box[1]<top)box[1]=top;if(box[4]>bottom)box[4]=bottom;
+ return box[4]>box[1];
+}
 static float MPF_Abs(float x){return x<0?-x:x;}
 /* Same world-box projection as BtlObj_UpdateBounds, restricted to a foot. */
 static float MPF_FootBottom(const float *m,const float *rel,const float *extent){

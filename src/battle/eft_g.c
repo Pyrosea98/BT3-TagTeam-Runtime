@@ -793,7 +793,13 @@ void EftStorm_DrawRain(void) {
     Vec4 streak;
     Vec4 delta;
     Mtx44 cam;
-    s32 view = gBtlCam->cur->index;
+    s32 view;
+#ifdef PORT
+    /* Character selection has an orbit view, but no battle-camera owner.
+       Stage weather may still register a rain task there. */
+    if (gBtlCam == NULL || gBtlCam->cur == NULL || gBtlCamView == NULL) return;
+#endif
+    view = gBtlCam->cur->index;
 
     Vec4_Set(&center, 0.0f, 0.0f, 150.0f, 1.0f);
     Vec4_Set(&streak, 0.0f, 100.0f, 0.0f, 0.0f);

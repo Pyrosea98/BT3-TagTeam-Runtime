@@ -1,7 +1,7 @@
 /* Native state contract: no MIPS hooks, emulator clients or savestate hand-back. */
 #include "../../include/tag_tournament_core.h"
 #include <string.h>
-static int valid_fighter(const struct TTFighter *f){return f&&f->character>=0&&f->character<302&&f->costume>=0&&f->costume<8;}
+static int valid_fighter(const struct TTFighter *f){return f&&f->character>=0&&f->character<326&&f->costume>=0&&f->costume<8;}
 void TT_Cancel(struct TTState *s){if(s)memset(s,0,sizeof(*s));}
 int TT_Begin(struct TTState *s,const struct TTConfig *c){
  int i,j,counts[4]={0};struct TTState n;

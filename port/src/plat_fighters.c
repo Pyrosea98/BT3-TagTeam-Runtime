@@ -49,7 +49,7 @@
 #include "plat_fighters.h"
 #include "port_fighters.h"
 
-#define CHARA_COUNT 302  /* stock roster plus explicitly aliased native identities */
+#define CHARA_COUNT 326  /* stock roster plus explicitly aliased native identities */
 #define NAME_COUNT CHARA_COUNT /* Beta8: the mod's named roster goes past the stock 161 */
 #define EXTRA_MAX PORT_EXTRA_MAX /* extra fighters a fight can have so far */
 #define FILE_CHARA 0x590 /* file ids of character c: c * 10 + this is its model, + 8 and + 9 its two animation files
@@ -658,12 +658,36 @@ const char *Port_CharaName(int chara) {
     if(chara==293)return "Buu (Goku absorbed)";
     if(chara==294)return "Buu (Full Power)";
     if(chara==295)return "Mecha Freezer (forma mejorada)";
-    if(chara==296)return "King Cold (Primera forma)";
-    if(chara==297)return "King Cold (Tercera forma)";
+    if(chara==296)return "King Cold (Tercera forma)";
+    if(chara==297)return "King Cold (Segunda forma)";
     if(chara==298)return "King Cold (Forma final)";
     if(chara==299)return "King Cold (Forma gigante)";
     if(chara==300)return "Mucchi";
     if(chara==301)return "Yajirobe";
+    if(chara==317)return "Hildegarn (Primera forma)";
+    if(chara==318)return "Vegeta Explorador Gran Mono Dorado";
+    if(chara==319)return "Luud";
+    if(chara==323)return "Shorty";
+    if(chara==324)return "Scarface";
+    if(chara==325)return "Cacao";
+    if(chara==320)return "Supremo Kaio del Norte";
+    if(chara==321)return "Androide 17 (GT - Tierra)";
+    if(chara==322)return "Androide 17 (GT - Infierno)";
+    if(chara==316)return "Vegeta (Inicio) Super Saiyajin";
+    if(chara==312)return "Trunks (Espada) Super Saiyajin 2";
+    if(chara==313)return "Trunks (Espada) Super Saiyajin 3";
+    if(chara==314)return "Bardock Super Saiyajin";
+    if(chara==315)return "Bardock Super Saiyajin 3";
+    if(chara==309)return "Vegeta Explorador Super Saiyajin";
+    if(chara==310)return "Vegeta Explorador Super Saiyajin 3";
+    if(chara==311)return "Baby Vegeta (Explorador)";
+    if(chara==302)return "Goku (Daima) Super Saiyajin";
+    if(chara==303)return "Goku (Daima) Super Saiyajin 2";
+    if(chara==304)return "Goku (Daima) Super Saiyajin 3";
+    if(chara==305)return "Goku (Daima) Super Saiyajin 4";
+    if(chara==306)return "Vegeta (Daima) Super Saiyajin";
+    if(chara==307)return "Vegeta (Daima) Super Saiyajin 2";
+    if(chara==308)return "Vegeta (Daima) Super Saiyajin 3";
     if (chara == 247) return "Gokoro";
     if (chara == 210) {
         return "Spopovich"; /* the mod's Spopovich cell (costume 0 only) */
@@ -732,7 +756,7 @@ const char *Port_CharaName(int chara) {
         return "Vegeta Explorador SSJ4";
     }
     if (chara == 161) return "Daima Goku";
-    if (chara == 163) return "Future Gohan";
+    if (chara == 163) return "Future Gohan Super Saiyajin 2";
     if (chara == 164) return "Zeno";
     if (chara == 170) return "Daima Vegeta";
     if (chara == 177) return "Glorio";
@@ -775,7 +799,7 @@ const char *Port_CharaName(int chara) {
     if (chara == 263) return "Cooler robot";
     if (chara == 264) return "Redict";
     if (chara == 265) return "Bido";
-    if (chara == 266) return "Llood";
+    if (chara == 266) return "Luud (Poder completo)";
     if (chara == 267) return "Bio Broly";
     if (chara == 268) return "Towa";
     if (chara == 269) return "General Rilld";
@@ -788,7 +812,7 @@ const char *Port_CharaName(int chara) {
     if (chara == 278) return "Tamagami 3";
     if (chara == 279) return "Drum";
     if (chara == 280) return "Kami";
-    if (chara == 281) return "Future Gohan Super Saiyajin";
+    if (chara == 281) return "Future Gohan Super Saiyajin 3";
     if (chara == 282) return "Shallot (SSJ)";
     if (chara == 283) return "Shallot SSJ3";
     if (chara == 284) return "Gohan nino Super Saiyajin";
@@ -870,7 +894,7 @@ void Port_TeamFillFusion(void *chr) {
     int *count = (int *)((unsigned char *)chr + 0x998);
     int i;
 
-    if(side>=2&&side<16){
+    if(side>=0&&side<16&&(side>=2||sMsFight)){
         extern int BtlChar_GetCount(void),Port_Team(int);extern void*BtlChar_Get(int),*BtlMember_GetActive(void*);
         int k,slot=1;memset(sFusionMirror[side],0,sizeof(sFusionMirror[side]));
         for(k=1;k<5;k++)memset((unsigned char*)chr+0x9a4+k*0xa4,0,0xa4);
@@ -980,7 +1004,7 @@ int Port_ModelUsable(int chara, int costume, int variant) {
 /* Explicit live-actor identity, separate from the copied native member row. */
 int Port_FusionPartnerActor(int who,int member){int k;if(who<0||who>=16||member<0||member>=5)return -1;
  if(sFusionLink[who][member])return sFusionLink[who][member]-1;
- if(who>=2)return sFusionMirror[who][member]-1;
+ if(who>=2||sMsFight)return sFusionMirror[who][member]-1;
  for(k=0;k<sFightCount;k++)if(sFight[k].member==who*8+member)return k+2;return -1;}
 /* A Dragon History scene-only actor counts as consumed whenever no cutscene shows it (mod_scenarios_runtime.inc). */
 extern int Port_StorySceneParked(int actor);
@@ -1185,27 +1209,6 @@ void Port_PatchSkillText(int chara, int costume, void *param, void *textSlot) {
             fclose(lg);
         }
     }
-    if (chara == 29 && costume == 4) {
-        /* Vegeta (Explorador) costume 5: the Oozaru target becomes the GT costume 3 SSJ4 form. */
-        for (i = 0; i < 4; i++) {
-            if ((p[0x98 + i] == 30 || p[0x98 + i] == 244)) {
-                p[0x98 + i] = 244;
-                p[0x9C + i] = 1;
-                p[0xA0 + i] = 2;
-                p[0xA4 + i] = 4;
-                p[0xA8 + i] = 255;
-                p[0xAC] = (unsigned char)i;
-            }
-        }
-        {
-            FILE *lg = fopen("bt3_fusion.log", "a");
-            if (lg != NULL) {
-                fprintf(lg, "costume5: chara=29 costume=%d target0=%d target3=%d default=%d\n",
-                        costume, p[0x98], p[0x9B], p[0xAC]);
-                fclose(lg);
-            }
-        }
-    }
     /* Split hybrid entries must not inherit unrelated fusion recipes from a
        Vegetto/Gogeta animation donor. Only explicitly authored pairs below apply. */
     {static const int hybrid[]={214,215,216,218,219,220,221,222,223,224,225,226,229,230,234,235,238,239,241};
@@ -1266,17 +1269,18 @@ void Port_PatchSkillText(int chara, int costume, void *param, void *textSlot) {
     /* GT costume-3 Goku family: both fusion styles at matching base/SSJ1/SSJ4.
        Store logical result ids so the loader retains Vegetto GT's own routes. */
     {
-        static const int pairs[][4]={{7,122,110,215},{8,240,53,220},{10,38,54,223}};
+        static const int pairs[][4]={{7,122,110,215},{8,240,53,220},{10,38,54,223},{233,38,54,223}};
         int k,j;
-        for(k=0;k<3;k++){
+        for(k=0;k<4;k++){
             int g=pairs[k][0],v=pairs[k][1],other=-1;
-            if(chara==g&&costume==2)other=v;
+            if(chara==g&&(costume==2||g==10||g==233))other=v;
             if(chara==v&&costume<=1)other=g;
             if(other<0)continue;
             for(j=0;j<2;j++){
                 p[0xB4+j]=(unsigned char)pairs[k][j+2];p[0xAE + j]=1;p[0xB1+j]=(unsigned char)(j+1);
                 p[0xB7+j]=(unsigned char)other;
                 for(i=0;i<4;i++)p[0xBA+j*4+i]=(unsigned char)other;
+                if(chara==38){p[0xB7+j]=10;for(i=0;i<4;i++)p[0xBA+j*4+i]=10;p[0xBA+j*4+1]=233;}
             }
         }
     }
@@ -1329,7 +1333,7 @@ void Port_PatchSkillText(int chara, int costume, void *param, void *textSlot) {
             liveFusion++;
         }
     }
-    if (liveTrans == 0 && liveFusion == 0) {
+    if (!rewriteForms && liveTrans == 0 && liveFusion == 0) {
         return; /* (nothing to list) */
     }
     /* The object owns a 32-bit PS2 pointer field, even in a 64-bit host. */
@@ -1480,13 +1484,15 @@ void Port_PatchSkillText(int chara, int costume, void *param, void *textSlot) {
         if (lineStart == injectTrans) {
             if(rewriteForms){
                 static const char*dirs[]={"←＋Ｒ３","↑＋Ｒ３","→＋Ｒ３","↓＋Ｒ３"};
-                for(j=0;j<4&&at+1024<cap;j++)if(p[0x98+j]!=255){
-                    int target=Port_Beta8CostumeFormTarget(chara,costume,p[0x98+j]),cost=p[0x9c+j];const char*nm=Port_CharaName(target);const char*glyph=(signed char)p[0xac]==j?"Ｒ３":dirs[j];
+                for(j=0;j<5&&at+1024<cap;j++){
+                    int raw=j<4?p[0x98+j]:Port_Beta8ExtraFormField(chara,costume,j,0),cost=j<4?p[0x9c+j]:Port_Beta8ExtraFormField(chara,costume,j,1);
+                    int target=Port_Beta8CostumeFormTarget(chara,costume,raw);const char*nm;const char*glyph;
+                    if(raw<0||raw==255)continue;nm=Port_CharaName(target);glyph=j==4||p[0xac]==j?"Ｒ３":dirs[j];
                     if(!nm[0]||cost>9)continue;
                     at+=skill_emit_entry(out+at,cap-at-2,0,cost,nm);out[at++]='\n';
                     at+=skill_name_units(out+at,cap-at-2,"!F%0Transformación: ");at+=skill_name_units(out+at,cap-at-2,nm);out[at++]='\n';
                     at+=skill_name_units(out+at,cap-at-2,"!D#<PAD=");at+=skill_name_units(out+at,cap-at-2,glyph);out[at++]='>';out[at++]='\n';
-                    if(p[0xa4+j]==3){at+=skill_name_units(out+at,cap-at-2,"!D#Requiere luna llena.");out[at++]='\n';}
+                    if(j<4&&p[0xa4+j]==3){at+=skill_name_units(out+at,cap-at-2,"!D#Requiere luna llena.");out[at++]='\n';}
                 }
             }else
             for (j = transOnPage; j < liveTrans && at + 1024 < cap; j++) {

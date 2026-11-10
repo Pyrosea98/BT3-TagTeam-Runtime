@@ -1303,7 +1303,11 @@ void BtlMove_ApplyOrbit(BtlMoveChr *chr) {
 
 /* Stage 7: keeps the fighter out of the opponent's body: a vertical plane between the two, placed by both radii,
    shared between them in proportion to how much each moved towards the other this frame. */
+#ifdef PORT
+static s32 Port_StockPushOut(BtlMoveChr *chr) {
+#else
 s32 BtlMove_PushOut(BtlMoveChr *chr) {
+#endif
     Vec4 base;
     Vec4 d;
     Vec4 n;
@@ -1404,6 +1408,33 @@ s32 BtlMove_PushOut(BtlMoveChr *chr) {
     }
     return 0;
 }
+
+#ifdef PORT
+#include "mod_giant_separation.h"
+/* The stock plane only sees the current target. A nearby giant remains solid
+   while another enemy is selected; ordinary pairs keep the original path. */
+s32 BtlMove_PushOut(BtlMoveChr *chr){
+ extern int Port_NetActive(void),BattleReplay_IsActive(void),Port_StoryHeld(int),Port_SequencePartner(int);
+ extern s32 BtlChar_GetCount(void),BtlParam_GetUnk2(BtlMoveChr*),BtlChar_IsFrozen(BtlMoveChr*);
+ extern BtlMoveChr*BtlChar_Get(s32);int result=Port_StockPushOut(chr),i,count=BtlChar_GetCount();
+ if(Port_NetActive()||BattleReplay_IsActive()||BtlChar_IsDead(chr)||BtlChar_IsFrozen(chr)||Port_StoryHeld(chr->player)||
+    Port_SequencePartner(chr->player)>=0||BtlChar_TestFlag(chr,0x3F)||BtlChar_TestFlag(chr,0xAE))return result;
+ for(i=0;i<count&&i<16;i++){
+  BtlMoveChr*other;BtlMovePose*p,*q;Vec4 a,b;float x,z,h0,h1,r;
+  if(i==chr->player)continue;other=BtlChar_Get(i);
+  if(!other||BtlParam_GetUnk2(other)!=4||BtlChar_IsDead(other)||BtlChar_IsFrozen(other)||
+     Port_StoryHeld(i)||Port_SequencePartner(i)>=0||BtlChar_TestFlag(other,0x3F)||BtlChar_TestFlag(other,0xAE))continue;
+  p=BtlChar_GetPos(chr);q=BtlChar_GetPos(other);h0=BtlCharApi_GetHeight(chr->objId);h1=BtlCharApi_GetHeight(other->objId);
+  if(q->pos.y-p->pos.y < -h0||q->pos.y-p->pos.y>h1)continue;
+  BtlChar_GetSnapPos(chr,&a,0);BtlChar_GetSnapPos(other,&b,0);
+  r=BtlCharApi_GetRadius(chr->objId)+BtlCharApi_GetRadius(other->objId);
+  if(GS_Separate(a.x-b.x,a.z-b.z,p->pos.x-q->pos.x,p->pos.z-q->pos.z,r,&x,&z)){
+   p->pos.x=q->pos.x+x;p->pos.z=q->pos.z+z;BtlChar_SetFlag(chr,0x5E);BtlChar_SetFlag(chr,0x5F);result=1;
+  }
+ }
+ return result;
+}
+#endif
 
 /* Vertical speed that covers `height` when it is afterwards braked by 100 km/h per frame, plus extra, limited to
    +-800 km/h. */

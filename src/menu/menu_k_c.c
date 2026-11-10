@@ -7,7 +7,13 @@
  * its own: "fl_guide_out" exists here and in Bracket_Update, "fl_guide_in" here and in Bracket_Load.
  */
 
+#ifdef PORT
+extern int Port_TagTourActive(void);
+extern void Port_Dbg3(const char*,int,int,int,int);
+#define BRK_SAY(b) do { if(Port_TagTourActive())Port_Dbg3("tournament announcer round/match/sequence/line",(b)->round,(b)->match,(b)->seq,(b)->voiceLine); Voice_PlayWithSubtitle((b)->subtitles, TOUR_VOICE_BASE, (b)->voiceLine); } while(0)
+#else
 #define BRK_SAY(b) Voice_PlayWithSubtitle((b)->subtitles, TOUR_VOICE_BASE, (b)->voiceLine)
+#endif
 
 /* Confirm skips the speech before a battle once the two large pictures are loaded (BRK_IMAGES). */
 #define BRK_SKIP_INTRO(b) \
@@ -379,7 +385,13 @@ void Bracket_UpdateSeq(Bracket *b) {
         if (b->round == 0) {
             switch (TOUR_PROG2->tour) {
             case TOUR_WORLD:
+#ifdef PORT
+                /* The native opening line 0x25 says the champion is decided
+                   by this match. Tag teams start in round one, not the final. */
+                b->voiceLine = Port_TagTourActive()?0x33:0x25;
+#else
                 b->voiceLine = 0x25;
+#endif
                 break;
             case TOUR_BIG:
                 b->voiceLine = 0x91;

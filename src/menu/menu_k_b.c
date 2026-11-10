@@ -1,5 +1,8 @@
 #ifdef PORT
 #include "tag_tournament_port.h"
+#include "tag_tournament_grid.h"
+#include "tag_tournament_view.h"
+static void *sPortBracketGrid;
 extern int Port_TagTourCpuMatch(void *bracket);
 extern void Port_TagTourSkip(void *bracket);
 #endif
@@ -41,9 +44,19 @@ void Bracket_Init(void) {
     McFlow_Init(1);
     McFlow_SetDoneCb(0, Bracket_OnSaveDone, 0);
     McFlow_SetDoneCb(1, Bracket_OnSaveDone, 0);
-    ChrGrid_Build(&gBracket->gridOutCount, gBracket->gridBuf, &gBracket->gridCount, gBracket->grid, NULL, NULL);
-    gBracket->gridCount = gBracket->gridOutCount;
-    gBracket->grid = gBracket->gridBuf;
+#ifdef PORT
+    if(gBracket->gridCount>0&&gBracket->gridCount<=1024){
+        s32 capacity=TT_GridCapacity(gBracket->gridCount);
+        sPortBracketGrid=Heap_Alloc(capacity*sizeof(gBracket->gridBuf[0]),0x20,0,2);
+        ChrGrid_Build(&gBracket->gridOutCount,sPortBracketGrid,&gBracket->gridCount,gBracket->grid,NULL,NULL);
+        gBracket->grid=sPortBracketGrid;
+    }else
+#endif
+    {
+        ChrGrid_Build(&gBracket->gridOutCount,gBracket->gridBuf,&gBracket->gridCount,gBracket->grid,NULL,NULL);
+        gBracket->grid=gBracket->gridBuf;
+    }
+    gBracket->gridCount=gBracket->gridOutCount;
     gBracket->imageFile[0] = Heap_Alloc(MCHAR_FACE_PACKED_BYTES, 0x40, 0, 2);
     gBracket->imageFile[1] = Heap_Alloc(MCHAR_FACE_PACKED_BYTES, 0x40, 0, 2);
     gBracket->imageRes[0] = Heap_Alloc(0x20800, 0x20, 0, 2);
@@ -102,6 +115,8 @@ void Bracket_Init(void) {
 /* Frees everything Init and Load allocated. */
 void Bracket_Term(void) {
 #ifdef PORT
+    if(sPortBracketGrid){Heap_Free(sPortBracketGrid);sPortBracketGrid=NULL;}
+    {struct TTBracketView v={0};Port_TagTourBracketPublish(&v);}
     Port_TournamentFrame(0,0,0,0);
 #endif
     s32 i;
@@ -154,29 +169,43 @@ void Bracket_Term(void) {
 /* Draws the backdrop, the tree, the moving chips, the guide with its message window, the panels and the reward window. */
 void Bracket_Draw(void) {
 #ifdef PORT
+    int modern=Port_TagTourActive()&&TT_BracketModern(gBracket->flags);
+#endif
+#ifdef PORT
     Port_TournamentFrame(3,0,0,gBracket->round);
     Port_TagTourHudState(-1,-1,-1,Port_TagTourActive()&&(gBracket->flags&BRK_INPUT)&&Port_TagTourCpuMatch(gBracket));
+#endif
+#ifdef PORT
+    {struct TTBracketView v;int i,j;memset(&v,0,sizeof(v));
+     v.active=modern;v.round=gBracket->round;v.match=gBracket->match;v.flags=gBracket->flags;v.win_side=gBracket->winSide;v.sequence=gBracket->seq;
+     if(v.active){
+      for(i=0;i<17;i++){struct TTTeam team;int id=gBracket->ents.e[i].unk2-0x5400;v.team[i]=id;v.entry_flags[i]=gBracket->ents.e[i].flags;
+       if(Port_TagTourTeam(id,&team)){v.count[i]=team.count;v.human[i]=team.human;for(j=0;j<team.count&&j<5;j++){v.character[i][j]=team.fighter[j].character;v.costume[i][j]=team.fighter[j].costume;}}
+      }
+      for(i=0;i<16;i++){v.match_flags[i]=gBracket->matches.m[i].flags;v.entrant[i][0]=gBracket->matches.m[i].ent[0];v.entrant[i][1]=gBracket->matches.m[i].ent[1];v.next[i]=gBracket->matches.m[i].next;}
+     }Port_TagTourBracketPublish(&v);
+    }
 #endif
     TourBg_Draw();
     Bracket_SetupDraw(gBracket);
     #ifdef PORT
-    Port_TournamentDraw(&gBracket->flash[BRK_FL_TREE],NULL);
+    if(!modern)Port_TournamentDraw(&gBracket->flash[BRK_FL_TREE],NULL);
     #else
     Flash_Draw(&gBracket->flash[BRK_FL_TREE]);
     #endif
     #ifdef PORT
-    Port_TournamentDraw(&gBracket->flash[BRK_FL_MOVE_A],NULL);
+    if(!modern)Port_TournamentDraw(&gBracket->flash[BRK_FL_MOVE_A],NULL);
     #else
     Flash_Draw(&gBracket->flash[BRK_FL_MOVE_A]);
     #endif
     #ifdef PORT
-    Port_TournamentDraw(&gBracket->flash[BRK_FL_MOVE_B],NULL);
+    if(!modern)Port_TournamentDraw(&gBracket->flash[BRK_FL_MOVE_B],NULL);
     #else
     Flash_Draw(&gBracket->flash[BRK_FL_MOVE_B]);
     #endif
     if (gBracket->flags & BRK_VS_FRONT) {
         #ifdef PORT
-        Port_TournamentDraw(&gBracket->flash[BRK_FL_VS],NULL);
+        if(!modern)Port_TournamentDraw(&gBracket->flash[BRK_FL_VS],NULL);
         #else
         Flash_Draw(&gBracket->flash[BRK_FL_VS]);
         #endif
@@ -199,7 +228,7 @@ void Bracket_Draw(void) {
         Flash_Draw(&gBracket->flash[BRK_FL_GUIDE]);
         #endif
         #ifdef PORT
-        Port_TournamentDraw(&gBracket->flash[BRK_FL_VS],NULL);
+        if(!modern)Port_TournamentDraw(&gBracket->flash[BRK_FL_VS],NULL);
         #else
         Flash_Draw(&gBracket->flash[BRK_FL_VS]);
         #endif
@@ -322,7 +351,16 @@ void Bracket_Update(void) {
 }
 
 /* Left / right scroll the tree while the player may look at it; confirm starts the next match. */
+#ifdef PORT
+static int sPortTournamentConfirm;
+extern void PortInput_KeyboardContext(unsigned);
+#endif
 void Bracket_Input(s32 *result) {
+#ifdef PORT
+    /* A single Cross during the bracket entrance must not be lost while the
+       native announcer/animation still owns BRK_INPUT. */
+    if(Port_TagTourActive()&&(gPad[0].pressed&PAD_CROSS))sPortTournamentConfirm=1;
+#endif
     if (gBracket->flags & BRK_INPUT) {
 #ifdef PORT
         if(Port_TagTourActive()&&(gPad[0].gamePressed&0x400)){
@@ -346,7 +384,14 @@ void Bracket_Input(s32 *result) {
                     gBracket->scroll = -512.0f;
                 }
             }
-        } else if (gPad[0].gamePressed & 0x200) {
+        } else if ((gPad[0].gamePressed & 0x200)
+#ifdef PORT
+                   ||(Port_TagTourActive()&&sPortTournamentConfirm)
+#endif
+        ) {
+#ifdef PORT
+            sPortTournamentConfirm=0;
+#endif
             Bracket_StartVs(gBracket);
             gBracket->flags ^= BRK_INPUT;
             Snd_PlaySe(1, 1);
@@ -362,6 +407,9 @@ s32 Bracket_Run(void) {
     s32 result = 1;
 
     Bracket_Init();
+#ifdef PORT
+    sPortTournamentConfirm=0;PortInput_KeyboardContext(1);
+#endif
     gBracket->result = result;
     ColorFade_StartIn(0, 0, 0, 0x14);
     while (1) {

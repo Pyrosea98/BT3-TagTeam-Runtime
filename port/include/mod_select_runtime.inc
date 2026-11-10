@@ -8,7 +8,7 @@ extern void Battle_SetBgm(int bgm);
 static void fight_log(void);
 static MsView sMsPlan;
 static int sMsReady,sMsPlayers=1,sMsFight;
-void Port_ModSelectPlayers(int n){sMsPlayers=n<1?1:n>4?4:n;}
+void Port_ModSelectPlayers(int n){sMsPlayers=n<0?1:n>4?4:n;}
 int Port_ModSelectPlayerCount(void){return sMsPlayers;}
 void Port_ModSelectClear(void){sMsReady=0;sMsPlan.result_team=0;}
 int Port_ModSelectMulti(void){return sMsReady&&sMsPlan.team_count>2&&!Port_ScenarioActive();}

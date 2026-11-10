@@ -850,7 +850,7 @@ static s32 MainMenu_PortModes(void) {
         if (next == 40) {
             sPortModesDuel[0] = *(s32 *)((u8 *)gProgress + 0x620);
             sPortModesDuel[1] = *(s32 *)((u8 *)gProgress + 0x624);
-            *(s32 *)((u8 *)gProgress + 0x620) = Port_CoopActive() ? (Port_CoopLeader(0)>=0 && Port_CoopLeader(1)>=0 ? 1 : 0) : (players >= 2 ? 1 : 0);
+            *(s32 *)((u8 *)gProgress + 0x620) = players==0 ? 2 : Port_CoopActive() ? (Port_CoopLeader(0)>=0 && Port_CoopLeader(1)>=0 ? 1 : 0) : (players >= 2 ? 1 : 0);
             *(s32 *)((u8 *)gProgress + 0x624) = 1;
         } else if (next == 45) {
             *(s32 *)((u8 *)gProgress + 0x7D4) |= 0x10;

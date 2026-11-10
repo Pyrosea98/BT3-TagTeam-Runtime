@@ -254,7 +254,12 @@ s32 BtlAct_CanTransform(BtlActJChr *chr, u32 index, s32 needBlast, s32 needAllow
     s32 kind;
 
     if (index >= 4) {
+#ifdef PORT
+        extern int Port_Beta8ExtraFormField(int,int,int,int);
+        if(Port_Beta8ExtraFormField(BtlMember_GetActive(chr)->chara,BtlMember_GetActive(chr)->costume,index,0)<0)return 0;
+#else
         return 0;
+#endif
     }
 #ifdef PORT
     if(needAllowed&&!Port_CpuFormAllowed(chr,index))return 0;
@@ -547,10 +552,10 @@ s32 BtlAct_CanFuse(BtlActJChr *chr, s32 index, s32 needBlast, s32 needAllowed, s
         if (res == 215 || res == 220 || res == 223) {
             /* Only the requested GT costume family gains these recipes. */
             s32 source = BtlMember_GetActive(chr)->chara;
-            s32 gcost = (source == 7 || source == 8 || source == 10) ? BtlMember_GetActive(chr)->costume : pcost;
+            s32 gcost = (source == 7 || source == 8 || source == 10 || source == 233) ? BtlMember_GetActive(chr)->costume : pcost;
             s32 vcost = (source == 122 || source == 240 || source == 38) ? BtlMember_GetActive(chr)->costume : pcost;
 
-            if (gcost != 2 || vcost > 1) {
+            if ((gcost != 2 && source != 10 && pchara != 10 && source != 233 && pchara != 233) || vcost > 1) {
                 return 0;
             }
         }
@@ -582,7 +587,7 @@ s32 BtlAct_CanFuse(BtlActJChr *chr, s32 index, s32 needBlast, s32 needAllowed, s
 int Port_FusionReadyMask(BtlActJChr *chr) {
     extern int Port_TargetHuman(int),Port_NetActive(void),BattleReplay_IsActive(void);
     extern s32 BtlChar_FrameMod(s32);
-    static struct {void *who;int chara,costume,tick,mask;} cache[12];
+    static struct {void *who;int chara;int costume;int tick;int mask;} cache[12];
     int p=chr?chr->player:-1,now,i,partner,chara,costume;
     if(p<0||p>=12||Port_NetActive()||BattleReplay_IsActive()||!Port_TargetHuman(p)||!BtlChar_IsFree(chr)||!chr->form.allowed)return 0;
     now=BtlChar_FrameMod(0x7fffffff);chara=BtlMember_GetActive(chr)->chara;costume=BtlMember_GetActive(chr)->costume;

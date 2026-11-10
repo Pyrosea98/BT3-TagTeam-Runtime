@@ -7,7 +7,7 @@ def ex(n):
  return s[a:i]
 head=r"""#include <cassert>
 #include <cstring>
-using s32=int;using u32=unsigned;
+using f32=float;using s32=int;using u32=unsigned;
 #define PORT 1
 #define PORT_SEQ_TEAMS 10
 #define PORT_ENDDBG(n) ((void)0)
@@ -21,10 +21,20 @@ using s32=int;using u32=unsigned;
 #define BTL_REASON_KO 4
 #define BTL_REASON_BIT18 0x40000
 struct BattleResult{int winner,reason;};struct Work{int flags;};static BattleResult result;static Work work;static int count=10,hp[10],consumed[10],team[10],bench[10],wait,off,timeup,mode,replay;
-BattleResult*Battle_GetResult(){return &result;}Work*Battle_GetWork(){return &work;}int BtlSeq_GetEndCheckOff(){return off;}int BtlCharApi_AnyHasFlag128(){return wait;}int BtlSeq_TickClocksExt(){return timeup;}int Battle_GetMode(){return mode;}int Port_JudgeTeams(BattleResult*){return 0;}void BtlSeq_JudgeByHealth(BattleResult*r){r->winner=1;}int BtlCtrl_TestFlag7(int){return 0;}int BtlChar_GetCount(){return count;}int Port_Team(int i){return team[i];}int BtlCharApi_GetHp(int i){return hp[i];}int Port_FusionConsumedActor(int i){return consumed[i];}int BtlCtrl_IsTeamDead(int i){return hp[i]<=0&&bench[i]<=0;}int BattleReplay_IsActive(){return replay;}int BattleReplay_TestDataFlag(){return 0;}
-void reset(){result={};work={};count=10;wait=off=timeup=mode=replay=0;memset(consumed,0,sizeof(consumed));for(int i=0;i<10;i++){team[i]=i<6?0:1;hp[i]=100;bench[i]=10000;}}
+BattleResult*Battle_GetResult(){return &result;}Work*Battle_GetWork(){return &work;}int BtlSeq_GetEndCheckOff(){return off;}int BtlCharApi_AnyHasFlag128(){return wait;}int BtlSeq_TickClocksExt(){return timeup;}int Battle_GetMode(){return mode;}int Port_JudgeTeams(BattleResult*){return 0;}void BtlSeq_JudgeByHealth(BattleResult*r){r->winner=1;}int Port_ScenarioIndependentTeams(){return 0;}int Port_ScenarioObjectiveEnd(const int*,int){return 0;}int Port_StoryEndPending(){return 0;}int Port_ModSelectMulti(){return 0;}void Port_ModSelectResult(int){}int tag=0,ring[16]={};int Port_TagTourActive(){return tag;}int BtlCtrl_TestFlag7(int i){return ring[i];}int BtlCtrl_GetActiveMember(int i){return i%3;}void BtlCtrl_LowerHp(int i,int member,float p){assert(member==i%3&&p==0);hp[i]=0;}void Port_Dbg2(const char*,int,int){}int BtlChar_GetCount(){return count;}int Port_Team(int i){return team[i];}int BtlCharApi_GetHp(int i){return hp[i];}int Port_FusionConsumedActor(int i){return consumed[i];}int BtlCtrl_IsTeamDead(int i){return hp[i]<=0&&bench[i]<=0;}int BattleReplay_IsActive(){return replay;}int BattleReplay_TestDataFlag(){return 0;}
+void reset(){tag=0;memset(ring,0,sizeof(ring));result={};work={};count=10;wait=off=timeup=mode=replay=0;memset(consumed,0,sizeof(consumed));for(int i=0;i<10;i++){team[i]=i<6?0:1;hp[i]=100;bench[i]=10000;}}
 """
-foot=r"""int main(){reset();assert(!BtlSeq_CheckBattleEnd());
+foot=r"""int main(){
+ // Every physical actor receives the same individual elimination, roots included.
+ for(int victim=0;victim<10;victim++){
+  reset();tag=1;ring[victim]=1;assert(!BtlSeq_CheckBattleEnd());assert(hp[victim]==0);
+  for(int j=0;j<10;j++)if(j!=victim)assert(hp[j]==100);
+ }
+ reset();tag=1;for(int i=0;i<6;i++)ring[i]=1;assert(BtlSeq_CheckBattleEnd()&&result.winner==2);
+ reset();tag=1;for(int i=6;i<10;i++)ring[i]=1;assert(BtlSeq_CheckBattleEnd()&&result.winner==1);
+ reset();tag=1;count=2;team[1]=1;ring[1]=1;assert(BtlSeq_CheckBattleEnd()&&result.winner==1);
+ reset();ring[0]=1;assert(BtlSeq_CheckBattleEnd()&&result.winner==2&&result.reason==BTL_REASON_FLAG7);
+ reset();assert(!BtlSeq_CheckBattleEnd());
  // Reproduce live snapshot: all physical team0 dead; leaders retain healthy mirrored rows.
  for(int i=0;i<6;i++)hp[i]=0;assert(BtlSeq_CheckBattleEnd()&&result.winner==2&&result.reason==BTL_REASON_KO);
  reset();for(int i=6;i<10;i++)hp[i]=0;assert(BtlSeq_CheckBattleEnd()&&result.winner==1);

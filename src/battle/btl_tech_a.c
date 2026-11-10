@@ -1388,28 +1388,48 @@ s32 BtlParam_GetUnkAC(BtlTechChr *chr) {
     return STC_param(chr)->transDefault;
 }
 
+#ifdef PORT
+extern int Port_Beta8ExtraFormField(int,int,int,int);
+static s32 Port_ExtraForm(BtlTechChr *chr,s32 slot,s32 field){BtlTechMember*m=BtlMember_GetActive(chr);return m?Port_Beta8ExtraFormField(m->chara,m->costume,slot,field):-1;}
+#endif
+
 /* Parameter +0x98 + slot: transformation target, 0xFF = none. */
 s32 BtlParam_GetSlotId(BtlTechChr *chr, s32 slot) {
+#ifdef PORT
+    if(slot>=4){s32 value=Port_ExtraForm(chr,slot,0);return value<0?255:value*1;}
+#endif
     return STC_param(chr)->transTarget[slot];
 }
 
 /* Parameter +0x9C + slot, times 100000: blast gauge a transformation costs. */
 s32 BtlParam_GetSlotCost(BtlTechChr *chr, s32 slot) {
+#ifdef PORT
+    if(slot>=4){s32 value=Port_ExtraForm(chr,slot,1);return value<0?0:value*100000;}
+#endif
     return STC_param(chr)->transCost[slot] * 100000;
 }
 
 /* Parameter +0xA0 + slot. */
 s32 BtlParam_GetSlotA0(BtlTechChr *chr, s32 slot) {
+#ifdef PORT
+    if(slot>=4){s32 value=Port_ExtraForm(chr,slot,2);return value<0?0:value*1;}
+#endif
     return STC_param(chr)->transSeq[slot];
 }
 
 /* Parameter +0xA4 + slot. */
 s32 BtlParam_GetSlotA4(BtlTechChr *chr, s32 slot) {
+#ifdef PORT
+    if(slot>=4){s32 value=Port_ExtraForm(chr,slot,3);return value<0?0:value*1;}
+#endif
     return STC_param(chr)->transKind[slot];
 }
 
 /* Parameter +0xA8 + slot. */
 s32 BtlParam_GetSlotA8(BtlTechChr *chr, s32 slot) {
+#ifdef PORT
+    if(slot>=4){s32 value=Port_ExtraForm(chr,slot,4);return value<0?0:value*1;}
+#endif
     return STC_param(chr)->transA8[slot];
 }
 

@@ -425,6 +425,20 @@ void EftMulti_UpdateParts(s32 objId, EftJTask *task, EftJSet *set, s32 mode) {
         if (*set->mask & (1 << g)) {
             u8 *info = set->grp[g].info;
             s32 j;
+#ifdef PORT
+            /* Modded packs can advertise a group with no descriptor. The
+               table built by EftEmit_LoadSet is authoritative; never read
+               info[1] through an absent group (COM crash at +0xFE075). */
+            if (info == NULL) {
+                static u32 reported[16];
+                if ((u32)objId < 16 && !(reported[objId] & (1u << g))) {
+                    extern void Port_Dbg3(const char *, int, int, int, int);
+                    reported[objId] |= 1u << g;
+                    Port_Dbg3("effect missing emitter group (actor/group/mask)", objId, g, *set->mask, 0);
+                }
+                continue;
+            }
+#endif
 
             for (j = 0; j < info[1]; j++) {
                 if (!EftMulti_IsPartKind5(set, info[0], j)) {
@@ -856,6 +870,20 @@ void EftPropShot_UpdateParts(s32 objId, EftJTask *task, EftJSet *set, s32 mode) 
         if (*set->mask & (1 << g)) {
             u8 *info = set->grp[g].info;
             s32 j;
+#ifdef PORT
+            /* Modded packs can advertise a group with no descriptor. The
+               table built by EftEmit_LoadSet is authoritative; never read
+               info[1] through an absent group (COM crash at +0xFE075). */
+            if (info == NULL) {
+                static u32 reported[16];
+                if ((u32)objId < 16 && !(reported[objId] & (1u << g))) {
+                    extern void Port_Dbg3(const char *, int, int, int, int);
+                    reported[objId] |= 1u << g;
+                    Port_Dbg3("effect missing emitter group (actor/group/mask)", objId, g, *set->mask, 0);
+                }
+                continue;
+            }
+#endif
 
             for (j = 0; j < info[1]; j++) {
                 s32 res;
@@ -1209,6 +1237,20 @@ void EftBlast_UpdateParts(s32 objId, EftJTask *task, EftJSet *set, s32 mode) {
         if (*set->mask & (1 << g)) {
             u8 *info = set->grp[g].info;
             s32 j;
+#ifdef PORT
+            /* Modded packs can advertise a group with no descriptor. The
+               table built by EftEmit_LoadSet is authoritative; never read
+               info[1] through an absent group (COM crash at +0xFE075). */
+            if (info == NULL) {
+                static u32 reported[16];
+                if ((u32)objId < 16 && !(reported[objId] & (1u << g))) {
+                    extern void Port_Dbg3(const char *, int, int, int, int);
+                    reported[objId] |= 1u << g;
+                    Port_Dbg3("effect missing emitter group (actor/group/mask)", objId, g, *set->mask, 0);
+                }
+                continue;
+            }
+#endif
 
             for (j = 0; j < info[1]; j++) {
                 s32 res;
@@ -1757,6 +1799,20 @@ void EftShotTech_UpdateParts(s32 objId, EftJTask *task, EftJSet *set) {
         if (*set->mask & (1 << g)) {
             u8 *info = set->grp[g].info;
             s32 j;
+#ifdef PORT
+            /* Modded packs can advertise a group with no descriptor. The
+               table built by EftEmit_LoadSet is authoritative; never read
+               info[1] through an absent group (COM crash at +0xFE075). */
+            if (info == NULL) {
+                static u32 reported[16];
+                if ((u32)objId < 16 && !(reported[objId] & (1u << g))) {
+                    extern void Port_Dbg3(const char *, int, int, int, int);
+                    reported[objId] |= 1u << g;
+                    Port_Dbg3("effect missing emitter group (actor/group/mask)", objId, g, *set->mask, 0);
+                }
+                continue;
+            }
+#endif
 
             for (j = 0; j < info[1]; j++) {
                 s32 res;

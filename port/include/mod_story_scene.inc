@@ -773,7 +773,7 @@ static void st_scene_begin(BtlSeqTalkCtx *ctx, s32 chapter, s32 set, s32 first, 
     {extern void Port_StoryInterludeShow(int);if(ST_Interlude(chapter))Port_StoryInterludeShow(1);}
     if(set==ST_SET_CANON||set==ST_SET_ALT){extern void Port_StoryMusicStart(int);
      if(chapter==4)Port_StoryMusicStart(PortSongs_StoryBgm(stChapters[chapter].id,stChapters[chapter].saga,0));
-     else if(chapter==5)Port_StoryMusicStart(-1);
+     else if(chapter==5||chapter==21)Port_StoryMusicStart(-1);
     }
     sStRun.chapter = chapter;
     sStRun.set = set;
@@ -2658,6 +2658,25 @@ static void st_fight_update(void) {
         int a=Port_StoryCastActor(k);
         if(a>=0&&!Port_StorySceneParked(a)&&!(sStGoneActors>>a&1u)&&st_hp(a)>0&&a!=sStTiredActor)
           Port_StoryResumeCombatActor(a,n);
+      }
+    }
+    /* Pendulum trial: all five trainees are active combatants. Recover a
+       completed neutral CPU plan without interrupting attacks or hit reactions. */
+    if(chapter==21&&!sStRun.active&&sStEventRun<0&&sStAtkFrames<=0){
+      int k,j,a,n;extern void Port_StoryResumeCombatActor(int,int);
+      for(k=0;k<stCasts[chapter].count;k++){
+        a=Port_StoryCastActor(k);
+        if(a<0||Port_StorySceneParked(a)||(sStGoneActors>>a&1u)||st_hp(a)<=0)continue;
+        n=gPortTarget[a];
+        if(n<0||n>=ST_ACTORS||Port_StorySceneParked(n)||st_hp(n)<=0||Port_Team(n)==Port_Team(a)){
+          n=-1;
+          for(j=0;j<stCasts[chapter].count;j++)if(stCasts[chapter].actor[j].team!=stCasts[chapter].actor[k].team){
+            int foe=Port_StoryCastActor(j);
+            if(foe>=0&&!Port_StorySceneParked(foe)&&!(sStGoneActors>>foe&1u)&&st_hp(foe)>0){n=foe;break;}
+          }
+          if(n>=0)gPortTarget[a]=n;
+        }
+        Port_StoryResumeCombatActor(a,n);
       }
     }
     if(chapter==6&&sStCh7ReleaseFrames>0&&!sStRun.active&&sStEventRun<0&&sStAtkFrames<=0){

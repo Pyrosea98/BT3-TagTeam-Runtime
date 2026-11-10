@@ -1,12 +1,19 @@
 #ifndef MOD_COSTUME_OWNERSHIP_H
 #define MOD_COSTUME_OWNERSHIP_H
 static int B8CostumeSelectable(int c,int slot){unsigned mask=0;if(slot<0||slot>7)return 0;switch(c){
-case 3:mask=8u;break;
+case 173:mask=12u;break;
+case 3:case 4:case 5:case 6:case 200:mask=8u;break;
 case 17:mask=8u;break;
 case 18:mask=8u;break;
 case 28:mask=8u;break;
-case 34:mask=4u;break;
-case 39:mask=8u;break;
+case 34:case 35:case 36:case 237:mask=4u;break;
+case 12:mask=4u;break;
+case 31:mask=12u;break;
+case 32:mask=4u;break;
+case 39:case 40:mask=8u;break;
+case 74:case 193:mask=254u;break;
+case 312:mask=28u;break;
+case 313:case 314:case 315:mask=30u;break;
 case 41:mask=8u;break;
 case 42:mask=8u;break;
 case 43:mask=8u;break;
@@ -20,6 +27,8 @@ case 54:mask=4u;break;
 case 55:mask=2u;break;
 case 59:mask=6u;break;
 case 61:mask=12u;break;
+case 62:mask=4u;break;
+case 101:mask=4u;break;
 case 63:mask=2u;break;
 case 66:mask=8u;break;
 case 68:mask=4u;break;
@@ -43,7 +52,7 @@ case 100:mask=4u;break;
 case 103:mask=12u;break;
 case 109:mask=14u;break;
 case 110:mask=8u;break;
-case 111:mask=10u;break;
+case 111:mask=14u;break;
 case 113:mask=12u;break;
 case 114:mask=8u;break;
 case 115:mask=8u;break;
@@ -70,8 +79,11 @@ case 153:mask=12u;break;
 case 154:mask=2u;break;
 case 155:mask=12u;break;
 case 158:mask=12u;break;
+case 165:mask=24u;break;
+case 232:mask=8u;break;
 case 166:mask=6u;break;
 case 210:mask=2u;break;
 default:break;}return !(mask&(1u<<slot));}
+static int B8CostumeDisplayNumber(int c,int slot){int n=0,k;switch(c){case 3:case 4:case 5:case 6:case 200:case 39:case 40:case 34:case 35:case 36:case 237:for(k=0;k<=slot;k++)if(B8CostumeSelectable(c,k))n++;return n>0?n:1;default:return slot+1;}}
 static int B8NextOwnedCostume(int c,int current,int delta,int count){int k,next=current;if(count<1||count>8)return 0;for(k=0;k<count;k++){next=(next+(delta<0?-1:1)+count)%count;if(B8CostumeSelectable(c,next))return next;}return current;}
 #endif

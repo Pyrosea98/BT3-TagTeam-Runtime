@@ -1,5 +1,7 @@
+#include "../../include/mod_costume_ownership.h"
 // Modern draft overlay. Real models are drawn by native ChrView underneath it.
 #include "../../include/mod_select.h"
+#include "../../include/tag_tournament_port.h"
 #include "../../include/b8_selection_rules.h"
 extern "C" int Port_Beta8CostumeIdentity(int,int);
 extern "C" const char *Port_CharaPower(int,int);
@@ -124,7 +126,7 @@ static void mod_select_draw(){
  if(v.roster_count<1||v.cursor<0||v.cursor>=v.roster_count)return;
  ++sMhStamp;
  ImVec2 sz=ImGui::GetIO().DisplaySize;float k=sz.y/720.f,edge=24*k,left=sz.x*.44f;
- bool es=Port_Setting("mod_language",1)==1;ImDrawList *dl=ImGui::GetForegroundDrawList();
+ bool es=Port_Setting("mod_language",1)==1;bool yamcha=v.mode==4&&Port_TagTourConfig(2)==4;ImDrawList *dl=ImGui::GetForegroundDrawList();
  ImFont *font=Ui_FontBold();if(!font)font=ImGui::GetFont();
  auto text=[&](const char *s,float x,float y,float fs,ImU32 color,float fit){
   fs*=k;float w=font->CalcTextSizeA(fs,10000,0,s).x;if(w>fit&&w>0)fs*=fit/w;
@@ -138,17 +140,18 @@ static void mod_select_draw(){
  dl->AddLine(ImVec2(edge,82*k),ImVec2(sz.x-edge,82*k),gold,1.3f*k);
  text(es?"ELIGE TU EQUIPO":"BUILD YOUR TEAM",edge,18*k,27,gold,left-edge);
  char line[180];snprintf(line,sizeof(line),v.mode==2?(es?"Todos contra todos  /  %d luchadores":"Free-for-All  /  %d fighters"):(es?"Tag Team  /  %d vs %d":"Tag Team  /  %d vs %d"),v.mode==2?v.total:v.a,v.total-v.a);
- if(v.mode!=2&&MS_Teams(&v)>2)snprintf(line,sizeof(line),es?"%d equipos / %d luchadores":"%d teams / %d fighters",MS_Teams(&v),v.total);
+ if(v.mode==4)snprintf(line,sizeof(line),es?"TORNEO TAG TEAM  /  EQUIPO %d  /  %d luchadores":"TAG TEAM TOURNAMENT  /  TEAM %d  /  %d fighters",v.stage+1,v.total);
+ if(v.mode!=4&&v.mode!=2&&MS_Teams(&v)>2)snprintf(line,sizeof(line),es?"%d equipos / %d luchadores":"%d teams / %d fighters",MS_Teams(&v),v.total);
  text(line,sz.x*.48f,27*k,18,white,sz.x*.48f-edge);
  ms_kit_sprite(dl,15,ImVec2(left-74*k,84*k),ImVec2(65*k,45*k),IM_COL32(255,255,255,165));
  if(v.phase==3){
   float bx=edge,by=115*k,bw=left-edge*2;
   text(es?"CONFIRMA TU EQUIPO":"CONFIRM YOUR TEAMS",bx,by,24,gold,bw);
-  text(es?"Revisa tus luchadores antes de continuar.":"Review your fighters before continuing.",bx,by+36*k,15,white,bw);
+  text(yamcha?(es?"El sorteo decide personajes, formas y trajes.":"The draw chooses fighters, forms and costumes."):(es?"Revisa tus luchadores antes de continuar.":"Review your fighters before continuing."),bx,by+36*k,15,white,bw);
   float rowH=SDL_min(32*k,(sz.y-271*k-(by+76*k))/SDL_max(1,v.total));
   for(int i=0;i<v.total;i++){
    float y=by+76*k+i*rowH;char label[200];
-   snprintf(label,sizeof(label),es?"Equipo %d: %s":"Team %d: %s",MS_Side(&v,i)+1,Port_CharaName(v.pick[i].chara));
+   snprintf(label,sizeof(label),es?"Equipo %d: %s":"Team %d: %s",(v.mode==4?v.stage:MS_Side(&v,i))+1,Port_CharaName(v.pick[i].chara));
    dl->AddRectFilled(ImVec2(bx,y),ImVec2(bx+bw,y+rowH-2*k),IM_COL32(71,35,66,130),3*k);
    if(auto*t=ms_art(Port_Beta8CostumeIdentity(v.pick[i].chara,v.pick[i].costume)))dl->AddImage(ImTextureRef((ImTextureID)(intptr_t)t),ImVec2(bx+2*k,y),ImVec2(bx+rowH,y+rowH));
    text(label,bx+rowH+5*k,y+5*k,14,white,bw-rowH-8*k);
@@ -162,7 +165,7 @@ static void mod_select_draw(){
   text(es?"TAMAÑO DE LOS EQUIPOS":"TEAM SIZE",edge,117*k,21,white,left-edge*2);
   if(v.mode==2){text("10 x 1",edge,173*k,40,gold,left-edge*2);}
   else{
-   int teams=MS_Teams(&v),players=v.player_count>0?v.player_count:1,rows=1+teams+players;
+   int teams=MS_Teams(&v),players=v.player_count>=0?v.player_count:1,rows=1+teams+players;
    float step=SDL_min(31*k,(sz.y-420*k)/rows);
    for(int row=0;row<rows;row++){
     int amount=row==0?teams:row<=teams?MS_Count(&v,row-1):v.human_team[row-teams-1]+1;
@@ -205,7 +208,7 @@ static void mod_select_draw(){
   if(!name||!*name){snprintf(line,sizeof(line),es?"Personaje %d":"Fighter %d",cid);name=line;}
   char clean[180];snprintf(clean,sizeof(clean),"%s",name);char *cut=strchr(clean,'[');if(!cut)cut=strchr(clean,',');if(cut)*cut=0;
   text(clean,sz.x*.48f,100*k,28,gold,sz.x*.49f-edge);
-  snprintf(line,sizeof(line),es?"Traje %d   /   P%d elige":"Costume %d   /   P%d choosing",v.costume+1,v.pad+1);
+  snprintf(line,sizeof(line),es?"Traje %d   /   P%d elige":"Costume %d   /   P%d choosing",B8CostumeDisplayNumber(cid,v.costume),v.pad+1);
   text(line,sz.x*.48f,142*k,16,white,sz.x*.48f-edge);
   if(v.preset==0)snprintf(line,sizeof(line),es?"Potaras: normal":"Potaras: normal");
   else if(v.preset<=3)snprintf(line,sizeof(line),es?"Potaras: personalizado %d":"Potaras: custom set %d",v.preset);
@@ -219,7 +222,7 @@ static void mod_select_draw(){
    }
   }
   // Ownership lives next to the team roster, away from the model.
-  int activeTeam=(v.slot>=0&&v.slot<v.total)?MS_Side(&v,v.slot):0;
+  int activeTeam=v.mode==4?v.stage:(v.slot>=0&&v.slot<v.total)?MS_Side(&v,v.slot):0;
   snprintf(line,sizeof(line),es?"Equipo %d / P%d elige":"Team %d / P%d choosing",activeTeam+1,v.pad+1);
   text(line,sz.x*.66f,sz.y-46*k,14,activeTeam?pink:gold,sz.x*.34f-edge);
   if(v.phase==2&&v.form_count>0){
@@ -243,7 +246,7 @@ static void mod_select_draw(){
  for(int team=0;team<teams;team++){
   int count=MS_Count(&v,team),start=0;while(start<v.total&&MS_Side(&v,start)!=team)start++;
   float cw=usable/cols,x=edge+(team%cols)*cw,y=base+(team/cols)*63*k;
-  snprintf(line,sizeof(line),es?"EQUIPO %d":"TEAM %d",team+1);text(line,x,y,12,team&1?pink:gold,cw-8*k);
+  snprintf(line,sizeof(line),es?"EQUIPO %d":"TEAM %d",v.mode==4?v.stage+1:team+1);text(line,x,y,12,team&1?pink:gold,cw-8*k);
   float w=SDL_min(39*k,(cw-8*k-(count-1)*3*k)/count);
   for(int j=0;j<count;j++){int slot=start+j;MsPick&p=v.pick[slot];float px=x+j*(w+3*k),py=y+17*k;
    dl->AddRectFilled(ImVec2(px,py),ImVec2(px+w,py+w),IM_COL32(80,45,74,170),3*k);
@@ -254,6 +257,7 @@ static void mod_select_draw(){
  }
  if(v.error==2)text(es?"Este personaje ya está en tu equipo.":"This fighter is already on your team.",edge,sz.y-44*k,15,pink,sz.x-edge*2);
  else if(v.error)text(es?"La distribucion no tiene espacio para todos los jugadores.":"This split has no space for all assigned players.",edge,sz.y-44*k,15,pink,sz.x-edge*2);
+ else if(v.phase==3&&yamcha){const ModPadHint h[]={{MP_CROSS,es?"Confirmar":"Confirm"},{MP_SQUARE,es?"Sortear de nuevo":"Reroll"},{MP_CIRCLE,es?"Salir":"Cancel"}};mod_pad_hints(dl,ImVec2(edge,sz.y-39*k),sz.x-edge*2,k,h,3,15);}
  else if(v.phase==3){const ModPadHint h[]={{MP_CROSS,es?"Confirmar":"Confirm"},{MP_TRIANGLE,es?"Volver / editar":"Back / edit"},{MP_CIRCLE,es?"Salir":"Cancel"}};mod_pad_hints(dl,ImVec2(edge,sz.y-39*k),sz.x-edge*2,k,h,3,15);}
  else {
   {const ModPadHint h[]={{MP_L1R1,es?"Página":"Page"},{MP_L2R2,es?"Traje":"Costume"},{MP_R3,es?"Potaras":"Potaras"}};mod_pad_hints(dl,ImVec2(edge,sz.y-46*k),sz.x-edge*2,k,h,3,13);}

@@ -101,6 +101,9 @@ void File_InitRequests(void);
 s32 File_IsBusy(void);
 s32 File_GetPendingCount(void);
 void File_CancelRequests(void);
+#ifdef PORT
+void Port_FileKeepRequestBuffer(void *buffer);
+#endif
 void *File_Request(s32 id, void *buf);
 s32 File_UpdateRequests(void);
 FileReqQueue *File_GetRequestQueue(void);

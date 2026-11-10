@@ -49,7 +49,7 @@ extern int BtlChar_TestFlag(void GAME_PTR chr, unsigned n);
 
 extern int Port_FilePath(int ptid, int flid, const char *fname, char *out, int size); /* plat_file.c */
 #define FACE_FILE 0x2F9 /* the large portraits (the character select's): file FACE_FILE + character of partition 1 */
-#define CHARA_MAX 302 /* stock roster, native aliases and Yajirobe (301) */
+#define CHARA_MAX 326 /* stock roster, native aliases and Yajirobe (301) */
 
 /* include/battle/btl_char_member.h: BtlMemberChr */
 #define CHR_ACTIVE 0x994
@@ -182,7 +182,8 @@ static void read_revive_rings(FpState*st){
  phase=BtlChar_FrameMod(30000)*speed*.0003333333f;wave=.5f+.5f*sinf(phase*6.283185307f);
  for(i=0;i<BtlChar_GetCount()&&i<FP_ACTORS;i++){
   void*c=BtlChar_Get(i),*m=c?BtlMember_GetActive(c):0;float*p,y;FpReviveRing*ring=&st->reviveRing[i];
-  {extern int Port_StoryNoRevive(int),Port_StorySceneParked(int);if(Port_StoryNoRevive(i)||Port_StorySceneParked(i))continue;}
+  {extern int Port_StoryNoRevive(int),Port_StorySceneParked(int),Port_FusionConsumedActor(int);if(Port_StoryNoRevive(i)||Port_StorySceneParked(i)||Port_FusionConsumedActor(i))continue;
+   {extern int Port_TagTourActive(void),BtlCtrl_TestFlag7(int);if(Port_TagTourActive()&&BtlCtrl_TestFlag7(i))continue;}}
   if(!m||!rd(m,8)||rd(m,0x40)>0||rd(m,0x44)<=0||(i>=2&&Port_FightConsumed(i-2)))continue;
   p=(float*)BtlChar_GetPos(c);if(!p)continue;y=BtlCharApi_GetGroundY(rd(c,12));if(!(y>=-1000000&&y<=1000000))continue;
   ring->active=1;ring->team=Port_Team(i);

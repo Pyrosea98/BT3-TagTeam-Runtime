@@ -900,6 +900,10 @@ f32 BtlCharApi_GetRadius(s32 objId) {
     if (obj != NULL) {
         if (obj->param != NULL) {
             r = obj->param->radius;
+#ifdef PORT
+            /* The fallback below already reads scaled body dimensions. */
+            if(r>0){extern float Port_GiantScale(const void*);r*=Port_GiantScale(obj);}
+#endif
         }
         if (r <= 0.0f) {
             r = obj->unkFF0 * 1.8f;

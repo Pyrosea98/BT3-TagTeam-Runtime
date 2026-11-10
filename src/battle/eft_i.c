@@ -868,6 +868,10 @@ void EftEmit_MarkCond(s32 objId, s32 extra, EftEmitSet *set, EftEmitState *state
             if (hdr->mask & (1 << type)) {
                 EftEmitGroup *grp = &set->grp[type];
                 EftEmitGroupDef *gd = grp->def;
+#ifdef PORT
+                /* Mask-only groups have no emitters to update or release. */
+                if (gd == NULL) { continue; }
+#endif
 
                 for (i = 0; i < gd->count; i++) {
                     s32 n = grp->first + i;
@@ -892,6 +896,10 @@ void EftEmit_MarkKind6(EftEmitSet *set, EftEmitState *state) {
         if (hdr->mask & (1 << type)) {
             EftEmitGroup *grp = &set->grp[type];
             EftEmitGroupDef *gd = grp->def;
+#ifdef PORT
+                /* Mask-only groups have no emitters to update or release. */
+                if (gd == NULL) { continue; }
+#endif
 
             for (i = 0; i < gd->count; i++) {
                 s32 n = grp->first + i;
@@ -923,6 +931,10 @@ void EftEmit_KillAll(EftEmitSet *set, EftEmitState *state) {
             if (hdr->mask & (1 << type)) {
                 EftEmitGroup *grp = &set->grp[type];
                 EftEmitGroupDef *gd = grp->def;
+#ifdef PORT
+                /* Mask-only groups have no emitters to update or release. */
+                if (gd == NULL) { continue; }
+#endif
 
                 for (i = 0; i < gd->count; i++) {
                     s32 n = grp->first + i;
@@ -1017,6 +1029,10 @@ s32 EftEmit_UpdateAlive(EftEmitSet *set, EftEmitState *state) {
             if (hdr->mask & (1 << type)) {
                 EftEmitGroup *grp = &set->grp[type];
                 EftEmitGroupDef *gd = grp->def;
+#ifdef PORT
+                /* Mask-only groups have no emitters to update or release. */
+                if (gd == NULL) { continue; }
+#endif
 
                 for (i = 0; i < gd->count; i++) {
                     s32 n = grp->first + i;
@@ -1529,6 +1545,10 @@ void EftSweep_Emit(s32 objId, EftTask *task, EftEmitSet *set, s32 reset) {
     for (type = 0; type < EFT_EMIT_TYPES; type++) {
         if (set->hdr->mask & (1 << type)) {
             EftEmitGroupDef *gd = set->grp[type].def;
+#ifdef PORT
+                /* Mask-only groups have no emitters to update or release. */
+                if (gd == NULL) { continue; }
+#endif
 
             for (i = 0; i < gd->count; i++) {
                 s32 flags;
@@ -1796,6 +1816,10 @@ void EftFollow_Emit(s32 objId, EftTask *task, EftEmitSet *set, s32 reset) {
     for (type = 0; type < EFT_EMIT_TYPES; type++) {
         if (set->hdr->mask & (1 << type)) {
             EftEmitGroupDef *gd = set->grp[type].def;
+#ifdef PORT
+                /* Mask-only groups have no emitters to update or release. */
+                if (gd == NULL) { continue; }
+#endif
 
             for (i = 0; i < gd->count; i++) {
                 s32 flags;

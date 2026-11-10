@@ -13,7 +13,7 @@ h=r'''#include <cassert>
 #include <initializer_list>
 #include "mod_shadow_balance.h"
 using u8=unsigned char;struct BtlMgrMember{int chara,costume;};struct BtlMgrObj{unsigned char bytes[0x1000];};struct BtlMgrChr{BtlMgrMember m;BtlMgrObj obj;int objId;};
-void Port_Beta8Ssj4Load(int,int,void*){}
+int Port_Beta8ExtraFormField(int,int,int,int){return 255;}void Port_Beta8Ssj4Load(int,int,void*){}
 BtlMgrObj*BtlChar_GetObj(BtlMgrChr*c){return &c->obj;}BtlMgrMember*BtlMember_GetActive(BtlMgrChr*c){return &c->m;}
 int Port_Beta8PatchFormParam(int,void*){return 0;}void Port_Beta8PatchCostumeFormParam(int c,int,void*p){Port_Beta8PatchFormParam(c,p);}int Port_Beta8HasFormPolicy(int,int){return 0;}int Port_Beta8CostumeFormTarget(int,int,int t){return t;}int Port_Beta8FormTarget(int,int t){return t;}const char*Port_CharaName(int){return "Fighter";}unsigned Port_GameBigAlloc(int){assert(false);return 0;}
 '''
@@ -34,8 +34,13 @@ int gt[][4]={{7,122,110,215},{8,240,53,220},{10,38,54,223}};
 for(auto &row:gt)for(int role=0;role<2;role++){
  unsigned char p[256];memset(p,255,256);Port_PatchSkillText(row[role],role?0:2,p,nullptr);
  assert(p[0xb4]==row[2]&&p[0xb5]==row[3]&&p[0xb7]==row[role^1]&&p[0xb8]==row[role^1]);
- assert(p[0xb1]==1&&p[0xb2]==2);for(int i=0;i<8;i++)assert(p[0xba+i]==row[role^1]);
+ assert(p[0xb1]==1&&p[0xb2]==2);for(int i=0;i<8;i++)assert(p[0xba+i]==(row[role]==38&&i%4==1?233:row[role^1]));
 }
+for(int costume=0;costume<8;costume++){
+ unsigned char p[256];memset(p,255,256);Port_PatchSkillText(10,costume,p,nullptr);
+ assert(p[0xb4]==54&&p[0xb5]==223&&p[0xb7]==38&&p[0xb8]==38);
+}
+for(int costume=0;costume<8;costume++){unsigned char p[256];memset(p,255,256);Port_PatchSkillText(233,costume,p,nullptr);assert(p[0xb4]==54&&p[0xb5]==223&&p[0xb7]==38&&p[0xb8]==38);}
 for(int cid:{214,215,216,218,219,220,221,222,223,224,225,226,229,230,234,235,238,239,241}){
  unsigned char p[256];memset(p,0,256);p[0xb4]=54;p[0xb5]=59;p[0xba]=p[0xbe]=53;Port_PatchSkillText(cid,0,p,nullptr);assert(p[0xb4]==255&&p[0xb5]==255&&p[0xb6]==255);
 }

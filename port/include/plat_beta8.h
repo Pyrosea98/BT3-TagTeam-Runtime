@@ -27,6 +27,7 @@ void *Port_Beta8LoadChipBundle(int chara);
 void Port_Beta8FreeChipBundle(void *data);
 int Port_Beta8StockAlias(int chara); /* stock id (0..160) an alias resolves to, or -1 */
 void Port_Beta8PowerIdentity(int *chara,int *costume);
+int Port_Beta8FormAllowed(int base,int costume,int target);
 int Port_Beta8FormList(int id, int *out, int max); /* a split cell's entries, base first; 0 = none */
 int Port_Beta8PatchFormParam(int chara, void *param); /* writes the split form chain into a live BtlParam */
 int Port_Beta8FormTarget(int source, int target); /* the entry a transformation of `source` really loads */
@@ -54,4 +55,5 @@ int Port_Beta8TransformCostume(int,int,int);
 
 const char *Port_Beta8DragonName(int);
 void Port_Beta8PatchDragonNames(void*);
+int Port_Beta8ExtraFormField(int,int,int,int);
 #endif

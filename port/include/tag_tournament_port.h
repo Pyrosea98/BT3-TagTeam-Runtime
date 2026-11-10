@@ -1,6 +1,7 @@
 #ifndef TAG_TOURNAMENT_PORT_H
 #define TAG_TOURNAMENT_PORT_H
 #include "tag_tournament_core.h"
+#include "tag_tournament_random.h"
 /* Progress flags shared with menu_k.h; that legacy header has incompatible grid views. */
 #define PORT_TT_PROGRESS_RUNNING 0x10
 #define PORT_TT_PROGRESS_GREETED 0x20
@@ -16,6 +17,8 @@ void Port_TagTourDraftCursor(int member);
 void Port_TagTourDraftStop(void);
 int Port_TagTourDraftMember(int member,int character,int costume,const unsigned short *items);
 int Port_TagTourCommit(void);
+int Port_TagTourRandomCatalog(const struct TTRandomChoice*,int,unsigned);
+int Port_TagTourRandomFighter(const int*,int,struct TTFighter*);
 int Port_TagTourSeed(const struct TTFighter *roster,int count,unsigned seed);
 int Port_TagTourTeam(int team,struct TTTeam *out);
 int Port_TagTourMatch(int left,int right,int swap);

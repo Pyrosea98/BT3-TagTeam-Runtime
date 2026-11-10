@@ -99,6 +99,7 @@ int Port_StorySagaState(int saga){
  if(saga<0||saga>=ST_SAGA_COUNT)return 0;
  for(i=0;i<ST_COUNT;i++)progress[i]=st_progress(i);
  for(i=0;i<ST_SAGA_COUNT;i++)if(ST_SagaCleared(i,stSagaFinalized[i],progress))completed|=1u<<i;
+ if(st_group_bits(8)&16u)completed|=1u; /* retain an already-earned Namek unlock */
  if(ST_SagaFirst(saga)>=0)state|=1;
  if(ST_SagaCanOpen(saga,completed))state|=2;
  if(completed&(1u<<saga))state|=4;
@@ -173,7 +174,7 @@ void Port_StoryAcknowledge(void){Port_StoryMusicEnd();Port_StoryClear();sStGrant
 static int sStChainSaved,sStChainReceipt[8];
 int Port_StoryInterludeAdvance(void){
  int next=-1;
- if(!sStChainSaved&&(sStOutcomeChapter==4||sStOutcomeChapter==5)&&(sStOutcome==ST_CANON||sStOutcome==ST_ALT)){
+ if(!sStChainSaved&&(sStOutcomeChapter==4||sStOutcomeChapter==21)&&(sStOutcome==ST_CANON||sStOutcome==ST_ALT)){
   sStChainReceipt[0]=sStOutcome;sStChainReceipt[1]=sStZeni;sStChainReceipt[2]=sStBalanceBefore;sStChainReceipt[3]=sStBalanceAfter;
   sStChainReceipt[4]=sStGrantedBall;sStChainReceipt[5]=sStNewChapter;sStChainReceipt[6]=sStDifficulty;sStChainReceipt[7]=sStChapter;sStChainSaved=1;next=sStOutcomeChapter==4?17:19;
  }else if(sStChainSaved&&sStOutcomeChapter==17)next=18;

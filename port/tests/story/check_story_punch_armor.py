@@ -31,6 +31,7 @@ code = r'''#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include "mod_damage_safe.h"
+#include "mod_power_armor.h"
 #include "common.h"
 #include "battle/btl_char_hit.h"
 #include "mod_story.h"
@@ -45,6 +46,11 @@ static int st_chapter(void){return chapter;}
 void Port_Dbg3(const char*s,int a,int b,int c,int d){}
 int Port_StoryCastActor(int cast){return chapter>=0&&cast>=0&&cast<stCasts[chapter].count?castToActor[cast]:-1;}
 ''' + gate + r'''
+static long long paPower[326];static int paAction,paNet,paReplay,paHeld,paPaired;
+int Port_NetActive(void){return paNet;}int BattleReplay_IsActive(void){return paReplay;}
+int Port_StoryHeld(int a){return paHeld;}int Port_SequencePartner(int a){return paPaired?0:-1;}
+long long Port_CharaPowerValue(int c,int co){return c>=0&&c<326?paPower[c]:0;}
+int Port_StoryActorPower(int actor,int form){return 0;}
 static HitMember members[16];HitMember*BtlMember_GetActive(HitChr*c){return members+c->player;}
 s32 BtlChar_GetCount(void){return 16;}
 HitChr*BtlChar_Get(s32 i){return chars+i;}
@@ -68,7 +74,7 @@ void BtlMove_SetImpulseYaw(HitChr*c,f32 y,f32 s){pushes++;}
 void BtlMove_AimVerticalAtOpponent(HitChr*c,s32 a){}
 s32 BtlAnim_GetId(HitChr*c){return 0;}
 u32 BtlAnim_GetFlags(s32 id){return 0;}
-s32 BtlAct_GetCurrent(HitChr*c){return 0;}
+s32 BtlAct_GetCurrent(HitChr*c){return paAction;}
 s32 BtlAct_TestPoweredSkill(HitChr*c,s32 m){return 0;}
 void BtlMember_Damage(HitChr*c,s32 a,s32 f){damageCalls++;damageTaken+=a;}
 void BtlMember_AddKi(HitChr*c,s32 a){}
@@ -125,8 +131,8 @@ int main(void){
   {2,3,{"Goku","Piccolo"},{"Raditz"}},
   {3,4,{"Piccolo"},{"Gohan"}},
   {4,5,{"Gohan"},{"Piccolo"}},
-  {6,7,{"Tenshinhan","Yamcha","Krillin","Piccolo","Gohan","Chaozu"},{"Nappa"}},
-  {11,8,{"Gohan","Krillin","Yajirobe"},{"Vegeta"}}};
+  {6,8,{"Tenshinhan","Yamcha","Krillin","Piccolo","Gohan","Chaozu"},{"Nappa"}},
+  {11,9,{"Gohan","Krillin","Yajirobe"},{"Vegeta"}}};
  assert(stCasts[11].count==5); /* no duplicate Goku / projectile actor */
  unsigned j,k;int ch,by,at;
  assert(sizeof(stPunchArmor)/sizeof(stPunchArmor[0])==sizeof(juan)/sizeof(juan[0]));
@@ -178,6 +184,17 @@ int main(void){
  /* A native no-flinch already chosen stays native (no double handling). */
  e18[castToActor[1]]=1;chapter=0;assert(strike(0,0,1)==2);e18[castToActor[1]]=0;
  puts("PASS actual native melee resolver + Story policy: CH1-5/7/8 listed allies' blows deal full damage with native no-flinch on the rival; Goku in CH7/CH8, other enemies, CH6, throws, authored attacks, cutscenes and non-Story modes keep native reactions");
+ /* Global power-gap rule is independent from the existing authored Story rules. */
+ members[0].chara=1;members[1].chara=2;paPower[1]=100;paPower[2]=499;reaction=5;kind=2;
+ assert(strike(-1,0,1)==5);paPower[2]=500;assert(strike(-1,0,1)==2&&damageTaken==1000);
+ assert(strike(-1,1,0)==5);paPower[2]=1000000000000000000LL;assert(strike(-1,0,1)==2);
+ paPower[1]=0;assert(strike(-1,0,1)==5);paPower[1]=100;
+ for(int k=0;k<=0xA3;k++){kind=k;reaction=5;int yes=PA_Physical(k,0,5);assert(strike(-1,0,1)==(yes?2:5));}
+ kind=2;for(int action=0xEC;action<=0x13B;action++){paAction=action;assert(strike(-1,0,1)==5);}paAction=0;
+ for(int mode=0;mode<4;mode++){paNet=mode==0;paReplay=mode==1;paHeld=mode==2;paPaired=mode==3;assert(strike(-1,0,1)==5);}paNet=paReplay=paHeld=paPaired=0;
+ assert(!PA_Outclassed(1000000000000000000LL,1000000000000000000LL));
+ assert(!PA_Physical(2,0,9)&&!PA_Physical(2,0,0x22));
+ puts("PASS actual 5x no-flinch: boundary/reversed/unknown/MAX powers, physical records/charged hits, unchanged damage, techniques/grabs/bursts/paired/Story-held/online/replay exclusions");
  return 0;
 }
 '''

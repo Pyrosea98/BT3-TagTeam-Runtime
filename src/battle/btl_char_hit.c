@@ -1,5 +1,6 @@
 #ifdef PORT
 #include "port_body_contacts.h"
+#include "mod_power_armor.h"
 #endif
 #include "mod_damage_safe.h"
 #include "common.h"
@@ -1319,6 +1320,21 @@ void BtlHit_ApplyHit(HitChr *atk) {
             react = 2;
             launch = 0;
         }
+    }
+#endif
+#ifdef PORT
+    {extern int Port_NetActive(void),BattleReplay_IsActive(void),Port_StoryHeld(int),Port_SequencePartner(int);
+     extern long long Port_CharaPowerValue(int,int);extern int Port_StoryActorPower(int,int);
+     if(!Port_NetActive()&&!BattleReplay_IsActive()&&PA_Physical(kind,BtlAct_GetCurrent(atk),react)&&
+        !Port_StoryHeld(atk->player)&&!Port_StoryHeld(def->player)&&
+        Port_SequencePartner(atk->player)<0&&Port_SequencePartner(def->player)<0){
+      HitMember *a=BtlMember_GetActive(atk),*d=BtlMember_GetActive(def);
+      if(a&&d){long long ap=Port_CharaPowerValue(a->chara,a->costume),dp=Port_CharaPowerValue(d->chara,d->costume);
+       int eraA=Port_StoryActorPower(atk->player,a->chara),eraD=Port_StoryActorPower(def->player,d->chara);
+       if(eraA>0)ap=eraA;if(eraD>0)dp=eraD;
+       if(PA_Outclassed(ap,dp)){react=2;launch=0;drain=0;def->react.back=back;}
+      }
+     }
     }
 #endif
     def->react.reaction = react;

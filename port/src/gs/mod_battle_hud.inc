@@ -24,10 +24,11 @@ static SDL_GPUTexture *mh_portrait(int cid,int costume,bool *stock=nullptr){
   if(k==0)snprintf(path,sizeof(path),"%s/beta8/custom-small-portraits/%03d.rgba",Port_FileRoot(),cid);
   else snprintf(path,sizeof(path),"%s/beta8/small-portraits/%03d-%d.rgba",Port_FileRoot(),cid,k==2?0:costume);
   f=fopen(path,"rb");if(!f)continue;
-  if(fread(shape,4,2,f)!=2||shape[0]!=64||shape[1]!=64){fclose(f);break;}
-  rgba=(uint8_t*)SDL_malloc(64*64*4);if(!rgba){fclose(f);break;}
-  if(fread(rgba,1,64*64*4,f)!=64*64*4||fgetc(f)!=EOF){SDL_free(rgba);fclose(f);break;}
-  fclose(f);sMhPortrait[slot].tex=Ui_Texture(rgba,64,64);sMhPortrait[slot].stock=k>=1;break;
+  if(fread(shape,4,2,f)!=2||shape[0]!=shape[1]||(shape[0]<32||shape[0]>512||(shape[0]&(shape[0]-1)))){fclose(f);continue;}
+  size_t bytes=(size_t)shape[0]*shape[1]*4;
+  rgba=(uint8_t*)SDL_malloc(bytes);if(!rgba){fclose(f);break;}
+  if(fread(rgba,1,bytes,f)!=bytes||fgetc(f)!=EOF){SDL_free(rgba);fclose(f);continue;}
+  fclose(f);sMhPortrait[slot].tex=Ui_Texture(rgba,shape[0],shape[1]);sMhPortrait[slot].stock=k>=1;break;
  }
  if(stock)*stock=sMhPortrait[slot].stock;return sMhPortrait[slot].tex;
 }

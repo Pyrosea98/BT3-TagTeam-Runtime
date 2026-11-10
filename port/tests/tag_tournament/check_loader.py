@@ -11,6 +11,7 @@ head=r"""
 #include "tag_tournament_port.h"
 #include "tag_tournament_grid.h"
 #include "plat_fighters.h"
+#include "mod_select.h"
 #include "coop_selection.h"
 #define PORT 1
 using s32=int;
@@ -24,6 +25,13 @@ struct Setup{BattleRule rule;BattleSide sides[2];} setup;
 int Battle_GetMode(){return setup.rule.mode;}
 int online;
 extern "C" int Port_NetActive(){return online;}
+extern "C" void Port_ModSelectPublish(const MsView*){}
+extern "C" int Port_ScenarioActive(){return 0;}
+extern "C" int Port_ScenarioStage(){return -1;}
+extern "C" int Port_ScenarioBgm(){return -1;}
+extern "C" void Battle_SetStartStage(int){assert(0);}
+extern "C" void Battle_SetBgm(int){assert(0);}
+
 static unsigned available=15;extern "C" int PortInput_PlayerAvailable(int p){return p>=0&&p<4&&(available&(1u<<p));}
 extern "C" int Port_Setting(const char*,int d){return d;}
 extern "C" void Port_SettingSave(const char*,int){}

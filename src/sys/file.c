@@ -333,6 +333,19 @@ s32 File_GetPendingCount(void) {
     return List_GetCount(&gFileReq.pending);
 }
 
+#ifdef PORT
+/* Transfer one queue-allocated buffer to its explicit resource owner before
+   cancellation. Cancel still stops the reader; only the resource frees this buffer. */
+void Port_FileKeepRequestBuffer(void *buffer) {
+    FileReq *req;
+    if (buffer == NULL) return;
+    for (req = (FileReq *)List_GetHead(&gFileReq.pending); req != NULL;
+         req = (FileReq *)List_GetNext(&req->node)) {
+        if (req->buf == buffer) req->flags &= ~FILE_REQ_OWNS_BUF;
+    }
+}
+#endif
+
 /* Aborts the batch in progress: stops the read, frees the buffers the queue allocated, drops every pending request. */
 void File_CancelRequests(void) {
     FileReqQueue *queue = &gFileReq;

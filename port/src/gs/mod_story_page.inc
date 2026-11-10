@@ -131,7 +131,7 @@ static void mod_story_page(unsigned view,int page,int cursor){
   // Later unlocks use their own authored chapter guide, never chapter2's greeting.
   if(selected!=0||welcomed[selected]>2){
    int remaining=(int)welcomed[selected],latest=ST_SagaFirst(selected);
-   for(int ch=0;ch<ST_COUNT;ch++)if(stChapters[ch].saga==selected&&--remaining==0){latest=ch;break;}
+   for(int n=0,ch=ST_SagaFirst(selected);n<ST_SagaChapterCount(selected)&&ch>=0;n++,ch=ST_SagaNextChapter(ch,1))if(--remaining==0){latest=ch;break;}
    if(latest>=0){const StGuideChapter*arrival=STG_Chapter(stChapters[latest].id);
     caption=visitLine==1?(es?"Pues vamos juntos. \302\241Todav\303\255a nos quedan muchas aventuras!":"Then let's go together. We still have plenty of adventures ahead!"):
       arrival?(visitLine==0?arrival->opening[L]:arrival->idle[L][0]):stChapters[latest].recap[L];

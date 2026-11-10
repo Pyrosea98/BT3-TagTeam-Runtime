@@ -1,5 +1,6 @@
 #ifdef PORT
 #include "tag_tournament_port.h"
+#include "mod_select.h"
 #include "plat_beta8.h"
 #include "tag_tournament_grid.h"
 static void *sPortTournamentGrid;
@@ -357,11 +358,11 @@ void EntrySel_Init(s32 section) {
     gEntrySel->grid = ((ESelGridList *)MPACK_AT(gEntrySel->res, 29))->cell;
     gEntrySel->gridCount = gEntrySel->res[gEntrySel->res[29] >> 2];
 #ifdef PORT
-    if(Port_TagTourActive()&&gEntrySel->gridCount>0&&gEntrySel->gridCount<=1024){
-        int capacity=(gEntrySel->gridCount+6)/7*7;
+    if(gEntrySel->gridCount>0&&gEntrySel->gridCount<=1024){
+        int capacity=TT_GridCapacity(gEntrySel->gridCount);
         sPortTournamentGrid=Heap_Alloc(capacity*sizeof(ESelCell),0x20,0,2);
         ChrGrid_Build(&gEntrySel->gridOutCount,sPortTournamentGrid,&gEntrySel->gridCount,gEntrySel->grid,NULL,NULL);
-        gEntrySel->gridOutCount=TT_CompactGrid(sPortTournamentGrid,gEntrySel->gridOutCount,capacity);
+        if(Port_TagTourActive())gEntrySel->gridOutCount=TT_CompactGrid(sPortTournamentGrid,gEntrySel->gridOutCount,capacity);
         gEntrySel->grid=sPortTournamentGrid;
     }else
 #endif
@@ -1102,6 +1103,22 @@ void EntrySel_UpdateEnd(void) {
 s32 EntrySel_Run(s32 section) {
     s32 result = 1;
 
+#ifdef PORT
+    if(Port_TagTourActive()){
+        MsPick picks[TT_MEMBERS];s32 n=TOUR_PROG->t.entryNum,i,j,ok;
+        /* Retain the native announcer resources/voice bank; our selector owns
+           models, input, family forms, costumes and saved Potara sets. */
+        EntrySel_Init(section);
+        Voice_PlayWithSubtitle(gEntrySel->subtitles,TOUR_VOICE_BASE,TOUR_PROG->t.tour==TOUR_WORLD?0x22:TOUR_PROG->t.tour==TOUR_BIG?0x7A:TOUR_PROG->t.tour==TOUR_CELL?0x4D:TOUR_PROG->t.tour==TOUR_OTHERWORLD?0x9F:0xCA);
+        ok=Port_ModSelectTournamentRun(picks,n);
+        if(ok)for(i=0;i<n;i++){
+            TourEntrant *e=&TOUR_PROG->t.entrant[i];memset(e,0,sizeof(*e));
+            e->chara=picks[i].chara;e->costume=picks[i].costume;e->player=i;e->flags=TOUR_ENT_PLAYER|TOUR_ENT_ITEMS;
+            for(j=0;j<8;j++)e->item[j]=(u16)picks[i].items[j];
+        }
+        EntrySel_Term();Dma_ResetBuffers();return ok;
+    }
+#endif
     EntrySel_Init(section);
     ColorFade_StartIn(0, 0, 0, 0x14);
     while (1) {

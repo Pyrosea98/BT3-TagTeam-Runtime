@@ -48,7 +48,7 @@ typedef struct FightExtra {
     int consumed;
 } FightExtra;
 static FightExtra sFight[PORT_EXTRA_MAX];
-static int sFightCount;static int sFusionMirror[12][5],sFusionOwner[12];
+static int sMsFight;static int sFightCount;static int sFusionMirror[12][5],sFusionOwner[12];
 int BtlChar_GetCount(){return 3;}int Port_Team(int i){return i==1?1:0;}
 static u8 sNoModelLogged[256];
 static int fusionResult = 51;
@@ -70,7 +70,7 @@ static void reset_world(void) {
     memset(&leaderStore, 0, sizeof(leaderStore));
     memset(&allyStore, 0, sizeof(allyStore));
     memset(sFight, 0, sizeof(sFight));
-    sFightCount = 0;
+    sFightCount = 0;sMsFight=0;memset(sFusionOwner,0,sizeof(sFusionOwner));
     leaderStore.player = 0;
     leaderStore.form.allowed = 1;
     *field(&leaderStore, 0x998) = 1;
@@ -107,6 +107,7 @@ int BtlParam_GetCostAE(void *chr, int index) { return 100000; }
 int BtlParam_GetUnkBA(void *chr, int index, int partner) { return fusionPartners[partner]; }
 int BattleSide_IsCharaUsable(int player, int chara) { return 1; }
 int BtlMember_HasBlast(void *chr, int cost) { return 1; }
+int Port_ScenarioFusionAllowed(int,int){return 1;}
 int Port_Setting(const char *key, int fallback) { return fallback; }
 int Port_FusionClockActive(int player) { return 0; }
 static int cooldowns[12],recipeSeq=1;
@@ -160,6 +161,10 @@ int main(void) {
     reset_world();cooldowns[0]=300;assert(!BtlAct_CanFuse(&leaderStore,0,1,1,&partner));
     cooldowns[0]=0;cooldowns[2]=300;assert(!BtlAct_CanFuse(&leaderStore,0,1,1,&partner));
     recipeSeq=2;assert(BtlAct_CanFuse(&leaderStore,0,1,1,&partner));recipeSeq=1;cooldowns[2]=0;assert(BtlAct_CanFuse(&leaderStore,0,1,1,&partner));
+    reset_world();sMsFight=1;sFight[0].member=-1;
+    assert(BtlAct_CanFuse(&leaderStore,0,1,1,&partner)&&partner==1);
+    *field(&allyStore,0x9a4+0x40)=0;assert(!BtlAct_CanFuse(&leaderStore,0,1,1,&partner));
+    *field(&allyStore,0x9a4+0x40)=30000;sFusionOwner[2]=1;assert(!BtlAct_CanFuse(&leaderStore,0,1,1,&partner));
     puts("PASS fusion admission: direct CanFuse mirrors live extras, dead/consumed rows scrubbed, native partners preserved");
     return 0;
 }

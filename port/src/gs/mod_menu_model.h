@@ -7,16 +7,23 @@
 #include "../../include/mod_story.h"
 #include "../../include/mod_achievements.h"
 struct ModMenuState { int page, cursor, pick; struct TTSetup tour; struct CoopSetup coop; };
-enum { MM_CLOSED, MM_ROOT, MM_PLAY, MM_PLAYERS, MM_SETTINGS, MM_CREDITS, MM_TOURSETUP, MM_COOPSETUP, MM_SCENARIOS, MM_CHALLENGES, MM_STORY, MM_ACHIEVEMENTS, MM_STORY_RESULT, MM_STORY_SAGAS };
+enum { MM_CLOSED, MM_ROOT, MM_PLAY, MM_PLAYERS, MM_SETTINGS, MM_CREDITS, MM_TOURSETUP, MM_COOPSETUP, MM_SCENARIOS, MM_CHALLENGES, MM_STORY, MM_ACHIEVEMENTS, MM_STORY_RESULT, MM_STORY_SAGAS, MM_SPECTATE };
 static int mm_count(int page) {
- return page==MM_ROOT?4:page==MM_PLAY?9:page==MM_PLAYERS?3:page==MM_SETTINGS?12:page==MM_ACHIEVEMENTS?MA_COUNT:1;
+ return page==MM_ROOT?4:page==MM_PLAY?10:page==MM_SPECTATE?2:page==MM_PLAYERS?3:page==MM_SETTINGS?12:page==MM_ACHIEVEMENTS?MA_COUNT:1;
 }
 static int mm_columns(int page){return page==MM_PLAY?3:2;}
 /* result: 1..3 launch mode; 10 close; 20..29 settings; 30 native tournament.
    players: Team/Training 1, Co-op 2..4, FFA 1..4 (FFA single default here). */
-static void mm_resume(struct ModMenuState *s,int pick){s->page=MM_PLAY;s->cursor=pick>=0&&pick<mm_count(MM_PLAY)?pick:0;s->pick=0;if(pick==7){s->page=MM_STORY;s->cursor=0;}}
+static void mm_resume(struct ModMenuState *s,int pick){s->page=MM_PLAY;s->cursor=pick>=0&&pick<mm_count(MM_PLAY)?pick:0;s->pick=0;if(pick==7){s->page=MM_STORY;s->cursor=0;}if(pick==9){s->page=MM_SPECTATE;s->cursor=0;}}
 static int mm_step(struct ModMenuState *s,unsigned pressed,unsigned repeat,int *players,int *sound) {
  int move=0; *sound=-1;
+ if(s->page==MM_SPECTATE){
+  if(pressed&0x2000){s->page=MM_CLOSED;*sound=2;return 10;}
+  if(pressed&(0x400|0x100)){s->page=MM_PLAY;s->cursor=9;*sound=2;return 0;}
+  if(repeat&15){s->cursor^=1;*sound=0;}
+  if(pressed&0x200){*players=0;*sound=1;return s->cursor+1;}
+  return 0;
+ }
  if(s->page==MM_STORY_SAGAS){
   if(pressed&0x2000){s->page=MM_CLOSED;*sound=2;return 10;}
   if(pressed&(0x400|0x100)){s->page=MM_PLAY;s->cursor=7;*sound=2;return 0;}
@@ -89,6 +96,7 @@ static int mm_step(struct ModMenuState *s,unsigned pressed,unsigned repeat,int *
   if(s->cursor==3){s->page=0;*sound=2;return 10;}
   s->page=s->cursor==0?MM_PLAY:s->cursor==1?MM_SETTINGS:MM_CREDITS;s->cursor=0;
  } else if(s->page==MM_PLAY){
+  if(s->cursor==9){s->page=MM_SPECTATE;s->cursor=0;return 0;}
   if(s->cursor==5){s->page=MM_SCENARIOS;s->cursor=0;return 0;}
   if(s->cursor==7){s->page=MM_STORY_SAGAS;s->cursor=0;return 0;}
   if(s->cursor==8){s->page=MM_ACHIEVEMENTS;s->cursor=0;return 0;}

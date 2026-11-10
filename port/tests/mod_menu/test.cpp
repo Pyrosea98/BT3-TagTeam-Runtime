@@ -26,8 +26,15 @@ int main(){
  mm_step(&s,0x100,0,&p,&sound);assert(s.page==MM_SCENARIOS);
  mm_step(&s,0x100,0,&p,&sound);assert(s.page==MM_PLAY&&s.cursor==5);
  for(int f=0;f<6;f++){s={MM_SCENARIOS,f,0};int oldp=p;assert(mm_step(&s,0,2,&p,&sound)==0&&s.cursor==(f+1)%6&&p==oldp);mm_step(&s,0,1,&p,&sound);assert(s.cursor==f);assert(mm_step(&s,0x200,0,&p,&sound)==0&&s.page==MM_CHALLENGES&&s.pick==f);}
- // The 3x3 Play grid reaches every mode; the new pages do not alias fight launches.
- assert(mm_count(MM_PLAY)==9&&mm_columns(MM_PLAY)==3);
+ // COM routes preserve original mode indexes and return zero human owners.
+ s={MM_PLAY,9,0};assert(mm_step(&s,0x200,0,&p,&sound)==0&&s.page==MM_SPECTATE);
+ assert(mm_step(&s,0x200,0,&p,&sound)==1&&p==0);
+ s={MM_SPECTATE,1,0};assert(mm_step(&s,0x200,0,&p,&sound)==2&&p==0);
+ assert(mm_step(&s,0x400,0,&p,&sound)==0&&s.page==MM_PLAY&&s.cursor==9);
+ mm_resume(&s,9);assert(s.page==MM_SPECTATE);mm_step(&s,0,2,&p,&sound);assert(s.cursor==1);
+ assert(mm_step(&s,0x2000,0,&p,&sound)==10&&s.page==MM_CLOSED);
+ // The expanded Play grid reaches every mode; the new pages do not alias fight launches.
+ assert(mm_count(MM_PLAY)==10&&mm_columns(MM_PLAY)==3);
  s={MM_PLAY,0,0};mm_step(&s,0,4,&p,&sound);assert(s.cursor==3);
  mm_step(&s,0,4,&p,&sound);assert(s.cursor==6);
  mm_step(&s,0,2,&p,&sound);assert(s.cursor==7);

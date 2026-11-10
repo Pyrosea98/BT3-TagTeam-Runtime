@@ -7,6 +7,8 @@ extern void Port_ReviveSpectator(int),BtlAct_Request(void*,int);
 typedef struct NativeRevive {int target,ticks,hp,lock,recovering,recovery,insufficient;} NativeRevive;
 static NativeRevive sRevive[16];
 static int rv_read(const void *p,int off){return *(const int*)((const unsigned char*)p+off);}
+extern int Port_TagTourActive(void),BtlCtrl_TestFlag7(int);
+static int rv_ringout(int who){return Port_TagTourActive()&&BtlCtrl_TestFlag7(who);}
 static int rv_gate(void){void *w=Battle_GetWork();return !Port_NetActive()&&!BattleReplay_IsActive()&&Port_Setting("revive_enabled",1)&&BtlChar_GetCount()>2&&BtlSeq_GetState()==3&&w&&!(rv_read(w,0x19f0)&0x100);}
 void Port_ReviveReset(void){memset(sRevive,0,sizeof(sRevive));}
 /* A story fighter joins the fight (a reserve leaving the sidelines, the next of a wave): health set as the native
@@ -45,8 +47,8 @@ void Port_ReviveTick(void){
   pos=(float*)BtlChar_GetPos(c);if(!pos){memset(r,0,sizeof(*r));continue;}
   for(j=0;j<n;j++)if(j!=i&&Port_Team(i)==Port_Team(j)&&!(j>=2&&Port_FightConsumed(j-2))){
    void *t=BtlChar_Get(j),*tm=t?BtlMember_GetActive(t):0;float *p;float d=0;int k;
-   {extern int Port_StoryNoRevive(int);if(Port_StoryNoRevive(j))continue;} /* story-dead stay down */
-   if(!tm||rv_read(tm,0x40)>0||rv_read(tm,0x44)<=0||!rv_read(tm,8)||!rv_eligible(t,1))continue;
+   {extern int Port_StoryNoRevive(int);if(Port_StoryNoRevive(j)||rv_ringout(j))continue;} /* story-dead stay down */
+   if(rv_ringout(j)||!tm||rv_read(tm,0x40)>0||rv_read(tm,0x44)<=0||!rv_read(tm,8)||!rv_eligible(t,1))continue;
    p=(float*)BtlChar_GetPos(t);if(!p)continue;for(k=0;k<3;k++){float v=pos[k]-p[k];d+=v*v;}if(!(d>=0&&d<=(float)radius*radius))continue;
    target=j;break;
   }
@@ -80,7 +82,7 @@ int Port_ReviveCpuHold(int who){
  pos=(float*)BtlChar_GetPos(c);if(!pos)return 0;
  for(j=0;j<n&&j<16;j++)if(j!=who&&Port_Team(who)==Port_Team(j)&&!(j>=2&&Port_FightConsumed(j-2))){
   void*t=BtlChar_Get(j),*tm=t?BtlMember_GetActive(t):0;float*p,d=0;int k;
-  if(!tm||rv_read(tm,0x40)>0||rv_read(tm,0x44)<=0||!rv_read(tm,8)||!rv_eligible(t,1))continue;
+  if(rv_ringout(j)||!tm||rv_read(tm,0x40)>0||rv_read(tm,0x44)<=0||!rv_read(tm,8)||!rv_eligible(t,1))continue;
   p=(float*)BtlChar_GetPos(t);if(!p)continue;for(k=0;k<3;k++){float v=pos[k]-p[k];d+=v*v;}
   if(d>=0&&d<=(float)radius*radius)return 1;
  }return 0;
