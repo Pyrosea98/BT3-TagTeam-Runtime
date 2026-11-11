@@ -482,7 +482,7 @@ static const int stChapterPower[ST_COUNT][ST_ACTORS]={
 ,
 {0},
 {0},
- {1770,1480,1830,610,970,3000,3000}
+ {1770,1480,1830,610,970,800,800}
 };
 /* Juan 2026-11-05: in these chapters the listed allies' melee hits (punches, kicks, rush and smash blows) still deal
    their damage but never make the rival react (native reaction 2, "no flinch"). Bits are stCasts indices, so a

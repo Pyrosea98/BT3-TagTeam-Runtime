@@ -586,7 +586,7 @@ static void b8_game_bundle_free(void *p){if(p)Port_LowFree(p);}
 void *Port_Beta8LoadSmallPortrait(int chara,int costume){
  char path[700];FILE *fp;unsigned char *b;uint32_t h[3];int i;const B8Alias *a=b8_alias(chara);
 
- if(chara==163||chara==281||(chara>=291&&chara<=328)||b8_custom_index(chara)>=0||(chara==59&&costume==0)){
+ if(chara==263||chara==163||chara==281||(chara>=291&&chara<=328)||b8_custom_index(chara)>=0||(chara==59&&costume==0)){
   snprintf(path,sizeof(path),"%s/beta8/custom-small-portraits/%03d.bin",root_dir(),chara);
   fp=fopen(path,"rb");if(fp){b=(unsigned char*)b8_game_bundle_alloc(0x2ac0);if(!b){fclose(fp);return NULL;}
    if(fread(b,1,0x2ac0,fp)==0x2ac0&&fgetc(fp)==EOF){memcpy(h,b,12);if(h[0]==2&&h[1]==8&&h[2]==32){fclose(fp);return b;}}

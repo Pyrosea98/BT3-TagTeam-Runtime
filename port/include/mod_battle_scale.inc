@@ -19,15 +19,16 @@ static void bt_scale_table(StCombatData*s,float strength,int nativeYajirobe){
  s->param.damageTaken=(nativeYajirobe?15.f:1.f)/strength;s->param.hitReactScale=1.f;
  {unsigned short cls=0;unsigned flags;memcpy(s->param.unk0,&cls,2);memcpy(&flags,s->param.unk0+0x10,4);flags&=~12u;memcpy(s->param.unk0+0x10,&flags,4);}
 }
+static int bt_reference_power(int c){return c==301?970:c==323||c==324?800:c==326||c==327?8000:0;}
 static void *bt_combat_table(void*fighter,int kind,void*original){
  BtlTechBChr*c=fighter;BtlTechBMember*m;BtlTechBObj*o;StCombatData*s;int a,mode;float strength;
  if(!c||Port_StoryActive()||Port_NetActive()||BattleReplay_IsActive())return original;
- mode=Port_BattleScaleMode();m=BtlMember_GetActive(c);if(!m||(mode==3&&m->chara!=301))return original;
+ mode=Port_BattleScaleMode();m=BtlMember_GetActive(c);if(!m||(mode==3&&!bt_reference_power(m->chara)))return original;
  a=*(int*)fighter;if(a<0||a>=16)return original;o=BtlChar_GetObj(c);if(!o||!o->param||!o->atk||!o->kiBlast||!o->super||!o->skill)return original;
  s=&sBtCombat[a];if(!s->valid||s->chara!=m->chara||sBtCostume[a]!=m->costume||sBtMode[a]!=mode){
  memcpy(&s->param,o->param,sizeof(s->param));memcpy(s->atk,o->atk,sizeof(s->atk));memcpy(s->ki,o->kiBlast,sizeof(s->ki));memcpy(&s->super,o->super,sizeof(s->super));memcpy(&s->skill,o->skill,sizeof(s->skill));
- strength=mode==3?sqrtf(970.f/1200.f):PS_Strength(Port_CharaPowerValue(m->chara,m->costume),mode);
- bt_scale_table(s,strength,mode==3&&m->chara==301);s->valid=1;s->chara=m->chara;sBtCostume[a]=m->costume;sBtMode[a]=mode;
+ strength=mode==3?sqrtf((float)bt_reference_power(m->chara)/1200.f):PS_Strength(Port_CharaPowerValue(m->chara,m->costume),mode);
+ bt_scale_table(s,strength,mode==3&&bt_reference_power(m->chara)>0);s->valid=1;s->chara=m->chara;sBtCostume[a]=m->costume;sBtMode[a]=mode;
  }
  switch(kind){case 0:return &s->param;case 1:return s->atk;case 2:return s->ki;case 3:return &s->super;case 4:return &s->skill;default:return original;}
 }

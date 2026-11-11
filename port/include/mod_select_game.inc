@@ -158,7 +158,7 @@ static int ms_catalog(MsView *v,int random){int i;
   }
  }
  /* Verified fighters share IDs with stock menu markers: insert only after marker filtering. */
- {static const int ids[]={161,163,164,291,300,301,317,319,320,321,322,185,271,278,323,324,325};int k,j,have;for(k=0;k<(int)(sizeof(ids)/sizeof(ids[0]));k++){ /* 301: Yajirobe (Juan approved, power 970) */have=0;for(j=0;j<v->roster_count;j++)if(v->roster[j]==ids[k])have=1;if(!have&&Port_Beta8SelectFormOwner(ids[k])<0&&v->roster_count<MS_ROSTER&&Port_ModSelectCostumeOk(ids[k],0)){int at=v->roster_count++;v->roster[at]=ids[k];memset(&sMsCatalog[at],0,sizeof(sMsCatalog[at]));sMsCatalog[at].id=ids[k];sMsCatalog[at].formCount=Port_Beta8FormList(ids[k],sMsCatalog[at].form,MS_FORMS);}}}
+ {static const int ids[]={161,163,164,291,300,301,317,319,320,321,322,185,271,278,323,324,325,263};int k,j,have;for(k=0;k<(int)(sizeof(ids)/sizeof(ids[0]));k++){ /* 301: Yajirobe (Juan approved, power 970) */have=0;for(j=0;j<v->roster_count;j++)if(v->roster[j]==ids[k])have=1;if(!have&&Port_Beta8SelectFormOwner(ids[k])<0&&v->roster_count<MS_ROSTER&&Port_ModSelectCostumeOk(ids[k],0)){int at=v->roster_count++;v->roster[at]=ids[k];memset(&sMsCatalog[at],0,sizeof(sMsCatalog[at]));sMsCatalog[at].id=ids[k];sMsCatalog[at].formCount=Port_Beta8FormList(ids[k],sMsCatalog[at].form,MS_FORMS);}}}
  ms_sort_catalog(v);
  if(!v->roster_count)return 0;
  if(random&&v->roster_count<MS_ROSTER){memmove(v->roster+1,v->roster,v->roster_count*sizeof(int));memmove(sMsCatalog+1,sMsCatalog,v->roster_count*sizeof(TsCell));v->roster[0]=-1;memset(sMsCatalog,0,sizeof(TsCell));v->roster_count++;}
