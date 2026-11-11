@@ -9,6 +9,9 @@ extern void Port_ModMenuDrawScene(MFlash *flash);
 extern int Port_ModMenuActive(void);
 extern void Port_ModMenuReset(void);
 extern void Port_ModMenuEnterMain(void);
+extern void Port_ModMenuSetBalls(unsigned);
+extern void Port_ModMenuNativeStay(void);
+static s32 sPortQuitToTitle;
 extern int Port_ModMenuStep(unsigned pressed, unsigned repeat, int *players, int *sound);
 extern int Port_NetMenuListed(void);
 extern int Port_NetSession(void);
@@ -25,6 +28,9 @@ extern int Port_ModesChoosePlayers(int entry, int n);
 #endif
 #include "sys/pad.h"
 #include "sys/save.h"
+#ifdef PORT
+#include "mod_native_options.inc"
+#endif
 
 /* The screen's work (overlay .data, 0x3B0E80). */
 MainMenu *gMainMenu = NULL;
@@ -835,7 +841,8 @@ static s32 MainMenu_PortModes(void) {
        Neutralising Flash input must not make our result wait on the hidden menu. */
     if (!Port_ModMenuActive() && (!(gMainMenu->flash[0].flags & MFLASH_PAD) || !(gMainMenu->flags & MAINMENU_STARTED))) return 0;
     if (Port_NetSession()) { MainMenu_PortSceneAudio(1);Port_ModMenuReset(); return 0; }
-    Port_ModesMenu(); /* renew hint; custom UI does not depend on relabelled sheets */
+    Port_NativeOptionsTick();
+    Port_ModMenuSetBalls(gSaveData->unlockFlags & 127);
     was = Port_ModMenuActive();
     result = Port_ModMenuStep(gPad[0].gamePressed, gPad[0].gameRepeat, &players, &sound);
     MainMenu_PortSceneAudio(result>0);
@@ -843,6 +850,19 @@ static s32 MainMenu_PortModes(void) {
     if (!was && Port_ModMenuActive()) {
         extern void Voice_StopWithLip(void);
         Voice_StopWithLip(); gMainMenu->voiceLine = -1;
+    }
+    if(result>=200){
+        switch(result){
+        case 200:MAINMENU_CHOOSE(49);break;
+        case 201:MAINMENU_CHOOSE(60);break;
+        case 202:MAINMENU_CHOOSE(70);break;
+        case 203:Port_NetMenuOpen();Port_ModMenuNativeStay();break;
+        case 204:MAINMENU_CHOOSE(13);break;
+        case 205:gPortScreen=PORT_SCREEN_TBO;MAINMENU_CHOOSE(MPROG_MODE_PORT_SCREEN);break;
+        case 206:MAINMENU_CHOOSE(53);break;
+        case 207:MAINMENU_CHOOSE(50);break;
+        case 210:sPortQuitToTitle=1;ColorFade_StartOut(0,0,0,0x14);break;
+        }return 1;
     }
     if (result == 30) { MAINMENU_CHOOSE(33); return 1; }
     if (result > 0) {
@@ -878,10 +898,12 @@ s32 MainMenu_Run(s32 section) {
     }
 #endif
 #ifdef PORT
-    Port_ModMenuEnterMain();
+    sPortQuitToTitle=0;Port_ModMenuEnterMain();
 #endif
     MainMenu_Init(section);
 #ifdef PORT
+    if(getenv("BT3_TEST_BALLS"))gSaveData->unlockFlags|=127;
+    Port_ModMenuSetBalls(gSaveData->unlockFlags & 127);
     MainMenu_PortSceneAudio(0);
 #endif
     ColorFade_StartIn(0, 0, 0, 0x14);
@@ -945,9 +967,11 @@ s32 MainMenu_Run(s32 section) {
     sPortModes = 0;
     MainMenu_PortSceneAudio(1);
     Port_ModMenuReset();
-    Port_ModMenuReset();
 #endif
     MainMenu_Term();
     Dma_ResetBuffers();
+#ifdef PORT
+    if(sPortQuitToTitle)return 0;
+#endif
     return result;
 }

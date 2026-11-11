@@ -1,6 +1,10 @@
 #include "common.h"
 #include "menu/menu_q.h"
 #include "sys/pad.h"
+#ifdef PORT
+#include "plat_beta8.h"
+extern MTexRes *Port_MenuChip(s32,s32);
+#endif
 
 /* The screen's work area (.data, 0x3B7384). */
 SimDay *gSimDay = NULL;
@@ -970,7 +974,11 @@ void SimDay_Init(s32 section) {
     SD_RES(31);
     gSimDay->tex0[5] = MTEX(res, 0);
     SD_RES(8);
+#ifdef PORT
+    {MTexRes *chip=Port_MenuChip(QPROG->member.chara,QPROG->member.color);s32 donor=Port_Beta8StockAlias(QPROG->member.chara);if(donor<0||donor>160)donor=0;gSimDay->tex0[53]=chip?MTEX(chip,0):MTEX(res,donor);}
+#else
     gSimDay->tex0[53] = MTEX(res, QPROG->member.chara);
+#endif
     gSimDay->faceResA = (MTexRes *)MPACK_AT(gSimDay->res, 6);
     Res_RelocateOffsets(&gSimDay->faceResA, gSimDay->faceResA, gSimDay->faceResA);
     SimDay_SetFaceA(0);
@@ -1957,8 +1965,8 @@ void SimDay_UpdateFaceLoad(void) {
         chara[0] = QPROG->member.chara;
         chara[1] = gSimDay->enemyChara;
         File_CancelRequests();
-        File_Request(chara[0] + SIMDAY_FACE_FILE, gSimDay->faceFile[0], SIMDAY_FACE_SIZE);
-        File_Request(chara[1] + SIMDAY_FACE_FILE, gSimDay->faceFile[1], SIMDAY_FACE_SIZE);
+        File_Request(MENU_FACE_FILE(chara[0],QPROG->member.color,(chara[0]<=160?chara[0]:0)+SIMDAY_FACE_FILE), gSimDay->faceFile[0], SIMDAY_FACE_SIZE);
+        File_Request(MENU_FACE_FILE(chara[1],0,(chara[1]<=160?chara[1]:0)+SIMDAY_FACE_FILE), gSimDay->faceFile[1], SIMDAY_FACE_SIZE);
         gSimDay->loadState = SIMDAY_LOAD_READ;
         break;
     case SIMDAY_LOAD_READ:

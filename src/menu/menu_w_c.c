@@ -453,3 +453,11 @@ s32 EvoTop_Run(s32 section) {
     Dma_ResetBuffers();
     return m.result;
 }
+
+#ifdef PORT
+/* Reuse the actual native dialog/card module, including confirmation and error handling. */
+static s32 sPortEvoCardResult;
+static void Port_EvoCardSaved(void){sPortEvoCardResult=1;}
+static void Port_EvoCardCancelled(void){sPortEvoCardResult=0;}
+s32 Port_EvoSaveRun(void){EvoTop m;memset(&m,0,sizeof(m));EvoTop_Init(&m,1);sPortEvoCardResult=-1;McFlow_SetDoneCb(0,Port_EvoCardSaved,NULL);McFlow_SetDoneCb(1,Port_EvoCardCancelled,NULL);gProgress->flags|=1;DcSave_Start();while(sPortEvoCardResult<0){Gfx_BeginFrame();Pad_Update();Snd_Update();ColorFade_Update();DcSave_Update();ColorFade_Draw();Gfx_EndFrame(1);Dma_Flush();File_Stub264D90();}EvoTop_Term(&m);Dma_ResetBuffers();return sPortEvoCardResult;}
+#endif

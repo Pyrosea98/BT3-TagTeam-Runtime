@@ -918,3 +918,21 @@ void CharRef_Term(void) {
         gCharRef = NULL;
     }
 }
+
+#ifdef PORT
+/* Original Reference data/voices, exposed to the modern roster without donor biographies. */
+extern int PortA11y_Utf8(char*,int,const u16*);
+extern void Port_RosterReferenceText(int,const char*,const char*);
+extern void Port_RosterReferenceState(int,int,int);
+extern void LipSync_Update(void);extern s32 LipSync_IsOpen(void);
+static int sPortRefCid;
+static int sPortRefEntry=-1,sPortRefLine=-1,sPortRefMode,sPortRefIdle,sPortRefOwn;
+static char sPortRefProfile[4096],sPortRefComment[2048];
+static void Port_RefText(void){Port_RosterReferenceText(sPortRefCid,sPortRefProfile,sPortRefComment);}
+void Port_ReferenceBegin(void){sPortRefOwn=gMenuArc9==NULL;if(sPortRefOwn)gMenuArc9=File_LoadSync(gProgress->baseFile+15,NULL,0);CharRef_Init(1);sPortRefEntry=sPortRefLine=-1;sPortRefMode=sPortRefIdle=0;sPortRefProfile[0]=sPortRefComment[0]=0;Port_RefText();}
+void Port_ReferenceSelect(s32 chara){int i;sPortRefCid=chara;Voice_StopWithLip();sPortRefEntry=-1;sPortRefLine=-1;sPortRefMode=sPortRefIdle=0;sPortRefProfile[0]=sPortRefComment[0]=0;for(i=0;i<gCharRef->count;i++)if(gCharRef->entry[i].chara==chara){sPortRefEntry=i;break;}if(sPortRefEntry>=0&&chara>=0&&chara<=160)PortA11y_Utf8(sPortRefProfile,sizeof(sPortRefProfile),(u16*)MPACK_AT(gCharRef->text[3],chara*2+2));Port_RefText();}
+static void Port_ReferenceSay(int line){PortA11y_Utf8(sPortRefComment,sizeof(sPortRefComment),(u16*)MPACK_AT(gCharRef->msgText,line+1));Voice_PlayWithSubtitle(gCharRef->subtitles,CHARREF_VOICE_BASE,line);Port_RefText();}
+void Port_ReferenceAction(int action,int chara){sPortRefIdle=0;sPortRefMode=action;Voice_StopWithLip();if(action==1){Voice_PlayChara(0,chara,Rand_Range(2));sPortRefLine=-1;}else if(action==2){sPortRefLine=0;if(sPortRefEntry>=0&&gCharRef->entry[sPortRefEntry].commentNum>0)Port_ReferenceSay(9+gCharRef->entry[sPortRefEntry].commentLine);}}
+void Port_ReferenceTick(void){LipSync_Update();if(sPortRefMode==2&&sPortRefEntry>=0&&Voice_GetStat(0)==MVOICE_IDLE&&sPortRefLine>=0){if(++sPortRefLine<gCharRef->entry[sPortRefEntry].commentNum)Port_ReferenceSay(9+gCharRef->entry[sPortRefEntry].commentLine+sPortRefLine);else sPortRefLine=-1;}if(sPortRefMode!=2&&Voice_GetStat(0)==MVOICE_IDLE&&++sPortRefIdle>720){sPortRefIdle=0;Port_ReferenceSay(2+Rand_Range(7));}Port_RosterReferenceState(sPortRefMode,LipSync_IsOpen(),sPortRefEntry>=0);}
+void Port_ReferenceEnd(void){Voice_StopWithLip();CharRef_Term();if(sPortRefOwn){Heap_Free(gMenuArc9);gMenuArc9=NULL;}sPortRefEntry=-1;}
+#endif

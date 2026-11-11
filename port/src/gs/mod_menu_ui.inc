@@ -39,14 +39,19 @@ static void mod_story_publish(int selected=-1){mod_story_sagas_publish();sStoryD
 static std::atomic<int> sCoopSetupView[5];
 static ModMenuState sModMenuGame={0,0,0}; // touched only by MainMenu's game thread
 static std::atomic<unsigned> sModMenuView{0};
+static std::atomic<unsigned> sMainBallMask{0};
+static std::atomic<int> sHomeClick{-1};
+extern "C" void Port_ModMenuSetBalls(unsigned mask){sMainBallMask.store(mask&127,std::memory_order_release);}
 static int sModLastPlay=-1,sModResumePlay=-1;static int sModMenuLaunching; // game thread only
 static int sModStoryChain=-1; // the story interlude the menu launches by itself next (-1 none)
 static std::atomic<int> sModMenuSettings{-1};
+extern "C" void Port_ModMenuNativeStay(void){sModMenuLaunching=0;}
 extern "C" int Port_ModMenuAtmosphere(void){int p=sModMenuView.load(std::memory_order_acquire)&255;return p==MM_STORY||p==MM_STORY_RESULT||p==MM_STORY_SAGAS?1:p==MM_SCENARIOS||p==MM_CHALLENGES?2:0;}
 extern "C" int Port_ModMenuActive(void){return (sModMenuView.load(std::memory_order_acquire)&255)!=0;}
 extern "C" void Port_ModMenuReset(void){sModMenuLaunching=0;sModMenuGame={0,0,0};sModMenuView.store(0,std::memory_order_release);sModMenuSettings.store(-1);sAchievementPick.store(-1);sAchievementBack.store(false);}
 extern "C" int Port_ModMenuStep(unsigned pressed,unsigned repeat,int *players,int *sound){
  if(sModMenuLaunching)return -1;
+ int click=sHomeClick.exchange(-1,std::memory_order_acq_rel);if(sModMenuGame.page==MM_ROOT&&sMainBallMask.load(std::memory_order_acquire)==127&&((pressed&0x80000)||click==0x1ff)){*sound=1;sModMenuLaunching=1;return 202;}if(click>=0&&(click>>8)==sModMenuGame.page&&(click&255)<mm_count(sModMenuGame.page)){sModMenuGame.cursor=click&255;pressed|=0x200;}
  if(sModMenuGame.page==MM_STORY_RESULT&&sStoryNewSaga.load()==1&&!sStoryFarewellDone.load()){*sound=-1;return -1;}
  if(sModStoryChain>=0){int next=sModStoryChain;sModStoryChain=-1; /* a scene-only interlude follows: no menu in between */
   Port_ScenarioClear();Port_StoryChoose(next);Port_CoopReset();sModLastPlay=7;sModMenuLaunching=1;return 1;}
@@ -73,7 +78,7 @@ extern "C" int Port_ModMenuStep(unsigned pressed,unsigned repeat,int *players,in
  sScenarioVariant.store(sModMenuGame.tour.cursor);
  if(r==40){Port_ScenarioChoose(SC_First(sModMenuGame.pick)+sModMenuGame.cursor,sModMenuGame.tour.cursor);Port_CoopReset();sModLastPlay=5;sModMenuLaunching=1;return 1;}
  if((r>=1&&r<=3)||r==30)Port_ScenarioClear();
- if(r>=100&&r<112){sModMenuSettings.store(r-100,std::memory_order_release);r=0;}
+ if(r>=100&&r<114){sModMenuSettings.store(r-100,std::memory_order_release);r=0;}
  sModMenuView.store((unsigned)sModMenuGame.page|((unsigned)sModMenuGame.cursor<<8)|((unsigned)sModMenuGame.pick<<16),std::memory_order_release);
  if(sModMenuGame.page==MM_TOURSETUP){const TTSetup &t=sModMenuGame.tour;
   sTourSetupView[0].store(t.config.players);sTourSetupView[1].store(t.config.team_size);sTourSetupView[2].store(t.config.type);sTourSetupView[3].store(t.config.difficulty);
@@ -84,9 +89,12 @@ extern "C" int Port_ModMenuStep(unsigned pressed,unsigned repeat,int *players,in
   else Port_CoopReset();
  }
  if(r==30&&!Port_TagTourBegin(&sModMenuGame.tour.config))return -1;
+ if(r==202&&sMainBallMask.load(std::memory_order_acquire)!=127){*sound=7;return -1;}
+ if(r>=200){sModMenuLaunching=1;return r;}
  if((r>=1&&r<=3)||r==30){sModLastPlay=r==30?4:from;sModMenuLaunching=1;return r;}
  return sModMenuGame.page||r==10?-1:0;
 }
+extern "C" void Port_ModSelectBattleConfig(void){sModMenuSettings.store(12,std::memory_order_release);}
 extern "C" int Port_ModMenuReturnFromSelect(void){
  if(Port_ModesFight()==PORT_MODE_NONE||sModLastPlay<0)return 0;
  sModResumePlay=sModLastPlay;return 1;
@@ -101,6 +109,7 @@ extern "C" void Port_ModMenuEnterMain(void){
     int next=stInterludeNext[ch];Port_StoryAcknowledge();if(next>=0)sModStoryChain=next;ch=ST_INTERLUDE_RETURN;}
    else if(Port_StoryLastOutcome(&ch,&z)!=ST_NONE)sModMenuGame.page=MM_STORY_RESULT;sModMenuGame.cursor=SDL_clamp(ch,0,ST_COUNT-1);sModMenuGame.pick=SDL_clamp(Port_Setting("story_difficulty",1),0,2);sStoryDifficulty.store(sModMenuGame.pick);mod_story_publish();}
   sModMenuView.store((unsigned)sModMenuGame.page|((unsigned)sModMenuGame.cursor<<8),std::memory_order_release);}
+ else {sModMenuGame.page=MM_ROOT;sModMenuGame.cursor=0;sModMenuView.store(MM_ROOT,std::memory_order_release);}
 }
 static SDL_GPUTexture *sModNav,*sModNimbus,*sModCategory,*sModSections,*sModPlayers[4];static bool sModArtTried;
 static SDL_GPUTexture *mod_menu_art(const char *name){
@@ -123,12 +132,12 @@ static void mod_menu_draw(){
  if(page==MM_ACHIEVEMENTS){achievement_gallery(cursor);return;}
  if(!sModArtTried){sModArtTried=true;sModNimbus=mod_menu_art("menu-nimbus");for(int n=0;n<4;n++){char name[40];snprintf(name,sizeof(name),"menu-player-%d",n+1);sModPlayers[n]=mod_menu_art(name);}}
  bool es=Port_Setting("mod_language",1)==1;
- static const char *root[2][4]={{"Play","Settings","About / Credits","Return to game"},{"Jugar","Ajustes","Acerca de / Créditos","Volver al juego"}};
- static const char *play[2][10]={{"Team Battle","Co-op Battle","Free-for-All","Training","Tag Team Tournament","Scenarios","Co-op Training","Dragon History","Achievements","Spectate"},{"Batalla en equipo","Batalla cooperativa","Todos contra todos","Entrenamiento","Torneo Tag Team","Escenarios","Entrenamiento cooperativo","Historia Drag\303\263n","Logros","Observar"}};
+ static const char *root[2][9]={{"Play","Evolution Z","Character Reference","Dragon Balls","Settings","Online","Challenges & Records","Credits","Return to title"},{"Jugar","Evolución Z","Personajes","Esferas del dragón","Ajustes","En línea","Desafíos y registros","Créditos","Volver al título"}};
+ static const char *play[2][11]={{"Team Battle","Co-op Battle","Free-for-All","Training","Tag Team Tournament","Scenarios","Co-op Training","Dragon History","Achievements","Spectate","Battle configuration"},{"Batalla en equipo","Batalla cooperativa","Todos contra todos","Entrenamiento","Torneo Tag Team","Escenarios","Entrenamiento cooperativo","Historia Drag\303\263n","Logros","Observar","Configurar combate"}};
  static const char *spectate[2][2]={{"COM Team Battle","COM Free-for-All"},{"Batalla en equipo COM","Todos contra todos COM"}};
- static const char *settings[2][12]={{"Video","Effects","Audio","Interface","Controls","Cheats","System","Extra fighters","Battle HUD","Fusion","CPU / Training","Struggles"},{"Video","Efectos","Audio","Interfaz","Controles","Trucos","Sistema","Luchadores extra","HUD de combate","Fusión","CPU / Entrenamiento","Choques"}};
+ static const char *settings[2][14]={{"Video","Effects","Audio","Interface","Controls","Cheats","System","Extra fighters","Battle HUD","Fusion","CPU / Training","Struggles","Battle rules","Game options"},{"Video","Efectos","Audio","Interfaz","Controles","Trucos","Sistema","Luchadores extra","HUD de combate","Fusión","CPU / Entrenamiento","Choques","Reglas de combate","Opciones del juego"}};
  static const char *help[2][4]={{"Choose a mode and prepare your next battle.","Configure the native game and your controllers.","Creators and contributors.","Close this menu and return to the original menu."},{"Elige un modo y prepara la siguiente batalla.","Configura el juego y tus controles.","Creadores y colaboradores.","Cierra este menú y vuelve al menú original."}};
- static const char *playHelp[2][10]={{"One player with CPU teammates.","Two to four local players. Choose the player count next.","Every fighter for themselves. One to four local players.","One-player team practice with CPU fighters.","Draft your team and enter the Tag Team Tournament.","Choose a Scenario and trophy route. Read its conditions before fighting.","Two to four players. Assign teams, then choose every fighter.","Follow the story of Dragon Ball, one chapter at a time.","Visit the Trophy Room and discover your next challenge.","Choose the fighters and watch CPU-only battles."},{"Un jugador con compañeros CPU.","De dos a cuatro jugadores locales. Elige cuántos al continuar.","Todos contra todos. De uno a cuatro jugadores locales.","Entrena con un jugador y equipos de luchadores CPU.","Elige tus equipos y compite en el Torneo Tag Team.","Elige un escenario y un trofeo. Lee sus condiciones antes de combatir.","De dos a cuatro jugadores. Asigna equipos y elige los luchadores.","Recorre la historia de Dragon Ball, capítulo a capítulo.","Visita la sala de trofeos y descubre tu próximo reto.","Elige los luchadores y observa combates entre CPU."}};
+ static const char *playHelp[2][11]={{"One player with CPU teammates.","Two to four local players. Choose the player count next.","Every fighter for themselves. One to four local players.","One-player team practice with CPU fighters.","Draft your team and enter the Tag Team Tournament.","Choose a Scenario and trophy route. Read its conditions before fighting.","Two to four players. Assign teams, then choose every fighter.","Follow the story of Dragon Ball, one chapter at a time.","Visit the Trophy Room and discover your next challenge.","Choose the fighters and watch CPU-only battles.","Set the power scale and battle rules before choosing your fighters."},{"Un jugador con compañeros CPU.","De dos a cuatro jugadores locales. Elige cuántos al continuar.","Todos contra todos. De uno a cuatro jugadores locales.","Entrena con un jugador y equipos de luchadores CPU.","Elige tus equipos y compite en el Torneo Tag Team.","Elige un escenario y un trofeo. Lee sus condiciones antes de combatir.","De dos a cuatro jugadores. Asigna equipos y elige los luchadores.","Recorre la historia de Dragon Ball, capítulo a capítulo.","Visita la sala de trofeos y descubre tu próximo reto.","Elige los luchadores y observa combates entre CPU.","Ajusta la escala de poder y las reglas antes de elegir luchadores."}};
  ImVec2 size=ImGui::GetIO().DisplaySize;float k=size.y/448.f,margin=20*k;
  // Use wide-screen space while preserving readable, height-based text sizes.
  float left=margin,right=size.x-margin,content=(right-left)*.67f;
@@ -140,7 +149,17 @@ static void mod_menu_draw(){
   dl->AddText(font,fs,ImVec2(x,y),IM_COL32(0,0,0,220),t);dl->AddText(font,fs,ImVec2(x-k,y-k),col,t);
  };
  if(SDL_GPUTexture *brand=mod_brand_texture())dl->AddImage(ImTextureRef((ImTextureID)(intptr_t)brand),ImVec2(left,8*k),ImVec2(left+185*k,70*k));
- const char *title=(page==MM_SCENARIOS||page==MM_CHALLENGES)?(es?"Escenarios":"Scenarios"):page==MM_ROOT?(es?"Modos modificados":"Modded Modes"):page==MM_PLAY?(es?"Jugar":"Play"):page==MM_SPECTATE?(es?"Observar":"Spectate"):page==MM_COOPSETUP?(es?"Equipos de jugadores":"Player teams"):page==MM_PLAYERS?(es?"Jugadores":"Players"):page==MM_SETTINGS?(es?"Ajustes":"Settings"):page==MM_TOURSETUP?(es?"Torneo Tag Team":"Tag Team Tournament"):(es?"Acerca de / Créditos":"About / Credits");
+ unsigned balls=sMainBallMask.load(std::memory_order_acquire);const bool complete=balls==127;float crownW=296*k,crownX=right-crownW;
+ static SDL_GPUTexture*ballArt[7]={};static bool ballsLoaded=false;if(!ballsLoaded){ballsLoaded=true;for(int n=0;n<7;n++){char path[64];snprintf(path,sizeof(path),"frontend-v3/dragon-ball-%d",n+1);ballArt[n]=mod_menu_art(path);}}
+ double seconds=SDL_GetTicks()*.001;float pulse=.5f+.5f*SDL_sinf((float)seconds*6.2831853f);int owned=0;
+ for(int n=0;n<7;n++){bool have=(balls&(1u<<n))!=0;owned+=have;float dx=(n-3)/3.f;ImVec2 c(crownX+(n+.5f)*crownW/7,33*k+dx*dx*8*k);float radius=17*k;
+  dl->AddCircleFilled(c,radius+2*k,IM_COL32(16,21,38,210),40);dl->AddCircle(c,radius+2*k,IM_COL32(185,149,76,150),40,k);
+  if(complete){for(int glow=4;glow>=1;glow--)dl->AddCircleFilled(c,radius+(glow*2.5f+pulse*3)*k,IM_COL32(255,195,47,(int)((12+18*pulse)/glow)),48);radius*=1.f+.06f*pulse;}
+  if(ballArt[n])dl->AddImage(ImTextureRef((ImTextureID)(intptr_t)ballArt[n]),ImVec2(c.x-radius,c.y-radius),ImVec2(c.x+radius,c.y+radius),ImVec2(0,0),ImVec2(1,1),have?IM_COL32_WHITE:IM_COL32(115,106,89,60));
+ }
+ char ballLabel[96];snprintf(ballLabel,sizeof(ballLabel),complete?(es?"Invocar a Shenlong":"Invoke Shenron"):(es?"Esferas del dragón  %d / 7":"Dragon Balls  %d / 7"),owned);text(ballLabel,crownX,67*k,complete?15:12,complete?IM_COL32(255,224,101,(int)(190+65*pulse)):IM_COL32(232,211,171,230),crownW-30*k);
+ if(complete){const ModPadHint hint[]={{MP_R3,""}};mod_pad_hints(dl,ImVec2(right-29*k,65*k),29*k,k,hint,1,15);if(page==MM_ROOT&&!sOpen&&ImGui::IsMouseClicked(0)&&ImGui::IsMouseHoveringRect(ImVec2(crownX,10*k),ImVec2(right,92*k)))sHomeClick.store(0x1ff);}
+ const char *title=(page==MM_SCENARIOS||page==MM_CHALLENGES)?(es?"Escenarios":"Scenarios"):page==MM_ROOT?(es?"Menú principal":"Main Menu"):page==MM_PLAY?(es?"Jugar":"Play"):page==MM_EVOLUTION?(es?"Evolución Z":"Evolution Z"):page==MM_ONLINE?(es?"En línea":"Online"):page==MM_EXTRAS?(es?"Desafíos y registros":"Challenges & records"):page==MM_SPECTATE?(es?"Observar":"Spectate"):page==MM_COOPSETUP?(es?"Equipos de jugadores":"Player teams"):page==MM_PLAYERS?(es?"Jugadores":"Players"):page==MM_SETTINGS?(es?"Ajustes":"Settings"):page==MM_TOURSETUP?(es?"Torneo Tag Team":"Tag Team Tournament"):(es?"Acerca de / Créditos":"About / Credits");
  text(title,left,76*k,23,IM_COL32(255,182,55,255),content);dl->AddLine(ImVec2(left,105*k),ImVec2(left+content,105*k),IM_COL32(249,197,71,210),1.5f*k);
  int count=page==MM_PLAYERS?((pick==1||pick==6)?3:4):mm_count(page);
 
@@ -174,33 +193,37 @@ static void mod_menu_draw(){
    text(title,left+12*k,(177+43*i)*k,16,IM_COL32(255,220,80,255),content-24*k);
    text(kModCreditUrls[i],left+12*k,(196+43*i)*k,10,IM_COL32(255,235,204,255),content-24*k);
   }
+  text(es?"Pruebas y colaboración":"Testing and feedback",left+12*k,342*k,12,IM_COL32(255,220,80,255),content-24*k);
+  text("Tenkaichi3Decomp - z3xox and contributors",left+12*k,326*k,11,IM_COL32(255,235,204,255),content-24*k);
   text(kModThanks[es?1:0],left+12*k,308*k,12,IM_COL32(255,235,204,255),content-24*k);
-  text("Tenkaichi3Decomp - z3xox and contributors",left+12*k,342*k,12,IM_COL32(255,235,204,255),content-24*k);
+  text(kModTesterNames,left+12*k,357*k,13,IM_COL32(255,235,204,255),content-24*k);
  }else{
   int columns=mm_columns(page),rows=(count+columns-1)/columns;float gap=14*k,w=(content-gap*(columns-1))/columns,h=(235*k-gap*(rows-1))/rows;
   for(int i=0;i<count;i++){
-   float x=left+(i%columns)*(w+gap),y=122*k+(i/columns)*(h+gap);bool selected=i==cursor;bool compact=page==MM_SETTINGS||rows>=4;
+   float x=left+(i%columns)*(w+gap),y=122*k+(i/columns)*(h+gap);bool selected=i==cursor;
+   if(!sOpen&&!sQuit&&ImGui::IsMouseClicked(ImGuiMouseButton_Left)&&ImGui::IsMouseHoveringRect(ImVec2(x,y),ImVec2(x+w,y+h),false))sHomeClick.store((page<<8)|i,std::memory_order_release);bool compact=page==MM_SETTINGS||rows>=4;
    // Beta8 style: floating labels and a Nimbus underline, no opaque card backs.
    if(selected){dl->AddRectFilled(ImVec2(x,y),ImVec2(x+w,y+h),IM_COL32(255,208,73,22),4*k);dl->AddLine(ImVec2(x,y+h-3*k),ImVec2(x+w,y+h-3*k),IM_COL32(255,218,77,240),1.7f*k);}
    float bob=selected?(float)SDL_sin(SDL_GetTicks()*.004)*2*k:0;
    int symbol=MI_PLAY;
-   if(page==MM_ROOT){static const int ids[]={MI_PLAY,MI_SYSTEM,MI_CREDITS,MI_RETURN};symbol=ids[i];}
-   else if(page==MM_PLAY){static const int ids[]={MI_TEAM,MI_COOP,MI_FFA,MI_TRAINING,MI_TROPHY,MI_STORY,MI_TRAINING,MI_DRAGON_HISTORY,MI_ACHIEVEMENTS,MI_FFA};symbol=ids[i];}
+   if(page==MM_ROOT){static const int ids[]={MI_PLAY,MI_FUSION,MI_EXTRAS,MI_PLAY,MI_SYSTEM,MI_CONTROLS,MI_TROPHY,MI_CREDITS,MI_RETURN};symbol=ids[mm_root_id(i)];}
+   else if(page==MM_PLAY){static const int ids[]={MI_TEAM,MI_COOP,MI_FFA,MI_TRAINING,MI_TROPHY,MI_STORY,MI_TRAINING,MI_DRAGON_HISTORY,MI_ACHIEVEMENTS,MI_FFA,MI_SYSTEM};symbol=ids[i];}
+   else if(page==MM_EVOLUTION)symbol=i?MI_EXTRAS:MI_FUSION;
    else if(page==MM_SPECTATE)symbol=i?MI_FFA:MI_TEAM;
-   else if(page==MM_SETTINGS)symbol=i==10?MI_TRAINING:i==11?MI_STRUGGLES:MI_VIDEO+i;
+   else if(page==MM_SETTINGS)symbol=i==10?MI_TRAINING:i==11?MI_STRUGGLES:i==12?MI_TEAM:i==13?MI_SYSTEM:MI_VIDEO+i;
    else if(page==MM_PLAYERS)symbol=MI_COOP;
    if(page==MM_PLAYERS&&i+((pick==1||pick==6)?2:1)>=1&&i+((pick==1||pick==6)?2:1)<=4&&sModPlayers[i+((pick==1||pick==6)?2:1)-1]){int humans=i+((pick==1||pick==6)?2:1);dl->AddImage(ImTextureRef((ImTextureID)(intptr_t)sModPlayers[humans-1]),ImVec2(x+7*k,y+7*k),ImVec2(x+63*k,y+35*k));}
-   else mod_icon_draw(dl,symbol,ImVec2(x+23*k,y+(compact?h*.5f:22*k)+bob),(compact?SDL_min(15*k,h*.43f):15*k),selected?IM_COL32(255,215,87,255):IM_COL32(255,239,210,255));
+   else mod_icon_draw(dl,symbol,ImVec2(x+(compact?23:31)*k,y+(compact?h*.5f:27*k)+bob),(compact?SDL_min(15*k,h*.43f):22*k),selected?IM_COL32(255,215,87,255):IM_COL32(255,239,210,255));
    char player[40];snprintf(player,sizeof(player),es?"%d jugadores":"%d players",i+((pick==1||pick==6)?2:1));if(page==MM_PLAYERS&&i==0&&pick!=1&&pick!=6)snprintf(player,sizeof(player),es?"1 jugador":"1 player");
-   const char *label=page==MM_ROOT?root[es][i]:page==MM_PLAY?play[es][i]:page==MM_SPECTATE?spectate[es][i]:page==MM_SETTINGS?settings[es][i]:player;
+   const char *label=page==MM_ROOT?root[es][mm_root_id(i)]:page==MM_PLAY?play[es][i]:page==MM_SPECTATE?spectate[es][i]:page==MM_EVOLUTION?(i?(es?"Tienda de Potaras":"Potara shop"):(es?"Personalizar luchadores":"Customize fighters")):page==MM_ONLINE?(i?"Tenkaichi Budokai Online":es?"Partida en línea":"Online match"):page==MM_EXTRAS?(i?(es?"Datos y registros":"Data & records"):(es?"Batalla definitiva":"Ultimate Battle")):page==MM_SETTINGS?settings[es][i]:player;
    text(label,x+(compact?46:8)*k,y+(compact?h*.5f-7*k:h-30*k),compact?14:17,selected?IM_COL32(255,220,80,255):IM_COL32(255,255,255,255),w-(compact?54:18)*k);
    if(selected&&sModNimbus)dl->AddImage(ImTextureRef((ImTextureID)(intptr_t)sModNimbus),ImVec2(x+w-41*k,y+h-22*k+bob),ImVec2(x+w,y+h+bob));
   }
  }
  float banner=374*k;dl->AddRectFilled(ImVec2(0,banner),ImVec2(size.x,426*k),IM_COL32(120,68,27,145));dl->AddLine(ImVec2(margin,banner),ImVec2(right,banner),IM_COL32(246,191,57,230),k);
- const char *description=(page==MM_SCENARIOS||page==MM_CHALLENGES)?(es?"Elige tu batalla y descubre qué hace falta para conquistar su trofeo.":"Choose your battle and discover what it takes to claim its trophy."):page==MM_COOPSETUP?(es?"Izquierda/derecha: equipo. Cada jugador elige su luchador; el líder elige los CPU.":"Left/right: team. Each player picks their fighter; the team leader picks CPU partners."):page==MM_TOURSETUP?(sTourSetupView[8].load()?(es?"Demasiados jugadores en un equipo. Aumenta su tamaño o sepáralos.":"Too many players on one team. Increase team size or split the players."):(es?"Arriba/abajo: opción. Izquierda/derecha: cambiar. Cada jugador elige su luchador.":"Up/down: option. Left/right: change. Each player drafts their own fighter.")):page==MM_ROOT?help[es][cursor]:page==MM_PLAY?playHelp[es][cursor]:page==MM_SPECTATE?(es?"Elige los equipos y observa. Todos los luchadores serán controlados por la CPU.":"Choose the fighters and watch. Every fighter is controlled by the CPU."):page==MM_SETTINGS?(es?"Configura esta categoría y guarda tus ajustes.":"Configure this category and save your settings."):page==MM_PLAYERS?(es?"Elige cuántos jugadores humanos participan.":"Choose how many human players participate."):(es?"Se conservan los créditos originales al iniciar el juego.":"Original creator credits remain in the full startup sequence.");
+ const char *description=(page==MM_SCENARIOS||page==MM_CHALLENGES)?(es?"Elige tu batalla y descubre qué hace falta para conquistar su trofeo.":"Choose your battle and discover what it takes to claim its trophy."):page==MM_COOPSETUP?(es?"Izquierda/derecha: equipo. Cada jugador elige su luchador; el líder elige los CPU.":"Left/right: team. Each player picks their fighter; the team leader picks CPU partners."):page==MM_TOURSETUP?(sTourSetupView[8].load()?(es?"Demasiados jugadores en un equipo. Aumenta su tamaño o sepáralos.":"Too many players on one team. Increase team size or split the players."):(es?"Arriba/abajo: opción. Izquierda/derecha: cambiar. Cada jugador elige su luchador.":"Up/down: option. Left/right: change. Each player drafts their own fighter.")):page==MM_ROOT?(es?"Tu próxima aventura comienza aquí.":"Your next adventure starts here."):page==MM_EVOLUTION?(es?"Prepara tus conjuntos de Potaras o visita la tienda.":"Prepare your Potara presets or visit the shop."):page==MM_PLAY?playHelp[es][cursor]:page==MM_SPECTATE?(es?"Elige los equipos y observa. Todos los luchadores serán controlados por la CPU.":"Choose the fighters and watch. Every fighter is controlled by the CPU."):page==MM_SETTINGS?(es?"Configura esta categoría y guarda tus ajustes.":"Configure this category and save your settings."):page==MM_PLAYERS?(es?"Elige cuántos jugadores humanos participan.":"Choose how many human players participate."):(es?"Se conservan los créditos originales al iniciar el juego.":"Original creator credits remain in the full startup sequence.");
  text(description,margin+8*k,388*k,15,IM_COL32(255,248,230,255),right-margin-16*k);
- const ModPadHint hints[]={{MP_DPAD,es?"Elegir":"Choose"},{MP_CROSS,es?"Abrir":"Open"},{MP_TRIANGLE,es?"Volver":"Back"},{MP_SELECT,es?"Cerrar":"Close"},{MP_LR,es?"Cambiar guerrero":"Change fighter"}};
+ const ModPadHint hints[]={{MP_DPAD,es?"Elegir":"Choose"},{MP_CROSS,es?"Abrir":"Open"},{MP_TRIANGLE,es?"Volver":"Back"},{MP_SELECT,es?"Inicio":"Home"},{MP_LR,es?"Cambiar guerrero":"Change fighter"}};
  bool variant=page==MM_CHALLENGES&&(SC_First(pick)+cursor==14||SC_First(pick)+cursor==16);
  mod_pad_hints(dl,ImVec2(left,430*k),right-left,k,hints,variant?5:4,12);
 

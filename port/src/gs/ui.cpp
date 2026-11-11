@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <atomic>
+#include <mutex>
 #include <string>
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -2185,18 +2186,55 @@ static void mod_struggle_settings(){
  {bool es=Port_Setting("mod_language",1)==1;const ModPadHint h[]={{MP_R3,es?"Ayudar cuando aparezca la invitación":"Help when invited"}};mod_pad_hint_items(h,1);ImGui::TextWrapped("%s",es?"Ayudar en un choque consume Ki; ayudar en un definitivo consume una reserva. La ayuda termina si te interrumpen o finaliza el ataque.":"Helping in a clash costs Ki; helping an ultimate costs one stock. Assistance ends if you are interrupted or the attack finishes.");}
 
 }
+static std::atomic<int> sNativeOptions[14];
+extern "C" void Port_NativeOptionPublish(int i,int v){if(i>=0&&i<14)sNativeOptions[i].store(v,std::memory_order_release);}
+static void native_combo(const char*key,int field,const char*label,const char*const*items,int count){int v=Port_Setting(key,sNativeOptions[field].load(std::memory_order_acquire));if(v<0||v>=count)v=0;if(ImGui::Combo(label,&v,items,count)){Port_SettingSave(key,v);Port_SettingsWrite();}}
+static void native_slider(const char*key,int field,const char*label,int lo,int hi){int v=Port_Setting(key,sNativeOptions[field].load(std::memory_order_acquire));if(ImGui::SliderInt(label,&v,lo,hi)){Port_SettingSave(key,v);Port_SettingsWrite();}}
+static void mod_battle_rules_settings(){
+ bool es=Port_Setting("mod_language",1)==1;
+ const char*scalesEn[]={"Everyone with the same power","Slight power scale","Moderate power scale","Real Power Scale"};
+ const char*scalesEs[]={"Todos con el mismo poder","Diferencias leves","Escala de poder moderada","Power Scale real"};
+ int preset=SDL_clamp(Port_Setting("power_scale_preset",3),0,3);
+ if(ImGui::Combo(es?"Escala de poder":"Power scale",&preset,es?scalesEs:scalesEn,4)){Port_SettingSave("power_scale_preset",preset);Port_SettingsWrite();}
+ ImGui::TextWrapped("%s",es?"Igualado: mismos valores base. Leve: diferencias pequeñas. Moderado: ventaja notable sin golpes letales. Real: conserva todo el poder. Se aplica al próximo combate local; Historia y escenarios mantienen sus reglas.":"Equal: shared base stats. Slight: small differences. Moderate: meaningful advantages without one-hit knockouts. Real: full current power. Applies to the next local fight; Story and scenarios keep their own rules.");
+ ImGui::Separator();
+ const char*time[]={"60 s","90 s","180 s","240 s",es?"Sin límite":"Unlimited"};
+ const char*levelEn[]={"Very easy","Easy","Normal","Hard","Very hard"};const char*levelEs[]={"Muy fácil","Fácil","Normal","Difícil","Muy difícil"};
+ const char*voices[]={"1","2","3","4","5","6","7"};const char*onoff[]={es?"Desactivado":"Off",es?"Activado":"On"};
+ native_combo("match_time_rule",0,es?"Tiempo de combate":"Battle time",time,5);
+ native_combo("match_cpu_level",1,es?"Dificultad CPU":"CPU difficulty",es?levelEs:levelEn,5);
+ native_combo("match_commentary",2,es?"Comentarista":"Commentator",voices,7);
+ native_combo("match_stage_destruction",5,es?"Destrucción del escenario":"Stage destruction",onoff,2);
+ ImGui::SeparatorText(es?"Transformaciones por equipo":"Team transformations");
+ for(int i=0;i<10;i++){char key[64],label[64];snprintf(key,sizeof(key),"match_team_%d_transformations",i);snprintf(label,sizeof(label),es?"Equipo %d":"Team %d",i+1);bool allow=Port_Setting(key,1)!=0;if(ImGui::Checkbox(label,&allow)){Port_SettingSave(key,allow);Port_SettingsWrite();}}
+ ImGui::TextWrapped("%s",es?"Estas reglas se aplican a combates locales. Historia Dragón y escenarios conservan sus reglas propias.":"These rules apply to local battles. Dragon History and scenarios retain their authored rules.");
+}
+static void mod_native_game_settings(){
+ bool es=Port_Setting("mod_language",1)==1;
+ const char*camera[]={es?"Tipo 1":"Type 1",es?"Tipo 2":"Type 2",es?"Tipo 3":"Type 3"};const char*onoff[]={es?"Desactivado":"Off",es?"Activado":"On"};const char*banks[]={es?"Principal":"Primary",es?"Alternativo":"Alternate"};const char*sound[]={es?"Estéreo":"Stereo","Mono"};
+ native_combo("game_camera_type",6,es?"Cámara de combate":"Battle camera",camera,3);
+ native_combo("game_camera_assist",7,es?"Asistencia de cámara":"Camera assistance",onoff,2);
+ native_combo("game_voice_bank",8,es?"Voces del disco":"Disc voice bank",banks,2);
+ ImGui::TextWrapped("%s",es?"Los idiomas disponibles dependen de las voces incluidas en tu ISO.":"Available languages depend on the voices included in your ISO.");
+ native_combo("game_sound_mode",9,es?"Salida de audio":"Sound output",sound,2);
+ native_slider("game_music_volume",10,es?"Volumen de música del juego":"Game music volume",0,9);
+ native_slider("game_effect_volume",11,es?"Volumen de efectos del juego":"Game effects volume",0,9);
+ native_slider("game_screen_x",12,es?"Posición horizontal":"Horizontal position",-32,32);
+ native_slider("game_screen_y",13,es?"Posición vertical":"Vertical position",-32,32);
+ ImGui::TextWrapped("%s",es?"La asignación de botones y mandos está en Controles.":"Controller assignments and button bindings are in Controls.");
+}
 // F1 and Select > Settings share one full-screen mod shell and the same live consumers.
 static void build(void) {
     PortVideo v,was;GsGpu_GetSettings(&v);was=v;ImGuiIO &io=ImGui::GetIO();bool open=true;
     static double savedUntil;static bool savedOk;bool focusOptions=false,focusCategories=false;
     if(sCapKind==2&&SDL_GetTicks()>sCapUntil){sCapKind=0;gPortInputCapture=0;}
     if(sCapKind==0&&(pad_pressed(ImGuiKey_GamepadFaceRight)||pad_pressed(ImGuiKey_GamepadFaceUp)))open=false;
-    if(sForceTab>=0&&sForceTab<12){sTab=sForceTab;sForceTab=-1;}
-    if(sTab<0||sTab>=12)sTab=0;
-    if(sCapKind==0&&(pad_pressed(ImGuiKey_GamepadL1)||pad_pressed(ImGuiKey_GamepadR1))){sTab=(sTab+(ImGui::IsKeyPressed(ImGuiKey_GamepadL1,false)?11:1))%12;sPadTab=false;}
+    if(sForceTab>=0&&sForceTab<14){sTab=sForceTab;sForceTab=-1;}
+    if(sTab<0||sTab>=14)sTab=0;
+    if(sCapKind==0&&(pad_pressed(ImGuiKey_GamepadL1)||pad_pressed(ImGuiKey_GamepadR1))){sTab=(sTab+(ImGui::IsKeyPressed(ImGuiKey_GamepadL1,false)?13:1))%14;sPadTab=false;}
     bool es=Port_Setting("mod_language",1)==1;
-    static const char *labels[2][12]={{"Video","Effects","Audio","Interface","Controls","Cheats","System","Extra fighters","Battle HUD","Fusion","CPU / Training","Struggles"},{"Video","Efectos","Audio","Interfaz","Controles","Trucos","Sistema","Luchadores extra","HUD de combate","Fusión","CPU / Entrenamiento","Choques"}};
-    static const char *desc[2][12]={{"Resolution, aspect ratio, display and graphics.","Lighting and battle effects.","Music, voices and sound levels.","Fonts, original HUD placement and interface.","Player controllers, bindings and struggle buttons.","Practice and game rule overrides.","Startup, updates and system preferences.","Additional fighters and multiplayer setup.","Rings, hexagons, health layers, Ki and Sparking.","Fusion Dance time, form drain and countdown.","Training opponents and repeated attack behavior.","Clash duration, CPU strength and win inputs."},{"Resolución, relación de aspecto y pantalla.","Iluminación y efectos de combate.","Música, voces y niveles de sonido.","Fuentes, HUD original e interfaz.","Mandos, botones y controles de choques.","Opciones de práctica y reglas.","Inicio, actualizaciones y sistema.","Luchadores adicionales y multijugador.","Anillos, hexágonos, salud, Ki y Sparking.","Duración de danza, desgaste y cuenta atrás.","CPU y ataques repetidos en entrenamiento.","Duración, fuerza CPU y controles de choques."}};
+    static const char *labels[2][14]={{"Video","Effects","Audio","Interface","Controls","Cheats","System","Extra fighters","Battle HUD","Fusion","CPU / Training","Struggles","Battle rules","Game options"},{"Video","Efectos","Audio","Interfaz","Controles","Trucos","Sistema","Luchadores extra","HUD de combate","Fusión","CPU / Entrenamiento","Choques","Reglas de combate","Opciones del juego"}};
+    static const char *desc[2][14]={{"Resolution, aspect ratio, display and graphics.","Lighting and battle effects.","Music, voices and sound levels.","Fonts, original HUD placement and interface.","Player controllers, bindings and struggle buttons.","Practice and game rule overrides.","Startup, updates and system preferences.","Additional fighters and multiplayer setup.","Rings, hexagons, health layers, Ki and Sparking.","Fusion Dance time, form drain and countdown.","Training opponents and repeated attack behavior.","Clash duration, CPU strength and win inputs.","Time, difficulty, transformations and arena destruction.","Camera, disc voices, sound and screen position."},{"Resolución, relación de aspecto y pantalla.","Iluminación y efectos de combate.","Música, voces y niveles de sonido.","Fuentes, HUD original e interfaz.","Mandos, botones y controles de choques.","Opciones de práctica y reglas.","Inicio, actualizaciones y sistema.","Luchadores adicionales y multijugador.","Anillos, hexágonos, salud, Ki y Sparking.","Duración de danza, desgaste y cuenta atrás.","CPU y ataques repetidos en entrenamiento.","Duración, fuerza CPU y controles de choques.","Tiempo, dificultad, transformaciones y destrucción.","Cámara, voces del disco, sonido y posición de pantalla."}};
     float scale=SDL_max(.65f,SDL_min(1.65f,io.DisplaySize.y/850.f)),pad=16*scale,side=SDL_min(io.DisplaySize.x*.31f,225*scale);
     ImGui::SetNextWindowPos(ImVec2(0,0));ImGui::SetNextWindowSize(io.DisplaySize);
     ImGui::PushStyleColor(ImGuiCol_WindowBg,ImVec4(.15f,.035f,.15f,.94f));
@@ -2221,8 +2259,8 @@ static void build(void) {
         float body=ImGui::GetContentRegionAvail().y-ImGui::GetFrameHeightWithSpacing()*3.8f;
         if(ImGui::BeginChild("categories",ImVec2(side,body),ImGuiChildFlags_Borders|ImGuiChildFlags_NavFlattened)){
             if(sCapKind==0&&ImGui::IsWindowFocused()&&(pad_pressed(ImGuiKey_GamepadDpadRight)||pad_pressed(ImGuiKey_GamepadFaceDown)||ImGui::IsKeyPressed(ImGuiKey_RightArrow))){focusOptions=true;ImGui::NavMoveRequestCancel();}
-            for(int i=0;i<12;i++){
-                ImVec2 pos=ImGui::GetCursorScreenPos();mod_icon_draw(ImGui::GetWindowDrawList(),(i==10?MI_TRAINING:i==11?MI_STRUGGLES:MI_VIDEO+i),ImVec2(pos.x+16*scale,pos.y+17*scale),11*scale,IM_COL32(255,204,104,255));
+            for(int i=0;i<14;i++){
+                ImVec2 pos=ImGui::GetCursorScreenPos();mod_icon_draw(ImGui::GetWindowDrawList(),(i==10?MI_TRAINING:i==11?MI_STRUGGLES:i==12?MI_TEAM:i==13?MI_SYSTEM:MI_VIDEO+i),ImVec2(pos.x+16*scale,pos.y+17*scale),11*scale,IM_COL32(255,204,104,255));
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX()+35*scale);
                 if(ImGui::Selectable(labels[es][i],sTab==i,0,ImVec2(0,35*scale))){sTab=i;focusOptions=true;}
             }
@@ -2232,7 +2270,7 @@ static void build(void) {
             if(sCapKind==0&&ImGui::IsWindowFocused()&&!ImGui::IsAnyItemActive()&&(pad_pressed(ImGuiKey_GamepadDpadLeft)||ImGui::IsKeyPressed(ImGuiKey_LeftArrow))){focusCategories=true;ImGui::NavMoveRequestCancel();}
             if(focusOptions){ImGui::SetKeyboardFocusHere();ImGui::SetNavCursorVisible(true);}
             ImGui::PushItemWidth(SDL_min(300*scale,ImGui::GetContentRegionAvail().x*.47f));
-            switch(sTab){case 0:video_tab(v);break;case 1:effects_tab(v);break;case 2:audio_tab(v);break;case 3:ui_tab(v);break;case 4:mod_controls_settings();break;case 5:cheats_tab();break;case 6:misc_tab();break;case 7:experiments_tab();mod_giant_settings();break;case 8:mod_hud_settings();break;case 9:mod_fusion_settings();break;case 10:mod_training_settings();break;case 11:mod_struggle_settings();break;}
+            switch(sTab){case 0:video_tab(v);break;case 1:effects_tab(v);break;case 2:audio_tab(v);break;case 3:ui_tab(v);break;case 4:mod_controls_settings();break;case 5:cheats_tab();break;case 6:misc_tab();break;case 7:experiments_tab();mod_giant_settings();break;case 8:mod_hud_settings();break;case 9:mod_fusion_settings();break;case 10:mod_training_settings();break;case 11:mod_struggle_settings();break;case 12:mod_battle_rules_settings();break;case 13:mod_native_game_settings();break;}
             ImGui::PopItemWidth();
         }ImGui::EndChild();
         if(focusCategories){ImGuiContext &g=*ImGui::GetCurrentContext();for(ImGuiWindow *w:g.Windows)if(w->ParentWindow==ImGui::GetCurrentWindow()&&strstr(w->Name,"/categories_")){ImGui::FocusWindow(w);ImGui::SetNavID(w->GetID(labels[es][sTab]),ImGuiNavLayer_Main,w->NavRootFocusScopeId,ImRect(0,0,1,1));ImGui::SetNavCursorVisible(true);break;}}
@@ -2726,7 +2764,7 @@ static bool frame_build(void) {
     bool modernStage=sReady&&Port_ModernStageActive();
     bool modMenu = sReady && Port_ModMenuActive();
     int modSettings = sModMenuSettings.exchange(-1, std::memory_order_acq_rel);
-    if (sReady && modSettings >= 0 && modSettings < 12) { set_open(true); sForceTab = modSettings; }
+    if (sReady && modSettings >= 0 && modSettings < 14) { set_open(true); sForceTab = modSettings; }
     bool modesOn = sReady && modes.hint && !modMenu;
     bool online = sReady && Port_NetActive() && PortChat_Enabled();
     if (sChat && !online) { // (the match ended while a line was typed)
@@ -2777,7 +2815,7 @@ static bool frame_build(void) {
     }
     if(modSelect&&!sOpen&&!sQuit){mod_select_draw();ImGui::Render();return true;}
     if(modernStage&&!sOpen&&!sQuit){mod_stage_draw();ImGui::Render();return true;}
-    if (modMenu) { mod_menu_draw(); }
+    if (modMenu&&!sOpen&&!sQuit) { mod_menu_draw(); }
     if (tournament) { tournament_draw(); }
     if(battleHud&&!modMenu&&!tournament&&!sOpen&&!Port_StoryPresentationView(nullptr,nullptr,nullptr)){mod_battle_hud_draw();mod_select_result_draw();}
     if(storySubtitle&&!modMenu&&!sOpen)mod_story_subtitle_draw();

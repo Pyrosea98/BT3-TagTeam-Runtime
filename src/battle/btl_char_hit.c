@@ -1,6 +1,7 @@
 #ifdef PORT
 #include "port_body_contacts.h"
 #include "mod_power_armor.h"
+int Port_PowerArmorTier(int,int);
 #endif
 #include "mod_damage_safe.h"
 #include "common.h"
@@ -244,6 +245,9 @@ void BtlHit_ApplyGuard(HitChr *atk, HitChr *def, u32 result) {
         atk->stopDelay = 1;
         break;
     }
+#ifdef PORT
+    if(Port_PowerArmorTier(atk->player,def->player)>=2){def->react.reaction=2;def->react.unk38=3;return;}
+#endif
     scale = 1.0f;
     switch (result) {
     case 0:
@@ -345,6 +349,23 @@ static inline s32 BtlHit_FormIndex(s32 n, HitGauge *g) {
     return n * 2 + (g->variant != 0);
 }
 
+#ifdef PORT
+/* Shared by body, grab, blast and technique contact paths. Actor indices, not team/view indices. */
+int Port_PowerArmorTier(int by,int at){
+ extern int Port_NetActive(void),BattleReplay_IsActive(void),Port_StoryHeld(int),Port_SequencePartner(int);
+ extern long long Port_CharaPowerValue(int,int);extern int Port_StoryActorPower(int,int);
+ HitChr *atk,*def;HitMember *a,*d;long long ap,dp;int eraA,eraD;
+ if(by<0||at<0||by==at||by>=BtlChar_GetCount()||at>=BtlChar_GetCount()||Port_NetActive()||BattleReplay_IsActive())return 0;
+ if(Port_StoryHeld(by)||Port_StoryHeld(at)||Port_SequencePartner(by)>=0||Port_SequencePartner(at)>=0)return 0;
+ atk=BtlChar_Get(by);def=BtlChar_Get(at);if(!atk||!def)return 0;
+ a=BtlMember_GetActive(atk);d=BtlMember_GetActive(def);if(!a||!d)return 0;
+ ap=Port_CharaPowerValue(a->chara,a->costume);dp=Port_CharaPowerValue(d->chara,d->costume);
+ eraA=Port_StoryActorPower(by,a->chara);eraD=Port_StoryActorPower(at,d->chara);if(eraA>0)ap=eraA;if(eraD>0)dp=eraD;
+ {extern int Port_BattleScaleMode(void);int mode=Port_BattleScaleMode();if(mode<2)return 0;if(mode==2)return 0;}
+ return PA_Tier(ap,dp);
+}
+#endif
+
 /* Attacker flags 0x4C / 0x4D (direction 0 / 1): a grab attempt within 100 units. Fails against flag 0x42, a form
  * whose parameter bit (0x1000000 << form) is set, flag 0x137, or from behind (animation flag 0x800: when 0x8000 is
  * set). On success fills the defender's reaction block (reaction 9, or 0xE with animation flag 0x800). */
@@ -375,6 +396,9 @@ s32 BtlHit_CheckGrab(HitChr *a, HitChr *b) {
     }
     BtlChar_ClearFlag(a, 0x4C);
     BtlChar_ClearFlag(a, 0x4D);
+#ifdef PORT
+    if(Port_PowerArmorTier(a->player,b->player)>=2)return 0;
+#endif
     n = BtlMember_GetActive(b)->costume;
     n = BtlHit_FormIndex(n, BtlMember_GetActiveGauge(b));
     if (BtlParam_GetFlags(b) & (0x1000000 << n)) {
@@ -1323,18 +1347,8 @@ void BtlHit_ApplyHit(HitChr *atk) {
     }
 #endif
 #ifdef PORT
-    {extern int Port_NetActive(void),BattleReplay_IsActive(void),Port_StoryHeld(int),Port_SequencePartner(int);
-     extern long long Port_CharaPowerValue(int,int);extern int Port_StoryActorPower(int,int);
-     if(!Port_NetActive()&&!BattleReplay_IsActive()&&PA_Physical(kind,BtlAct_GetCurrent(atk),react)&&
-        !Port_StoryHeld(atk->player)&&!Port_StoryHeld(def->player)&&
-        Port_SequencePartner(atk->player)<0&&Port_SequencePartner(def->player)<0){
-      HitMember *a=BtlMember_GetActive(atk),*d=BtlMember_GetActive(def);
-      if(a&&d){long long ap=Port_CharaPowerValue(a->chara,a->costume),dp=Port_CharaPowerValue(d->chara,d->costume);
-       int eraA=Port_StoryActorPower(atk->player,a->chara),eraD=Port_StoryActorPower(def->player,d->chara);
-       if(eraA>0)ap=eraA;if(eraD>0)dp=eraD;
-       if(PA_Outclassed(ap,dp)){react=2;launch=0;drain=0;def->react.back=back;}
-      }
-     }
+    {int tier=Port_PowerArmorTier(atk->player,def->player);
+     if(tier>=2||(tier==1&&PA_Physical(kind,BtlAct_GetCurrent(atk),react))){react=2;launch=0;drain=0;def->react.back=back;}
     }
 #endif
     def->react.reaction = react;

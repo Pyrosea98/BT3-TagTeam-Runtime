@@ -14,7 +14,7 @@ def function(name):
     return s[start:end]+'\n'
 
 fixture+=r'''
-static int stoppedTalk,fade,fadeFrames,resultPad,aborted,skip;
+static int stoppedTalk,fade,fadeFrames,resultPad,aborted,skip,sPortEndingVoice;
 void BtlSeq_StopTalk(void){stoppedTalk++;}
 s32 Voice_IsStopped(s32 side){return 1;}
 s32 BattleResult_IsAborted(void){return aborted;}

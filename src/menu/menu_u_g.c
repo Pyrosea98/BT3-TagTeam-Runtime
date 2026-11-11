@@ -1,3 +1,6 @@
+#ifdef PORT
+#include "mod_select.h"
+#endif
 #include "common.h"
 #include "menu/menu_u.h"
 
@@ -199,6 +202,10 @@ void EvoZ_Update(void) {
 
 /* Mode 49: runs the screen until it is left. */
 s32 EvoZ_Run(s32 section) {
+#ifdef PORT
+ Port_RosterBrowse(6,NULL,1,0);return 0;
+#else
+
     s32 result = 1;
 
     EvoZ_Init(section);
@@ -242,4 +249,5 @@ s32 EvoZ_Run(s32 section) {
     EvoZ_Term();
     Dma_ResetBuffers();
     return result;
+#endif
 }

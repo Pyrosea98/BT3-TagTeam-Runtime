@@ -45,16 +45,9 @@ static int ms_save_cell(int chara){
   for(j=0;j<sMsAuthored[i].formCount;j++)if(sMsAuthored[i].form[j]==chara||sMsAuthored[i].form[j]==host)return i;
  }return -1;
 }
-static void ms_items(MsView *v,int chara,int *out){
- int j,cell=ms_save_cell(chara);const u16 *items=NULL;
- if(v->preset>=1&&v->preset<=3&&cell>=0)items=TS_SAVE->custom[cell].set[v->preset-1].id;
- if(v->preset>=4&&v->preset<18&&gSaveData->rec[v->preset-4].chara==chara)items=TS_SAVE->rec[v->preset-4].items.id;
- for(j=0;j<8;j++)out[j]=items?items[j]:0;
-}
-static void ms_cycle_preset(MsView *v,int chara){
- int i;for(i=0;i<18;i++){v->preset=(v->preset+1)%18;if(!v->preset)return;if(v->preset<=3&&ms_save_cell(chara)>=0)return;if(v->preset>=4&&gSaveData->rec[v->preset-4].chara==chara)return;}
- v->preset=0;
-}
+static void rb_read(int,int,u16*);
+static void ms_items(MsView*v,int chara,int*out){int j;u16 custom[8];const u16*items=NULL;if(v->preset>=1&&v->preset<=3){rb_read(chara,v->preset-1,custom);items=custom;}if(v->preset>=4&&v->preset<18&&gSaveData->rec[v->preset-4].chara==chara)items=TS_SAVE->rec[v->preset-4].items.id;for(j=0;j<8;j++)out[j]=items?items[j]:0;}
+static void ms_cycle_preset(MsView*v,int chara){int i;for(i=0;i<18;i++){v->preset=(v->preset+1)%18;if(v->preset<=3)return;if(gSaveData->rec[v->preset-4].chara==chara)return;}v->preset=0;}
 static int ms_family(int cid){
  int i,j,owner=Port_Beta8SelectFormOwner(cid);if(owner>=0)cid=owner;
  for(i=0;i<(int)(sizeof(sMsAuthored)/sizeof(sMsAuthored[0]));i++){
@@ -62,12 +55,8 @@ static int ms_family(int cid){
   for(j=0;j<sMsAuthored[i].formCount;j++)if(sMsAuthored[i].form[j]==cid)return sMsAuthored[i].id;
  }return cid;
 }
-static int ms_taken(const MsView *v,int cid){
- if(Port_ScenarioActive())return 0;
- int i,side;if(cid<0||v->slot<0)return 0;side=MS_Side(v,v->slot);cid=ms_family(cid);
- for(i=0;i<v->total;i++)if(i!=v->slot&&v->pick[i].chara>=0&&MS_Side(v,i)==side&&ms_family(v->pick[i].chara)==cid)return 1;
- return 0;
-}
+/* Juan: duplicates are allowed again, including multiple forms of one family. */
+static int ms_taken(const MsView*v,int cid){(void)v;(void)cid;return 0;}
 static int ms_random(MsView *v){
  int choices[MS_ROSTER],n=0,i;for(i=0;i<v->roster_count;i++)if(v->roster[i]>=0&&!ms_taken(v,v->roster[i]))choices[n++]=v->roster[i];
  return n?choices[Rand_Range(n)]:-1;
@@ -160,6 +149,21 @@ static int ms_story_fixed(MsView *v){
  Port_ModSelectTrace(3,v->a,v->total-v->a);return 1;
 }
 
+static int ms_catalog(MsView *v,int random){int i;
+ {static TsCell cells[MS_ROSTER],custom[14];int count=0,customCount=0,n=sizeof(sMsAuthored)/sizeof(sMsAuthored[0]);
+  ChrGrid_Build(&count,cells,&n,sMsAuthored,&customCount,custom);
+  for(i=0;i<count&&v->roster_count<MS_ROSTER;i++){
+   int cid=cells[i].id;if(cid<0||cid>=MS_CHARACTERS||(cid>=161&&cid<=164)||Port_Beta8SelectFormOwner(cid)>=0||!Port_ModSelectCostumeOk(cid,0))continue;
+   sMsCatalog[v->roster_count]=cells[i];v->roster[v->roster_count++]=cid;
+  }
+ }
+ /* Verified fighters share IDs with stock menu markers: insert only after marker filtering. */
+ {static const int ids[]={161,163,164,291,300,301,317,319,320,321,322,185,271,278,323,324,325};int k,j,have;for(k=0;k<(int)(sizeof(ids)/sizeof(ids[0]));k++){ /* 301: Yajirobe (Juan approved, power 970) */have=0;for(j=0;j<v->roster_count;j++)if(v->roster[j]==ids[k])have=1;if(!have&&Port_Beta8SelectFormOwner(ids[k])<0&&v->roster_count<MS_ROSTER&&Port_ModSelectCostumeOk(ids[k],0)){int at=v->roster_count++;v->roster[at]=ids[k];memset(&sMsCatalog[at],0,sizeof(sMsCatalog[at]));sMsCatalog[at].id=ids[k];sMsCatalog[at].formCount=Port_Beta8FormList(ids[k],sMsCatalog[at].form,MS_FORMS);}}}
+ ms_sort_catalog(v);
+ if(!v->roster_count)return 0;
+ if(random&&v->roster_count<MS_ROSTER){memmove(v->roster+1,v->roster,v->roster_count*sizeof(int));memmove(sMsCatalog+1,sMsCatalog,v->roster_count*sizeof(TsCell));v->roster[0]=-1;memset(sMsCatalog,0,sizeof(TsCell));v->roster_count++;}
+return v->roster_count;
+}
 int Port_ModSelectRun(void){
  MsView v;int i,ret=0,viewer=0,last=-1,lastCost=-1,settle=0,old=-1,oldCost=-1,quitting=0;
  int frameCursor,framePhase,frameCost;
@@ -171,18 +175,7 @@ int Port_ModSelectRun(void){
  gProgress->flags&=~MPROG_FREEZE;
  {int fixed=sMsTourOutput?-1:ms_story_fixed(&v);if(fixed>=0)return fixed;}
  v.a=MS_Size(Port_Setting("mod_team_a",5));if(sMsTourOutput)v.mode=4;
- {static TsCell cells[MS_ROSTER],custom[14];int count=0,customCount=0,n=sizeof(sMsAuthored)/sizeof(sMsAuthored[0]);
-  ChrGrid_Build(&count,cells,&n,sMsAuthored,&customCount,custom);
-  for(i=0;i<count&&v.roster_count<MS_ROSTER;i++){
-   int cid=cells[i].id;if(cid<0||cid>=MS_CHARACTERS||(cid>=161&&cid<=164)||Port_Beta8SelectFormOwner(cid)>=0||!Port_ModSelectCostumeOk(cid,0))continue;
-   sMsCatalog[v.roster_count]=cells[i];v.roster[v.roster_count++]=cid;
-  }
- }
- /* Verified fighters share IDs with stock menu markers: insert only after marker filtering. */
- {static const int ids[]={161,163,164,291,300,301,317,319,320,321,322,185,271,278,323,324,325};int k,j,have;for(k=0;k<(int)(sizeof(ids)/sizeof(ids[0]));k++){ /* 301: Yajirobe (Juan approved, power 970) */have=0;for(j=0;j<v.roster_count;j++)if(v.roster[j]==ids[k])have=1;if(!have&&Port_Beta8SelectFormOwner(ids[k])<0&&v.roster_count<MS_ROSTER&&Port_ModSelectCostumeOk(ids[k],0)){int at=v.roster_count++;v.roster[at]=ids[k];memset(&sMsCatalog[at],0,sizeof(sMsCatalog[at]));sMsCatalog[at].id=ids[k];sMsCatalog[at].formCount=Port_Beta8FormList(ids[k],sMsCatalog[at].form,MS_FORMS);}}}
- ms_sort_catalog(&v);
- if(!v.roster_count)return 0;
- if(v.roster_count<MS_ROSTER){memmove(v.roster+1,v.roster,v.roster_count*sizeof(int));memmove(sMsCatalog+1,sMsCatalog,v.roster_count*sizeof(TsCell));v.roster[0]=-1;memset(sMsCatalog,0,sizeof(TsCell));v.roster_count++;}
+ if(!ms_catalog(&v,1))return 0;
  Port_ModSelectTrace(0,v.mode,v.roster_count);
  {int p;for(p=0;p<4;p++){int team=p&1;if(Port_CoopActive()){int t,m;for(t=0;t<2;t++)for(m=0;m<10;m++)if(Port_CoopMemberPad(t,m)==p)team=t;}v.human_team[p]=team;}}
  if(sMsTourOutput){if(!ms_tour_init(&v))return 0;if(Port_TagTourConfig(2)==4&&(!ms_yamcha_catalog(&v)||!ms_yamcha_draw(&v)))return 0;Port_ModSelectPublish(&v);}
@@ -212,6 +205,7 @@ int Port_ModSelectRun(void){
   frameCursor=v.cursor;framePhase=v.phase;frameCost=v.costume;
   pad=Port_Pad(v.pad);
   pressed=pad->pressed;repeat=pad->repeat;
+  if((pressed&0x2000)&&!Port_ScenarioActive()){extern void Port_ModSelectBattleConfig(void);Port_ModSelectBattleConfig();pressed=repeat=0;}
   if(v.phase!=1&&v.phase!=3)Port_ModSelectTakeMouse(); /* keep review-button clicks */
   /* Do not inherit the stock menu's freeze gate: input and the draft state machine must continue
      while the model viewer or the native menu resources are loading. */
@@ -319,3 +313,5 @@ int Port_ModSelectTournamentRun(MsPick *out,int count){
  Port_TagTourDraftStop();sMsTourOutput=out;sMsTourSize=count;
  ret=Port_ModSelectRun();sMsTourOutput=NULL;sMsTourSize=0;return ret;
 }
+
+#include "mod_roster_browser.inc"

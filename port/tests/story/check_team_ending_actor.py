@@ -1,0 +1,17 @@
+"""Actual ending actor/camera selection with fusion-consumed primary and extra teams."""
+from pathlib import Path
+import re, subprocess, tempfile
+r=Path.cwd();s=(r/'src/battle/btl_seq.c').read_text()
+def extract(name):
+ m=re.search(r'(?m)^(?:static int|s32) '+name+r'\([^;]*?\)\s*\{',s)
+ assert m,name
+ b=s.index('{',m.start());end=b+1;depth=1
+ while depth:depth+=(s[end]=='{')-(s[end]=='}');end+=1
+ return s[m.start():end]
+head='#include <assert.h>\n#include <stdlib.h>\n#include <string.h>\n#define PORT 1\n#define ST_STEP_BEAT 100\n#define ST_STEP_HOLD 102\n#define NULLPTR 0\ntypedef int s32;typedef unsigned char u8;\ntypedef struct{int side[2],chara[2],line[2],step;float timer;}BtlSeqTalkCtx;\ntypedef struct{int chara;u8*talkTbl;}BtlSeqObj;\nstatic int n=3,team[10]={0,1,0},hp[10]={1,0,1},consumed[10]={1,0,0},story,net,replay,mode,win=0,pwin=1,resultteam=0;\nstatic int pose=-1,cam=-1,voice=-1,voicech=-1,sub=-1,notice=-1;static BtlSeqObj obj[30];static int sPortEndingVoice;\nint BtlChar_GetCount(){return n;}int Port_Team(int i){return team[i];}int Port_FusionConsumedActor(int i){return consumed[i];}int Port_ModSelectMulti(){return n>2;}int Port_ModSelectWinningTeam(){return resultteam;}\nint Port_FighterObjId(int i){return i<2?i:i+10;}int BtlCharApi_GetHp(int id){return hp[id<2?id:id-10];}\nint BattleSide_GetObjId(int i){assert(i<2);return i;}int Battle_GetMode(){return mode;}int Port_StoryActive(){return story;}int Port_StoryHumanActor(){return 0;}int Port_NetActive(){return net;}int BattleReplay_IsActive(){return replay;}\nint BattleResult_GetWinnerSide(){return win;}int BattleResult_IsPlayerWin(){return pwin;}BtlSeqObj*BtlObj_Get(int id){assert(id>=0&&id<30);return obj+id;}int BtlCharApi_HasMemberUnk70(int id){assert(id>=0&&id<30);return 0;}\nvoid Ramp_Start(float*t,float a,float b,float c){}void HudNotice_Show(int n){notice=n;}\nvoid st_scene_beat(BtlSeqTalkCtx*c){}void BtlCtrl_StartWinPose(int n){pose=n;}void BtlCtrl_StartLosePose(int n){pose=n;}void DemoCam_PlayObjAnim(int n,int cut){cam=n;}void DemoCam_SetScaleHeight(int n){}\nvoid Voice_PlayChara(int channel,int ch,int l){voice=channel;voicech=ch;}void BtlObj_SetSubState(BtlSeqObj*o,int a,int l){sub=(int)(o-obj);}\n'
+foot='int main(){BtlSeqTalkCtx c={0};obj[0].chara=4;obj[1].chara=114;obj[12].chara=54;\n assert(BtlSeqWinTalk_Setup(&c));assert(c.side[0]==2&&c.chara[0]==54);BtlSeqWinTalk_PreUpdate(&c);assert(pose==2&&cam==12&&sub==12&&voice==0&&voicech==54);\n pwin=0;win=1;hp[2]=0;c.step=0;BtlSeqWinTalk_Setup(&c);assert(c.side[0]==2);BtlSeqWinTalk_PreUpdate(&c);assert(pose==2&&cam==12&&voice==0);\n n=5;team[4]=3;hp[4]=20;resultteam=3;win=1;pwin=1;obj[14].chara=27;c.step=0;BtlSeqWinTalk_Setup(&c);assert(c.side[0]==4);BtlSeqWinTalk_PreUpdate(&c);assert(pose==4&&cam==14&&voice==1);\n story=1;assert(Port_EndingActor(0,0)==0);story=0;net=1;assert(Port_EndingActor(0,0)==0);net=0;replay=1;assert(Port_EndingActor(0,0)==0);replay=0;n=2;assert(Port_EndingActor(0,0)==0);\n}'
+with tempfile.TemporaryDirectory(dir=r/'analysis') as d:
+ p=Path(d)/'test.cpp';p.write_text(head+'\n'.join(extract(n)for n in ['Port_EndingActor','Port_EndingObject','BtlSeqWinTalk_Setup','BtlSeqWinTalk_PreUpdate'])+foot)
+ subprocess.run(['g++','-fsanitize=address,undefined',str(p),'-o',str(p.with_suffix(''))],check=True)
+ subprocess.run([str(p.with_suffix(''))],check=True)
+print('PASS actual ending presenter, non-identity object IDs, consumed primary, extra winning team, losing actor, native voice channel and protected modes')

@@ -4,7 +4,7 @@
 #define MS_MAX 16 /* story drafts; the selector UI limits itself to MS_UI_MAX */
 #define MS_UI_MAX 10
 #define MS_ROSTER 302
-#define MS_CHARACTERS 326
+#define MS_CHARACTERS 328
 #define MS_PAGE 35
 #define MS_COLS 7
 #define MS_FORMS 7
@@ -12,6 +12,7 @@
 extern "C" {
 #endif
 typedef struct MsPick {int chara,costume,team,pad;int items[8];} MsPick;
+int Port_RosterBrowse(int kind,MsPick *out,int count,int dp);
 typedef struct MsView {
  int active,phase,mode,a,total,slot,cursor,costume,roster_count,stage,stage_count,error,pad,loading,form_cursor,form_count,preset;
  int disabled[MS_ROSTER],formDisabled[MS_FORMS];
@@ -37,6 +38,7 @@ int Port_ModSelectPlanCount(void);
 int Port_ModSelectMulti(void);
 void Port_ModSelectResult(int team);
 int Port_ModSelectWinnerPad(void);
+int Port_ModSelectWinningTeam(void);
 int Port_ModSelectPlayerWin(void);
 int Port_ModSelectItems(int actor,unsigned short *out);
 int Port_ModSelectEnabled(void);
@@ -85,7 +87,7 @@ static int MS_TournamentValid(const MsView *s){
  int i,j;if(!s||s->mode!=4||s->total<1||s->total>5||s->a!=s->total)return 0;
  for(i=0;i<s->total;i++){
   const MsPick*p=&s->pick[i];if(p->chara<0||p->chara>=MS_CHARACTERS||p->costume<0||p->costume>7||p->team!=0||p->pad< -1||p->pad>3)return 0;
-  for(j=0;j<i;j++)if(s->pick[j].chara==p->chara||(p->pad>=0&&s->pick[j].pad==p->pad))return 0;
+  for(j=0;j<i;j++)if(p->pad>=0&&s->pick[j].pad==p->pad)return 0;
  }return 1;
 }
 static int MS_Move(int cursor,int delta,int count){if(count<1)return 0;return (cursor+delta%count+count)%count;}

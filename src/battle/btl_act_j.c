@@ -247,6 +247,10 @@ static int Port_CpuFormAllowed(BtlActJChr*,int);
 #endif
 s32 BtlAct_CanTransform(BtlActJChr *chr, u32 index, s32 needBlast, s32 needAllowed) {
 #ifdef PORT
+    {extern int Port_MatchTransformsAllowed(int);if(!Port_MatchTransformsAllowed(chr->player))return 0;}
+#endif
+
+#ifdef PORT
     extern int Port_StoryFormGranted(int,int);
 #endif
     s32 chara;

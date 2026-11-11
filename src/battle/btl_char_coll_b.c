@@ -1,5 +1,8 @@
 #include "common.h"
 #include "battle/btl_char_coll.h"
+#ifdef PORT
+extern int Port_PowerArmorTier(int,int);
+#endif
 
 /*
  * Fighter hit reactions, 0x1CA6D0..0x1CDCA8: what a fighter does when the hit detection (0x1AF740..0x1B10F0)
@@ -140,6 +143,9 @@ extern s32 BtlSkill_GetFrames(BtlCollChr *chr, s32 slot);  /* stun frames */
 
 /* Starts a throw: fills the attacker's throw block, copies it to the victim and marks both. */
 s32 BtlColl_StartThrow(BtlCollChr *atk, BtlCollChr *def, s32 slot, u32 techFlags) {
+#ifdef PORT
+    if(Port_PowerArmorTier(atk->side,def->side)>=2)return 0;
+#endif
     s32 pick = 0;
     s32 back;
     f32 yaw;
@@ -410,6 +416,9 @@ s32 BtlColl_GuardBlast(BtlCollChr *chr, BtlCollHit *hit) {
     if (kind == 0 || kind == 5) {
         return 0;
     }
+#ifdef PORT
+    if(Port_PowerArmorTier(hit->atk->side,chr->side)>=2){chr->react.id=BTL_REACT_NOFLINCH;chr->react.unk38=3;}else
+#endif
     BtlChar_SetFlag(chr, 0x66);
     BtlMember_Damage(chr, dmg, 0xC);
     switch (BtlKiBlast_GetTypeOfHit(hit)) {
@@ -424,6 +433,9 @@ s32 BtlColl_GuardBlast(BtlCollChr *chr, BtlCollHit *hit) {
         break;
     }
     time = 0.1f;
+#ifdef PORT
+    if(Port_PowerArmorTier(hit->atk->side,chr->side)<2)
+#endif
     BtlMove_SetImpulseDir(chr, &dir, BtlKiBlast_GetGuardPushOfHit(hit));
     ChrCam_AddShake(chr, 3.0f, time);
     BtlChar_Vibrate(chr, 1.0f, time);
@@ -462,10 +474,16 @@ s32 BtlColl_GuardStrike(BtlCollChr *chr, BtlCollHit *hit) {
     if (kind == 0 || kind == 5) {
         return 0;
     }
+#ifdef PORT
+    if(Port_PowerArmorTier(atk->side,chr->side)>=2){chr->react.id=BTL_REACT_NOFLINCH;chr->react.unk38=3;}else
+#endif
     BtlChar_SetFlag(chr, 0x66);
     BtlMember_Damage(chr, dmg, 0xC);
     time = 0.2f;
     BtlColl_PlayHitSound(NULL, hit, BtlSkill_GetHitSound(atk, slot));
+#ifdef PORT
+    if(Port_PowerArmorTier(atk->side,chr->side)<2)
+#endif
     BtlMove_SetImpulseDir(chr, &dir, BtlSkill_GetGuardPush(atk, slot));
     ChrCam_AddShake(chr, 3.0f, time);
     BtlChar_Vibrate(chr, 1.0f, time);
@@ -531,6 +549,9 @@ s32 BtlColl_GuardRush(BtlCollChr *chr, BtlCollHit *hit) {
     if (kind == 0 || kind == 5) {
         return 0;
     }
+#ifdef PORT
+    if(Port_PowerArmorTier(atk->side,chr->side)>=2){chr->react.id=BTL_REACT_NOFLINCH;chr->react.unk38=3;}else
+#endif
     switch (BtlSuper_GetGuardKind(atk, slot)) {
     case 0:
         BtlChar_SetFlag(chr, 0x66);
@@ -542,6 +563,9 @@ s32 BtlColl_GuardRush(BtlCollChr *chr, BtlCollHit *hit) {
     BtlMember_Damage(chr, BtlSuper_GetDamage(atk, slot, 1, 0), 0xC);
     BtlColl_PlayHitSound(NULL, hit, BtlSuper_GetHitSound(atk, slot, alt));
     if (alt) {
+#ifdef PORT
+    if(Port_PowerArmorTier(atk->side,chr->side)<2)
+#endif
         BtlMove_SetImpulseDir(chr, &dir, BtlSuper_GetGuardPush(atk, slot));
     }
     time = 0.3f;
@@ -649,6 +673,9 @@ s32 BtlColl_HitByBlast(BtlCollChr *chr, BtlCollHit *hit) {
             react = BtlKiBlast_GetReactOfHit(hit);
         }
     }
+    #ifdef PORT
+    if(Port_PowerArmorTier(atk->side,chr->side)>=2)react=BTL_REACT_NOFLINCH;
+    #endif
     if (react == BTL_REACT_NOFLINCH) {
         BtlCollReact *g = &chr->react;
 
@@ -730,6 +757,9 @@ s32 BtlColl_HitByStrike(BtlCollChr *chr, BtlCollHit *hit) {
     if (react == 1) {
         return 0;
     }
+    #ifdef PORT
+    if(Port_PowerArmorTier(atk->side,chr->side)>=2)react=BTL_REACT_NOFLINCH;
+    #endif
     r = &chr->react;
     if (chr->noFlinch > 0) {
         react = BTL_REACT_NOFLINCH;
@@ -1060,6 +1090,9 @@ s32 BtlColl_HitByRush(BtlCollChr *chr, BtlCollHit *hit) {
     if (react == 1) {
         return 0;
     }
+    #ifdef PORT
+    if(Port_PowerArmorTier(atk->side,chr->side)>=2)react=BTL_REACT_NOFLINCH;
+    #endif
     if (react == BTL_REACT_NOFLINCH) {
         BtlColl_ApplyRushNoFlinch(chr, atk, hit, yaw, front);
     } else if (react == 0x1D || react == 0x1E) {

@@ -29,6 +29,7 @@ typedef struct B8Alias {
 } B8Alias;
 
 static const B8Alias sAliases[] = {
+    {326,180,3},{327,188,2}, /* Past Saiyan Great Apes: exact existing costumes, no model edits. */
     {323,77,2},{324,173,3},{325,173,2}, /* Shorty / Scarface: independent illusion Saiyans */
     {317,196,1},{318,196,2},{319,196,3},{320,111,2},{321,62,2},{322,101,2},
     {312,74,2},{313,193,2}, /* Sword Trunks SSJ2/SSJ3 */
@@ -707,6 +708,7 @@ int Port_Beta8FormList(int id, int *out, int max) {
         src = sFutureGohanForms; n = (int)(sizeof(sFutureGohanForms) / sizeof(sFutureGohanForms[0]));
     } else if (id == 73) {
         src=sBardockForms; n=5;
+    } else if (id==323||id==324||id==190){static int ape[2];ape[0]=id;ape[1]=id==323?326:id==324?327:228;src=ape;n=2;
     } else if (id == 13) {
         src=sKidGohanForms; n=2;
     } else if (id == 285) {
@@ -739,6 +741,8 @@ typedef struct B8FormParam {
 } B8FormParam;
 
 static const B8FormParam sFormParams[] = {
+    {323,{180,255,255,255}},{324,{188,255,255,255}},{326,{255,255,255,77}},{327,{255,255,255,173}},
+    {190,{228,255,255,255}},{228,{255,255,255,71}},
     {62,{255,255,255,255}}, /* Hildegarn belongs to317, not Tapion. */
     {317,{139,255,255,255}},{139,{255,255,255,255}},
     {319,{130,255,255,255}},{266,{255,255,255,255}},
@@ -986,7 +990,7 @@ void Port_Beta8PatchPowerText(void *section){
 }
 typedef struct {int id;int row[4];} B8MemberStats;
 static const B8MemberStats sRound2Stats[]={
- {323,{60000,100000,100000,5}},{324,{60000,100000,100000,5}},
+ {326,{60000,100000,100000,5}},{327,{60000,100000,100000,5}},{323,{60000,100000,100000,5}},{324,{60000,100000,100000,5}},
  {261,{400000,100000,100000,6}},
  {275,{400000,100000,100000,6}},
  {276,{400000,100000,100000,6}},
@@ -1077,6 +1081,9 @@ void Port_Beta8TraceTexture(unsigned epoch,unsigned long long tex0,unsigned gen,
 }
 
 int Port_Beta8CostumeFormTarget(int source,int costume,int target){
+ if(source==323&&target==180)return 326;if(source==324&&target==188)return 327;
+ if(source==326&&target==77)return 323;if(source==327&&target==173)return 324;
+ if(source==228&&target==71)return 190;
  if((source==29||source==309||source==310||source==318||source==244)&&target==196)return 318;
  if((source==29||source==309||source==310||source==318)&&target==122)return 244;
  if(source==29&&target==33)return 311;
@@ -1095,6 +1102,7 @@ int Port_Beta8FormSlotTargetForCostume(int source,int costume,int slot,int targe
  return Port_Beta8CostumeFormTarget(source,costume,target);
 }
 int Port_Beta8TransformCostume(int source,int costume,int target){
+ if(source==228&&target==190)return 0;
  /* Fat Buu must not inherit a costume promoted into Majin Duu or Multiverse Buu. */
  if(source==112&&target==113&&!Port_Beta8CostumeSelectable(113,costume))return 0;
  if(source==121&&target==196)return 0;
@@ -1143,6 +1151,12 @@ static void b8_reduce_reviewed_form_costs(int source,int costume,unsigned char*p
 
 void Port_Beta8PatchCostumeFormParam(int source,int costume,void *param){
  unsigned char*p=(unsigned char*)param;int j;if(!p)return;Port_Beta8PatchFormParam(source,param);
+ if(source==71){for(j=0;j<4;j++)if(p[0x98+j]==228){p[0x98+j]=255;p[0x9c+j]=0;}}
+ if(source==323||source==324||source==190||source==326||source==327||source==228){
+  int back=source==326||source==327||source==228;
+  for(j=0;j<4;j++){p[0x9c+j]=p[0x98+j]!=255&&!back;p[0xa0+j]=back?1:0;p[0xa4+j]=p[0x98+j]==255?0:back?1:3;p[0xa8+j]=255;}
+  p[0xac]=back?255:0;
+ }
  if(source==29&&costume!=4){int have=0;for(j=0;j<4;j++)if(p[0x98+j]==33)have=1;if(!have)for(j=0;j<4;j++)if(p[0x98+j]==255){p[0x98+j]=33;p[0x9c+j]=1;p[0xa0+j]=0;p[0xa4+j]=2;p[0xa8+j]=255;break;}}
  if(source==29&&costume==4){
   const unsigned char targets[4]={33,32,196,122};
@@ -1175,7 +1189,7 @@ void Port_Beta8PatchCostumeFormParam(int source,int costume,void *param){
   if(source==73){p[0xa0]=2;p[0xa4]=3;}
  }
  if(source>=312&&source<=315){for(j=0;j<4;j++)p[0x9c+j]=(p[0x98+j]!=255&&j!=3)?1:0;p[0xac]=source==314?1:source==315?2:source==313?255:0;}
- if(source==259||source==323||source==324||source==325||source==320||source==321||source==322||source==179||source==181||source==194||source==264||source==271||(source==110&&costume==2)){
+ if(source==259||source==325||source==320||source==321||source==322||source==179||source==181||source==194||source==264||source==271||(source==110&&costume==2)){
   for(j=0;j<4;j++){p[0x98+j]=255;p[0x9c+j]=0;p[0xa0+j]=0;p[0xa4+j]=0;p[0xa8+j]=255;}p[0xac]=255;
  }
  if((source==22&&p[0x9b]==155)||(source==112&&p[0x9b]==61)||(source==81&&p[0x9b]==73)){p[0x9b]=255;p[0x9f]=0;}
@@ -1241,21 +1255,23 @@ int Port_Beta8FormAllowed(int base,int costume,int target){
    int cost=j<4?p[0x9c+j]:Port_Beta8ExtraFormField(c,outfit,j,1),t,co;
    if(raw<0||raw==255||cost==255)continue;
    t=Port_Beta8CostumeFormTarget(c,outfit,raw);if(t==target)return 1;
-   if(t<0||t>=326)continue;co=Port_Beta8TransformCostume(c,outfit,t);
+   if(t<0||t>=328)continue;co=Port_Beta8TransformCostume(c,outfit,t);
    for(k=0;k<n;k++)if(ids[k]==t&&outfits[k]==co)break;
    if(k==n&&n<80){ids[n]=t;outfits[n++]=co;}
   }
  }
  return 0;
 }
-int Port_Beta8SelectFormOwner(int id){if(id==318)return 29;if(id==139)return 317;if(id==266)return 319;if(id==311)return 29;if(id==316)return 12;if(id==312||id==313)return 39;if(id==314||id==315)return 73;if(id>=309&&id<=310)return 29;if(id>=302&&id<=305)return 161;if(id>=306&&id<=308)return 170;if(id==295)return 91;if(id>=296&&id<=299)return 97;static const int rows[][2]={{245,213},{292,291},{293,291},{294,291},{180,11},{191,66},{168,152},{173,118},{231,0},{188,77},{174,75},{176,73},{175,80},{228,71},{211,82},{196,121},{165,20},{232,1},{248,131},{217,131},{171,58},{200,3},{237,34},{202,34},{250,17},{166,51},{249,110},{172,110},{169,7},{233,7},{240,122},{236,122},{246,72},{243,81},{193,74},{227,64},{201,144},{54,110},{59,51},{160,159},{163,159},{182,13},{199,73},{244,29},{281,159},{282,178},{283,178},{284,13},{286,269},{287,260},{289,260},{290,269},{216,214},{218,214},{219,214},{220,215},{221,215},{222,215},{223,215},{225,224},{226,224},{229,224},{230,224},{235,234},{238,234},{239,234},{241,234}};int i;for(i=0;i<(int)(sizeof(rows)/sizeof(rows[0]));i++)if(rows[i][0]==id)return rows[i][1];return -1;}
+int Port_Beta8SelectFormOwner(int id){if(id==326)return 323;if(id==327)return 324;if(id==228)return 190;if(id==318)return 29;if(id==139)return 317;if(id==266)return 319;if(id==311)return 29;if(id==316)return 12;if(id==312||id==313)return 39;if(id==314||id==315)return 73;if(id>=309&&id<=310)return 29;if(id>=302&&id<=305)return 161;if(id>=306&&id<=308)return 170;if(id==295)return 91;if(id>=296&&id<=299)return 97;static const int rows[][2]={{245,213},{292,291},{293,291},{294,291},{180,11},{191,66},{168,152},{173,118},{231,0},{188,77},{174,75},{176,73},{175,80},{228,71},{211,82},{196,121},{165,20},{232,1},{248,131},{217,131},{171,58},{200,3},{237,34},{202,34},{250,17},{166,51},{249,110},{172,110},{169,7},{233,7},{240,122},{236,122},{246,72},{243,81},{193,74},{227,64},{201,144},{54,110},{59,51},{160,159},{163,159},{182,13},{199,73},{244,29},{281,159},{282,178},{283,178},{284,13},{286,269},{287,260},{289,260},{290,269},{216,214},{218,214},{219,214},{220,215},{221,215},{222,215},{223,215},{225,224},{226,224},{229,224},{230,224},{235,234},{238,234},{239,234},{241,234}};int i;for(i=0;i<(int)(sizeof(rows)/sizeof(rows[0]));i++)if(rows[i][0]==id)return rows[i][1];return -1;}
 
 /* Expand only gauge rows in native memory; no original common-file bytes change. */
 int *Port_Beta8MultiverseGaugeRows(int *rows,int count){
- static int extended[326*4];static const int donors[]={113,114,115,116,96,126,127,128,96,109,60,4,5,6,200,35,36,237,31,32,12,74,193,165,232,31,196,196,196,111,62,101,77,173,173};int i;
+ static int extended[328*4];static const int donors[]={113,114,115,116,96,126,127,128,96,109,60,4,5,6,200,35,36,237,31,32,12,74,193,165,232,31,196,196,196,111,62,101,77,173,173,180,188};int i;
  if(!rows||count<291)return rows;
  memcpy(extended,rows,291*16);
- for(i=0;i<35;i++)memcpy(extended+(291+i)*4,rows+donors[i]*4,16);
+ for(i=0;i<37;i++)memcpy(extended+(291+i)*4,rows+donors[i]*4,16);
+ Port_Beta8ApplyMemberStats(extended,328);
+ {const int yaj[]={30000,100000,100000,3};memcpy(extended+301*4,yaj,16);}
  return extended;
 }
 

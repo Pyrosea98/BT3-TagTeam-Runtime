@@ -9,7 +9,7 @@ AUDIT=SOURCE/'analysis/v05-roster/damage-audit'
 MAX=2147483647
 # Logical id: power in billions. Standard-form donors remain authored;
 # Gogetto SSJ2/3 progression is explicitly confirmed by Juan.
-POWERS={54:40000,57:100,59:80000,60:5000,147:80,149:40,
+POWERS={52:5000,53:2250,166:10000,249:4500,172:18000,54:40000,57:100,59:80000,60:5000,147:80,149:40000,
         194:100,201:50,218:48,219:120,
         220:1000,221:2000,222:8000,223:80000,
         225:2900,226:5800,229:23200,230:232000,

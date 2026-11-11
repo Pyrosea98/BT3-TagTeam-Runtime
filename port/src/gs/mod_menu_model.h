@@ -7,16 +7,20 @@
 #include "../../include/mod_story.h"
 #include "../../include/mod_achievements.h"
 struct ModMenuState { int page, cursor, pick; struct TTSetup tour; struct CoopSetup coop; };
-enum { MM_CLOSED, MM_ROOT, MM_PLAY, MM_PLAYERS, MM_SETTINGS, MM_CREDITS, MM_TOURSETUP, MM_COOPSETUP, MM_SCENARIOS, MM_CHALLENGES, MM_STORY, MM_ACHIEVEMENTS, MM_STORY_RESULT, MM_STORY_SAGAS, MM_SPECTATE };
+enum { MM_CLOSED, MM_ROOT, MM_PLAY, MM_PLAYERS, MM_SETTINGS, MM_CREDITS, MM_TOURSETUP, MM_COOPSETUP, MM_SCENARIOS, MM_CHALLENGES, MM_STORY, MM_ACHIEVEMENTS, MM_STORY_RESULT, MM_STORY_SAGAS, MM_SPECTATE, MM_ONLINE, MM_EXTRAS, MM_EVOLUTION };
 static int mm_count(int page) {
- return page==MM_ROOT?4:page==MM_PLAY?10:page==MM_SPECTATE?2:page==MM_PLAYERS?3:page==MM_SETTINGS?12:page==MM_ACHIEVEMENTS?MA_COUNT:1;
+ return page==MM_ROOT?8:(page==MM_ONLINE||page==MM_EXTRAS||page==MM_EVOLUTION)?2:page==MM_PLAY?11:page==MM_SPECTATE?2:page==MM_PLAYERS?3:page==MM_SETTINGS?14:page==MM_ACHIEVEMENTS?MA_COUNT:1;
 }
-static int mm_columns(int page){return page==MM_PLAY?3:2;}
+static int mm_root_id(int index){return index>=3?index+1:index;}
+static int mm_columns(int page){return page==MM_PLAY||page==MM_ROOT?3:2;}
 /* result: 1..3 launch mode; 10 close; 20..29 settings; 30 native tournament.
    players: Team/Training 1, Co-op 2..4, FFA 1..4 (FFA single default here). */
 static void mm_resume(struct ModMenuState *s,int pick){s->page=MM_PLAY;s->cursor=pick>=0&&pick<mm_count(MM_PLAY)?pick:0;s->pick=0;if(pick==7){s->page=MM_STORY;s->cursor=0;}if(pick==9){s->page=MM_SPECTATE;s->cursor=0;}}
 static int mm_step(struct ModMenuState *s,unsigned pressed,unsigned repeat,int *players,int *sound) {
  int move=0; *sound=-1;
+ /* The custom frontend is the main menu, not a dismissible overlay. */
+ if(s->page&&(pressed&0x2000)){s->page=MM_ROOT;s->cursor=0;*sound=2;return 0;}
+ if(s->page==MM_ROOT&&(pressed&(0x400|0x100))){*sound=2;return 0;}
  if(s->page==MM_SPECTATE){
   if(pressed&0x2000){s->page=MM_CLOSED;*sound=2;return 10;}
   if(pressed&(0x400|0x100)){s->page=MM_PLAY;s->cursor=9;*sound=2;return 0;}
@@ -92,10 +96,23 @@ static int mm_step(struct ModMenuState *s,unsigned pressed,unsigned repeat,int *
  if(move){int n=s->page==MM_PLAYERS?((s->pick==1||s->pick==6)?3:4):mm_count(s->page);s->cursor=(s->cursor+move+n)%n;*sound=0;return 0;}
  if(!(pressed&0x200))return 0;
  *sound=1;
+ if(s->page==MM_EVOLUTION)return s->cursor?207:200;
  if(s->page==MM_ROOT){
-  if(s->cursor==3){s->page=0;*sound=2;return 10;}
-  s->page=s->cursor==0?MM_PLAY:s->cursor==1?MM_SETTINGS:MM_CREDITS;s->cursor=0;
+  switch(mm_root_id(s->cursor)){
+  case 0:s->page=MM_PLAY;s->cursor=0;break;
+  case 1:s->page=MM_EVOLUTION;s->cursor=0;break; /* Evolution Z */
+  case 2:return 201; /* Character Reference */
+  case 3:return 202; /* Dragon shrine */
+  case 4:s->page=MM_SETTINGS;s->cursor=0;break;
+  case 5:s->page=MM_ONLINE;s->cursor=0;break;
+  case 6:s->page=MM_EXTRAS;s->cursor=0;break;
+  case 7:s->page=MM_CREDITS;s->cursor=0;break;
+  case 8:return 210; /* deliberate return to title */
+  }
+ } else if(s->page==MM_ONLINE){return s->cursor?205:203;
+ } else if(s->page==MM_EXTRAS){return s->cursor?206:204;
  } else if(s->page==MM_PLAY){
+  if(s->cursor==10)return 112;
   if(s->cursor==9){s->page=MM_SPECTATE;s->cursor=0;return 0;}
   if(s->cursor==5){s->page=MM_SCENARIOS;s->cursor=0;return 0;}
   if(s->cursor==7){s->page=MM_STORY_SAGAS;s->cursor=0;return 0;}

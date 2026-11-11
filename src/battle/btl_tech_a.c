@@ -924,6 +924,7 @@ s32 BtlAtk_GetId(BtlTechChr *chr) {
 
 /* Story data readers: damaged clothes must not change combat power. */
 extern int Port_StoryActive(void);
+extern int Port_BattleScaleMode(void);
 extern void *Port_StoryCombatTable(void*,int,void*);
 static BtlParam *STC_param(BtlTechChr *chr){return (BtlParam*)Port_StoryCombatTable(chr,0,BtlChar_GetObj(chr)->param);}
 static BtlAtkRecord *STC_atk(BtlTechChr *chr){return (BtlAtkRecord*)Port_StoryCombatTable(chr,1,BtlChar_GetObj(chr)->atk);}
@@ -1006,7 +1007,7 @@ s32 BtlAtk_GetDamage(BtlTechChr *chr) {
     s32 hits;
 
 #ifdef PORT
-    {BtlTechMember*m=BtlMember_GetActive(chr);if(m&&!Port_StoryActive()&&!Port_NetActive()&&!BattleReplay_IsActive())raw=MD_Profile(m->chara,m->costume,id,raw);}
+    {BtlTechMember*m=BtlMember_GetActive(chr);if(m&&Port_BattleScaleMode()==3&&m->chara!=301&&!Port_StoryActive()&&!Port_NetActive()&&!BattleReplay_IsActive())raw=MD_Profile(m->chara,m->costume,id,raw);}
 #endif
     if (raw > 0x7FFFFFFFu) {
         raw = 0x7FFFFFFFu;

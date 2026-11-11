@@ -1,6 +1,7 @@
 /* 3Hz ordinary CPU transformation planner, ported from prior cpu_tactics.py. */
 #ifdef PORT
 #include "mod_cpu_form_tiers.inc"
+#include "mod_power_ratio.h"
 extern int Port_TargetHuman(int),Port_Team(int),Port_CamTarget(int),Battle_GetMode(void),Port_ModesFight(void);
 typedef struct CpuTacticsState {int age,nextEval,nextTransform,lastHp,chara;} CpuTacticsState;
 static CpuTacticsState sCpuTactics[12];
@@ -75,10 +76,10 @@ static int Port_CpuTransformSlot(BtlActJChr *c){
  s->lastHp=ownHp;
  if(ownPow<=0||enemyPow<=0||ownHp<=0||enemyHp<=0)return -1;
  /* Only bother when the opponent is at least roughly as strong (within 10% below us). */
- if(enemyPow*100<ownPow*90LL)return -1;
+ if(!PU_AtLeastPercent(enemyPow,ownPow,90))return -1;
  /* Far stronger opponent: transform at once, before any damage. Waiting to fall behind on health would let a
     fighter that dies to one hit never transform at all. */
- jump=enemyPow*100>=ownPow*150LL;
+ jump=PU_AtLeastPercent(enemyPow,ownPow,150);
  if(!jump){
   /* Otherwise only once the opponent actually leads on current health. */
   need=ct_deficit(ownHpMax,preset);
@@ -94,7 +95,7 @@ static int Port_CpuTransformSlot(BtlActJChr *c){
  for(k=0;k<4;k++){
   int dest=BtlParam_GetSlotId(c,k),cost=BtlParam_GetSlotCost(c,k),df,dt,inFamily;
   if((current>=291&&current<=299)||current==95||current==97)dest=Port_Beta8FormSlotTargetForCostume(current,BtlMember_GetActive(c)->costume,k,dest);
-  if(dest<0||dest>=301||dest==255||dest==current)continue;ct_tier(dest,&df,&dt);
+  if(dest<0||dest>=328||dest==255||dest==current)continue;ct_tier(dest,&df,&dt);
   if(family&&family==df&&dt<=tier)continue;
   inFamily=(family&&family==df&&dt>tier);
   if(cost<=0&&!inFamily)continue;

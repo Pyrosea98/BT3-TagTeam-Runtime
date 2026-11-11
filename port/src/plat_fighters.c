@@ -49,7 +49,7 @@
 #include "plat_fighters.h"
 #include "port_fighters.h"
 
-#define CHARA_COUNT 326  /* stock roster plus explicitly aliased native identities */
+#define CHARA_COUNT 328  /* stock roster plus explicitly aliased native identities */
 #define NAME_COUNT CHARA_COUNT /* Beta8: the mod's named roster goes past the stock 161 */
 #define EXTRA_MAX PORT_EXTRA_MAX /* extra fighters a fight can have so far */
 #define FILE_CHARA 0x590 /* file ids of character c: c * 10 + this is its model, + 8 and + 9 its two animation files
@@ -667,6 +667,9 @@ const char *Port_CharaName(int chara) {
     if(chara==317)return "Hildegarn (Primera forma)";
     if(chara==318)return "Vegeta Explorador Gran Mono Dorado";
     if(chara==319)return "Luud";
+    if(chara==326)return "Shorty Great Ape";
+    if(chara==327)return "Scarface Great Ape";
+    if(chara==228)return "Toma Great Ape";
     if(chara==323)return "Shorty";
     if(chara==324)return "Scarface";
     if(chara==325)return "Cacao";
@@ -830,7 +833,7 @@ const char *Port_CharaName(int chara) {
 
 /* Exact select-screen power label, resolved by physical costume for aliases.
    Read only; this is presentation data, never a combat damage calculation. */
-const char *Port_CharaPower(int chara,int costume){
+static const char *Port_CharaPowerRaw(int chara,int costume){
  if(chara==301)return "970"; /* approved imported identity; no ISO text row */
  static char out[96];const char *value=B8PowerText(chara),*end;int i;
  if(!value){Port_Beta8PowerIdentity(&chara,&costume);if(!sNamesState)names_read();value=chara>=0&&chara<NAME_COUNT?sPowerLabels[chara]:NULL;}
@@ -844,31 +847,11 @@ const char *Port_CharaPower(int chara,int costume){
    12.5e9, "300Mil" -> 300000, "MAX" -> the top value. A '.' is a thousands separator when exactly three digits
    follow it and no more, a decimal point otherwise. 0 when the label is missing or unreadable (the caller then
    falls back to the health ceiling). Read only: presentation data, never a combat calculation. */
-long long Port_CharaPowerValue(int chara,int costume){
- const char *s=Port_CharaPower(chara,costume),*p,*q;
- long long whole=0,fraction=0,scale=1,mult=1;
- char suffix[6];int n=0,k,frac=0,digits=0;
- if(s==NULL)return 0;
- for(p=s;*p==' ';p++){}
- if((p[0]=='m'||p[0]=='M')&&(p[1]=='a'||p[1]=='A')&&(p[2]=='x'||p[2]=='X'))return 1000000000000000000LL;
- for(;*p;p++){
-  if(*p>='0'&&*p<='9'){digits++;if(frac){fraction=fraction*10+(*p-'0');scale*=10;}else whole=whole*10+(*p-'0');}
-  else if(*p=='.'||*p==','){
-   if(frac)break;
-   for(q=p+1,k=0;q[k]>='0'&&q[k]<='9';k++){}
-   if(k==3&&!(q[3]>='0'&&q[3]<='9'))continue;   /* thousands separator */
-   frac=1;
-  }else break;
- }
- if(!digits)return 0;
- for(;*p==' ';p++){}
- for(k=0;k<5&&p[k];k++){char c=p[k];if(c>='A'&&c<='Z')c=(char)(c-'A'+'a');suffix[k]=c;}suffix[k]=0;n=k;
- if(n==1&&suffix[0]=='k')mult=1000;
- else if(n==3&&suffix[0]=='m'&&suffix[1]=='i'&&suffix[2]=='l')mult=1000;      /* 300Mil */
- else if(n==1&&suffix[0]=='m')mult=1000000;
- else if(n==2&&suffix[0]=='m'&&suffix[1]=='m')mult=1000000000;                 /* MM = mil millones */
- else if(n==1&&suffix[0]=='b')mult=1000000000;
- return whole*mult+(scale>1?fraction*mult/scale:0);
+#include "mod_power_units.h"
+long long Port_CharaPowerValue(int chara,int costume){return PU_Parse(Port_CharaPowerRaw(chara,costume),PU_BUnit(chara,costume));}
+const char *Port_CharaPower(int chara,int costume){
+ static char out[96];const char*raw=Port_CharaPowerRaw(chara,costume);long long value=PU_Parse(raw,PU_BUnit(chara,costume));
+ if(!value)return raw;PU_Format(value,out,sizeof(out));return out;
 }
 
 /* Fill the game's own team-member list of the active fighter with the port's extra allies of the same side, so
@@ -1879,3 +1862,11 @@ int Port_FusionPartnerPad(int who,int member){extern void*BtlChar_Get(int);exter
 #include "mod_revive_native.inc"
 #include "mod_assists_native.inc"
 #include "mod_training_health_native.inc"
+
+/* Explicit permission for every real local team, independent of CPU tactics. */
+int Port_MatchTransformsAllowed(int actor){
+ extern int Port_Team(int),Port_StoryActive(void),Port_ScenarioActive(void);char key[64];int team;
+ if(Port_NetActive()||BattleReplay_IsActive()||Port_StoryActive()||Port_ScenarioActive())return 1;
+ team=Port_Team(actor);if(team<0||team>=16)return 1;
+ snprintf(key,sizeof(key),"match_team_%d_transformations",team);return Port_Setting(key,1)!=0;
+}

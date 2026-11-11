@@ -19,7 +19,7 @@ extern "C" int Port_TagTourDraftMember(int member,int character,int costume,cons
 extern "C" int Port_TagTourCommit(void){draftOwner=-1;return TT_CommitDraft(&state);}
 extern "C" int Port_TagTourRandomCatalog(const TTRandomChoice*p,int n,unsigned seed){
  if(!state.active||state.config.type!=4||!p||n<1||n>TT_RANDOM_MAX)return 0;
- for(int i=0;i<n;i++)if(p[i].family<0||p[i].family>=326||p[i].character<0||p[i].character>=326||p[i].costume<0||p[i].costume>=8)return 0;
+ for(int i=0;i<n;i++)if(p[i].family<0||p[i].family>=328||p[i].character<0||p[i].character>=328||p[i].costume<0||p[i].costume>=8)return 0;
  memcpy(randomPool,p,n*sizeof(*p));randomCount=n;randomSeed=seed?seed:1;fprintf(stderr,"bt3: Yamcha random catalog: %d valid family/form/costume combinations\n",n);return 1;
 }
 extern "C" int Port_TagTourRandomFighter(const int*characters,int n,TTFighter*out){

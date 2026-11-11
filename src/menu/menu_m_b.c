@@ -1,4 +1,7 @@
 #ifdef PORT
+#include "mod_select.h"
+#endif
+#ifdef PORT
 #include "plat_beta8.h"
 #endif
 #include "common.h"
@@ -1128,6 +1131,10 @@ void UbTeamSel_UpdateEnd(void) {
  * in gProgress->team and their number in gProgress->teamSize), 0 when the player backed out.
  */
 s32 UbTeamSel_Run(s32 section) {
+#ifdef PORT
+ MsPick picks[5];int i,j;int n=UB_PROG->teamSize;if(n<1)n=1;if(n>5)n=5;int rule=UB_PROG->dpRule;int ok=Port_RosterBrowse(7,picks,n,rule>=1&&rule<=3?5+rule*5:0);if(ok){n=ok;memset(&UB_PROG->team,0,sizeof(UB_PROG->team));for(i=0;i<5;i++)UB_PROG->team.member[i].chara=-1;for(i=0;i<n;i++){UB_PROG->team.member[i].chara=picks[i].chara;UB_PROG->team.member[i].color=picks[i].costume;for(j=0;j<8;j++)UB_PROG->team.member[i].items.id[j]=picks[i].items[j];}UB_PROG->teamSize=n;}return ok;
+#else
+
     s32 result = 1;
 
     UbTeamSel_Init(section);
@@ -1186,4 +1193,5 @@ s32 UbTeamSel_Run(s32 section) {
     UbTeamSel_Term();
     Dma_ResetBuffers();
     return result;
+#endif
 }

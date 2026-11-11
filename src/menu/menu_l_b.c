@@ -1,4 +1,7 @@
 #ifdef PORT
+#include "mod_select.h"
+#endif
+#ifdef PORT
 #include "plat_beta8.h"
 #endif
 #include "common.h"
@@ -808,6 +811,10 @@ void SoloSel_UpdateEnd(void) {
  * chosen (the choice is then in gProgress->team[0]), 0 when the player backed out.
  */
 s32 SoloSel_Run(s32 section) {
+#ifdef PORT
+ MsPick p;int ok=Port_RosterBrowse(7,&p,1,0);if(ok){memset(&SOLO_PROG->lastEntry,0,sizeof(SOLO_PROG->lastEntry));SOLO_PROG->lastEntry.chara=p.chara;SOLO_PROG->lastEntry.costume=p.costume;for(int j=0;j<8;j++)SOLO_PROG->lastEntry.items.id[j]=p.items[j];}return ok;
+#else
+
     s32 result = 1;
 
     SoloSel_Init(section);
@@ -869,4 +876,5 @@ s32 SoloSel_Run(s32 section) {
     SoloSel_Term();
     Dma_ResetBuffers();
     return result;
+#endif
 }

@@ -15,6 +15,7 @@ static int sChrViewFitPending,sChrViewFitChara;
 static int sChrViewDynamic;
 static int sChrViewTournament;
 void Port_ChrViewTournament(int on){sChrViewTournament=on;}
+static void *sStagePreviewBuffer; /* transferred to the viewer resource; Heap_Free owns cleanup */
 static int sStagePreviewFile=-1,sStagePreviewId=-1;static float sStagePreviewAngle,sStagePreviewPitch;
 extern void BtlRes_FreeSingle(void *);
 #endif
@@ -182,14 +183,18 @@ void ChrView_SetupCamera(s32 chara) {
         OrbitCam_Reset();
         OrbitCam_SetFloorClamp(1);
         OrbitCam_SetTarget(0.0f, info->targetY, 0.0f);
-        OrbitCam_SetAngles(0.0f, 3.14159265f, 0.0f);
+        OrbitCam_SetAngles(0.0f,
+#ifdef PORT
+            sStagePreviewId==41?0.0f:
+#endif
+            3.14159265f, 0.0f);
         OrbitCam_SetDist(info->dist);
 #ifdef PORT
         if(sChrViewDynamic){
             extern f32 Port_WideFactor(void);
             f32 dist=info->dist*1.5f;
             /* Frame the complete body in the uncovered right panel, at any aspect. */
-            OrbitCam_SetTarget(dist*0.263f*Port_WideFactor(),info->targetY+info->dist*0.15f,0.0f);
+            OrbitCam_SetTarget(dist*0.263f*Port_WideFactor()*(sStagePreviewId==41?-1:1),info->targetY+info->dist*0.15f,0.0f);
             OrbitCam_SetDist(dist);
             OrbitCam_SetDistRange(dist,dist);
         }else
@@ -239,6 +244,10 @@ s32 ChrView_StepLoad(ChrViewJob *job) {
         }
         job->slot->obj = BtlObj_Create(3, &job->slot->file, 1);
         job->obj = BtlObj_Get(job->slot->obj);
+#ifdef PORT
+        /* Earth is behind the opposite side of this stage: turn only this viewer instance. */
+        if(sStagePreviewId==41){extern void BtlObjXf_Update(u8*);*(f32 *)(job->obj+0x964)=3.14159265f;BtlObjXf_Update(job->obj);}
+#endif
         BtlObjAnim_PlayModel(job->obj, gChrView->anim, 2);
         BTL_OBJ_FLAGS(job->obj) &= ~0x02000000;
         BtlObj_SetPartVisible(job->obj, 0, 0);
@@ -279,7 +288,16 @@ s32 ChrView_StepLoadStage(ChrViewJob *job) {
  sStagePreviewFile>=0?sStagePreviewFile:sChrViewTournament?
  (sChrViewTournament==4&&PortStages_Find("Other World Tournament")>=0?0xD48+70000+PortStages_Find("Other World Tournament")-PORT_STAGE_FIRST:1142+TT_ThemeStage(sChrViewTournament-1,-1)):
 #endif
- CHRVIEW_FILE_STAGE, NULL, 0);
+ CHRVIEW_FILE_STAGE,
+#ifdef PORT
+ sStagePreviewBuffer,
+#else
+ NULL,
+#endif
+ 0);
+#ifdef PORT
+        sStagePreviewBuffer=NULL;
+#endif
         job->state++;
         break;
     case 1:
@@ -423,7 +441,7 @@ void ChrView_Update(void) {
             /* Rage's huge bounds put the camera behind the backdrop pillars. Normalize this
                viewer instance only; the fighter's combat scale and model file remain untouched. */
             if(sChrViewFitChara==275&&dist>100){float factor=100/dist;*(f32*)(obj+0xA20)*=factor;*(f32*)(obj+0x954)*=factor;BtlObjXf_Update(obj);BtlObjPose_CalcMatrices(obj);BtlObj_UpdateBounds(obj,obj+0xA40);dist=100;y=(box[1]+box[4])*.5f+(box[4]-box[1])*.05f;}
-            OrbitCam_SetTarget((box[0]+box[3])*0.5f+dist*0.263f*wide,y,(box[2]+box[5])*0.5f);
+            OrbitCam_SetTarget((box[0]+box[3])*0.5f+dist*0.263f*wide*(sStagePreviewId==41?-1:1),y,(box[2]+box[5])*0.5f);
             OrbitCam_SetDist(dist);OrbitCam_SetDistRange(dist,dist);OrbitCam_Update(0);
             Port_ModSelectTrace(5,sChrViewFitChara,(int)(dist*100));sChrViewFitPending=0;
         }else --sChrViewFitPending;
@@ -555,12 +573,21 @@ void ChrView_Term(void) {
 /* One real stage resource at a time; no fighter, AI, physics loop or per-card renderers. */
 void Port_StagePreviewEnd(void){if(sStagePreviewId>=0&&gChrView)ChrView_Term();sStagePreviewId=-1;sStagePreviewFile=-1;}
 int Port_StagePreviewStep(int stage){
- extern int Port_IsAddedStage(int);extern float BtlStage_GetRadius(void);int file;float radius;
+ extern int Port_IsAddedStage(int);extern float BtlStage_GetRadius(void);extern unsigned Port_GameBigAlloc(int);int file,size;float radius;
  if(stage<0||stage==35){Port_StagePreviewEnd();return 0;}
  if(stage!=sStagePreviewId){
   file=Port_IsAddedStage(stage)?0xD48+70000+stage-42:1142+stage;
-  if(File_GetSize(file)<=8)return 0;
-  Port_StagePreviewEnd();sStagePreviewFile=file;ChrView_Init();sStagePreviewId=stage;sStagePreviewAngle=3.14159f;
+  size=File_GetSize(file);if(size<=8)return 0;
+  Port_StagePreviewEnd();
+  /* Match the battle loader: large custom stages cannot fit beside menu
+     resources in the console heap. File_GetSize already rounds to sectors.
+     On allocation failure leave the thumbnail available without queuing a
+     read into NULL (which File_Request would try to allocate in that heap). */
+  if(size>0x6CB800){
+   sStagePreviewBuffer=(void *)Port_GameBigAlloc(size);
+   if(!sStagePreviewBuffer)return 0;
+  }
+  sStagePreviewFile=file;ChrView_Init();sStagePreviewId=stage;sStagePreviewAngle=3.14159f;
   gChrView->stageOn=1;gChrView->visible=1;
   OrbitCam_SetFloorClamp(0);OrbitCam_SetPadLocked(1);radius=BtlStage_GetRadius();if(!(radius>50&&radius<100000))radius=400;radius*=.55f;sStagePreviewPitch=-.25f;if(stage==20||stage==21){radius*=1.6f;sStagePreviewPitch=-.45f;}
   OrbitCam_SetTarget(0,-radius*((stage==20||stage==21)?.45f:.15f),0);OrbitCam_SetDist(radius);OrbitCam_SetDistRange(radius,radius);

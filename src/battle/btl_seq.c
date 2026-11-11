@@ -1121,6 +1121,24 @@ s32 BtlSeqIntroTalk_Skip(BtlSeqTalkCtx *ctx) {
     return 1;
 }
 
+#ifdef PORT
+/* An ordinary team ending must frame a real remaining actor, not a partner
+   hidden by fusion. Keep native/Story/network casting and voice channels. */
+static int sPortEndingVoice;
+static int Port_EndingActor(int side,int winner){
+ extern int BtlChar_GetCount(void),Port_Team(int),Port_FusionConsumedActor(int),BtlCharApi_GetHp(int),Port_ModSelectMulti(void),Port_ModSelectWinningTeam(void),Port_NetActive(void),BattleReplay_IsActive(void),Port_FighterObjId(int);
+ int i,team,n=BtlChar_GetCount();
+ if(n<=2||Battle_GetMode()==1||Port_StoryActive()||Port_NetActive()||BattleReplay_IsActive())return side;
+ team=Port_Team(side);
+ if(side==winner&&Port_ModSelectMulti()&&Port_ModSelectWinningTeam()>=0)team=Port_ModSelectWinningTeam();
+ if(Port_Team(side)==team&&!Port_FusionConsumedActor(side)&&BtlCharApi_GetHp(Port_FighterObjId(side))>0)return side;
+ for(i=0;i<n;i++)if(Port_Team(i)==team&&!Port_FusionConsumedActor(i)&&BtlCharApi_GetHp(Port_FighterObjId(i))>0)return i;
+ for(i=0;i<n;i++)if(Port_Team(i)==team&&!Port_FusionConsumedActor(i))return i;
+ return side;
+}
+static int Port_EndingObject(int actor){extern int Port_FighterObjId(int);return actor>=2?Port_FighterObjId(actor):BattleSide_GetObjId(actor);}
+#endif
+
 /* Chooses the speaker, line and announcement of the winner scene. */
 s32 BtlSeqWinTalk_Setup(BtlSeqTalkCtx *ctx) {
     s32 winner = BattleResult_GetWinnerSide();
@@ -1128,15 +1146,49 @@ s32 BtlSeqWinTalk_Setup(BtlSeqTalkCtx *ctx) {
 #ifdef PORT
     {extern int Port_StoryHumanActor(void);if(Port_StoryActive()&&!BattleResult_IsPlayerWin()){int human=Port_StoryHumanActor();if(human>=0)loser=human;}}
 #endif
-    BtlSeqObj *winObj = BtlObj_Get(BattleSide_GetObjId(winner));
+#ifdef PORT
+    sPortEndingVoice=BattleResult_IsPlayerWin()?winner:loser;
+    {int original=winner;winner=Port_EndingActor(winner,original);loser=Port_EndingActor(loser,original);}
+#endif
+    BtlSeqObj *winObj = BtlObj_Get(
+#ifdef PORT
+ Port_EndingObject(winner)
+#else
+ BattleSide_GetObjId(winner)
+#endif
+);
     u8 *winTbl = winObj->talkTbl;
-    BtlSeqObj *loseObj = BtlObj_Get(BattleSide_GetObjId(loser));
+    BtlSeqObj *loseObj = BtlObj_Get(
+#ifdef PORT
+ Port_EndingObject(loser)
+#else
+ BattleSide_GetObjId(loser)
+#endif
+);
     u8 *loseTbl = loseObj->talkTbl;
 
     if (BattleResult_IsPlayerWin()) {
-        if (winTbl == NULL || loseTbl == NULL || BtlCharApi_HasMemberUnk70(winner) || BtlCharApi_HasMemberUnk70(loser)) {
+        if (winTbl == NULL || loseTbl == NULL || BtlCharApi_HasMemberUnk70(
+#ifdef PORT
+ Port_EndingObject(winner)
+#else
+ winner
+#endif
+) || BtlCharApi_HasMemberUnk70(
+#ifdef PORT
+ Port_EndingObject(loser)
+#else
+ loser
+#endif
+)) {
             ctx->side[0] = winner;
-            if (BtlCharApi_HasMemberUnk70(winner)) {
+            if (BtlCharApi_HasMemberUnk70(
+#ifdef PORT
+ Port_EndingObject(winner)
+#else
+ winner
+#endif
+)) {
                 ctx->chara[0] = 0x56;
             } else {
                 ctx->chara[0] = winObj->chara;
@@ -1159,7 +1211,13 @@ s32 BtlSeqWinTalk_Setup(BtlSeqTalkCtx *ctx) {
         HudNotice_Show(6);
     } else {
         ctx->side[0] = loser;
-        if (BtlCharApi_HasMemberUnk70(loser)) {
+        if (BtlCharApi_HasMemberUnk70(
+#ifdef PORT
+ Port_EndingObject(loser)
+#else
+ loser
+#endif
+)) {
             ctx->chara[0] = 0x56;
         } else {
             ctx->chara[0] = loseObj->chara;
@@ -1214,15 +1272,39 @@ s32 BtlSeqWinTalk_PreUpdate(BtlSeqTalkCtx *ctx) {
     case 0:
         if (BattleResult_IsPlayerWin()) {
             BtlCtrl_StartWinPose(ctx->side[0]);
-            DemoCam_PlayObjAnim(ctx->side[0], 1);
+            DemoCam_PlayObjAnim(
+#ifdef PORT
+ Port_EndingObject(ctx->side[0]),
+#else
+ ctx->side[0],
+#endif
+ 1);
             DemoCam_SetScaleHeight(1);
         } else {
             BtlCtrl_StartLosePose(ctx->side[0]);
-            DemoCam_PlayObjAnim(ctx->side[0], 2);
+            DemoCam_PlayObjAnim(
+#ifdef PORT
+ Port_EndingObject(ctx->side[0]),
+#else
+ ctx->side[0],
+#endif
+ 2);
         }
         Ramp_Start(&ctx->timer, 10.0f, 0.0f, 1.0f);
-        Voice_PlayChara(ctx->side[0], ctx->chara[0], ctx->line[0]);
-        BtlObj_SetSubState(BtlObj_Get(BattleSide_GetObjId(ctx->side[0])), 2, ctx->line[0]);
+        Voice_PlayChara(
+#ifdef PORT
+ sPortEndingVoice,
+#else
+ ctx->side[0],
+#endif
+ ctx->chara[0], ctx->line[0]);
+        BtlObj_SetSubState(BtlObj_Get(
+#ifdef PORT
+ Port_EndingObject(ctx->side[0])
+#else
+ BattleSide_GetObjId(ctx->side[0])
+#endif
+), 2, ctx->line[0]);
         ctx->step++;
         break;
     case 2:
@@ -1256,7 +1338,13 @@ s32 BtlSeqWinTalk_Update(BtlSeqTalkCtx *ctx) {
     case 0:
     case 1:
         if (BtlCtrl_IsPoseReached(ctx->side[0])) {
-            if (Voice_IsStopped(ctx->side[0]) || Ramp_Step(&ctx->timer)) {
+            if (Voice_IsStopped(
+#ifdef PORT
+ sPortEndingVoice
+#else
+ ctx->side[0]
+#endif
+) || Ramp_Step(&ctx->timer)) {
                 ctx->step = 2;
             }
         }

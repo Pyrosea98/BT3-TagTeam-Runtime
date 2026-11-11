@@ -1,5 +1,11 @@
 #include "common.h"
+#ifdef PORT
+#include "plat_beta8.h"
+#endif
 #include "menu/menu_o.h"
+#ifdef PORT
+extern MTexRes *Port_MenuChip(s32,s32);
+#endif
 #include "sys/pad.h"
 
 /*
@@ -287,7 +293,11 @@ void MisSel_Draw(void) {
         if (gMisSel->opps[gMisSel->missions[cur].opp[i]].chara == MISSEL_NONE) {
             chip = (MTexRes *)MPACK_AT(gMisSel->chips, MISSEL_CHIP_NUM);
         } else {
+            #ifdef PORT
+            {s32 c=gMisSel->opps[gMisSel->missions[cur].opp[i]].chara;chip=Port_MenuChip(c,gMisSel->opps[gMisSel->missions[cur].opp[i]].costume);if(!chip){s32 donor=Port_Beta8StockAlias(c);if(donor<0||donor>160)donor=0;chip=(MTexRes *)MPACK_AT(gMisSel->chips,donor+1);}}
+#else
             chip = (MTexRes *)MPACK_AT(gMisSel->chips, gMisSel->opps[gMisSel->missions[cur].opp[i]].chara + 1);
+#endif
         }
         gMisSel->tex[gMisSelFaceTex[i]] = chip->tex;
     }

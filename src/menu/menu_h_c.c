@@ -1,3 +1,6 @@
+#ifdef PORT
+#include "mod_select.h"
+#endif
 #include "common.h"
 #include "menu/menu_h.h"
 #ifdef PORT
@@ -24,6 +27,10 @@ extern s32 CharSel_Run(s32 kind);  /* the character select (chunk 5, menu_e) */
 
 /* Mode 60: loads archive 9 (file baseFile + 15) and runs the character reference; back to the main menu. */
 s32 CharRefMode_Main(void) {
+#ifdef PORT
+ Port_RosterBrowse(5,NULL,1,0);gProgress->mode=4;return 0;
+#endif
+
     s32 bgm = 0;
     s32 done = 0;
     s32 result = 1;

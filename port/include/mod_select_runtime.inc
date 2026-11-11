@@ -57,3 +57,5 @@ static int ms_fight_setup(int mode,int replay,int script){
 }
 
 void Port_ModSelectTrace(int event,int a,int b){static const char *names[]={"begin","viewer initialized","preview character/costume","committed","cancelled","preview camera fitted (character/distance x100)","preview ground lift (character/offset x100)"};if(event>=0&&event<7)fprintf(stderr,"bt3: modern select: %s %d %d\n",names[event],a,b);}
+
+int Port_ModSelectWinningTeam(void){return sMsPlan.result_team-1;}

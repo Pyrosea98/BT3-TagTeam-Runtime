@@ -135,12 +135,16 @@ void BtlMember_LoadParams(BtlMemberChr *chr, s32 member, s32 init, f32 healthPct
 #ifdef PORT
     /* New split forms use their own maxima, including fusion-born forms.
        The native transformation path already preserves current health ratio. */
-    extern int Port_Beta8UsesMemberStats(int);
-    if (g->fused == 0 || Port_Beta8UsesMemberStats(m->chara)) {
+    extern int Port_Beta8UsesMemberStats(int),Port_BattleScaleMode(void);
+    if (g->fused == 0 || Port_Beta8UsesMemberStats(m->chara) || Port_BattleScaleMode()!=3) {
 #else
     if (g->fused == 0) {
 #endif
         g->healthMax = gBtlChars->paramTbl[m->chara].healthMax;
+        #ifdef PORT
+        {extern int Port_BattleScaleHealth(int,int,int);g->healthMax=Port_BattleScaleHealth(m->chara,m->costume,g->healthMax);}
+#endif
+        
         if (BtlMember_HasAbilityOf(chr, member, 100)) {
             g->healthMax += 30000;
         } else if (BtlMember_HasAbilityOf(chr, member, 99)) {
@@ -395,6 +399,7 @@ s32 BtlMember_Damage(BtlMemberChr *chr, s32 amount, s32 flags) {
     BtlMemberCombo *combo = &chr->combo;
     BtlMemberGauge *g = BtlMember_GetActiveGauge(chr);
     s32 before = g->health;
+
     s32 health;
 
     if (!(flags & BTL_DMG_NO_HALVE)) {
@@ -435,6 +440,9 @@ s32 BtlMember_Damage(BtlMemberChr *chr, s32 amount, s32 flags) {
             }
         }
     }
+#ifdef PORT
+    {extern int Port_BattleScaleDamageCap(int,int);if(!(flags&BTL_DMG_FORCE))amount=Port_BattleScaleDamageCap(amount,g->healthMax);}
+#endif
     if (flags & BTL_DMG_DRAIN) {
         if (BtlMember_HasAbility(chr, 0x3F)) {
             amount = 0;

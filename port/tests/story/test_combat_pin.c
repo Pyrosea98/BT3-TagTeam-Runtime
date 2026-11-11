@@ -22,6 +22,7 @@ float BtlStat_GetBlast2DamageScale(BtlTechBChr*c){return 1;}float BtlStat_GetUlt
 float BtlStat_GetKiBlastDamageScale(BtlTechBChr*c){return 1;}
 static void seed(void){int a,i;for(a=0;a<16;a++){*(int*)&fighters[a]=a;objects[a].param=&param[a];objects[a].atk=atk[a];objects[a].kiBlast=ki[a];objects[a].super=&super[a];objects[a].skill=&skill[a];param[a].damageTaken=5;param[a].hitReactScale=1;memset(param[a].unk0,0,sizeof(param[a].unk0));for(i=0;i<163;i++)atk[a][i].damage=100;for(i=0;i<13;i++)ki[a][i].damage=20;for(i=0;i<3;i++)super[a].damage[i]=1000;member[a].chara=a==2?25:a==1?77:0;member[a].costume=a==2?1:3;}}
 void Port_Dbg3(const char*a,int b,int c,int d,int e){(void)a;(void)b;(void)c;(void)d;(void)e;} /* debug log boundary (BT3_STORY_FORM_LOG) */
+int Port_Setting(const char*k,int d){return d;}int Port_ScenarioActive(void){return 0;}long long Port_CharaPowerValue(int c,int co){return c==60?5000000000000000000LL:c==164?9223372036854775807LL:970;}
 int main(void){int i,pass;TestAtk*p;assert(sizeof(TestAtk)==48);seed();
  *(unsigned*)(param[0].unk0+0x10)=0x1000;*(unsigned*)(param[2].unk0+0x10)=0x1000;
  for(pass=0;pass<3;pass++){Port_StoryCombatReset();

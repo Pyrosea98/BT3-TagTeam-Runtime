@@ -20,7 +20,8 @@ static StCombatData *st_combat_form(int actor,int form,int create){
  for(i=0;i<ST_COMBAT_FORMS;i++){StCombatData*s=&sStCombat[actor][i];if(s->valid&&s->chara==form)return s;if(!s->valid&&!empty)empty=s;}
  if(create&&empty){empty->chara=form;return empty;}return 0;
 }
-void Port_StoryCombatReset(void){memset(sStCombat,0,sizeof(sStCombat));}
+extern void Port_BattleScaleReset(void);
+void Port_StoryCombatReset(void){memset(sStCombat,0,sizeof(sStCombat));Port_BattleScaleReset();}
 static int st_combat_raw(const StCombatAtk*r){return MD_Clamp((long long)r->damage+((long long)r->damageHi<<16));}
 static void st_combat_write(StCombatAtk*r,int v){r->damage=(unsigned)v&65535;r->damageHi=(unsigned)v>>16;}
 static int st_combat_scale(int v,int top,int old){return v>0&&top>0&&old>0?MD_MulDiv(v,top,old):v;}
@@ -94,9 +95,10 @@ void Port_StoryCombatBind(void *fighter,int initial){
  if(BtlMember_GetActive(c)&&BtlMember_GetActive(c)->chara==0){u32 flags;memcpy(&flags,s->param.unk0+0x10,4);flags&=~0x1000u;memcpy(s->param.unk0+0x10,&flags,4);}
  if(Port_StoryChapter()==1&&role==1){g=Port_StoryCastActor(0);if(g>=0&&g<16){StCombatData*base=st_combat_form(g,0,0);if(base)st_combat_krillin(s,base);}}
 }
+#include "mod_battle_scale.inc"
 void *Port_StoryCombatTable(void *fighter,int kind,void *original){
  int a;StCombatData*s;
- if(!fighter||!Port_StoryActive()||Port_NetActive()||BattleReplay_IsActive())return original;
+ if(!fighter||!Port_StoryActive()||Port_NetActive()||BattleReplay_IsActive())return bt_combat_table(fighter,kind,original);
  a=*(int*)fighter;if(a<0||a>=16)return original;
  if(kind==3){extern int Port_StoryTechniqueDonor(int);int donor=Port_StoryTechniqueDonor(a);
   if(donor>=0&&donor<16){BtlTechBChr*d=BtlChar_Get(donor);BtlTechBObj*o=d?BtlChar_GetObj(d):0;

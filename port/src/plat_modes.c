@@ -238,3 +238,5 @@ void Port_ModesFightLog(void) {
     }
     fprintf(stderr, "%s\n", line);
 }
+
+#include "mod_roster_presets.inc"

@@ -1,4 +1,4 @@
-/* Local power-gap reaction only. Damage and non-melee contact paths are untouched. */
+/* Local power-gap reaction: 5x physical armor, 50x all-contact armor. */
 #ifndef MOD_POWER_ARMOR_H
 #define MOD_POWER_ARMOR_H
 static int PA_Physical(int kind,int action,int reaction){
@@ -11,5 +11,9 @@ static int PA_Physical(int kind,int action,int reaction){
 static int PA_Outclassed(long long attacker,long long defender){
  /* Division avoids overflow even for MAX / imported high-power identities. */
  return attacker>0&&defender>0&&attacker<=defender/5;
+}
+static int PA_Tier(long long attacker,long long defender){
+ if(attacker<=0||defender<=0)return 0;
+ return attacker<=defender/50?2:PA_Outclassed(attacker,defender)?1:0;
 }
 #endif

@@ -24,10 +24,10 @@ def function(text, head):
 
 
 externs = hit[hit.index('/* Fighter accessors and flags. */'):hit.index('/* 1 when the attacker')]
-apply_hit = function(hit, 'void BtlHit_ApplyHit(HitChr *atk) {')
+apply_hit = function(hit, 'int Port_PowerArmorTier(int by,int at){')+'\n'+function(hit, 'void BtlHit_ApplyHit(HitChr *atk) {')
 gate = function(scene, 'static int st_punch_armor(int by,int at){') + '\n' + function(scene, 'int Port_StoryPunchArmor(int by,int at,int kind,int react,int byChara){')
 
-code = r'''#include <assert.h>
+code = 'int Port_BattleScaleMode(void){return 3;}\n'+r'''#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include "mod_damage_safe.h"
@@ -189,9 +189,17 @@ int main(void){
  assert(strike(-1,0,1)==5);paPower[2]=500;assert(strike(-1,0,1)==2&&damageTaken==1000);
  assert(strike(-1,1,0)==5);paPower[2]=1000000000000000000LL;assert(strike(-1,0,1)==2);
  paPower[1]=0;assert(strike(-1,0,1)==5);paPower[1]=100;
- for(int k=0;k<=0xA3;k++){kind=k;reaction=5;int yes=PA_Physical(k,0,5);assert(strike(-1,0,1)==(yes?2:5));}
+ paPower[2]=4999;for(int k=0;k<=0xA3;k++){kind=k;reaction=5;int yes=PA_Physical(k,0,5);assert(strike(-1,0,1)==(yes?2:5));}
  kind=2;for(int action=0xEC;action<=0x13B;action++){paAction=action;assert(strike(-1,0,1)==5);}paAction=0;
  for(int mode=0;mode<4;mode++){paNet=mode==0;paReplay=mode==1;paHeld=mode==2;paPaired=mode==3;assert(strike(-1,0,1)==5);}paNet=paReplay=paHeld=paPaired=0;
+ paPower[1]=100;paPower[2]=4999;kind=0x55;reaction=9;assert(strike(-1,0,1)==9);
+ paPower[2]=5000;assert(strike(-1,0,1)==2&&damageTaken==1000);
+ for(int k=0;k<=0xA3;k++){kind=k;reaction=5;assert(strike(-1,0,1)==2&&damageTaken==1000);}
+ kind=2;for(int action=0xEC;action<=0x13B;action++){paAction=action;assert(strike(-1,0,1)==2);}paAction=0;
+ for(int mode=0;mode<4;mode++){paNet=mode==0;paReplay=mode==1;paHeld=mode==2;paPaired=mode==3;assert(strike(-1,0,1)==5);}paNet=paReplay=paHeld=paPaired=0;
+ assert(PA_Tier(100,5000)==2&&PA_Tier(100,4999)==1&&PA_Tier(0,5000)==0&&PA_Tier(5000,100)==0);
+ assert(PA_Tier(1,9223372036854775807LL)==2&&PA_Tier(9223372036854775807LL,9223372036854775807LL)==0);
+ puts("PASS 50x all-contact reaction boundary, grabs, technique actions, unchanged damage and protected contexts");
  assert(!PA_Outclassed(1000000000000000000LL,1000000000000000000LL));
  assert(!PA_Physical(2,0,9)&&!PA_Physical(2,0,0x22));
  puts("PASS actual 5x no-flinch: boundary/reversed/unknown/MAX powers, physical records/charged hits, unchanged damage, techniques/grabs/bursts/paired/Story-held/online/replay exclusions");

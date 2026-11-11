@@ -66,6 +66,7 @@ static void mod_startup_draw(void) {
         }
         line(kModCreditNames[3],379,14,colour(255,192,72));
         line(kModCreditUrls[3],401,11,colour(255,255,255));
+        line(kModTesterNames,425,12,colour(255,219,119));
     } else {
         char title[160];snprintf(title,sizeof(title),"%s: %s",es?kModCreditRolesEs[2]:kModCreditRoles[2],kModCreditNames[2]);
         dl->AddRectFilled(at(42,238),at(598,327),colour(18,30,43,165));
@@ -88,5 +89,6 @@ static void mod_credits_settings(void) {
         ImGui::PopID();
     }
     ImGui::TextWrapped("%s",kModThanks[es?1:0]);
+    ImGui::TextWrapped("%s: %s",es?"Pruebas y colaboración":"Testing and feedback",kModTesterNames);
     ImGui::Separator();
 }

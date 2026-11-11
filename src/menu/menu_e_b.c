@@ -2654,6 +2654,9 @@ modern_restart:
         if (bgm == TS_BGM_RANDOM) {
             bgm = modern?Port_ModSelectMusic():TS_RANDOM_BGM();
         }
+#ifdef PORT
+        {extern void Port_NativeRulesApply(void);Port_NativeRulesApply();}
+#endif
         switch (gSaveData->rule[0]) {
         case 0:
             timeLimit = 1;

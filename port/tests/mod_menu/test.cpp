@@ -1,3 +1,4 @@
+#include <initializer_list>
 
 #include <assert.h>
 #include "../../src/gs/mod_menu_model.h"
@@ -5,9 +6,10 @@ int main(){
  ModMenuState s={0,0,0};int p=0,sound=0;
  assert(mm_step(&s,0x2000,0,&p,&sound)==0&&s.page==MM_ROOT&&sound==1);
  assert(mm_step(&s,0,2,&p,&sound)==0&&s.cursor==1); // right
+ s.cursor=3; // Settings follows Reference; no always-visible Dragon Ball tile
  assert(mm_step(&s,0x200,0,&p,&sound)==0&&s.page==MM_SETTINGS);
  s.cursor=4;assert(mm_step(&s,0x200,0,&p,&sound)==104); // actual Controls tab
- for(int i=0;i<12;i++){s.cursor=i;assert(mm_step(&s,0x200,0,&p,&sound)==100+i);}
+ for(int i=0;i<14;i++){s.cursor=i;assert(mm_step(&s,0x200,0,&p,&sound)==100+i);}
  assert(mm_step(&s,0x400,0,&p,&sound)==0&&s.page==MM_ROOT);
  assert(mm_step(&s,0x200,0,&p,&sound)==0&&s.page==MM_PLAY);
  assert(mm_step(&s,0x200,0,&p,&sound)==1&&p==1); // solo team battle
@@ -16,10 +18,10 @@ int main(){
  s={MM_PLAY,2,0};mm_step(&s,0x200,0,&p,&sound);
  for(int i=0;i<4;i++){s.cursor=i;assert(mm_step(&s,0x200,0,&p,&sound)==2&&p==i+1);}
  s={MM_PLAY,3,0};assert(mm_step(&s,0x200,0,&p,&sound)==3&&p==1);
- s={MM_ROOT,3,0};assert(mm_step(&s,0x200,0,&p,&sound)==10&&s.page==0);
- s={MM_PLAYERS,2,1};assert(mm_step(&s,0x2000,0,&p,&sound)==10&&s.page==0);
+ assert(mm_count(MM_ROOT)==8);for(int n=0;n<8;n++){s={MM_ROOT,n,0};assert(mm_step(&s,0x200,0,&p,&sound)!=202);}
+ s={MM_PLAYERS,2,1};assert(mm_step(&s,0x2000,0,&p,&sound)==0&&s.page==MM_ROOT);
  s={MM_PLAY,4,0};assert(mm_step(&s,0x200,0,&p,&sound)==0&&s.page==MM_TOURSETUP);s.tour.cursor=8;assert(mm_step(&s,0x200,0,&p,&sound)==30);
- s={MM_PLAY,4,0};mm_step(&s,0x200,0,&p,&sound);assert(mm_step(&s,0x2000,0,&p,&sound)==10&&s.page==0);
+ s={MM_PLAY,4,0};mm_step(&s,0x200,0,&p,&sound);assert(mm_step(&s,0x2000,0,&p,&sound)==0&&s.page==MM_ROOT);
  s={MM_PLAY,5,0};assert(mm_step(&s,0x200,0,&p,&sound)==0&&s.page==MM_SCENARIOS);
  mm_step(&s,0x200,0,&p,&sound);assert(s.page==MM_CHALLENGES);
  assert(mm_step(&s,0x200,0,&p,&sound)==40&&p==1);
@@ -32,9 +34,10 @@ int main(){
  s={MM_SPECTATE,1,0};assert(mm_step(&s,0x200,0,&p,&sound)==2&&p==0);
  assert(mm_step(&s,0x400,0,&p,&sound)==0&&s.page==MM_PLAY&&s.cursor==9);
  mm_resume(&s,9);assert(s.page==MM_SPECTATE);mm_step(&s,0,2,&p,&sound);assert(s.cursor==1);
- assert(mm_step(&s,0x2000,0,&p,&sound)==10&&s.page==MM_CLOSED);
+ assert(mm_step(&s,0x2000,0,&p,&sound)==0&&s.page==MM_ROOT);
+ s={MM_PLAY,10,0};assert(mm_step(&s,0x200,0,&p,&sound)==112&&s.page==MM_PLAY);
  // The expanded Play grid reaches every mode; the new pages do not alias fight launches.
- assert(mm_count(MM_PLAY)==10&&mm_columns(MM_PLAY)==3);
+ assert(mm_count(MM_PLAY)==11&&mm_columns(MM_PLAY)==3);
  s={MM_PLAY,0,0};mm_step(&s,0,4,&p,&sound);assert(s.cursor==3);
  mm_step(&s,0,4,&p,&sound);assert(s.cursor==6);
  mm_step(&s,0,2,&p,&sound);assert(s.cursor==7);
@@ -50,7 +53,13 @@ int main(){
  mm_step(&s,0,4,&p,&sound);assert(s.cursor==0);
  assert(mm_step(&s,0x200,0,&p,&sound)==0&&s.page==MM_ACHIEVEMENTS&&p==4);
  mm_step(&s,0x100,0,&p,&sound);assert(s.page==MM_PLAY&&s.cursor==8);
- s={MM_ACHIEVEMENTS,0,0};assert(mm_step(&s,0x2000,0,&p,&sound)==10&&s.page==MM_CLOSED);
+ s={MM_ACHIEVEMENTS,0,0};assert(mm_step(&s,0x2000,0,&p,&sound)==0&&s.page==MM_ROOT);
+ // The Home screen cannot fall back into native Duel via Cancel or Select.
+ for(unsigned key: {0x100u,0x400u,0x2000u}){s={MM_ROOT,0,0};assert(mm_step(&s,key,0,&p,&sound)==0&&s.page==MM_ROOT);}
+ const int routes[]={0,0,201,0,0,0,0,210};
+ for(int n=0;n<8;n++){s={MM_ROOT,n,0};assert(mm_step(&s,0x200,0,&p,&sound)==routes[n]);}
+ s={MM_EVOLUTION,0,0};assert(mm_step(&s,0x200,0,&p,&sound)==200);s={MM_EVOLUTION,1,0};assert(mm_step(&s,0x200,0,&p,&sound)==207);
+ for(int page: {MM_ONLINE,MM_EXTRAS})for(int n=0;n<2;n++){s={page,n,0};int out=mm_step(&s,0x200,0,&p,&sound);assert(out>=203&&out<=206);}
  for(int last=0;last<4;last++){mm_resume(&s,last);assert(s.page==MM_PLAY&&s.cursor==last);}
  mm_resume(&s,999);assert(s.page==MM_PLAY&&s.cursor==0);
  // Co-op training has the same team assignment, while normal training remains solo.

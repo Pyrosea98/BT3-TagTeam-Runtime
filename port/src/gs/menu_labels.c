@@ -1950,3 +1950,11 @@ static int ml_item_into(MlCtx *c, MlBuf screen, int part, MlTex *sheet, const un
     }
     return 1;
 }
+
+/* Decode the actual full portrait, rather than magnifying a 64px selection chip. */
+int MenuLabels_PortraitRgba(const void *data,size_t bytes,unsigned char **pixels,int *width,int *height){
+ MlCtx c={0};MlBuf packed={(uint8_t*)data,bytes},plain={0};MlTex t={0};int ok=0;
+ if(!data||bytes<8||bytes>16*1024*1024||!pixels||!width||!height)return 0;
+ if(ml_unpack(&c,packed,&plain)&&ml_texture(&c,plain,0,&t)>0&&t.w>0&&t.h>0&&t.w<=2048&&t.h<=2048){size_t n=(size_t)t.w*t.h*4;unsigned char *copy=malloc(n);if(copy){memcpy(copy,t.rgba,n);for(size_t i=3;i<n;i+=4){unsigned alpha=copy[i]*2;copy[i]=alpha>255?255:alpha;}*pixels=copy;*width=t.w;*height=t.h;ok=1;}}
+ ml_free(&c);return ok;
+}

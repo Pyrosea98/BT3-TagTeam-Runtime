@@ -1,6 +1,10 @@
 #include "common.h"
 #include "menu/menu_n.h"
 #include "sys/pad.h"
+#ifdef PORT
+#include "plat_beta8.h"
+extern MTexRes *Port_MenuChip(s32,s32);
+#endif
 
 /*
  * UbRank, 0x373A68..0x3760C8: the ranking ladder of mode 26. A list of 100 places (five plates visible); the
@@ -26,7 +30,12 @@ static const s32 sUbRankChipTex[6] = { 13, 15, 16, 17, 18, 19 };
     Res_RelocateOffsets(&res, res, res)
 
 /* The texture list of a character's chip in the chip pack. */
+#ifdef PORT
+static MTexRes *Port_UbRankChip(s32 c){MTexRes *res=Port_MenuChip(c,c==NPROG->chara?NPROG->color:0);s32 donor=Port_Beta8StockAlias(c);if(donor<0||donor>160)donor=0;return res?res:(MTexRes *)MPACK_AT(gUbRank->chips,donor+1);}
+#define UR_CHIP_RES(chara) Port_UbRankChip(chara)
+#else
 #define UR_CHIP_RES(chara) ((MTexRes *)MPACK_AT(gUbRank->chips, (chara) + 1))
+#endif
 
 /* The battle hand-off of the ladder: the player's fighter against the opponent chosen by UbRank_PickFoe. */
 void UbRank_SetupBattle(void) {
@@ -701,8 +710,8 @@ void UbRank_UpdateFaceLoad(void) {
         chara[0] = NPROG->chara;
         chara[1] = gUbRank->curFoe->chara;
         File_CancelRequests();
-        File_Request(chara[0] + N_FACE_FILE, gUbRank->faceFile[0], MCHAR_FACE_PACKED_BYTES);
-        File_Request(chara[1] + N_FACE_FILE, gUbRank->faceFile[1], MCHAR_FACE_PACKED_BYTES);
+        File_Request(MENU_FACE_FILE(chara[0],NPROG->color,(chara[0]<=160?chara[0]:0)+N_FACE_FILE), gUbRank->faceFile[0], MCHAR_FACE_PACKED_BYTES);
+        File_Request(MENU_FACE_FILE(chara[1],gUbRank->curFoe->color,(chara[1]<=160?chara[1]:0)+N_FACE_FILE), gUbRank->faceFile[1], MCHAR_FACE_PACKED_BYTES);
         gUbRank->loadState = UBRANK_LOAD_READ;
         break;
     case UBRANK_LOAD_READ:

@@ -130,8 +130,8 @@ f32 BtlParam_GetChargeRateA(BtlTechBChr *chr) {
 /* Logical identity owns combat scaling; shared model tables stay immutable. */
 extern int Port_NetActive(void),BattleReplay_IsActive(void);
 static int Port_CombatLocal(void){return !Port_NetActive()&&!BattleReplay_IsActive();}
-int Port_CombatScaleDamage(void *fighter,int value){BtlTechBChr*c=(BtlTechBChr*)fighter;BtlTechBMember*m;if(!c||!Port_CombatLocal()||Port_StoryActive())return value;m=BtlMember_GetActive(c);return m?MD_Offense(m->chara,m->costume,value):value;}
-static float Port_CombatDefence(BtlTechBChr*c,float original){BtlTechBMember*m;if(!c||!Port_CombatLocal()||Port_StoryActive())return original;m=BtlMember_GetActive(c);return m?MD_Defence(m->chara,m->costume,original):original;}
+int Port_CombatScaleDamage(void *fighter,int value){BtlTechBChr*c=(BtlTechBChr*)fighter;BtlTechBMember*m;if(!c||!Port_CombatLocal()||Port_StoryActive()||Port_BattleScaleMode()!=3)return value;m=BtlMember_GetActive(c);return m?MD_Offense(m->chara,m->costume,value):value;}
+static float Port_CombatDefence(BtlTechBChr*c,float original){BtlTechBMember*m;if(!c||!Port_CombatLocal()||Port_StoryActive()||Port_BattleScaleMode()!=3)return original;m=BtlMember_GetActive(c);return m?MD_Defence(m->chara,m->costume,original):original;}
 
 /* Parameter +0x78: attack charge rate at a full gauge. */
 f32 BtlParam_GetChargeRateB(BtlTechBChr *chr) {

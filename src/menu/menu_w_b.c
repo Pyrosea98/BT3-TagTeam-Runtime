@@ -59,11 +59,21 @@ s32 EvoMode_Main(void) {
             break;
         case MODE_EVOZ_CUSTOM:
             EvoZ_Run(3);
+#ifdef PORT
+            {extern s32 Port_EvoSaveRun(void);if(gProgress->flags&1)Port_EvoSaveRun();}
+            Adx_StopAll();gProgress->mode=MODE_MAIN_MENU;done=1;result=0;
+#else
             gProgress->mode = MODE_EVOZ_MENU;
+#endif
             break;
         case MODE_EVOZ_SHOP:
             Shop_Run(2);
+#ifdef PORT
+            {extern s32 Port_EvoSaveRun(void);if(gProgress->flags&1)Port_EvoSaveRun();}
+            Adx_StopAll();gProgress->mode=MODE_MAIN_MENU;done=1;result=0;
+#else
             gProgress->mode = MODE_EVOZ_MENU;
+#endif
             break;
         }
         sceGsSyncPath(0, 0);

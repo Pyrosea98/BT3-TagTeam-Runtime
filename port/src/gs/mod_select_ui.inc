@@ -120,10 +120,12 @@ static void mod_stage_draw(){
 }
 static void mod_select_result_draw(){MsView v;if(sOpen||!ms_snapshot(v)||v.active)return;
  if(v.result_team>0){char label[96];snprintf(label,sizeof(label),Port_Setting("mod_language",1)==1?"VICTORIA DEL EQUIPO %d":"TEAM %d WINS",v.result_team);ImVec2 sz=ImGui::GetIO().DisplaySize;ImFont*f=Ui_FontBold();if(!f)f=ImGui::GetFont();float fs=sz.y*.036f,w=f->CalcTextSizeA(fs,10000,0,label).x;ImGui::GetForegroundDrawList()->AddText(f,fs,ImVec2((sz.x-w)*.5f,sz.y*.12f),IM_COL32(255,209,83,255),label);}}
+#include "mod_roster_library.inc"
 static void mod_select_draw(){
  MsView v;if(sOpen||!ms_snapshot(v))return;
  if(!v.active)return;
  if(v.roster_count<1||v.cursor<0||v.cursor>=v.roster_count)return;
+ if(v.mode>=5&&v.mode<=7){rb_library_draw(v);return;}
  ++sMhStamp;
  ImVec2 sz=ImGui::GetIO().DisplaySize;float k=sz.y/720.f,edge=24*k,left=sz.x*.44f;
  bool es=Port_Setting("mod_language",1)==1;bool yamcha=v.mode==4&&Port_TagTourConfig(2)==4;ImDrawList *dl=ImGui::GetForegroundDrawList();
@@ -260,7 +262,7 @@ static void mod_select_draw(){
  else if(v.phase==3&&yamcha){const ModPadHint h[]={{MP_CROSS,es?"Confirmar":"Confirm"},{MP_SQUARE,es?"Sortear de nuevo":"Reroll"},{MP_CIRCLE,es?"Salir":"Cancel"}};mod_pad_hints(dl,ImVec2(edge,sz.y-39*k),sz.x-edge*2,k,h,3,15);}
  else if(v.phase==3){const ModPadHint h[]={{MP_CROSS,es?"Confirmar":"Confirm"},{MP_TRIANGLE,es?"Volver / editar":"Back / edit"},{MP_CIRCLE,es?"Salir":"Cancel"}};mod_pad_hints(dl,ImVec2(edge,sz.y-39*k),sz.x-edge*2,k,h,3,15);}
  else {
-  {const ModPadHint h[]={{MP_L1R1,es?"Página":"Page"},{MP_L2R2,es?"Traje":"Costume"},{MP_R3,es?"Potaras":"Potaras"}};mod_pad_hints(dl,ImVec2(edge,sz.y-46*k),sz.x-edge*2,k,h,3,13);}
+  {const ModPadHint h[]={{MP_L1R1,es?"Página":"Page"},{MP_L2R2,es?"Traje":"Costume"},{MP_R3,es?"Potaras":"Potaras"},{MP_SELECT,es?"Reglas":"Rules"}};mod_pad_hints(dl,ImVec2(edge,sz.y-46*k),sz.x-edge*2,k,h,4,13);}
   const char *labels[2][4]={{"Choose","Auto-fill","Back","Cancel"},{"Elegir","Completar","Atras","Salir"}};
   float yy=sz.y-17*k,step=SDL_min(145*k,(sz.x-edge*2)/4);
   for(int n=0;n<4;n++){float x=edge+n*step;ImU32 c=n==0?IM_COL32(100,174,255,255):n==1?pink:n==2?IM_COL32(92,222,145,255):IM_COL32(247,110,106,255);
