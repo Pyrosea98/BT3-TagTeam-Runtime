@@ -4,7 +4,7 @@
 #define MS_MAX 16 /* story drafts; the selector UI limits itself to MS_UI_MAX */
 #define MS_UI_MAX 10
 #define MS_ROSTER 302
-#define MS_CHARACTERS 328
+#define MS_CHARACTERS 329
 #define MS_PAGE 35
 #define MS_COLS 7
 #define MS_FORMS 7

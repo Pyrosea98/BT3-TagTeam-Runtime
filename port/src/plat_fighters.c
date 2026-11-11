@@ -49,7 +49,7 @@
 #include "plat_fighters.h"
 #include "port_fighters.h"
 
-#define CHARA_COUNT 328  /* stock roster plus explicitly aliased native identities */
+#define CHARA_COUNT 329  /* stock roster plus explicitly aliased native identities */
 #define NAME_COUNT CHARA_COUNT /* Beta8: the mod's named roster goes past the stock 161 */
 #define EXTRA_MAX PORT_EXTRA_MAX /* extra fighters a fight can have so far */
 #define FILE_CHARA 0x590 /* file ids of character c: c * 10 + this is its model, + 8 and + 9 its two animation files
@@ -669,7 +669,7 @@ const char *Port_CharaName(int chara) {
     if(chara==319)return "Luud";
     if(chara==326)return "Shorty Great Ape";
     if(chara==327)return "Scarface Great Ape";
-    if(chara==228)return "Toma Great Ape";
+    if(chara==328)return "Toma Great Ape";
     if(chara==323)return "Shorty";
     if(chara==324)return "Scarface";
     if(chara==325)return "Cacao";

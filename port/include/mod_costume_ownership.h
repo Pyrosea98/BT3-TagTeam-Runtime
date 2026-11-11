@@ -1,6 +1,7 @@
 #ifndef MOD_COSTUME_OWNERSHIP_H
 #define MOD_COSTUME_OWNERSHIP_H
 static int B8CostumeSelectable(int c,int slot){unsigned mask=0;if(slot<0||slot>7)return 0;switch(c){
+case 228:mask=4u;break;
 case 180:mask=8u;break;
 case 188:mask=12u;break;
 case 173:mask=12u;break;

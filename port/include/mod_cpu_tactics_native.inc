@@ -95,7 +95,7 @@ static int Port_CpuTransformSlot(BtlActJChr *c){
  for(k=0;k<4;k++){
   int dest=BtlParam_GetSlotId(c,k),cost=BtlParam_GetSlotCost(c,k),df,dt,inFamily;
   if((current>=291&&current<=299)||current==95||current==97)dest=Port_Beta8FormSlotTargetForCostume(current,BtlMember_GetActive(c)->costume,k,dest);
-  if(dest<0||dest>=328||dest==255||dest==current)continue;ct_tier(dest,&df,&dt);
+  if(dest<0||dest>=329||dest==255||dest==current)continue;ct_tier(dest,&df,&dt);
   if(family&&family==df&&dt<=tier)continue;
   inFamily=(family&&family==df&&dt>tier);
   if(cost<=0&&!inFamily)continue;

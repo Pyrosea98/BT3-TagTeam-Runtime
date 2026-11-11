@@ -49,7 +49,7 @@ extern int BtlChar_TestFlag(void GAME_PTR chr, unsigned n);
 
 extern int Port_FilePath(int ptid, int flid, const char *fname, char *out, int size); /* plat_file.c */
 #define FACE_FILE 0x2F9 /* the large portraits (the character select's): file FACE_FILE + character of partition 1 */
-#define CHARA_MAX 328 /* stock roster, native aliases and Yajirobe (301) */
+#define CHARA_MAX 329 /* stock roster, native aliases and Yajirobe (301) */
 
 /* include/battle/btl_char_member.h: BtlMemberChr */
 #define CHR_ACTIVE 0x994
