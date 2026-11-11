@@ -35,7 +35,7 @@ int main(void){TestAtk*p;int mode,v;seed();active=0;
  assert(Port_BattleScaleMode()==mode);preset=3;assert(Port_BattleScaleMode()==mode); /* no mid-fight switch */
  }
  preset=3;Port_StoryCombatReset();member[0].chara=0;assert(Port_StoryCombatTable(&fighters[0],1,atk[0])==atk[0]);assert(Port_BattleScaleDamageCap(2147483647,60000)==2147483647);
- member[0].chara=301;p=Port_StoryCombatTable(&fighters[0],1,atk[0]);assert(p!=atk[0]&&p[0].damage<2000);assert(Port_BattleScaleHealth(301,0,9999999)==30000);
+ member[0].chara=301;p=Port_StoryCombatTable(&fighters[0],1,atk[0]);assert(p!=atk[0]&&p[0].damage<=21);assert(Port_BattleScaleHealth(301,0,9999999)==30000);assert(((BtlTechBParam*)Port_StoryCombatTable(&fighters[0],0,&param[0]))->damageTaken>15.f);
  net=1;assert(Port_StoryCombatTable(&fighters[0],1,atk[0])==atk[0]);net=0;replay=1;assert(Port_StoryCombatTable(&fighters[0],1,atk[0])==atk[0]);replay=0;
  preset=0;scenario=1;Port_StoryCombatReset();member[0].chara=0;assert(Port_BattleScaleMode()==3&&Port_StoryCombatTable(&fighters[0],1,atk[0])==atk[0]);
  puts("PASS actual private combat tables: four presets, canonical extremes, no shared mutation/compound scaling, costume reload, next-fight latch, Yajirobe, real/network/replay/scenario preservation");return 0;}
