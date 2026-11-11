@@ -1,4 +1,5 @@
 # 0.5.alpha.3 — Nightly / PC
+<!-- bt3-revision: moderate-cold-fusion-20261111 -->
 
 ## Español
 - Corregida la escala Moderada: conserva diferencias de ataque y defensa en todo el plantel. Auditoría offline de764combinaciones de personaje/traje y6112casos entre cuatro modos.
