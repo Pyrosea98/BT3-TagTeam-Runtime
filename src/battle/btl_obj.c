@@ -546,6 +546,10 @@ u8 *BtlObj_GetCharaWork(u32 id) {
 void BtlObj_Setup(BtlObj *obj, s32 type, BtlResSlot *res, s32 id, s32 active) {
     BtlObjMdl_Destroy(obj);
     BtlObjMdl_Create(type, obj, res);
+#ifdef PORT
+    /* Damage-costume reloads can reuse the same object, fighter and table addresses. */
+    {extern void Port_BattleScaleObjectChanged(void*);Port_BattleScaleObjectChanged(obj);}
+#endif
     obj->active = active;
     obj->id = id;
     obj->chara = (res->file[0].id - 0x590) / 10;

@@ -12,11 +12,16 @@ static float PS_PositiveFloat(long long power){
 }
 /* Canonical labels remain intact. Compression is local combat policy only. */
 static float PS_Strength(long long power,int mode){
- float z,v;if(mode==0||power<=0)return 1.f;
- z=(logf(PS_PositiveFloat(power))-18.405439907382451f)/8.4833518659657887f;
- v=expf(z*(mode==1?.14f:.75f));
- if(mode==1){if(v<.8f)v=.8f;if(v>1.25f)v=1.25f;}
- else{if(v<.25f)v=.25f;if(v>4.f)v=4.f;}
+ float lp,z,v;if(mode==0||power<=0)return 1.f;
+ lp=logf(PS_PositiveFloat(power));
+ if(mode==1){
+  /* Smooth bounded differences: no hard-clamped high/low roster bands. */
+  z=(lp-18.405439907382451f)/8.4833518659657887f;
+  return 1.025f+.225f*z/sqrtf(1.f+z*z);
+ }
+ /* Keep the accepted upper-tier quarter-root curve. Below Omega use a
+    gentler exponent rather than flattening most of the roster at0.25. */
+ z=lp-logf(8.e13f);v=expf(z*(z<0.f?.1f:.25f));
  return v;
 }
 #endif

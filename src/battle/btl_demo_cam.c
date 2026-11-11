@@ -426,6 +426,10 @@ void DemoCam_StartAutoOnce(void) {
 
 /* Asks for the animation to end at the next DemoCam_IsActive(). */
 void DemoCam_Stop(void) {
+#ifdef PORT
+    /* Scene teardown may run after DemoCam_Term has released this owner. */
+    if (gDemoCam == NULL) return;
+#endif
     if (gDemoCam->anim != NULL) {
         gDemoCam->flags |= DEMO_CAM_STOP;
     }

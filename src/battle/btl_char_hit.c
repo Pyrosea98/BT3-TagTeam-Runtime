@@ -361,7 +361,7 @@ int Port_PowerArmorTier(int by,int at){
  a=BtlMember_GetActive(atk);d=BtlMember_GetActive(def);if(!a||!d)return 0;
  ap=Port_CharaPowerValue(a->chara,a->costume);dp=Port_CharaPowerValue(d->chara,d->costume);
  eraA=Port_StoryActorPower(by,a->chara);eraD=Port_StoryActorPower(at,d->chara);if(eraA>0)ap=eraA;if(eraD>0)dp=eraD;
- {extern int Port_BattleScaleMode(void);int mode=Port_BattleScaleMode();if(mode<2)return 0;if(mode==2)return 0;}
+ {extern int Port_BattleScaleMode(void);int mode=Port_BattleScaleMode();if(mode<2)return 0;}
  return PA_Tier(ap,dp);
 }
 #endif

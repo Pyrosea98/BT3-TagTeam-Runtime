@@ -13,6 +13,7 @@ h=r'''#include <cassert>
 #include <initializer_list>
 #include "mod_shadow_balance.h"
 using u8=unsigned char;struct BtlMgrMember{int chara,costume;};struct BtlMgrObj{unsigned char bytes[0x1000];};struct BtlMgrChr{BtlMgrMember m;BtlMgrObj obj;int objId;};
+void Port_BattleScaleObjectChanged(void*){}
 int Port_Beta8ExtraFormField(int,int,int,int){return 255;}void Port_Beta8Ssj4Load(int,int,void*){}
 BtlMgrObj*BtlChar_GetObj(BtlMgrChr*c){return &c->obj;}BtlMgrMember*BtlMember_GetActive(BtlMgrChr*c){return &c->m;}
 int Port_Beta8PatchFormParam(int,void*){return 0;}void Port_Beta8PatchCostumeFormParam(int c,int,void*p){Port_Beta8PatchFormParam(c,p);}int Port_Beta8HasFormPolicy(int,int){return 0;}int Port_Beta8CostumeFormTarget(int,int,int t){return t;}int Port_Beta8FormTarget(int,int t){return t;}const char*Port_CharaName(int){return "Fighter";}unsigned Port_GameBigAlloc(int){assert(false);return 0;}

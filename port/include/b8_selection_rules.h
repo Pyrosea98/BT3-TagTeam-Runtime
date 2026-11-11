@@ -28,6 +28,7 @@ static int B8CostumeCountRule(int chara,int isAlias,int *costume) {
 }
 typedef struct {int chara;const char *text;} B8PowerTextCandidate;
 static const B8PowerTextCandidate b8PowerTextCandidate[]={
+ {63,"15M"},{186,"15M-15M"},
  {79,"1.200-1.200-1M-1.200"},{285,"1M"},{326,"8K"},{327,"8K"},{328,"35K"},{323,"800"},{324,"800"},{164,"MAX"},{194,"100B"},{201,"50B"},
  {218,"48B"},{219,"120B"},{220,"1.000B"},{221,"2.000B"},{222,"8.000B"},{223,"80.000B"},
  {225,"2.900B"},{226,"5.800B"},{229,"23.200B"},{230,"232.000B"},

@@ -29,7 +29,7 @@ typedef struct B8Alias {
 } B8Alias;
 
 static const B8Alias sAliases[] = {
-    {326,180,3},{327,188,2},{328,228,2}, /* Past Saiyan Great Apes: exact existing costumes, no model edits. */
+    {326,188,2},{327,180,3},{328,228,2}, /* Past Saiyan Great Apes: exact existing costumes, no model edits. */
     {323,77,2},{324,173,3},{325,173,2}, /* Shorty / Scarface: independent illusion Saiyans */
     {317,196,1},{318,196,2},{319,196,3},{320,111,2},{321,62,2},{322,101,2},
     {312,74,2},{313,193,2}, /* Sword Trunks SSJ2/SSJ3 */
@@ -124,8 +124,8 @@ typedef struct B8FormTarget {
 } B8FormTarget;
 
 static const B8FormTarget sFormTargets[] = {
- {190,228,328},{328,71,190},{323,180,326},{326,77,323},{324,188,327},{327,173,324},
-    {95,96,295},{97,127,297},{297,126,296},{296,128,298},{298,96,299},
+ {190,228,328},{328,71,190},{323,188,326},{326,77,323},{324,180,327},{327,173,324},
+    {95,96,295},{97,126,296},{296,127,297},{297,128,298},{298,96,299},
     {291,115,292},{292,116,293},{293,117,294},
     {163,18,281},{281,17,163},
     {178,42,282},{178,43,283},{282,43,283},{282,41,178},{283,41,178},
@@ -492,7 +492,7 @@ int Port_Beta8IsTransform(int source, int target) {
     if(source==324)return target==327;if(source==327)return target==324;
     if(source==95&&target==295)return 1;
     if(source==97)return target==297;
-    if(source>=296&&source<=299)return target==97||target==(source==297?296:source==296?298:source==298?299:-1);
+    if(source>=296&&source<=299)return target==97||target==(source==296?297:source==297?298:source==298?299:-1);
     if(source==213)return target==245;
     if(source==245)return target==213;
     int i;
@@ -663,7 +663,7 @@ int Port_Beta8HasEntry(int chara) {
 /* The form entries of a split cell (the base entry first), or 0 for a character without one. */
 int Port_Beta8FormList(int id, int *out, int max) {
     static const int scouter[]={29,30,309,310,318,244,311};
-    static const int frieza[]={91,92,93,94,95,295},cold[]={97,297,296,298,299};
+    static const int frieza[]={91,92,93,94,95,295},cold[]={97,296,297,298,299};
     static const int sGokhanForms[] = { 214, 216, 218, 219 };
     static const int sGtForms[] = { 215, 220, 221, 222, 223 };
     static const int sGogettoForms[] = { 224, 225, 226, 229, 230 };
@@ -745,7 +745,7 @@ typedef struct B8FormParam {
 } B8FormParam;
 
 static const B8FormParam sFormParams[] = {
-    {323,{180,255,255,255}},{324,{188,255,255,255}},{326,{255,255,255,77}},{327,{255,255,255,173}},
+    {323,{188,255,255,255}},{324,{180,255,255,255}},{326,{255,255,255,77}},{327,{255,255,255,173}},
     {190,{228,255,255,255}},{328,{255,255,255,71}},
     {62,{255,255,255,255}}, /* Hildegarn belongs to317, not Tapion. */
     {317,{139,255,255,255}},{139,{255,255,255,255}},
@@ -757,7 +757,7 @@ static const B8FormParam sFormParams[] = {
     {161,{4,5,6,200}},{302,{5,6,200,3}},{303,{6,200,255,3}},{304,{200,255,255,3}},{305,{255,255,255,3}},
     {170,{35,36,237,255}},{306,{36,237,255,34}},{307,{237,255,255,34}},{308,{255,255,255,34}},
     {95,{96,255,255,255}},{295,{255,255,255,255}},
-    {97,{127,255,255,255}},{297,{126,255,255,97}},{296,{128,255,255,97}},
+    {97,{126,255,255,255}},{296,{127,255,255,97}},{297,{128,255,255,97}},
     {298,{96,255,255,97}},{299,{255,255,255,97}},
     {291,{115,255,255,255}},{292,{116,255,255,255}},{293,{117,255,255,255}},{294,{255,255,255,255}},
     {159,{160,17,18,255}},{160,{17,18,255,159}},
@@ -994,6 +994,7 @@ void Port_Beta8PatchPowerText(void *section){
 }
 typedef struct {int id;int row[4];} B8MemberStats;
 static const B8MemberStats sRound2Stats[]={
+ {269,{150000,80000,100000,5}},{286,{150000,80000,100000,6}},{290,{150000,80000,100000,6}}, /* Rild source135/136/153 gauges, not appended default40K. */
  {326,{60000,100000,100000,5}},{327,{60000,100000,100000,5}},{323,{60000,100000,100000,5}},{324,{60000,100000,100000,5}},
  {261,{400000,100000,100000,6}},
  {275,{400000,100000,100000,6}},
@@ -1085,7 +1086,7 @@ void Port_Beta8TraceTexture(unsigned epoch,unsigned long long tex0,unsigned gen,
 }
 
 int Port_Beta8CostumeFormTarget(int source,int costume,int target){
- if(source==323&&target==180)return 326;if(source==324&&target==188)return 327;
+ if(source==323&&target==188)return 326;if(source==324&&target==180)return 327;
  if(source==326&&target==77)return 323;if(source==327&&target==173)return 324;
  if(source==190&&target==228)return 328;
  if(source==328&&target==71)return 190;

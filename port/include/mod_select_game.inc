@@ -205,7 +205,7 @@ int Port_ModSelectRun(void){
   frameCursor=v.cursor;framePhase=v.phase;frameCost=v.costume;
   pad=Port_Pad(v.pad);
   pressed=pad->pressed;repeat=pad->repeat;
-  if((pressed&0x2000)&&!Port_ScenarioActive()){extern void Port_ModSelectBattleConfig(void);Port_ModSelectBattleConfig();pressed=repeat=0;}
+  if((pressed&PAD_SELECT)&&!Port_ScenarioActive()){extern void Port_ModSelectBattleConfig(void);Port_ModSelectBattleConfig();pressed=repeat=0;}
   if(v.phase!=1&&v.phase!=3)Port_ModSelectTakeMouse(); /* keep review-button clicks */
   /* Do not inherit the stock menu's freeze gate: input and the draft state machine must continue
      while the model viewer or the native menu resources are loading. */

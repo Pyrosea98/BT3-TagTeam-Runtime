@@ -658,8 +658,8 @@ const char *Port_CharaName(int chara) {
     if(chara==293)return "Buu (Goku absorbed)";
     if(chara==294)return "Buu (Full Power)";
     if(chara==295)return "Mecha Freezer (forma mejorada)";
-    if(chara==296)return "King Cold (Tercera forma)";
-    if(chara==297)return "King Cold (Segunda forma)";
+    if(chara==296)return "King Cold (Segunda forma)";
+    if(chara==297)return "King Cold (Tercera forma)";
     if(chara==298)return "King Cold (Forma final)";
     if(chara==299)return "King Cold (Forma gigante)";
     if(chara==300)return "Mucchi";

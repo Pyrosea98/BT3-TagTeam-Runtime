@@ -356,6 +356,8 @@ static void Port_PatchFighterSkillData(BtlMgrChr *chr){
         Port_Beta8Ssj4Load(chr->objId,m->chara,*(void**)((u8*)obj+0x91c));
         Port_PatchSkillText(m->chara,m->costume,*(void**)((u8*)obj+0x91c),(u8*)obj+0xbc);
         SB_Apply(m->chara,*(void**)((u8*)obj+0x91c),*(void**)((u8*)obj+0x920),*(void**)((u8*)obj+0x924),*(void**)((u8*)obj+0x92c));
+        /* Recipes are patched after model setup; discard pre-patch normalized copies. */
+        {extern void Port_BattleScaleObjectChanged(void*);Port_BattleScaleObjectChanged(obj);}
     }
 }
 #endif
