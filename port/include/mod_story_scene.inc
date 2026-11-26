@@ -5156,7 +5156,7 @@ void *Port_StoryUltimateText(void *obj, void *original, int caption)
     const u16 *text = original;
     const char *name;
     int profile = st_manual_ultimate_object(obj);
-    int n = 0, i, row = 0, tag, nameStart, nameEnd, len = 0;
+    int n = 0, i, row = 0, tag, rowTag = -1, nameStart = 0, nameEnd = 0, len = 0;
     u16 *out;
     extern int Port_Setting(const char *, int);
     extern const void *Port_StoryUltimateFallbackText(int);
@@ -5164,26 +5164,39 @@ void *Port_StoryUltimateText(void *obj, void *original, int caption)
     if (!profile) return original;
     if (!text) text = Port_StoryUltimateFallbackText(profile);
     if (!text) return original;
-    while (n < TEXT_CAP && text[n]) ++n;
-    if (n == TEXT_CAP) return original;
-    for (i = 1; i + 2 < n;) {
-        tag = i + 2;
-        if (text[tag] == '&') tag += 4;
-        if (tag + 4 < n && text[tag] == '*' && ++row == 5) break;
-        while (i < n && text[i++] != '\n') {}
+    /* The native script ends at its @ line. Some model sections have no NUL
+       before the next section, so stop at the same marker as the native reader. */
+    for (i = 1; i < TEXT_CAP;) {
+        int end = i;
+        while (end < TEXT_CAP && text[end] && text[end] != '\n') ++end;
+        if (end == TEXT_CAP) return original;
+        if (end == i && !text[end]) break;
+        tag = i;
+        if (text[tag] == '!' && tag + 2 < end) tag += 2;
+        if (text[tag] == '&' && tag + 4 < end) tag += 4;
+        if (tag < end && text[tag] == '@') {
+            n = end;
+            break;
+        }
+        if (tag + 4 < end && text[tag] == '*' && ++row == 5) {
+            rowTag = tag;
+            nameStart = tag + 4;
+            nameEnd = end;
+            if (text[nameEnd - 1] == '\r') --nameEnd;
+        }
+        if (!text[end]) break;
+        i = end + 1;
     }
-    if (row != 5) return original;
-    nameStart = tag + 4;
-    nameEnd = nameStart;
-    while (nameEnd < n && text[nameEnd] != '\r' && text[nameEnd] != '\n') ++nameEnd;
+    if (rowTag < 0 || n <= nameEnd) return original;
     if (Port_Setting("mod_language", 1) == 1) name = profile == 880 ? "Makankosappo" : "Kienzan";
     else name = profile == 880 ? "Special Beam Cannon" : "Destructo Disc";
     while (name[len]) ++len;
     if (nameStart + len + n - nameEnd >= TEXT_CAP) return original;
     out = buffers[caption != 0];
     memcpy(out, text, nameStart * sizeof(*out));
-    if (profile == 1000) out[tag + 2] = '4';
+    out[rowTag + 2] = profile == 880 ? '5' : '4';
     for (i = 0; i < len; ++i) out[nameStart + i] = (u16)name[i];
-    memcpy(out + nameStart + len, text + nameEnd, (n - nameEnd + 1) * sizeof(*out));
+    memcpy(out + nameStart + len, text + nameEnd, (n - nameEnd) * sizeof(*out));
+    out[nameStart + len + n - nameEnd] = 0;
     return out;
 }

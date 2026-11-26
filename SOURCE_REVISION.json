@@ -538,7 +538,7 @@
     "port/include/mod_story_combat.inc": "ee09a7f0d2f1d47a372bec1459d0208424a471f0ab8a7093f3c456ad11ad3cc3",
     "port/include/mod_story_presentation.h": "25d2f7da92eba4dae3d0adeeae7f5829f15aec1006f98318d41f2fda40f6f3da",
     "port/include/mod_story_runtime.inc": "d2a200e1abf64c86d4fbeb5dbd41c761a9f410eabcc543f9863d8fe30812a4ad",
-    "port/include/mod_story_scene.inc": "fc79ef34650b3feda805341a4c4adbc8bb75d306f61954fead73be439b21d3f7",
+    "port/include/mod_story_scene.inc": "e2bc6c62bbb557eae624bb7b28b97deb547c6b8f7b724be0001ca085af93b377",
     "port/include/mod_story_wardrobe.h": "54c5ec309600579eb90eb8ef03df63f2bb2d79f8ae5d0d5153a532d53fe5ab83",
     "port/include/mod_terrain_appearance.h": "c3755f4adc99ab0b75ec27cc69d0f77d1f012e85d046634a84119903da518bf3",
     "port/include/mod_terrain_bridge.h": "869716e5212dc67c3866f95401ef8bcd204e38d7ec27a8cbf4b954a10c2ff957",
@@ -729,7 +729,7 @@
     "port/tools/where.sh": "9c55faefb99b91f7d1ab1e60165ac9ed37088cb0d07be04bac00961ba2275d06"
   },
   "runtime": {
-    "Tenkaichi3Decomp.exe": "c7949a219f6a8dd6fbeffadf0979b516a18fec6ac477998aef71f96b0c7020f3",
+    "Tenkaichi3Decomp.exe": "177fcd65073b60e51eb9c1dc9beb7a0e338dada22b9ffe56cc6e3ea3c6af4e02",
     "Tenkaichi3Decomp.dat": "9e9f960984fa9107f9cf1e8306bd8f1da891d3690aa7798a645aff81435481be",
     "Tenkaichi3Decomp.exe.mem": "6651e6af90a8e7625f9a1801b427f412400ab3ccdcb097fb37e2a06f3ade3bf9",
     "SDL3.dll": "49db50085edc74c2b5962f010e2416557188dcc67d6fb8a61381de2a2cd3a287"
