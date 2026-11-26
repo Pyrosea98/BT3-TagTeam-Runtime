@@ -1136,6 +1136,29 @@ static int Port_EndingActor(int side,int winner){
  for(i=0;i<n;i++)if(Port_Team(i)==team&&!Port_FusionConsumedActor(i))return i;
  return side;
 }
+static int Port_TeamVictoryPose(void) {
+    extern int Port_ModSelectPlanCount(void), Port_Team(int);
+    int count = Port_ModSelectPlanCount();
+    if (count <= 2 || Port_StoryActive() || Port_NetActive() || BattleReplay_IsActive()) return 0;
+    if (Port_ModSelectMulti()) return Port_ModSelectWinningTeam() >= 0;
+    int team = Port_Team(BattleResult_GetWinnerSide());
+    int members = 0;
+    for (int i = 0; i < BtlChar_GetCount(); ++i)
+        if (Port_Team(i) == team) ++members;
+    return members > 2;
+}
+static int Port_ShowWinner(void) {
+    return BattleResult_IsPlayerWin() || Port_TeamVictoryPose();
+}
+static void Port_StartVictoryPoses(int lead) {
+    extern int Port_Team(int), Port_FusionConsumedActor(int), Port_FighterObjId(int);
+    BtlCtrl_StartWinPose(lead);
+    if (!Port_TeamVictoryPose()) return;
+    for (int i = 0; i < BtlChar_GetCount(); ++i)
+        if (i != lead && Port_Team(i) == Port_Team(lead) && !Port_FusionConsumedActor(i)
+            && BtlCharApi_GetHp(Port_FighterObjId(i)) > 0)
+            BtlCtrl_StartWinPose(i);
+}
 static int Port_EndingObject(int actor){extern int Port_FighterObjId(int);return actor>=2?Port_FighterObjId(actor):BattleSide_GetObjId(actor);}
 #endif
 
@@ -1147,7 +1170,7 @@ s32 BtlSeqWinTalk_Setup(BtlSeqTalkCtx *ctx) {
     {extern int Port_StoryHumanActor(void);if(Port_StoryActive()&&!BattleResult_IsPlayerWin()){int human=Port_StoryHumanActor();if(human>=0)loser=human;}}
 #endif
 #ifdef PORT
-    sPortEndingVoice=BattleResult_IsPlayerWin()?winner:loser;
+    sPortEndingVoice=Port_ShowWinner()?winner:loser;
     {int original=winner;winner=Port_EndingActor(winner,original);loser=Port_EndingActor(loser,original);}
 #endif
     BtlSeqObj *winObj = BtlObj_Get(
@@ -1167,7 +1190,11 @@ s32 BtlSeqWinTalk_Setup(BtlSeqTalkCtx *ctx) {
 );
     u8 *loseTbl = loseObj->talkTbl;
 
-    if (BattleResult_IsPlayerWin()) {
+    #ifdef PORT
+        if (Port_ShowWinner()) {
+#else
+        if (BattleResult_IsPlayerWin()) {
+#endif
         if (winTbl == NULL || loseTbl == NULL || BtlCharApi_HasMemberUnk70(
 #ifdef PORT
  Port_EndingObject(winner)
@@ -1270,8 +1297,16 @@ s32 BtlSeqWinTalk_PreUpdate(BtlSeqTalkCtx *ctx) {
 #endif
     switch (ctx->step) {
     case 0:
+        #ifdef PORT
+        if (Port_ShowWinner()) {
+#else
         if (BattleResult_IsPlayerWin()) {
+#endif
+            #ifdef PORT
+            Port_StartVictoryPoses(ctx->side[0]);
+#else
             BtlCtrl_StartWinPose(ctx->side[0]);
+#endif
             DemoCam_PlayObjAnim(
 #ifdef PORT
  Port_EndingObject(ctx->side[0]),
@@ -1772,6 +1807,7 @@ s32 BtlSeqFight_Update(BtlSeqWaitCtx *ctx) {
             return 6;
         }
 #ifdef PORT
+        if(Port_StoryActive()&&ST_Interlude(st_chapter())&&!BattleResult_IsAborted())return 6;
         if(Port_StoryActive()&&st_direct_ending()&&!BattleResult_IsAborted())return 5; /* no Duel FINISH between resolved Story choreography and its ending */
 #endif
         return BattleResult_IsAborted() ? 6 : 4;
@@ -1950,7 +1986,7 @@ s32 BtlSeqFinish_Update(BtlSeqWaitCtx *ctx) {
     if (Ramp_Step(&ctx->timer)) {
         if (Battle_GetMode() != 8 && BattleResult_HasWinner()) {
 #ifdef PORT
-            if(Port_ModSelectMulti())return 6;
+            if (Port_ModSelectMulti() && !Port_TeamVictoryPose()) return 6;
 #endif
             return 5;
         }

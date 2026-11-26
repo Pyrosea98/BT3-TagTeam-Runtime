@@ -195,7 +195,11 @@ void Vu1Pkt_CallProg4(u32 chain) {
 }
 
 /* Program 4 setup: uploads the microprogram, the two camera matrices and the given matrix. */
+#ifdef PORT
+static void vu1_prog4_setup(void *mtx, void *prop) {
+#else
 void Vu1Pkt_LoadProg4(void *mtx) {
+#endif
     u32 *p;
 
     Dma_AddRef(D_002C04F0, D_002C1180 - D_002C04F0);
@@ -203,6 +207,12 @@ void Vu1Pkt_LoadProg4(void *mtx) {
     Mtx_Copy(p + 0x24, mtx);
     Vu0Screen_StoreMtx(p + 4);
     Vu0Clip_StoreMtx(p + 0x14);
+#ifdef PORT
+    if (prop != NULL) {
+        Mtx_Mul(p + 4, p + 4, prop);
+        Mtx_Mul(p + 0x14, p + 0x14, prop);
+    }
+#endif
     p[0] = VU1_DMA_CNT | 0xD;
     p[1] = 0;
     p[2] = VU1_VIF_FLUSHE;
@@ -212,6 +222,16 @@ void Vu1Pkt_LoadProg4(void *mtx) {
     p[0x36] = VU1_VIF_OFFSET(0x1B4);
     p[0x37] = VU1_VIF_NOP;
 }
+
+#ifdef PORT
+void Vu1Pkt_LoadProg4(void *mtx) {
+    vu1_prog4_setup(mtx, NULL);
+}
+
+void Vu1Pkt_LoadProg4Prop(void *mtx, void *prop) {
+    vu1_prog4_setup(mtx, prop);
+}
+#endif
 
 /* Program 5 draw: one matrix, then the caller's chain. No callers. */
 void Vu1Pkt_CallProg5(u32 chain, void *mtx) {

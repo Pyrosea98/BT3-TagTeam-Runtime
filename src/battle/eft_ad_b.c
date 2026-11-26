@@ -1046,3 +1046,17 @@ void EftMesh_SendTri(EftAdScr *p0, EftAdScr *p1, EftAdScr *p2, EftAdVec *c0, Eft
     memcpy(dst, &pkt.gifTag, (u16)pkt.dmaTag << 4);
     Dma_EndDirect(dst + ((u16)pkt.dmaTag << 4));
 }
+
+#ifdef PORT
+/* Fit the ORIGINAL mesh in scene units using its actual referenced vertices.
+   No guessed PS2/host scale or flat-axis convention; no replacement geometry. */
+void Port_StoryFitDiscMesh(void*raw,const Vec4*pos,float radius,float angle){EftMesh*m=raw;float lo[3]={1e20f,1e20f,1e20f},hi[3]={-1e20f,-1e20f,-1e20f},c[3],base[3][3]={{1,0,0},{0,1,0},{0,0,1}},span,k,big=0;Mtx44 out;int g,t,j,n,thin=0;static int logged;
+ if(!m||!m->data||!m->groups||!m->tris||!m->verts)return;
+ for(g=0;g<m->data->numGroups;g++)for(t=0;t<m->groups[g].numTris;t++)for(n=0;n<3;n++){EftMeshVtx*v=m->verts+m->tris[m->groups[g].firstTri+t].v[n];for(j=0;j<3;j++){float q=((float*)&v->pos)[j];if(q<lo[j])lo[j]=q;if(q>hi[j])hi[j]=q;}}
+ for(j=0;j<3;j++){span=hi[j]-lo[j];c[j]=(hi[j]+lo[j])*.5f;if(span>big)big=span;if(span<hi[thin]-lo[thin])thin=j;}if(!(big>.001f&&big<1e8f))return;k=radius*2/big;
+ if(thin==2){base[1][1]=base[2][2]=0;base[1][2]=1;base[2][1]=-1;}else if(thin==0){base[0][0]=base[1][1]=0;base[0][1]=1;base[1][0]=1;base[2][2]=-1;}
+ memset(&out,0,sizeof(out));for(n=0;n<3;n++){out.m[n][0]=(base[n][0]*cosf(angle)+base[n][2]*sinf(angle))*k;out.m[n][1]=base[n][1]*k;out.m[n][2]=(-base[n][0]*sinf(angle)+base[n][2]*cosf(angle))*k;}
+ for(j=0;j<3;j++){out.m[3][j]=((float*)pos)[j];for(n=0;n<3;n++)out.m[3][j]-=c[n]*out.m[n][j];}out.m[3][3]=1;EftMesh_SetMtx(m,&out);EftMesh_SetOwner(m,-1,-1);EftMesh_SetClip(m,1);
+ if(!logged++){extern void Port_Dbg3(const char*,int,int,int,int);Port_Dbg3("story native disc actual mesh bounds",(int)(hi[0]-lo[0]),(int)(hi[1]-lo[1]),(int)(hi[2]-lo[2]),thin);}
+}
+#endif

@@ -1,6 +1,8 @@
 #ifdef PORT
 #include "port_body_contacts.h"
 #include "mod_power_armor.h"
+#include "mod_combat_damage.h"
+#include "mod_blood.h"
 int Port_PowerArmorTier(int,int);
 #endif
 #include "mod_damage_safe.h"
@@ -364,6 +366,31 @@ int Port_PowerArmorTier(int by,int at){
  {extern int Port_BattleScaleMode(void);int mode=Port_BattleScaleMode();if(mode<2)return 0;}
  return PA_Tier(ap,dp);
 }
+/* Sequences can suppress flinch handling, but still have an identifiable damage owner. */
+long long Port_CombatPowerGap(int by, int at) {
+    extern int Port_BattleScaleMode(void), Port_NetActive(void), BattleReplay_IsActive(void);
+    extern int Port_StoryActive(void), Port_ScenarioActive(void);
+    extern long long Port_CharaPowerValue(int, int);
+    HitChr *attacker, *defender;
+    HitMember *a, *d;
+    long long attackPower, defensePower;
+
+    if (by < 0 || at < 0 || by == at || by >= BtlChar_GetCount() || at >= BtlChar_GetCount())
+        return 0;
+    if (Port_StoryActive() || Port_ScenarioActive() || Port_NetActive() || BattleReplay_IsActive() ||
+        Port_BattleScaleMode() < 2)
+        return 0;
+    attacker = BtlChar_Get(by);
+    defender = BtlChar_Get(at);
+    a = attacker ? BtlMember_GetActive(attacker) : NULL;
+    d = defender ? BtlMember_GetActive(defender) : NULL;
+    if (!a || !d)
+        return 0;
+    attackPower = Port_CharaPowerValue(a->chara, a->costume);
+    defensePower = Port_CharaPowerValue(d->chara, d->costume);
+    return PA_Tier(attackPower, defensePower) == 2 ? defensePower / attackPower : 0;
+}
+
 #endif
 
 /* Attacker flags 0x4C / 0x4D (direction 0 / 1): a grab attempt within 100 units. Fails against flag 0x42, a form
@@ -938,6 +965,7 @@ s32 BtlHit_CheckRush(void) {
         s32 tech;
         u32 tf;
         s32 flag;
+        s32 authored = 0;
 
         if (!BtlChar_TestFlag(a, 0x49)) {
             continue;
@@ -949,6 +977,9 @@ s32 BtlHit_CheckRush(void) {
         st = BtlAnim_GetFlags(BtlAnim_GetId(b));
         tech = BtlAct_GetCurrentClass(a);
         tf = BtlSuper_GetFlags(a, tech);
+#ifdef PORT
+        {extern int Port_StoryAuthoredVictim(int,int,int);authored=Port_StoryAuthoredVictim(a->player,b->player,tech);}
+#endif
         if (BtlChar_TestFlag(b, 0x42) || (st & 0x800)) {
             goto miss;
         }
@@ -960,7 +991,7 @@ s32 BtlHit_CheckRush(void) {
             BtlChar_SetFlag(a, 0x129);
             continue;
         }
-        if (BtlChar_IsFree(b) && b->unk107C > 0) {
+        if (!authored && BtlChar_IsFree(b) && b->unk107C > 0) {
             if (BtlChar_TestFlag(a, 0xA5)) {
                 if ((st & 0x31) && !BtlHit_IsFromBehind(a, b)) {
                     BtlChar_SetFlag(a, 0x7A);
@@ -986,7 +1017,7 @@ s32 BtlHit_CheckRush(void) {
                 }
             }
         }
-        if (BtlChar_IsFree(b) && !BtlChar_TestFlag(b, 0x5A)) {
+        if (!authored && BtlChar_IsFree(b) && !BtlChar_TestFlag(b, 0x5A)) {
             s32 n0 = 0;
             s32 n1 = 0;
 
@@ -1027,7 +1058,7 @@ s32 BtlHit_CheckRush(void) {
                 continue;
             }
         }
-        if (BtlColl_IsGuarding(b) && !BtlHit_IsFromBehind(a, b) && !(tf & 1) && !BtlChar_TestFlag(a, 0xA5)) {
+        if (!authored && BtlColl_IsGuarding(b) && !BtlHit_IsFromBehind(a, b) && !(tf & 1) && !BtlChar_TestFlag(a, 0xA5)) {
             BtlChar_SetFlag(a, 0x6F);
             BtlChar_SetFlag(a, 0x129);
             BtlChar_SetFxBit(b, 0x20);
@@ -1141,7 +1172,7 @@ void BtlHit_TestHit(HitChr *chr) {
                 BtlChar_SetHeldFlag(chr, 0x5C);
             } else if (BtlHit_CheckGuard(chr, opp, &full)) {
                 if (full) {
-                    BtlMember_Damage(opp, BtlAtk_GetGuardDamage(chr), 0xC);
+                    Port_CombatDamageFrom(opp, BtlAtk_GetGuardDamage(chr), 0xC, chr->player);
                 }
             } else if (!BtlHit_CheckThrowBreak(chr, opp)) {
                 st->target = oppIdx;
@@ -1218,6 +1249,97 @@ void BtlHit_ResolveTrades(void) {
  * defender's animation flags (or a "does not flinch" reaction 2 from the armour level comparison), fills the
  * defender's reaction block, shakes cameras and pads, then takes health with BtlMember_Damage and gives the attacker
  * its ki and gauge gains. */
+#ifdef PORT
+/* Sangre (port/src/plat_fx.c). Se decide ACA, donde la reaccion del rival ya esta resuelta: el registro del ataque
+   no alcanza, porque la armadura (la nativa y Port_PowerArmorTier) cambia la reaccion despues, y el rival que no se
+   inmuta queda en 2 - el caso del personaje muy debil contra uno muy fuerte, que no debe sangrar.
+   Solo punos y cuerpo: hitFx 1..5 (6..10 son blasts). Nada de agarres (0x55, 0x56).
+   El punto de impacto no existe todavia: el pedido queda armado y BtlChar_SpawnHitFx lo consume cuando el juego
+   pide el efecto, que es el mismo golpe. */
+extern void Port_Fx_Arm(int objId, int kind, int scaleQ8, int spit);
+
+/* Reglas de Juan (2026-11-19): la sangre es para los golpes que valen.
+   - solo "cinematograficos": cargado (0x13..0x21, 0x67..0x6B), rush (0x4E..0x52) y remates de rush
+     (0x7E..0x86); o un aturdimiento (reacciones 23..28 = gut punch / golpe pesado).
+   - nada de combos comunes: si no es de esos, no sangra.
+   - el rival tiene que estar a la altura: si nos saca 5x o mas (PA_Tier >= 1) no hay sangre, y si es
+     de los que no sangran (Buu, Baby parasito, robots, gelatinas) tampoco. */
+static int port_blood_powerful(s32 id, s32 react) {
+    if (id >= 0x13 && id <= 0x21) {
+        return 1; /* golpe cargado: debil, medio, completo */
+    }
+    if (id >= 0x67 && id <= 0x6B) {
+        return 1; /* cargado completo */
+    }
+    if (id >= 0x4E && id <= 0x52) {
+        return 1; /* rush rapidisimo (especial de punos) */
+    }
+    if (id >= 0x7E && id <= 0x86) {
+        return 1; /* primer/medio/ultimo golpe del rush */
+    }
+    if (react >= 23 && react <= 28) {
+        return 1; /* aturdimiento: el golpe pesado, el gut punch */
+    }
+    return 0;
+}
+
+static void port_blood_arm(HitChr *atk, s32 react, s32 kind) {
+    s32 fx, dmg, id;
+    float scale;
+    int spit;
+    HitMember *dm;
+
+    if (react <= 2 || kind == 0x55 || kind == 0x56) {
+        return;
+    }
+    fx = BtlAtk_GetHitFxKind(atk);
+    if (fx < 1 || fx > 5) {
+        return;
+    }
+    id = BtlAtk_GetId(atk);
+    if (!port_blood_powerful(id, react)) {
+        return; /* un combo comun no hace sangrar */
+    }
+    /* Poder: el que pega tiene que estar a la altura. PA_Tier 1 = el rival nos saca 5x (los fisicos no
+       lo mueven), 2 = 50x. En los dos casos, nada de sangre. */
+    if (Port_PowerArmorTier(atk->player, atk->status.target) != 0) {
+        return;
+    }
+    /* Hay personajes que no sangran (familia Buu, Baby parasito, robots, gelatinas): ni sangre ni desgaste. */
+    dm = BtlMember_GetActive(BtlChar_Get(atk->status.target));
+    if (dm == NULL || Blood_None(dm->chara)) {
+        return;
+    }
+    dmg = BtlAtk_GetDamage(atk);
+    if (dmg <= 0) {
+        return;
+    }
+    scale = 0.55f + (float)dmg / 900.0f;
+    if (scale > 1.4f) {
+        scale = 1.4f;
+    }
+    spit = 0; /* Spitting is an authored mouth contact, not a generic hit reaction. */
+    /* A resolved hit already has its victim. Native rushes may suppress the ordinary
+       hit-FX request, so do not wait for that optional effect to supply a position. */
+    {HitChr*def=BtlChar_Get(atk->status.target);Vec4 p,from,d;
+     extern void BtlCharApi_GetNodePos(s32,s32,Vec4*),BtlCharApi_GetPos(s32,Vec4*);
+     extern f32 BtlCharApi_GetHeight(s32),BtlCharApi_GetGroundY(s32);
+     extern void Port_Fx_WorldSpit(const Vec4*,const Vec4*,int);
+     float len,h;if(!def)return;h=BtlCharApi_GetHeight(def->objId);
+     BtlCharApi_GetNodePos(def->objId,0x10,&p);BtlCharApi_GetPos(atk->objId,&from);
+     d.x=p.x-from.x;d.y=-.12f;d.z=p.z-from.z;len=sqrtf(d.x*d.x+d.z*d.z);
+     if(len>.01f){d.x/=len;d.z/=len;}else{d.x=0;d.z=1;}
+     p.x-=d.x*h*.18f;p.z-=d.z*h*.18f;d.w=BtlCharApi_GetGroundY(def->objId);
+     { /* Color del que sangra (rojo por defecto; verde -> violeta, etc.), solo para ESTA sangre: cada gota lo
+          guarda al nacer, y despues se vuelve al rojo para que la sangre autorada de la Historia no lo herede. */
+      int br,bg,bb;extern void Port_Fx_SetTint(int,int,int),Port_Fx_ResetTint(void);
+      Blood_Color(dm->chara,&br,&bg,&bb);Port_Fx_SetTint(br,bg,bb);
+      Port_Fx_WorldSpit(&p,&d,(int)(h*scale*256.f));
+      Port_Fx_ResetTint();}
+    }
+}
+#endif
+
 void BtlHit_ApplyHit(HitChr *atk) {
     s32 drain = 0;
     s32 launch = 0;
@@ -1230,6 +1352,9 @@ void BtlHit_ApplyHit(HitChr *atk) {
     f32 yaw;
     s32 back;
     s32 react;
+#ifdef PORT
+    s32 blood_reaction;
+#endif
     f32 power;
     f32 time;
     f32 a;
@@ -1334,6 +1459,8 @@ void BtlHit_ApplyHit(HitChr *atk) {
         break;
     }
 #ifdef PORT
+    /* Story no-flinch changes motion, while blood uses the hit's native severity. */
+    blood_reaction = react;
     /* Story: some rivals take a listed ally's blows without reacting (mod_story.h stPunchArmor). Grabs and throws
        (0x55, 0x56) keep their paired native motions. Damage below is unchanged. */
     if (react != 2 && kind != 0x55 && kind != 0x56) {
@@ -1394,6 +1521,9 @@ void BtlHit_ApplyHit(HitChr *atk) {
     if (!(af & 0x80000)) {
         BtlChar_SetFxBit(atk, 0x1B);
     }
+#ifdef PORT
+    port_blood_arm(atk, blood_reaction, kind);
+#endif
     if (af & 0x10000) {
         BtlChar_SetFxBit(atk, 0x25);
     }
@@ -1508,7 +1638,7 @@ void BtlHit_ApplyHit(HitChr *atk) {
             type = 0x200000 + atk->unkE0C;
             break;
         }
-        BtlMember_Damage(def, dmg, type);
+        Port_CombatDamageFrom(def, dmg, type, atk->player);
         break;
     }
     }

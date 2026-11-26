@@ -1034,7 +1034,7 @@ s32 BtlAtk_GetGuardDamage(BtlTechChr *chr) {
     s32 val = BtlAtk_GetRecord(chr, &id)->guardDamage;
     s32 hits;
 
-    {BtlTechMember*m=BtlMember_GetActive(chr);if(m&&!Port_NetActive()&&!BattleReplay_IsActive())val=MD_Offense(m->chara,m->costume,val);}
+    {BtlTechMember*m=BtlMember_GetActive(chr);if(m&&Port_BattleScaleMode()==3&&m->chara!=301&&!Port_StoryActive()&&!Port_NetActive()&&!BattleReplay_IsActive())val=MD_Offense(m->chara,m->costume,val);}
     val = MD_FloatScale(val,BtlStat_GetMeleeDamageScale(chr));
     if (BtlAct_TestPoweredSkill(chr, 0x10)) {
         if ((u32)id < 0xB) {

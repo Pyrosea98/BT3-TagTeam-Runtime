@@ -999,7 +999,19 @@ void CharSel_Draw(void) {
         Flash_FindLabel(f, NULL, i ? "mc_name_text_r" : "mc_name_text_l", &ref);
         TextBox_AttachLine(f, &ref, 0, 0, gCharSel->side[i]->chara, &gCharSel->nameBox[i]);
         Flash_FindLabel(f, NULL, i ? "mc_form_text_r" : "mc_form_text_l", &ref);
-        TextBox_AttachLine(f, &ref, 0, 0, gCharSel->side[i]->chara, &gCharSel->formBox[i]);
+#ifdef PORT
+        {
+            extern int Port_CharaPowerText(int, int, unsigned short *, int);
+            extern void TextBox_AttachString(MFlash *, MFlashRef *, s32, s32, u16 *, MTextBox *);
+            static u16 power[2][48];
+            if (Port_CharaPowerText(gCharSel->side[i]->chara, gCharSel->side[i]->colorPlate, power[i], 48))
+                TextBox_AttachString(f, &ref, 0, 0, power[i], &gCharSel->formBox[i]);
+            else
+#endif
+            TextBox_AttachLine(f, &ref, 0, 0, gCharSel->side[i]->chara, &gCharSel->formBox[i]);
+#ifdef PORT
+        }
+#endif
     }
 
     uv.x0 = 0;

@@ -74,7 +74,7 @@ static void mod_startup_draw(void) {
         line(title,251,20,colour(255,192,72));
         line(kModCreditUrls[2],292,13,colour(255,255,255));
         line(kModThanks[es?1:0],355,12,colour(255,255,255));
-        line(es?"Gracias!":"Thank you!",394,22,colour(255,192,72));
+        line(es?"¡Gracias!":"Thank you!",394,22,colour(255,192,72));
     }
 }
 

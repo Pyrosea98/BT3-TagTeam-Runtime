@@ -69,6 +69,14 @@ typedef struct SaveCustom {
     /* 0x36 */ u16 unk36;
 } SaveCustom;
 
+/* Port-only Potara modes stored in the existing per-character reserved word.  Zero keeps
+   the stock behavior.  The health value is a maximum, in native 10,000-point bars. */
+#ifdef PORT
+#define SAVE_CUSTOM_POTARA_RED 0x8000
+#define SAVE_CUSTOM_POTARA_HP_MASK 0x007F
+#define SAVE_CUSTOM_POTARA_RESERVED_MASK (SAVE_CUSTOM_POTARA_RED | SAVE_CUSTOM_POTARA_HP_MASK)
+#endif
+
 /* 0x1C bytes; fourteen of them at 0x2D40. */
 typedef struct SaveRec {
     /* 0x00 */ u8 unk0[0x14];

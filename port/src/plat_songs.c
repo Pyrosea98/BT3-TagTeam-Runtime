@@ -206,6 +206,31 @@ int PortSongs_Offset(int index) {
     return gPortSongOffsets[index];
 }
 
+int PortSongs_FindOffsetByFile(const char *file) {
+    if (!file || !*file) return -1;
+    PortSongs_Init();
+    for (int i = 0; i < gPortSongCount; i++) {
+        if (strcmp(sFiles[i], file) == 0) return gPortSongOffsets[i];
+    }
+    return -1;
+}
+
+/* Battle cues are keyed by stable chapter and file names, independent of list
+   order and display-title corrections. Missing/invalid rows retain old defaults. */
+int PortSongs_StoryBattleBgm(const char *chapter){
+ char path[512],line[256];FILE*f;int i;
+ if(!chapter||!*chapter)return -1;
+ PortSongs_Init();snprintf(path,sizeof(path),"%s/story-battle.txt",sDir);
+ f=fopen(path,"r");if(!f)return -1;
+ while(fgets(line,sizeof(line),f)){char*bar;if(line[0]=='#')continue;bar=strchr(line,'|');if(!bar)continue;*bar++=0;
+  if(strcmp(trim(line),chapter))continue;
+  bar=trim(bar);
+  i=PortSongs_FindOffsetByFile(bar);
+  if(i>=0){fclose(f);return i;}
+ }
+ fclose(f);return -1;
+}
+
 /* Story presentation ADX slots are independent of the music list (no index shifts in saves).
    Chapter-specific files override saga families, allowing a different intro for each movie. */
 #define STORY_TRACK_FIRST 75000

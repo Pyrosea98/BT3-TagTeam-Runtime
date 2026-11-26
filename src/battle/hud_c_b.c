@@ -755,7 +755,17 @@ void HudCombo_DrawText(void) {
                edge and stood where it stands in 4:3, away from its panel (seen by the user). */
             Port_GsMarker(HUD_SCR(side) ? PORT_2D_RIGHT : PORT_2D_LEFT);
 #endif
+            #ifdef PORT
+            {
+                extern int Port_StoryTechniqueActor(void);
+                extern void *Port_StoryUltimateText(void *, void *, int);
+                int actor = Port_StoryTechniqueActor();
+                HudCObj *obj = BtlCtrl_GetObj(actor >= 0 ? actor : side);
+                BtlMenu_SetScript2(Port_StoryUltimateText(obj, obj ? obj->skillScript : NULL, 1));
+            }
+#else
             BtlMenu_SetScript2(BtlCtrl_GetObj(side)->skillScript);
+#endif
             BtlText_DrawEntryName(pos[0], pos[1], gHudCombo->text[side], HUD_SCR(side), alpha); /* (the 4th: left or right aligned) */
         }
     }
@@ -863,7 +873,13 @@ void HudCombo_DrawParts(HudCNode *root) {
         pos = gHudCombo->textPos[k];
         if (pos[0] >= 0 && pos[1] >= 0) {
             Port_GsMarker(right ? PORT_2D_CENTER : PORT_2D_LEFT);
-            BtlMenu_SetScript2(BtlCtrl_GetObj(who)->skillScript);
+            {
+                extern int Port_StoryTechniqueActor(void);
+                extern void *Port_StoryUltimateText(void *, void *, int);
+                int actor = Port_StoryTechniqueActor();
+                HudCObj *obj = BtlCtrl_GetObj(actor >= 0 ? actor : who);
+                BtlMenu_SetScript2(Port_StoryUltimateText(obj, obj ? obj->skillScript : NULL, 1));
+            }
             BtlText_DrawEntryName(pos[0], pos[1], gHudCombo->text[k], 0, gHudCombo->textAlpha[k]);
         }
         Port_GsMarkerForce(0);

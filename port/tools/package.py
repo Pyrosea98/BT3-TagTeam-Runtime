@@ -79,7 +79,7 @@ Added stages are not written to your save, and they are not offered in an online
 SONGS_NOTE = """Music from outside the disc.
 
 Put a song as an .mp3 or an .adx file (CRI ADX, the game's own music format) into this folder. It is added to the
-music choice of the stage select, before "Random", named after the file. Up to 40 songs. An .mp3 is converted to
+music choice of the stage select, before "Random", named after the file. Up to 256 songs. An .mp3 is converted to
 .adx when the game starts, once (the .adx is written next to it, while the game is already running: a new song may
 be missing from the first select screen and is there from the next one on). An .mp3 that is replaced by another is
 converted again. An .adx you made yourself is never replaced: an .mp3 of the same name beside it is left alone. An
@@ -143,6 +143,16 @@ def take_fonts(out, lic):
 def take_tbo_art(out, lic):
     """The pictures of the Tenkaichi Budokai Online screens, and who made them (port/tbo/ui/CREDITS.md)."""
     src = ROOT / "port/tbo/ui"
+    soil = ROOT / "port/assets/terrain/crater_soil.rgba"
+    if soil.exists():
+        target = out / "assets/terrain"
+        target.mkdir(parents=True, exist_ok=True)
+        for name in ("soil", "urban", "rock", "ice", "alien", "desert",
+                     "wasteland", "wasteland_night", "rocky", "namek", "namek_dying", "glacier", "canyon", "rocky_evening", "rocky_night", "canyon_evening", "canyon_night"):
+            asset = soil.parent / ("crater_" + name + ".rgba")
+            if not asset.is_file() or asset.stat().st_size != 256 * 256 * 4:
+                raise RuntimeError("Missing or invalid crater material: " + str(asset))
+            shutil.copy2(asset, target / asset.name)
     kit = ROOT / "port/assets/mod-select/select-kit-v1.rgba"
     if kit.exists():
         (out / "mod-select").mkdir(exist_ok=True)

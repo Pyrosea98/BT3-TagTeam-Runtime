@@ -1,3 +1,4 @@
+#include "mod_combat_damage.h"
 #include "mod_damage_safe.h"
 #include "common.h"
 #include "battle/btl_char_flag.h"
@@ -537,7 +538,7 @@ s32 BtlClash_UpdateA(s32 state) {
 #ifdef PORT
                 {extern int Port_AssistBeamClashDamage(int,int);damage=Port_AssistBeamClashDamage(winner->player,damage);}
 #endif
-                BtlMember_Damage(loser, damage, flags);
+                Port_CombatDamageFrom(loser, damage, flags, winner->player);
 #ifdef PORT
                 /* A decided beam struggle applies damage here rather than through
                    projectile collision. Report its real winner to authored Story. */
@@ -546,6 +547,9 @@ s32 BtlClash_UpdateA(s32 state) {
 #endif
                 BtlChar_PlayVoice(loser, 0x16);
                 BtlCharSnd_PlayStream(loser, 0x8D31);
+#ifdef PORT
+                {extern void Port_TerrainBeamStruggle(void);Port_TerrainBeamStruggle();}
+#endif
                 EftStruggle_End(-1);
             }
             BtlChar_RaiseFirstClash(winner);

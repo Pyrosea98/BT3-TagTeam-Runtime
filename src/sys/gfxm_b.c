@@ -10,6 +10,10 @@
 #include "sys/gfx.h"
 #include "sys/heap.h"
 #include "sys/gfxm_b.h"
+#ifdef PORT
+#include "mod_environment_rules.h"
+extern s32 BtlStage_GetId(void);
+#endif
 
 extern void *memset(void *dst, s32 c, u32 n);
 extern void GfxPostQuad_Set(GfxQuad *out, s32 baseX, s32 baseY, s16 u0, s16 v0, s16 u1, s16 v1, s32 dx, s32 dy, s32 w, s32 h,
@@ -258,11 +262,11 @@ void GfxPost_DrawTexRect(u64 tex0, s32 x, s32 y, s32 w, s32 h, s32 fullHeight) {
 /* Draws a blended untextured rectangle over the whole screen (16 strips), depth writes off; colour from four floats.
    `x` has to be a second induction variable (not `i * 32`): the compiler then builds the strips' start values from
    its initial value at run time (`move v1,zero / sll v1,v1,4`) instead of folding them. */
-void GfxPost_DrawTintRect(u64 alpha, Vec4 *color) {
+static void GfxPost_DrawTintRange(u64 alpha, Vec4 *color, int firstX, int strips) {
     u64 *p;
     u64 *tag;
     s32 i;
-    s32 x = 0;
+    s32 x = firstX;
 
     Gfx_AddDefaultEnv();
     Dma_AddZbuf(GFX_ZBP, 1);
@@ -288,16 +292,20 @@ void GfxPost_DrawTintRect(u64 alpha, Vec4 *color) {
     p += 2;
     tag = p;
     p += 2;
-    for (i = 0; i < 16; i++) {
+    for (i = 0; i < strips; i++) {
         p[0] = (s64)((x << 4) + GFX_OFX) | 0x72000000;
         p[1] = (s64)(((x + 32) << 4) + GFX_OFX) | 0x8E000000;
         p += 2;
         x += 32;
     }
-    tag[0] = GIF_TAG_EX(16, 1, GIF_FLG_REGLIST, 2);
+    tag[0] = GIF_TAG_EX(strips, 1, GIF_FLG_REGLIST, 2);
     tag[1] = 0x55;
     Dma_EndDirect(p);
     Dma_AddZbuf(GFX_ZBP, 0);
+}
+
+void GfxPost_DrawTintRect(u64 alpha, Vec4 *color) {
+    GfxPost_DrawTintRange(alpha, color, 0, 16);
 }
 
 /* Clears the flare table and its trailing words. */
@@ -928,6 +936,14 @@ void GfxWater_DrawView(s32 split, s32 view) {
     if (Battle_GetWork()->flags & 0x2000) {
         return;
     }
+#ifdef PORT
+    /* Dying Namek has a lava plane but no native water post-process record. */
+    if (BtlStage_GetId() == 3) {
+        Vec4 amber = {224, 76, 18, 44};
+        GfxPost_DrawTintRange(0x44, &amber, split ? view * 256 : 0, split ? 8 : 16);
+        return;
+    }
+#endif
     if (!(BtlStage_GetList90()->flags & 1)) {
         return;
     }
@@ -1072,6 +1088,10 @@ void GfxWater_DrawView(s32 split, s32 view) {
         p += 2;
         p[0] = 0x114;
         rgba = gGfxWater[view].rgba;
+#ifdef PORT
+        /* GS modulation uses 0x80 for unity. Use warm transmission below lava. */
+        if (BtlStage_GetId() == 3) rgba = 0x80214C80u;
+#endif
         p[1] = (u64)(rgba & 0xFF) | ((u64)((rgba >> 8) & 0xFF) << 8) | ((u64)((rgba >> 16) & 0xFF) << 16) |
                ((u64)((rgba >> 24) & 0xFF) << 24);
         p += 2;
@@ -1106,7 +1126,7 @@ INCLUDE_ASM("asm/nonmatchings/sys/gfxm_b", GfxWater_DrawView);
 /* Draws the underwater wobble for every view whose camera is below the stage's water level. */
 void GfxWater_Draw(void) {
     Mtx44 cam;
-    f32 level;
+    f32 level = 0.0f;
     s32 views = 1;
     s32 split = 0;
     s32 i;
@@ -1115,6 +1135,12 @@ void GfxWater_Draw(void) {
     if (gBtlCam == NULL) {
         return;
     }
+    s32 hasLiquid = BtlStage_GetWaterLevel(&level);
+#ifdef PORT
+    s32 stage = BtlStage_GetId();
+    hasLiquid = ENV_Liquid(stage, hasLiquid, level, &level);
+#endif
+    if (!hasLiquid) return;
     if (Battle_IsSplitScreen() && !DemoCam_IsActive() && gBtlCam->view->unk280 != 0) {
         split = 1;
         views = 2;
@@ -1123,7 +1149,7 @@ void GfxWater_Draw(void) {
         for (i = 0; i < views; i++) {
             GfxLensCam *c = gBtlCam;
 
-            if (BtlStage_GetWaterLevel(&level)) {
+            {
                 Mtx_InverseRT(&cam, &c->views[i].mtx40);
                 if (level < cam.m[3][1]) {
                     GfxWater_DrawView(split, i);
@@ -1132,7 +1158,7 @@ void GfxWater_Draw(void) {
         }
     } else {
         v = gBtlCamView;
-        if (BtlStage_GetWaterLevel(&level)) {
+        {
             Mtx_InverseRT(&cam, &v->mtx40);
             if (level < cam.m[3][1]) {
                 GfxWater_DrawView(split, 0);

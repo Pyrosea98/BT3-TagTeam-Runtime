@@ -186,6 +186,9 @@ void EftBubble_RandDir(EftBVec v);
 void EftBubble_DrawOne(EftBVec pos, EftBMtx m, f32 size, f32 rot, u8 r, u8 g, u8 b, u8 a, EftBTex *tex, u8 layer);
 void EftBubble_SetTexMode(s32 a, s32 b);
 void EftStageScroll_PlaceTextures(s32 tcc, s32 tfx);
+#ifdef PORT
+static void stage_scroll_upload(EftBTexSet *set, s32 tcc, s32 tfx);
+#endif
 void EftStageScroll_Load(void);
 void EftGeyser_Update(EftBTask *task);
 void EftGeyser_Restart(EftBTask *task, EftGeyser *w);
@@ -1249,20 +1252,118 @@ void EftBubble_SetTexMode(s32 a, s32 b) {
 }
 
 /* Task init: allocates the state and loads the sheet. */
+#ifdef PORT
+#include "mod_sky_scroll.h"
+static int sChargeSkySheet;
+#include <stdio.h>
+static EftBTexSet sChargeStormTex;static u8*sChargeStormData;
+extern int Port_GroundChargeStormLevel(void);
+static void charge_storm_load(void){
+ FILE*f=fopen("assets/terrain/storm_clouds.tex","rb");long bytes;if(!f)return;
+ fseek(f,0,SEEK_END);bytes=ftell(f);rewind(f);
+ if(bytes==66944){sChargeStormData=BtlPool_Alloc(BtlPool_GetCurrent(),bytes);if(sChargeStormData&&fread(sChargeStormData,1,bytes,f)==bytes&&SS_TexHash(sChargeStormData,bytes)==0xc2827a72u){EftTexSet_Load32(&sChargeStormTex,sChargeStormData);}else if(sChargeStormData){BtlPool_Free(BtlPool_GetCurrent(),sChargeStormData);sChargeStormData=0;}}
+ fclose(f);
+}
+extern int Port_GroundChargeSkyLevel(void),Battle_GetStage(void);
+extern int Port_StoryActive(void);
+extern const char *Port_FileRoot(void);
+extern void EftMesh_SetColor(void *, u8, u8, u8, u8);
+extern void Port_ChargeBoltsBind(void *);
+extern void Port_ChargeBoltsUpdate(int, int);
+extern void Port_ChargeBoltsDraw(int);
+
+enum {
+    CHARGE_SKY_BYTES = 33216,
+    CHARGE_MESH_BYTES = 3776,
+    CHARGE_BOLT_BYTES = 100672,
+};
+static u8 sRuinedSkyData[CHARGE_SKY_BYTES] __attribute__((aligned(16)));
+static u8 sRuinedMeshData[CHARGE_MESH_BYTES] __attribute__((aligned(16)));
+static u8 sRuinedBoltData[CHARGE_BOLT_BYTES] __attribute__((aligned(16)));
+static EftStageScroll sRuinedSky __attribute__((aligned(16)));
+
+/* Read only the three authenticated blocks from the original local stage.
+   Both effects share this result and the same intensity ramp. */
+static void charge_ruined_load(void) {
+    char path[1024];
+    FILE *file;
+    int written;
+
+    sRuinedSky.enabled = 0;
+    Port_ChargeBoltsBind(NULL);
+    if (!sChargeSkySheet || Port_StoryActive() || Battle_GetStage() == 15 ||
+        BtlScene_GetPackEntrySize(BtlScene_GetStageData(), 0xE) > 0) {
+        return;
+    }
+    written = snprintf(path, sizeof(path), "%s/pak3us1/01156.bin", Port_FileRoot());
+    if (written < 0 || (size_t)written >= sizeof(path)) {
+        return;
+    }
+    file = fopen(path, "rb");
+    if (!file) {
+        return;
+    }
+    if (fseek(file, 2821632, SEEK_SET) ||
+        fread(sRuinedSkyData, 1, sizeof(sRuinedSkyData), file) != sizeof(sRuinedSkyData) ||
+        fread(sRuinedMeshData, 1, sizeof(sRuinedMeshData), file) != sizeof(sRuinedMeshData) ||
+        fseek(file, 3139968, SEEK_SET) ||
+        fread(sRuinedBoltData, 1, sizeof(sRuinedBoltData), file) != sizeof(sRuinedBoltData)) {
+        fclose(file);
+        return;
+    }
+    fclose(file);
+    if (!SS_Verified(15, sRuinedSkyData, sizeof(sRuinedSkyData),
+                     sRuinedMeshData, sizeof(sRuinedMeshData)) ||
+        SS_Hash(sRuinedBoltData, sizeof(sRuinedBoltData)) != 0x6d3426ecu) {
+        return;
+    }
+    memset(&sRuinedSky, 0, sizeof(sRuinedSky));
+    sRuinedSky.size = 4.0f;
+    sRuinedSky.speed = 0.0008f;
+    EftTexSet_Load32(&sRuinedSky.tex, sRuinedSkyData);
+    EftMesh_Init(sRuinedSky.model, sRuinedMeshData + 16);
+    EftMesh_SetTex(sRuinedSky.model, &sRuinedSky.tex);
+    EftMesh_SetClip(sRuinedSky.model, 1);
+    Port_ChargeBoltsBind(sRuinedBoltData);
+    sRuinedSky.enabled = 1;
+}
+
+static int charge_ruined_level(void) {
+    return sRuinedSky.enabled && !Port_StoryActive() ? Port_GroundChargeSkyLevel() : 0;
+}
+#endif
 void EftStageScroll_Init(void) {
     gEftStageScroll = BtlPool_Alloc(BtlPool_GetCurrent(), sizeof(EftStageScroll));
     memset(gEftStageScroll, 0, sizeof(EftStageScroll));
     EftStageScroll_Load();
+#ifdef PORT
+    if (Port_StoryActive()) charge_storm_load();
+    charge_ruined_load();
+#endif
 }
 
 /* Task term. */
 void EftStageScroll_Term(void) {
+#ifdef PORT
+    sRuinedSky.enabled = 0;
+    Port_ChargeBoltsBind(NULL);
+    sChargeSkySheet=0;if(sChargeStormData){BtlPool_Free(BtlPool_GetCurrent(),sChargeStormData);sChargeStormData=0;}memset(&sChargeStormTex,0,sizeof(sChargeStormTex));
+#endif
     BtlPool_Free(BtlPool_GetCurrent(), gEftStageScroll);
     gEftStageScroll = NULL;
 }
 
 /* Task update: advances the scroll offset and wraps it into -size..size. Stops while paused or loading. */
 void EftStageScroll_Update(void) {
+#ifdef PORT
+    int ruined = BtlStage_IsReady() ? charge_ruined_level() : 0;
+    int stopped = BtlScene_IsTimeStopped() || (Battle_GetWork()->flags & EFTB_BATTLE_PAUSE);
+    Port_ChargeBoltsUpdate(ruined, stopped);
+    if (ruined && !stopped) {
+        sRuinedSky.offX += sRuinedSky.speed * (1.f + 0.015f * ruined);
+        if (sRuinedSky.offX >= sRuinedSky.size) sRuinedSky.offX -= sRuinedSky.size;
+    }
+#endif
     if (Battle_GetWork()->flags & EFTB_BATTLE_PAUSE) {
         return;
     }
@@ -1272,8 +1373,17 @@ void EftStageScroll_Update(void) {
     if (!gEftStageScroll->enabled) {
         return;
     }
+#ifdef PORT
+    {int level=sChargeSkySheet && (Port_StoryActive() || Battle_GetStage() == 15)
+                   ? Port_GroundChargeSkyLevel() : 0;float speed=gEftStageScroll->speed*(1.f+(float)level*.015f);
+     /* A uniform sheet has no moving detail: preserve its native appearance. */
+     {static int lastStage=-1,lastLevel=-1;int stage=Battle_GetStage();if(stage!=lastStage||(level>0)!=(lastLevel>0)){extern void Port_GroundTrace(const char*,int,int,int,int);Port_GroundTrace("sky(stage,verified,level,speedx10000)",stage,sChargeSkySheet,Port_GroundChargeSkyLevel(),(int)(speed*10000.f));lastStage=stage;lastLevel=level;}}
+     gEftStageScroll->offX+=gEftStageScroll->dirX*speed;
+     gEftStageScroll->offY+=gEftStageScroll->dirY*speed;}
+#else
     gEftStageScroll->offX += gEftStageScroll->dirX * gEftStageScroll->speed;
     gEftStageScroll->offY += gEftStageScroll->dirY * gEftStageScroll->speed;
+#endif
     if (gEftStageScroll->offX > gEftStageScroll->size) {
         gEftStageScroll->offX = gEftStageScroll->offX - gEftStageScroll->size;
     } else if (gEftStageScroll->offX < -gEftStageScroll->size) {
@@ -1289,6 +1399,9 @@ void EftStageScroll_Update(void) {
 /* Task reset: reloads the sheet (a new stage file after a stage change). */
 void EftStageScroll_Reset(void) {
     EftStageScroll_Load();
+#ifdef PORT
+    charge_ruined_load();
+#endif
 }
 
 /* Task draw: nothing (the sheet is drawn by the stage). */
@@ -1296,6 +1409,12 @@ void EftStageScroll_DrawStub(void) {
     if (!BtlStage_IsReady()) {
         return;
     }
+#ifdef PORT
+    if (gBtlCamView && EftStage_IsDrawOn() &&
+        !(Battle_GetWork()->flags & 0x0080000000000000ULL)) {
+        Port_ChargeBoltsDraw(charge_ruined_level());
+    }
+#endif
 }
 
 /* Draws the sheet: called by the stage draw, once per view. */
@@ -1340,14 +1459,43 @@ void EftStageScroll_Draw(void) {
     EftMesh_SetUvOfs(gEftStageScroll->model, gEftStageScroll->offX, gEftStageScroll->offY);
     EftMesh_SetMtx(gEftStageScroll->model, &m);
     EftMesh_DrawNow(gEftStageScroll->model, 1);
+#ifdef PORT
+    {
+        int level = charge_ruined_level();
+        if (level) {
+            int alpha = level * 128 / 225;
+            if (alpha > 128) alpha = 128;
+            stage_scroll_upload(&sRuinedSky.tex, 1, 0);
+            EftMesh_SetColor(sRuinedSky.model, 128, 128, 128, (u8)alpha);
+            EftMesh_SetUvScale(sRuinedSky.model, sRuinedSky.size);
+            EftMesh_SetUvOfs(sRuinedSky.model, sRuinedSky.offX, 0.f);
+            EftMesh_SetMtx(sRuinedSky.model, &m);
+            EftMesh_DrawNow(sRuinedSky.model, 1);
+        }
+    }
+#endif
 }
 
 /* Uploads the sheet's textures one after the other from VRAM block 0x2A20 (palettes from 0x2A00) and rewrites
    the TBP0, TCC, TFX and CBP fields of each TEX0 to match. */
+#ifdef PORT
 void EftStageScroll_PlaceTextures(s32 tcc, s32 tfx) {
+    EftBTexSet *set = &gEftStageScroll->tex;
+    if (Port_StoryActive() && sChargeSkySheet && sChargeStormData &&
+        Port_GroundChargeStormLevel() > 0) {
+        set = &sChargeStormTex;
+    }
+    EftMesh_SetTex(gEftStageScroll->model, set);
+    stage_scroll_upload(set, tcc, tfx);
+}
+
+static void stage_scroll_upload(EftBTexSet *set, s32 tcc, s32 tfx) {
+#else
+void EftStageScroll_PlaceTextures(s32 tcc, s32 tfx) {
+    EftBTexSet *set = &gEftStageScroll->tex;
+#endif
     s32 tbp = 0x2A20;
     s32 cbp = 0x2A00;
-    EftBTexSet *set = &gEftStageScroll->tex;
     s32 i;
 
     for (i = 0; i < set->count; i++) {
@@ -1371,6 +1519,12 @@ void EftStageScroll_Load(void) {
 
     p = file + (*(u32 *)(file + 0x1C) / 4) * 4;
     texPack = file + (*(u32 *)(file + 0x18) / 4) * 4;
+#ifdef PORT
+    {u32 t=*(u32*)(file+0x18),a=*(u32*)(file+0x1C),b=*(u32*)(file+0x20);
+     int stage = Battle_GetStage();
+     sChargeSkySheet = !(stage == 15 && Port_StoryActive()) && t<=a && a<=b && b<=16777216u
+         ? SS_Verified(stage,texPack,a-t,p,b-a) : 0;}
+#endif
     gEftStageScroll->enabled = 1;
     EFTB_READ_INT(v, p);
     gEftStageScroll->size = v;
@@ -1781,4 +1935,20 @@ void EftGeyser_DrawColumn(EftBTask *task) {
 RODATA_ALIGN16();
 INCLUDE_RODATA("asm/nonmatchings/battle/eft_b", D_002EC6E0);
 INCLUDE_ASM("asm/nonmatchings/battle/eft_b", EftGeyser_DrawColumn);
+#endif
+
+#ifdef PORT
+/* Same native projection/ordering/depth test as effects, with texture sampling disabled. */
+void Port_EftSolidTriangle(EftBIVec*a,EftBIVec*b,EftBIVec*c,Vec4*ca,Vec4*cb,Vec4*cc,Vec4*ua,Vec4*ub,Vec4*uc,s32 z){
+ EftBTriPkt*p=(EftBTriPkt*)gOtCur;EftPrim_DrawTriangle(a,b,c,ca,cb,cc,ua,ub,uc,0,0,0,z,0);
+ if((void*)gOtCur!=(void*)p)p->prim&=~(u64)0x10;
+}
+#endif
+
+#ifdef PORT
+extern void EftMesh_QueueTri(void*,void*,void*,void*,void*,void*,void*,void*,void*,s32,s32,s32,s32,s32,u64);
+void Port_EftGroundTriangle(EftBIVec*a,EftBIVec*b,EftBIVec*c,Vec4*ca,Vec4*cb,Vec4*cc,Vec4*ua,Vec4*ub,Vec4*uc,s32 z,u64 tex,int opaque){
+ /* Queue native CLAMP repeat state with the depth-sorted triangle, not an immediate GS state write. */
+ EftMesh_QueueTri(a,b,c,ca,cb,cc,ua,ub,uc,opaque?0:1,0,tex!=0,opaque?-1:0,z,tex);
+}
 #endif

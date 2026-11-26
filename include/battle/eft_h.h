@@ -129,6 +129,8 @@ typedef struct EftHSlot {
 } EftHSlot; /* size 0x50 */
 
 /* Per-character part of the manager state. */
+#define EFT_H_STORY_ULTIMATE_SLOT 5
+
 typedef struct EftHChar {
     /* 0x000 */ EftHSlot slot[6];
     /* 0x1E0 */ EftShotParam param[6];

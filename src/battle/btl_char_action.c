@@ -1,4 +1,7 @@
 #include "common.h"
+#ifdef PORT
+extern void Port_StoryCh2KrillinFallTrace(void *, const char *);
+#endif
 #include "battle/btl_char_action.h"
 
 /*
@@ -1175,12 +1178,27 @@ void BtlAct_UpdateTimers(BtlActChr *chr) {
 void BtlAct_Update(BtlActChr *chr) {
     BtlActState *act = &chr->act;
     BtlActHandler *tbl = gBtlActHandlers;
+#ifdef PORT
+    extern int Port_StoryMoonLaunchPending(s32 obj);
+    s32 moonLaunch = -1;
+
+    if (BtlAct_IsTechniqueId(act->request) && Port_StoryMoonLaunchPending(chr->objId)) {
+        moonLaunch = act->request;
+    }
+#endif
 
     BtlChar_SetStage(chr, 4);
     if (tbl[act->current] != NULL) {
         tbl[act->current](chr, BTLACT_PHASE_DECIDE);
     }
     BtlAct_CheckForced(chr);
+#ifdef PORT
+    if (moonLaunch != -1 && !BtlChar_IsDead(chr) && act->request != moonLaunch) {
+        extern void Port_Dbg3(const char*, int, int, int, int);
+        Port_Dbg3("story moon launch restored", chr->player, act->current, act->request, moonLaunch);
+        act->request = moonLaunch;
+    }
+#endif
     if (act->request != -1) {
         if (tbl[act->current] != NULL) {
             tbl[act->current](chr, BTLACT_PHASE_LEAVE);
@@ -1217,9 +1235,18 @@ void BtlAct_Update(BtlActChr *chr) {
     chr->holdAction = 0;
     if (gBtlActHandlers[act->current] != NULL) {
         gBtlActHandlers[act->current](chr, BTLACT_PHASE_RUN);
+#ifdef PORT
+        Port_StoryCh2KrillinFallTrace(chr, "handler-return");
+#endif
     }
     BtlAct_UpdateGauges(chr);
+#ifdef PORT
+    Port_StoryCh2KrillinFallTrace(chr, "after-gauges");
+#endif
     BtlAct_UpdateTimers(chr);
+#ifdef PORT
+    Port_StoryCh2KrillinFallTrace(chr, "after-timers");
+#endif
 }
 
 /* Action 1 (forced by flag 0xEF): plays motions 0x180 -> 0x181 in place; flag 0xF0 ends it (to action 0xB). */

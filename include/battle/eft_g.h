@@ -67,7 +67,8 @@ typedef struct EftShotSlot {
     /* 0x1C */ void *pack;     /* the slot's data in the character pack (EftShot_GetCharPack) */
     /* 0x20 */ s32 unk20;
     /* 0x24 */ EftShotDef *def;
-    /* 0x28 */ u8 unk28[0x28];
+    /* 0x28 */ void *task;     /* group task, same field as EftHSlot.task */
+    /* 0x2C */ u8 unk2C[0x24];
 } EftShotSlot; /* 0x50 */
 
 /* The part of a blast record (0x190 bytes, include/battle/btl_scene.h) read by EftRec_GetDefClass. */
@@ -259,12 +260,13 @@ typedef struct EftBound {
 /* ---- shot slots ------------------------------------------------------------------------ */
 
 #define EFT_SHOT_SLOTS 5
+#define EFT_SHOT_STORY_ULTIMATE EFT_SHOT_SLOTS
 
 typedef struct EftShotChar {
     /* 0x000 */ EftShotSlot slot[EFT_SHOT_SLOTS];
-    /* 0x190 */ u8 unk190[0x50];
+    /* 0x190 */ EftShotSlot storyUltimate;
     /* 0x1E0 */ EftShotDef def[EFT_SHOT_SLOTS];
-    /* 0x49C */ u8 unk49C[0x8C];
+    /* 0x49C */ EftShotDef storyUltimateDef;
     /* 0x528 */ void *list;    /* child task list (6 tasks of 0x2000 bytes) */
     /* 0x52C */ void *task;    /* the character's task */
     /* 0x530 */ s32 curSlot;   /* slot in use, -1 when the fighter is in neither a technique nor a skill */

@@ -1,6 +1,9 @@
 #include "common.h"
 #include "battle/hud_a.h"
 #include "battle/battle.h"
+#ifdef PORT
+#include "battle/btl_char_member.h"
+#endif
 #include "sys/heap.h"
 
 /*
@@ -47,6 +50,66 @@ extern s32 BtlCtrl_GetStatMod0(s32 side);
 extern s32 BtlCtrl_GetStatMod1(s32 side);
 extern s32 BtlCtrl_GetStatMod2(s32 side);
 extern s32 BtlCtrl_GetStatMod3(s32 side);
+#ifdef PORT
+extern BtlMemberChr *BtlChar_FindBySide(s32 side);
+extern BtlMemberChr *BtlChar_Get(s32 index);
+extern int Port_ModesFight(void);
+extern int Port_ScenarioActive(void);
+extern int Port_PotaraRedEnabled(int chara);
+extern s32 BtlChar_TestFlag(BtlMemberChr *fighter, s32 flag);
+
+static int Hud_GetPotaraIconLevels(BtlMemberChr *fighter, s32 levels[4]) {
+    BtlMember *member;
+    if (!fighter) {
+        return 0;
+    }
+    member = BtlMember_GetActive(fighter);
+    if (!member || !member->present || !Port_PotaraRedEnabled(member->chara)) {
+        return 0;
+    }
+
+    /* Same order as the native HUD: melee, blasts, defense and Ki. */
+    levels[0] = member->bonus[1];
+    levels[1] = member->bonus[5] ? member->bonus[5] : member->bonus[6];
+    levels[2] = member->bonus[2];
+    levels[3] = member->bonus[0];
+    if (levels[3] == 0 && BtlMember_HasAbility(fighter, 0x2B)) {
+        levels[3] = 1; /* Reduced Ki cost for the active fighter's techniques. */
+    }
+    return 1;
+}
+
+/* Bits 0–4 mark effects, bit 5 marks red permission, and bits 8–12 mark positive effects. */
+u32 Port_HudPotaraFlags(s32 actor) {
+    BtlMemberChr *fighter;
+    s32 levels[4];
+    u32 flags = 0;
+    s32 i;
+    if (!Port_ModesFight()) {
+        return 0;
+    }
+    fighter = BtlChar_Get(actor);
+    if (!Hud_GetPotaraIconLevels(fighter, levels)) {
+        return 0;
+    }
+    if (!Port_ScenarioActive()) {
+        flags |= 1u << 5;
+    }
+    for (i = 0; i < 4; ++i) {
+        if (levels[i] != 0) {
+            flags |= 1u << i;
+            if (levels[i] > 0) {
+                flags |= 1u << (8 + i);
+            }
+        }
+    }
+    if (BtlMember_HasAbility(fighter, 0x1C) || BtlMember_HasAbility(fighter, 0x1D) ||
+        (BtlMember_HasAbility(fighter, 0x5C) && BtlChar_TestFlag(fighter, 0x11))) {
+        flags |= (1u << 4) | (1u << 12);
+    }
+    return flags;
+}
+#endif
 extern s32 BtlSide_GetBlast(s32 side);
 extern s32 BtlSide_GetMaxPower(s32 side);
 extern void *BtlCtrl_GetObj(s32 side);
@@ -357,6 +420,12 @@ void Hud_PreUpdate(void) {
         s32 mask;
         s32 up;
         s32 isNew;
+#ifdef PORT
+        s32 potaraLevels[4] = {0};
+        if (Port_ModesFight()) {
+            Hud_GetPotaraIconLevels(BtlChar_FindBySide(HUD_WHO(side)), potaraLevels);
+        }
+#endif
 
         HudGauge_SetHp(side, BtlSide_GetHp(HUD_WHO(side)));
         HudGauge_SetKi(side, BtlSide_GetKi(HUD_WHO(side)));
@@ -385,6 +454,12 @@ void Hud_PreUpdate(void) {
                 default:
                     continue;
             }
+#ifdef PORT
+            /* Preserve priority for temporary effects already shown by the native HUD. */
+            if (v == 0) {
+                v = potaraLevels[i];
+            }
+#endif
             if (v != 0) {
                 mask |= 1 << i;
                 if (v > 0) {

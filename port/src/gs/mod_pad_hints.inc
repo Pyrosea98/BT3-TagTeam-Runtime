@@ -1,8 +1,8 @@
 
 /* Shared PlayStation hints. Geometry is independent of texture/font coverage. */
-enum ModPadGlyph {MP_CROSS,MP_TRIANGLE,MP_SQUARE,MP_CIRCLE,MP_DPAD,MP_LEFT,MP_RIGHT,MP_LR,MP_R3,MP_SELECT,MP_L1R1,MP_L2R2,MP_L2,MP_START};
+enum ModPadGlyph {MP_CROSS,MP_TRIANGLE,MP_SQUARE,MP_CIRCLE,MP_DPAD,MP_LEFT,MP_RIGHT,MP_LR,MP_R3,MP_SELECT,MP_L1R1,MP_L2R2,MP_L2,MP_START,MP_L2_PLUS_R2,MP_L3_PLUS_R3};
 struct ModPadHint {int button;const char *label;};
-static float mod_pad_width(int kind){return kind==MP_START?37.f:kind==MP_SELECT?42.f:(kind==MP_L1R1||kind==MP_L2R2)?56.f:kind==MP_R3||kind==MP_L2?25.f:18.f;}
+static float mod_pad_width(int kind){return kind==MP_START?37.f:kind==MP_SELECT?42.f:(kind==MP_L2_PLUS_R2||kind==MP_L3_PLUS_R3)?64.f:(kind==MP_L1R1||kind==MP_L2R2)?56.f:kind==MP_R3||kind==MP_L2?25.f:18.f;}
 static void mod_pad_glyph(ImDrawList*d,int kind,ImVec2 c,float k){
  const ImU32 white=IM_COL32(235,231,238,255);float rr=6*k,th=SDL_max(1.f,1.65f*k);
  auto line=[&](float x,float y,float a,float b,ImU32 col){d->AddLine(ImVec2(c.x+(x+1)*k,c.y+(y+1)*k),ImVec2(c.x+(a+1)*k,c.y+(b+1)*k),IM_COL32(0,0,0,190),th+1);d->AddLine(ImVec2(c.x+x*k,c.y+y*k),ImVec2(c.x+a*k,c.y+b*k),col,th);};
@@ -20,6 +20,11 @@ static void mod_pad_glyph(ImDrawList*d,int kind,ImVec2 c,float k){
  case MP_L1R1:pill("L1",-15,24);pill("R1",15,24);break;
  case MP_L2R2:pill("L2",-15,24);pill("R2",15,24);break;
  case MP_L2:pill("L2",0,23);break;
+ case MP_L2_PLUS_R2:
+ case MP_L3_PLUS_R3:
+  pill(kind==MP_L2_PLUS_R2?"L2":"L3",-19,24);
+  pill(kind==MP_L2_PLUS_R2?"R2":"R3",19,24);
+  line(-3,0,3,0,white);line(0,-3,0,3,white);break;
  }
 }
 /* Width-aware packing also works on4:3; each complete icon/label stays together. */

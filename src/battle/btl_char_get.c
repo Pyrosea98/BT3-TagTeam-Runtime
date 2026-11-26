@@ -340,8 +340,11 @@ void BtlChar_Vibrate(BtlCharGetChr *chr, f32 power, f32 seconds) {
 void BtlChar_UpdateVibration(BtlCharGetChr *chr) {
     BtlCharVib *vib = &chr->vib;
 
-#ifdef PORT /* PC build: BT3_RUMBLE_TEST=1 lets a replay vibrate as the fight it shows did (testing without a player) */
-    if (!vib->enabled || (BattleReplay_IsActive() && !Port_RumbleTest()) || chr->injectOn) {
+#ifdef PORT
+    /* The port's per-player vibration switch/strength is applied by
+       Port_PadVibrate. The retired PS2 Options save bit must not silently veto
+       that switch. Keep replay and CPU suppression unchanged. */
+    if ((BattleReplay_IsActive() && !Port_RumbleTest()) || chr->injectOn) {
 #else
     if (!vib->enabled || BattleReplay_IsActive() || chr->injectOn) {
 #endif

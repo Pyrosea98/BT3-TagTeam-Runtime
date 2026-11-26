@@ -1122,7 +1122,15 @@ void HudPrompt_DrawNames(void) {
 #ifdef PORT
             Port_GsMarker(HUD_SCR(i) ? PORT_2D_RIGHT : PORT_2D_LEFT); /* (widescreen: each name with its side, as HudCombo_DrawText) */
 #endif
+#ifdef PORT
+            {
+                extern void *Port_StoryUltimateText(void *, void *, int);
+                HudPromptObj *obj = BtlCtrl_GetObj(i);
+                BtlMenu_SetScript2((s32)Port_StoryUltimateText(obj, obj ? (void *)obj->unkBC : NULL, 1));
+            }
+#else
             BtlMenu_SetScript2(BtlCtrl_GetObj(i)->unkBC);
+#endif
             BtlText_DrawEntryName(pos->x, pos->y, idx, HUD_SCR(i), alpha); /* (the 4th: left or right aligned) */
         }
     }

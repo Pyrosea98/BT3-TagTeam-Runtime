@@ -47,8 +47,7 @@ void Port_ReviveTick(void){
   pos=(float*)BtlChar_GetPos(c);if(!pos){memset(r,0,sizeof(*r));continue;}
   for(j=0;j<n;j++)if(j!=i&&Port_Team(i)==Port_Team(j)&&!(j>=2&&Port_FightConsumed(j-2))){
    void *t=BtlChar_Get(j),*tm=t?BtlMember_GetActive(t):0;float *p;float d=0;int k;
-   {extern int Port_StoryNoRevive(int);if(Port_StoryNoRevive(j)||rv_ringout(j))continue;} /* story-dead stay down */
-   if(rv_ringout(j)||!tm||rv_read(tm,0x40)>0||rv_read(tm,0x44)<=0||!rv_read(tm,8)||!rv_eligible(t,1))continue;
+   {extern int Port_StoryNoRevive(int);if(Port_StoryNoRevive(j)||rv_ringout(j)||!tm||rv_read(tm,0x40)>0||rv_read(tm,0x44)<=0||!rv_read(tm,8)||!rv_eligible(t,1))continue;}
    p=(float*)BtlChar_GetPos(t);if(!p)continue;for(k=0;k<3;k++){float v=pos[k]-p[k];d+=v*v;}if(!(d>=0&&d<=(float)radius*radius))continue;
    target=j;break;
   }
@@ -82,7 +81,7 @@ int Port_ReviveCpuHold(int who){
  pos=(float*)BtlChar_GetPos(c);if(!pos)return 0;
  for(j=0;j<n&&j<16;j++)if(j!=who&&Port_Team(who)==Port_Team(j)&&!(j>=2&&Port_FightConsumed(j-2))){
   void*t=BtlChar_Get(j),*tm=t?BtlMember_GetActive(t):0;float*p,d=0;int k;
-  if(rv_ringout(j)||!tm||rv_read(tm,0x40)>0||rv_read(tm,0x44)<=0||!rv_read(tm,8)||!rv_eligible(t,1))continue;
+  {extern int Port_StoryNoRevive(int);if(Port_StoryNoRevive(j)||rv_ringout(j)||!tm||rv_read(tm,0x40)>0||rv_read(tm,0x44)<=0||!rv_read(tm,8)||!rv_eligible(t,1))continue;}
   p=(float*)BtlChar_GetPos(t);if(!p)continue;for(k=0;k<3;k++){float v=pos[k]-p[k];d+=v*v;}
   if(d>=0&&d<=(float)radius*radius)return 1;
  }return 0;

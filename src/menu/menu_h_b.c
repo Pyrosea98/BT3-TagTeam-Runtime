@@ -2,6 +2,9 @@
 #include "menu/menu_h.h"
 #include "sys/pad.h"
 #include "sys/save.h"
+#ifdef PORT
+#include "mod_power_display.h"
+#endif
 
 CharRef *gCharRef = NULL; /* 0x3B4854 */
 
@@ -228,6 +231,17 @@ done:
 /* The clip of list row / details plate `n` + 1. */
 #define CR_PLATE2(n) sprintf(name, "mc_menu_plate2_%d", n)
 
+#ifdef PORT
+static void CharRef_AttachPower(MFlash *flash, MFlashRef *ref, s32 chara, s32 costume,
+                                u16 power[48], MTextBox *box) {
+    extern void TextBox_AttachString(MFlash *, MFlashRef *, s32, s32, u16 *, MTextBox *);
+    if (Port_CharaPowerText(chara, costume, power, 48))
+        TextBox_AttachString(flash, ref, 0, 0, power, box);
+    else
+        TextBox_AttachLine(flash, ref, 0, 0, chara, box);
+}
+#endif
+
 /* Draws the background and the movie with everything that depends on the state, the windows and the fade. */
 void CharRef_Draw(void) {
     MFlashRef ref;
@@ -237,6 +251,11 @@ void CharRef_Draw(void) {
     MFlashUv uv;
     MFlash *flash = &gCharRef->flash[0];
     s32 state = gCharRef->state;
+#ifdef PORT
+    static u16 detailPower[48], listPower[5][48];
+    s32 costume = state >= CHARREF_ST_COSTUME && state <= CHARREF_ST_VIEW_WAIT
+        ? gCharRef->costume : 0;
+#endif
     s32 pose = gCharRef->pose;
     s32 chara = gCharRef->entry[gCharRef->cursor].chara;
     s32 line;
@@ -268,7 +287,11 @@ void CharRef_Draw(void) {
     Flash_FindLabel(flash, NULL, "mc_name_text_1", &ref);
     TextBox_AttachLine(flash, &ref, 0, 0, chara, &gCharRef->box[CHARREF_BOX_NAME]);
     Flash_FindLabel(flash, NULL, "mc_form_text_1", &ref);
+#ifdef PORT
+    CharRef_AttachPower(flash, &ref, chara, costume, detailPower, &gCharRef->box[CHARREF_BOX_FORM]);
+#else
     TextBox_AttachLine(flash, &ref, 0, 0, chara, &gCharRef->box[CHARREF_BOX_FORM]);
+#endif
     Flash_FindLabel(flash, NULL, "mc_voice_text_1", &ref);
     line = chara * 2;
     TextBox_AttachLine(flash, &ref, 0, 0, line, &gCharRef->box[CHARREF_BOX_VOICE]);
@@ -296,7 +319,11 @@ void CharRef_Draw(void) {
         TextBox_AttachLine(flash, &ref, 0, 0, gCharRef->entry[n].chara, &gCharRef->box[CHARREF_BOX_LIST_NAME + i]);
         CR_PLATE2(i + 1);
         Flash_FindLabel(flash, name, "mc_form_text", &ref);
+#ifdef PORT
+        CharRef_AttachPower(flash, &ref, gCharRef->entry[n].chara, 0, listPower[i], &gCharRef->box[CHARREF_BOX_LIST_FORM + i]);
+#else
         TextBox_AttachLine(flash, &ref, 0, 0, gCharRef->entry[n].chara, &gCharRef->box[CHARREF_BOX_LIST_FORM + i]);
+#endif
     }
     if (gCharRef->scrollDir == 4) {
         n = gCharRef->cursor - gCharRef->row - 1;
@@ -308,7 +335,11 @@ void CharRef_Draw(void) {
         TextBox_AttachLine(flash, &ref, 0, 0, gCharRef->entry[n].chara, &gCharRef->box[CHARREF_BOX_LIST_NAME + 4]);
         CR_PLATE2(i);
         Flash_FindLabel(flash, name, "mc_form_text", &ref);
+#ifdef PORT
+        CharRef_AttachPower(flash, &ref, gCharRef->entry[n].chara, 0, listPower[4], &gCharRef->box[CHARREF_BOX_LIST_FORM + 4]);
+#else
         TextBox_AttachLine(flash, &ref, 0, 0, gCharRef->entry[n].chara, &gCharRef->box[CHARREF_BOX_LIST_FORM + 4]);
+#endif
     }
     uv.x0 = 0;
     uv.x1 = 0x100;

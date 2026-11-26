@@ -298,7 +298,11 @@ s32 BtlAct_CanTransform(BtlActJChr *chr, u32 index, s32 needBlast, s32 needAllow
     if(!Port_ScenarioFormAllowed(chr->player,chara))return 0;
     cost=eg_price(chr,chara,cost,NULL);if(cost<0)return 0;
 #endif
-    if (chara == 0xFF) {
+    if (chara == 0xFF
+#ifdef PORT
+        && !(BtlMember_GetActive(chr)->chara == 285 && index == 0)
+#endif
+    ) {
         return 0;
     }
 #ifdef PORT

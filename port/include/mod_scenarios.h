@@ -54,7 +54,7 @@ static int SC_BuildDraft(MsView*v,int route,int variant,unsigned*weak){
  case 0:SC_Add(v,105,0,1);if(route!=1){SC_Add(v,101,0,2);SC_Add(v,102,1,2);}break;
  case 1:SC_Add(v,129,0,1);SC_Add(v,252,0,1);SC_Add(v,253,0,1);break;
  case 2:SC_Add(v,114,0,1);break;
- case 3:SC_Add(v,255,0,1);if(route==10)SC_Add(v,255,0,1);SC_Add(v,72,2,1);SC_Add(v,81,2,1);SC_Add(v,74,2,1);break;
+ case 3:SC_Add(v,255,0,1);if(route==10)SC_Add(v,255,0,1);SC_Add(v,72,2,1);SC_Add(v,81,2,1);SC_Add(v,74,0,1); /* GT Trunks: costume2 was promoted to a different roster form. */break;
  case 4:{static const int dragons[]={146,261,76,145,275,213,276};for(i=0;i<7;i++)SC_Add(v,dragons[i],0,1);}break;
  case 5:SC_Add(v,291,0,1);break;
  }
@@ -70,6 +70,7 @@ int Port_ScenarioActive(void),Port_ScenarioStage(void),Port_ScenarioBgm(void),Po
 int Port_ScenarioFormAllowed(int,int),Port_ScenarioFusionAllowed(int,int),Port_ScenarioAbsorbAllowed(int,int);
 void Port_ScenarioConsumed(int,int),Port_ScenarioObserve(int,int),Port_ScenarioSetFinalHp(const int*,int);
 int Port_ScenarioCpuScope(int);
+int Port_ScenarioCpuFormGoal(int,int,int);
 int Port_ScenarioIndependentTeams(void),Port_ScenarioObjectiveEnd(const int*,int),Port_ScenarioBossBuff(int),Port_ScenarioHealthMax(int,int);
 unsigned Port_ScenarioResult(int,int,int,const int*,int,int);
 #ifdef __cplusplus

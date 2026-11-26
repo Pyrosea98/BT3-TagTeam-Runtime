@@ -53,7 +53,7 @@ static float se_gain(void) {
 }
 /* The settings overlay's volumes (snd_adx.c), by bank slot; they take effect with the next sound. */
 extern int gPortSePercent, gPortVoicePercent, gPortStagePercent;
-#define SE_GAIN(slot) (se_gain() * (float)((slot) == 3 ? gPortStagePercent : (slot) == 4 || (slot) == 5 ? gPortVoicePercent : gPortSePercent) / 100.0f)
+#define SE_GAIN(slot) (se_gain() * (float)((slot) == 3 ? gPortStagePercent : (slot) == 4 || (slot) == 5 || (slot) == 8 ? gPortVoicePercent : gPortSePercent) / 100.0f)
 
 typedef struct Bank {
     int set;
@@ -79,10 +79,10 @@ typedef struct Voice {
 
 /* Beside the sound chip's memory: room for the clip banks this copy plays in the place of the game's (voice_own_bank). */
 #define OWN_SLOT 0x100000 /* a megabyte each; the largest voice bank file of the disc has 591,104 bytes */
-#define SPU_TOTAL (SPU_SIZE + 8 * OWN_SLOT)
+#define SPU_TOTAL (SPU_SIZE + 9 * OWN_SLOT)
 static uint8_t sSpu[SPU_TOTAL];
-static uint8_t *sOwnTables[8]; /* the two tables of such a bank (one allocation) */
-static Bank sBanks[8];
+static uint8_t *sOwnTables[9]; /* the two tables of such a bank (one allocation) */
+static Bank sBanks[9];
 static Voice sVoices[VOICES];
 static SDL_AudioStream *sStream;
 static int sMono, sTried;
@@ -263,11 +263,11 @@ static int slot_of(int mask) {
     return -1;
 }
 
-static void play(int mask, int id, int volume, int pan, int pitch, int handle) {
+static void play_slot(int slot, int id, int volume, int pan, int pitch, int handle) {
     if (gPortResim) { /* a frame that is only being re-run: its sounds were heard the first time */
         return;
     }
-    int slot = slot_of(mask), k, pick = -1;
+    int k, pick = -1;
     uint32_t start, rate;
     double theta;
     Voice *v;
@@ -302,6 +302,10 @@ static void play(int mask, int id, int volume, int pan, int pitch, int handle) {
     if (getenv("BT3_SND_VERBOSE") != NULL) {
         fprintf(stderr, "se: play bank %d effect %d: %u Hz, volume %d, pan %d, pitch %d, handle %d\n", slot, id, rate, volume, pan, pitch, handle);
     }
+}
+
+static void play(int mask,int id,int volume,int pan,int pitch,int handle) {
+    play_slot(slot_of(mask),id,volume,pan,pitch,handle);
 }
 
 /* Stops voices: by bank mask (id < 0, handle < 0), by bank and number, or by handle. */
@@ -424,6 +428,41 @@ static void voice_own_bank(int slot) {
         }
     }
     free(b);
+}
+
+/* Private cinematic voice bank: never overwrites a native combat bank. */
+static int sStoryVoiceChara=-1,sStoryVoiceAlt=-1;
+int Port_StoryVoicePrepare(int chara) {
+    extern int Port_NetVoiceAlt(void);
+    long size; uint8_t *b,*table;
+    uint32_t hd,hs,sq,qs,smp,ss;
+    int k,alt=Port_NetVoiceAlt()!=0;
+    if(chara<0 || chara>=VOICE_BANKS)return 0;
+    if(sStoryVoiceChara==chara && sStoryVoiceAlt==alt)return 1;
+    b=bank_file((alt?VOICE_BANK_OTHER:VOICE_BANK_DEFAULT)+chara,&size);
+    if(!b)return 0;
+    if(!bank_parts(b,size,&hd,&hs,&sq,&qs,&smp,&ss)||ss>OWN_SLOT){free(b);return 0;}
+    table=malloc(hs+qs);if(!table){free(b);return 0;}
+    memcpy(table,b+hd,hs);memcpy(table+hs,b+sq,qs);
+    if(sStream)SDL_LockAudioStream(sStream);
+    for(k=0;k<VOICES;k++)if(sVoices[k].bank==8)sVoices[k].on=0;
+    free(sOwnTables[8]);sOwnTables[8]=table;
+    memcpy(sSpu+SPU_SIZE+8*OWN_SLOT,b+smp,ss);
+    memset(sSpu+SPU_SIZE+8*OWN_SLOT+ss,0,OWN_SLOT-ss);
+    sBanks[8].spu=SPU_SIZE+8*OWN_SLOT;sBanks[8].hd=table;sBanks[8].sq=table+hs;
+    sBanks[8].set=1;sBanks[8].paused=0;sBanks[8].volume=1;
+    sStoryVoiceChara=chara;sStoryVoiceAlt=alt;
+    if(sStream)SDL_UnlockAudioStream(sStream);
+    free(b);return 1;
+}
+int Port_StoryVoiceHurt(int id) {
+    uint32_t start,rate;
+    if(!sBanks[8].set||!lookup(&sBanks[8],id,&start,&rate))return 0;
+    stream_ready();if(sStream)SDL_LockAudioStream(sStream);
+    play_slot(8,id,127,64,0,-800);
+    if(sStream)SDL_UnlockAudioStream(sStream);
+    fprintf(stderr,"story hurt native voice: chara=%d id=%d rate=%u stream=%d\n",sStoryVoiceChara,id,rate,sStream!=NULL);
+    return 1;
 }
 
 /* the game's structure: its two pointers are 4 bytes wide in every build (PS2 layout) */

@@ -45,11 +45,12 @@ extern FpHud GAME_PTR gHud; /* include/battle/hud_a.h; read only while this batt
 extern void GAME_PTR BtlChar_FindBySide(int side);
 extern int BtlCharApi_GetChara(int objId);
 extern int BtlChar_TestFlag(void GAME_PTR chr, unsigned n);
+extern unsigned Port_HudPotaraFlags(int actor);
 #define CHR_POWERED_UP 6
 
 extern int Port_FilePath(int ptid, int flid, const char *fname, char *out, int size); /* plat_file.c */
 #define FACE_FILE 0x2F9 /* the large portraits (the character select's): file FACE_FILE + character of partition 1 */
-#define CHARA_MAX 329 /* stock roster, native aliases and Yajirobe (301) */
+#define CHARA_MAX 330 /* stock roster, native aliases and Yajirobe (301) */
 
 /* include/battle/btl_char_member.h: BtlMemberChr */
 #define CHR_ACTIVE 0x994
@@ -163,7 +164,7 @@ static void read_fusion_partners(FpState *st){
   if(slot>=FP_ACTORS)continue;
   a=&st->actor[slot];
   if(!a->present&&source>=0&&sHudLastAlive[source].chara==rd(m,0)&&sHudLastAlive[source].costume==rd(m,4))*a=sHudLastAlive[source];
-  if(!a->present){memset(a,0,sizeof(*a));a->present=1;a->chara=rd(m,0);a->costume=rd(m,4);a->hp=rd(m,0x40);a->hpMax=rd(m,0x44);a->ki=rd(m,0x4c);a->kiMax=rd(m,0x50);a->blast=rd(m,0x54);a->blastMax=rd(m,0x58);a->team=Port_Team(i);a->fusionMove=a->fusionAttack=-1;snprintf(a->name,sizeof(a->name),"%s",Port_CharaName(a->chara));}
+  if(!a->present){memset(a,0,sizeof(*a));a->present=1;a->chara=rd(m,0);a->costume=rd(m,4);a->hp=rd(m,0x40);a->hpMax=rd(m,0x44);a->ki=rd(m,0x4c);a->kiMax=rd(m,0x50);a->blast=rd(m,0x54);a->blastMax=rd(m,0x58);a->maxPower=rd(m,0x5c);a->team=Port_Team(i);a->fusionMove=a->fusionAttack=-1;snprintf(a->name,sizeof(a->name),"%s",Port_CharaName(a->chara));}
   if(slot==st->actorCount)st->actorCount++;
   BtlCharApi_GetNodePos(obj,0x30,&head);
   for(q=0;q<st->viewCount;q++)a->visible[q]=Port_ModHudProject(q,&head,&a->x[q],&a->y[q]);
@@ -204,7 +205,8 @@ static void read_actors(FpState *st){
   a->team=Port_Team(i);
   if(!c||(i>=2&&Port_FightConsumed(i-2)))continue;m=(uint8_t GAME_PTR)BtlMember_GetActive(c);if(!m||!rd(m,8)||rd(m,0x40)<=0)continue;
   a->present=1;a->chara=rd(m,0);a->costume=rd(m,4);a->hp=rd(m,0x40);a->hpMax=rd(m,0x44);a->ki=rd(m,0x4c);a->kiMax=rd(m,0x50);
-  a->blast=rd(m,0x54);a->blastMax=rd(m,0x58);a->poweredUp=BtlChar_TestFlag(c,6);a->player=Port_TargetHuman(i)?rd(c,4)+1:0;a->team=Port_Team(i);a->fusionSeconds=Port_FusionClockSeconds(i);a->fusionMove=a->fusionAttack=-1;a->fusionSwap=0;
+  a->potaraIcons=Port_HudPotaraFlags(i);
+  a->blast=rd(m,0x54);a->blastMax=rd(m,0x58);a->maxPower=rd(m,0x5c);a->poweredUp=BtlChar_TestFlag(c,6);a->player=Port_TargetHuman(i)?rd(c,4)+1:0;a->team=Port_Team(i);a->fusionSeconds=Port_FusionClockSeconds(i);a->fusionMove=a->fusionAttack=-1;a->fusionSwap=0;
   {extern int Port_FusionControlPads(int,int*,int*),Port_FusionControlSeconds(int);if(Port_FusionControlPads(i,&a->fusionMove,&a->fusionAttack)){a->player=a->fusionAttack+1;a->fusionSwap=Port_FusionControlSeconds(i);}}
 
   snprintf(a->name,sizeof(a->name),"%s",Port_CharaName(a->chara));
@@ -251,7 +253,7 @@ void PortPanels_GameTick(void) {
         read_side(&st, 1);
         st.battle = st.side[0].found && st.side[1].found;
         h = gHud;
-        st.gauges = st.battle && h != NULL && (h->flags & HUD_SHOW_GAUGES) != 0;
+        {extern int Port_StoryAssistBlocked(void);st.gauges = st.battle && h != NULL && (h->flags & HUD_SHOW_GAUGES) != 0 && !Port_StoryAssistBlocked();}
         if(st.gauges){uint8_t GAME_PTR work=(uint8_t GAME_PTR)Battle_GetWork();st.paused=work&&(rd(work,0x19F0)&0x100)!=0;if(!work||(rd(work,0x19F0)&(0x4000|0x2000|0x8000)))st.gauges=0;else {read_actors(&st);read_fusion_partners(&st);}}
         if (st.battle && !st.paused) read_defuse_lights(&st);
     }

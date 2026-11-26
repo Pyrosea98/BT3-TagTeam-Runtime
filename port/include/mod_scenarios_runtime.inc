@@ -25,7 +25,8 @@ static const char *const scDefaultMusic[SC_FAMILIES]={
 int Port_ScenarioStage(void){char key[40];if(Port_StoryActive())return Port_StoryStage();if(!sc_route())return -1;snprintf(key,sizeof(key),"scenario_stage_%d",sScRoute);return Port_Setting(key,SC_DefaultStage(sScRoute));}
 int Port_ScenarioBgm(void){char key[40];int i,bgm=-1;if(Port_StoryActive())return Port_StoryBgm();if(!sc_route())return -1;PortSongs_Init();for(i=0;i<gPortSongCount;i++)if(!strcmp(gPortSongNames[i],scDefaultMusic[scRoutes[sScRoute].family])){bgm=gPortSongOffsets[i];break;}snprintf(key,sizeof(key),"scenario_bgm_%d",sScRoute);return Port_Setting(key,bgm);}
 static unsigned sStSceneMask,sStSceneShown; /* scene-only actors of the running chapter, and those a cutscene shows */
-void Port_ScenarioClear(void){sStSceneMask=sStSceneShown=0;Port_StoryClear();sScRoute=-1;sScLive=sScN=0;sScFinalHpN=0;sScWeak=sScConsumed=0;}
+static unsigned char sStPowerBoost[32],sStPowerComboHeld[32]; /* private volatile test: 0=P, 1=6P, 2=11P */
+void Port_ScenarioClear(void){sStSceneMask=sStSceneShown=0;memset(sStPowerBoost,0,sizeof(sStPowerBoost));memset(sStPowerComboHeld,0,sizeof(sStPowerComboHeld));Port_StoryClear();sScRoute=-1;sScLive=sScN=0;sScFinalHpN=0;sScWeak=sScConsumed=0;}
 void Port_ScenarioChoose(int route,int variant){Port_ScenarioClear();if(route>=0&&route<SC_COUNT){sScRoute=route;sScVariant=variant<0?0:variant%3;}}
 int Port_ScenarioDraft(MsView*v){
  unsigned weak=0;int i,slot,result;if(!Port_ScenarioActive())return 0;
@@ -44,6 +45,20 @@ int Port_StoryCastActor(int cast){const StCast*c;int i,nth=0;if(!Port_StoryActiv
  for(i=0;i<cast;i++)if(c->actor[i].chara==c->actor[cast].chara&&c->actor[i].team==c->actor[cast].team&&(!(c->actor[i].flags&ST_ACTOR_DENSE)||Port_StoryDense()))nth++;
  for(i=0;i<sScN;i++)if(sScIds[i]==c->actor[cast].chara&&sScTeams[i]==c->actor[cast].team&&nth--==0)return i;return -1;}
 int Port_StorySceneActor(int actor){return Port_StoryActive()&&actor>=0&&actor<32&&(sStSceneMask>>actor&1u);}
+/* Private-only Historia test. The launcher opt-in is BT3_STORY_POWER_TEST=1.
+   The caller supplies the complete L2+R2+L1+R1+Down+Cross hold; release is required before another pulse. */
+void Port_StoryPowerShortcutTick(int actor,int comboHeld){
+ int pulse;
+ if(actor<0||actor>=32)return;
+ pulse=comboHeld&&!sStPowerComboHeld[actor];sStPowerComboHeld[actor]=comboHeld?1:0;
+ if(!getenv("BT3_STORY_POWER_TEST")||!Port_StoryActive()||!pulse||actor>=sScN||sScTeams[actor]!=0||sStPowerBoost[actor]>=2)return;
+ sStPowerBoost[actor]++;
+ fprintf(stderr,"bt3: story power test actor%d step%d multiplier%d\n",actor,sStPowerBoost[actor],1+5*sStPowerBoost[actor]);
+}
+int Port_StoryPowerMultiplier(int actor){
+ if(!getenv("BT3_STORY_POWER_TEST")||!Port_StoryActive()||actor<0||actor>=32||actor>=sScN||sScTeams[actor]!=0)return 1;
+ return 1+5*sStPowerBoost[actor];
+}
 /* Reserve fighters (ST_ACTOR_RESERVE): a story event brings one into the fight (no longer a scene-only actor; native
    get-up with the health he had when he stepped back, or full) or sends one back to the sidelines. */
 static int sStReserveHp[32];
@@ -58,13 +73,15 @@ void Port_StorySceneShow(int actor,int on){if(actor<0||actor>=32)return;if(on&&P
 /* Difficulty, opponent only (team 1, fighters; scene-only actors are parked and need none). `side` is the fighter's
    side as btl_char_member.c passes it; `actor` is the battle actor index. */
 /* One authored era power drives UI/CPU and the real local offensive/defensive profile. */
-int Port_StoryActorPower(int actor,int form){int ch=Port_StoryChapter(),k,p;
+int Port_StoryActorPower(int actor,int form){int ch=Port_StoryChapter(),k,p,boost;
  if(ch<0||ch>=ST_COUNT)return 0;
  for(k=0;k<stCasts[ch].count;k++)if(Port_StoryCastActor(k)==actor){p=stChapterPower[ch][k];
   if(p<=0&&ch==3&&k==1)p=1307; /* volatile child rage; no fixed menu reading is advertised */
   if(p<=0)return 0;
   if(form==231&&stCasts[ch].actor[k].chara==0)p*=2;
   if(form==30||form==180)p*=10;
+  boost=(actor>=0&&actor<32)?sStPowerBoost[actor]:0;
+  if(getenv("BT3_STORY_POWER_TEST")&&boost>0)p*=1+5*boost;
   return p;}
  return 0;
 }
@@ -91,7 +108,7 @@ int Port_StoryFormGranted(int actor,int target){return Port_StoryActive()&&actor
 int Port_StoryFormSlot(int source){if(!Port_StoryActive()||Port_NetActive()||BattleReplay_IsActive())return -1;if(source==231)return 0;if(Port_StoryChapter()==3&&source==180)return 13;return ST_StoryFormFor(Port_StoryChapter(),source);}
 void Port_StoryRemoveActor(int actor){if(Port_StoryActive()&&actor>=0&&actor<32)sStRemoved|=1u<<actor;}
 int Port_StorySceneParked(int actor){return (Port_StorySceneActor(actor)&&!(sStSceneShown>>actor&1u))||(Port_StoryActive()&&actor>=0&&actor<32&&(sStRemoved>>actor&1u));}
-void Port_ScenarioRoundReset(void){int i;sStSceneShown=0;sStRemoved=0;memset(sStReserveHp,0,sizeof(sStReserveHp));for(i=0;i<16;i++)sStFormGrant[i]=-1;sScLive=Port_ScenarioActive();Port_StoryFightStarted();sScConsumed=0;sScAbsorptions=sScFullPower=0;sScFinalHpN=0;for(i=0;i<sScN;i++){sScForms[i]=sScIds[i];sScFinalHp[i]=-1;}}
+void Port_ScenarioRoundReset(void){int i;sStSceneShown=0;sStRemoved=0;memset(sStPowerBoost,0,sizeof(sStPowerBoost));memset(sStPowerComboHeld,0,sizeof(sStPowerComboHeld));memset(sStReserveHp,0,sizeof(sStReserveHp));for(i=0;i<16;i++)sStFormGrant[i]=-1;sScLive=Port_ScenarioActive();Port_StoryFightStarted();sScConsumed=0;sScAbsorptions=sScFullPower=0;sScFinalHpN=0;for(i=0;i<sScN;i++){sScForms[i]=sScIds[i];sScFinalHp[i]=-1;}}
 void Port_ScenarioSetFinalHp(const int*hp,int count){int i;sScFinalHpN=0;if(!hp||count<0||count>16)return;for(i=0;i<count;i++)sScFinalHp[i]=hp[i];sScFinalHpN=count;}
 int Port_ScenarioWeak(int actor){return sScLive&&actor>=0&&actor<sScN&&!!(sScWeak&(1u<<actor));}
 void Port_ScenarioObserve(int actor,int chara){if(!sScLive||actor<0||actor>=sScN)return;if(sScIds[actor]<0)sScIds[actor]=chara;sScForms[actor]=chara;if(sScTeams[actor]==1&&chara==294)sScFullPower=1;}
@@ -118,6 +135,14 @@ int Port_ScenarioAbsorbAllowed(int actor,int target){
  if(scRoutes[sScRoute].family==3||scRoutes[sScRoute].family==5)return !!(sScWeak&(1u<<target));return 1;
 }
 void Port_ScenarioConsumed(int actor,int target){if(!sScLive||target<0||target>=sScN)return;sScConsumed|=1u<<target;if(actor>=0&&actor<sScN&&sScTeams[actor]==1)sScAbsorptions++;}
+/* Authored challenge progression: still requires ordinary native admission,
+   valid weak donors, stocks and paid consumption. Strength pressure is irrelevant. */
+int Port_ScenarioCpuFormGoal(int actor,int source,int target){
+ int f;if(!sScLive||!sc_route()||Port_StoryActive()||actor<0||actor>=sScN||sScTeams[actor]!=1)return 0;f=scRoutes[sScRoute].family;
+ if(f==3)return source==255&&(target==140||target==272);
+ if(f==5)return (source==291&&target==292)||(source==292&&target==293)||(source==293&&target==294);
+ return 0;
+}
 int Port_ScenarioCpuScope(int actor){return sScLive&&actor>=0&&actor<sScN?1:-1;}
 /* Awards are objective predicates, never the selected tier's bit alone. */
 static int sc_initial_ally(int id){int i;for(i=0;i<sScN;i++)if(sScTeams[i]==0&&sScIds[i]==id)return 1;return 0;}

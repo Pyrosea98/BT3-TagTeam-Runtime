@@ -9,6 +9,7 @@ static long long PU_BUnit(int id,int costume){(void)id;(void)costume;return 1000
 static long long PU_Parse(const char*s,long long bunit){
  const char*p,*q;long long whole=0,fraction=0,scale=1,mult=1,answer;int digits=0,frac=0,k;char suffix[6];
  if(!s)return 0;while(*s==' ')s++;
+ if(!strcmp(s,"\xe2\x88\x9e"))return PU_MAX;
  if((s[0]=='M'||s[0]=='m')&&(s[1]=='A'||s[1]=='a')&&(s[2]=='X'||s[2]=='x'))return PU_MAX;
  for(p=s;*p;p++){
   if(*p>='0'&&*p<='9'){
@@ -37,14 +38,53 @@ static long long PU_Parse(const char*s,long long bunit){
  return answer;
 }
 #include "mod_power_ratio.h"
-static void PU_Format(long long v,char*out,size_t cap){
- static const long long steps[]={1LL,1000LL,1000000LL,1000000000LL,1000000000000LL,1000000000000000000LL};
- static const char*units[]={"","K","M","MM","B","T"};int i=0;char dec[5];long long unit,f;
- if(v<=0){snprintf(out,cap,"?");return;}if(v==PU_MAX){snprintf(out,cap,"MAX");return;}
- while(i<5&&v>=steps[i+1])i++;unit=steps[i];
- if(!i||v%unit==0){snprintf(out,cap,"%lld%s",v/unit,units[i]);return;}
- f=(v%unit)/(unit/1000);snprintf(dec,sizeof(dec),"%03lld",f);
- {int n=(int)strlen(dec);while(n&&dec[n-1]=='0')dec[--n]=0;}
- snprintf(out,cap,"%lld.%s%s",v/unit,dec,units[i]);
+/* Exact integer grouping, independent of the operating system locale. */
+static void PU_FormatInteger(long long value, char *out, size_t cap) {
+    char digits[24], grouped[32];
+    size_t i, n, at = 0;
+    snprintf(digits, sizeof(digits), "%lld", value);
+    n = strlen(digits);
+    for (i = 0; i < n; i++) {
+        if (i > (digits[0] == '-' ? 1u : 0u) && (n - i) % 3 == 0)
+            grouped[at++] = ' ';
+        grouped[at++] = digits[i];
+    }
+    grouped[at] = 0;
+    snprintf(out, cap, "%s", grouped);
+}
+
+/* Keep Juan's long scale: M = millón, MM = mil millones, B = billón, T = trillón.
+   Abbreviate only when the entire integer is representable with three decimal places. */
+static void PU_Format(long long value, char *out, size_t cap, int spanish) {
+    static const long long units[] = {
+        1000000000000000000LL, 1000000000000LL, 1000000000LL, 1000000LL
+    };
+    static const char *const suffix[] = {"T", "B", "MM", "M"};
+    size_t i;
+
+    for (i = 0; i < sizeof(units) / sizeof(units[0]); i++) {
+        long long unit = units[i];
+        long long remainder;
+        char whole[32];
+        if (value < unit)
+            continue;
+        remainder = value % unit;
+        if (remainder % (unit / 1000) != 0)
+            break;
+        PU_FormatInteger(value / unit, whole, sizeof(whole));
+        if (remainder) {
+            char fraction[8];
+            size_t n;
+            snprintf(fraction, sizeof(fraction), "%03d", (int)(remainder / (unit / 1000)));
+            n = strlen(fraction);
+            while (n > 0 && fraction[n - 1] == '0')
+                fraction[--n] = 0;
+            snprintf(out, cap, "%s%c%s %s", whole, spanish ? ',' : '.', fraction, suffix[i]);
+        } else {
+            snprintf(out, cap, "%s %s", whole, suffix[i]);
+        }
+        return;
+    }
+    PU_FormatInteger(value, out, cap);
 }
 #endif

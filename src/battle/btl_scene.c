@@ -124,6 +124,9 @@ extern u8 *StgTint_GetWork(void);
 
 /* Allocates the scene, the pool arenas and the effect subsystems, then creates the root task (0 = every layer). */
 void BtlScene_Init(s32 layerMask) {
+#ifdef PORT
+ {extern void Port_GroundChargeReset(void);Port_GroundChargeReset();}
+#endif
     gBtlScene = Heap_Alloc(sizeof(BtlScene), 0x20, 0, HEAP_ANY);
     memset(gBtlScene, 0, sizeof(BtlScene));
     gBtlScene->layerMask = layerMask;
@@ -175,6 +178,9 @@ void BtlScene_Term(void) {
 
 /* First per-frame pass: empties the record list, refreshes the character scales, runs every task's update. */
 void BtlScene_Update(void) {
+#ifdef PORT
+ {extern void Port_GroundChargeTick(void);Port_GroundChargeTick();}
+#endif
     EftHit_BeginFrame();
     EftCam_Update();
     BtlScene_UpdateCharScales();
@@ -216,6 +222,9 @@ static s32 Port_SceneResetCam(s32 mode) {
 /* Resets the tasks selected by mode (BTL_SCENE_RESET_*) and drops a pending stage change request. */
 void BtlScene_Reset(s32 mode) {
 #ifdef PORT
+ if(mode==0||mode==1){extern void Port_GroundChargeReset(void);Port_GroundChargeReset();}
+#endif
+#ifdef PORT
     if (Port_SceneResetCam(mode))
 #endif
     EftCam_Clear();
@@ -256,12 +265,18 @@ void BtlScene_Draw(s32 first) {
     if (first) {
         EftSurf_BuildPalettes();
         if (BtlStage_IsReady()) {
+#ifdef PORT
+            {extern void Port_GroundChargePrepare(void);Port_GroundChargePrepare();}
+#endif
             EftVram_UploadAll();
         }
         EftVram_Reset();
     }
     EftGfx_UpdateClipPlanes();
     BtlTaskList_Draw(gBtlScene->root);
+#ifdef PORT
+ {extern void Port_GroundChargeDraw(void);Port_GroundChargeDraw();}
+#endif
 }
 
 /* Returns entry idx of the offset table at the start of common file 3 (gCommonRes->data[1]). */
@@ -296,8 +311,8 @@ s32 BtlScene_TestCharPackBit(s32 side, s32 bit) {
 /* Returns entry idx of a character's pack (0x2053B0), or NULL when the character has none. */
 s32 *BtlScene_GetCharPackEntry(s32 side, s32 idx) {
 #ifdef PORT
-    /* Story's borrowed throw keeps Krilin's actor/model while looking up the
-       already-loaded Goku technique's emitters, projectile model and cameras. */
+    /* The authored Spirit Bomb keeps Krillin as owner and resolves emitters,
+       projectile model and cameras from his own loaded slot-4 technique. */
     {extern int Port_StoryTechniqueDonor(int);int donor=Port_StoryTechniqueDonor(side);
      if(donor>=0&&idx>=1&&idx<=11)side=donor;}
 #endif
@@ -566,6 +581,11 @@ s32 BtlScene_IsEffectStopped(s32 objId, s32 kind) {
  * - An inline helper for the first switch (five shapes): 39 to 50. */
 s32 BtlScene_IsEffectHidden(s32 objId, s32 kind) {
     s32 result = 0;
+#ifdef PORT
+    /* Authored hand charges remain visible through their own fixed camera.
+       This predicate is bounded to CH8 Kienzan / Nappa rescue, not combat. */
+    {extern int Port_StoryChargeHandActive(int);if(kind==0&&Port_StoryChargeHandActive(objId))return 0;}
+#endif
 
     if (BtlCharApi_IsHidden(objId)) {
         switch (kind) {

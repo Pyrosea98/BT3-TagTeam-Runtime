@@ -6,6 +6,22 @@
  * PS2 passes. Called from the game's effect functions under `#ifdef PORT`.
  */
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+extern void Dma_AddData(void *src, int size);
+
+/* Object/part identity must travel with the DMA list, not in a global set
+ * while the game is merely constructing that list. Reserved PC register7E. */
+void Port_GsBloodPart(int type,int actor,int node) {
+    const char *enabled=getenv("BT3_BLOOD_SURFACE_REVIEW");uint32_t value=0;
+    static uint32_t previous;
+    uint32_t pkt[12]={0x10000002u,0,0x10000000u,0x50000002u,
+                     0x8001u,0x10000000u,0xE,0,0,0x424C4F44u,0x7E,0};
+    if(enabled&&strcmp(enabled,"1"))return;
+    if(type==0&&actor>=0&&actor<16&&node>=0&&node<256)value=(actor+1)|((node+1)<<8);
+    if(value==previous)return;previous=value;
+    pkt[8]=value;Dma_AddData(pkt,sizeof(pkt));
+}
 
 extern void Dma_AddData(void *src, int size);
 

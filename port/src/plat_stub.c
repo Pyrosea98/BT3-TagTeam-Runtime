@@ -566,6 +566,8 @@ void Port_Dbg2(const char *what, int a, int b) {
         fprintf(stderr, "bt3: dbg: %s %d %d\n", what, a, b);
     }
 }
+/* Experimental ground-effect trace. Call sites are bounded and opt-in; no heap debugger required. */
+void Port_GroundTrace(const char*stage,int a,int b,int c,int d){fprintf(stderr,"bt3: ground-charge %s %d %d %d %d\n",stage,a,b,c,d);}
 void Port_Dbg3(const char *what, int a, int b, int c, int d) {
     if (getenv("BT3_HEAPCHK") != NULL) {
         fprintf(stderr, "bt3: dbg: %s: %d %#x %#x %d\n", what, a, b, c, d);

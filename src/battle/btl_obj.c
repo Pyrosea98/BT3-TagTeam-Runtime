@@ -447,6 +447,8 @@ List *BtlObj_GetUsedList(void) {
 
 /* Clears the table and puts all 12 objects on the free list, numbered in order. */
 void BtlObj_InitTable(void) {
+#ifdef PORT
+#endif
     BtlObjTable *tbl = BtlObj_GetTable();
     BtlObjNode *node;
     s32 i;
@@ -647,6 +649,11 @@ void BtlRes_CommitReloadEx(void) {
 
 /* Allocates the work block and initialises every part of it. */
 void BtlObj_Init(s32 prealloc) {
+#ifdef PORT
+ {extern void Port_StoryDetachedReset(void);Port_StoryDetachedReset();}
+#endif
+#ifdef PORT
+#endif
 #ifdef PORT
     Port_ObjExtraFreeAll(0);
 #endif
@@ -977,6 +984,14 @@ void BtlObj_BuildDrawList(BtlObjDrawList *list, s32 view) {
              node = (BtlObjNode *)List_GetNext(&node->link)) {
             obj = &node->obj;
             state = &node->obj.state;
+#ifdef PORT
+            {extern void*Port_StoryGenkiDrawObject(void*);BtlObj*draw=Port_StoryGenkiDrawObject(obj);
+             if(!draw)continue;
+             /* Copy the helper's completed view lighting too: the real actor's
+                ordinary view can be black/culled while this ultimate runs. */
+             if(draw!=obj){int idx=view==1;if(!state->view||!obj->unk04||!obj->active)continue;draw->state.views[idx]=*state->view;draw->state.view=&draw->state.views[idx];}
+             obj=draw;}
+#endif
             if (obj->unk04 != 0 && obj->active != 0) {
                 rec = state->view;
                 if (rec->flags & BTL_OBJ_FLAG_VISIBLE) {
@@ -1057,6 +1072,9 @@ void BtlObj_UpdateAll(void) {
             BtlObj_UpdateAlpha(obj);
         }
     }
+#ifdef PORT
+    {extern void Port_StoryDetachedStep(void);Port_StoryDetachedStep();}
+#endif
 }
 
 /* Builds every object's record and the draw list for one view (the current gBtlCamView). */
@@ -1118,29 +1136,34 @@ void BtlObj_FillAlphaRow(u8 *table, BtlObj *obj) {
     BtlObjState *state = &obj->state;
     s32 row = obj->mdl.model->alphaRow * 15;
     s32 i;
+    BtlObj *appearance=obj;
+#ifdef PORT
+    {extern void*Port_StoryGenkiRenderSource(void*);BtlObj*source=Port_StoryGenkiRenderSource(obj);
+     if(source){appearance=source;state=&source->state;}}
+#endif
 
     if (state->flags & BTL_OBJ_FLAG_COLOR_BLACK) {
         for (i = 0; i < 15; i++) {
             table[row + i] = 0xFF;
         }
-    } else if (obj->state.flags & BTL_OBJ_FLAG_COLOR_B) {
+    } else if (state->flags & BTL_OBJ_FLAG_COLOR_B) {
         Vec4 value;
         u8 alpha;
 
-        BtlObjFade_Get(obj, &value);
+        BtlObjFade_Get(appearance, &value);
         alpha = (u32)(value.x * 128.0f);
         for (i = 0; i < 15; i++) {
             table[row + i] = alpha;
         }
-    } else if (obj->state.flags & BTL_OBJ_FLAG_COLOR_C) {
-        u8 alpha = (u32)obj->state.unkDC;
+    } else if (state->flags & BTL_OBJ_FLAG_COLOR_C) {
+        u8 alpha = (u32)state->unkDC;
 
         for (i = 0; i < 15; i++) {
             table[row + i] = alpha;
         }
     } else {
         for (i = 0; i < 15; i++) {
-            table[row + i] = state->alpha[i];
+            table[row + i] = obj->state.alpha[i]; /* keep this costume's own material alpha */
         }
     }
 }
@@ -1703,3 +1726,13 @@ void BtlRes_FreeSingle(BtlResSlot *slot) {
     BtlRes_FreeFile(&slot->file[2]);
     memset(slot, 0, sizeof(slot->file));
 }
+
+
+#ifdef PORT
+static int sStoryForearmRes=-1,sStoryForearmObj=-1,sStoryForearmLife;
+void Port_StoryDetachedReset(void){extern void Port_StoryDetachedClear(void);sStoryForearmRes=sStoryForearmObj=-1;sStoryForearmLife=0;Port_StoryDetachedClear();}
+void Port_StoryDetachedPrepare(void){if(sStoryForearmRes<0)sStoryForearmRes=BtlRes_Request(0,0x43000439,-1,-1);}
+int Port_StoryDetachedReady(void){extern int File_UpdateRequests(void);return sStoryForearmRes>=0&&File_UpdateRequests();}
+int Port_StoryDetachedSpawn(int source,int unused,float floor){extern int Port_StoryDetachedCapture(int,int,float,float);extern float BtlCharApi_GetHeight(int);BtlResSlot*r;BtlObj*o;if(sStoryForearmObj>=0||!Port_StoryDetachedReady()||!(r=BtlRes_GetSlot(sStoryForearmRes)))return 0;sStoryForearmObj=BtlObj_Create(1,r,1);if(sStoryForearmObj<0)return 0;o=BtlObj_Get(sStoryForearmObj);o->noAnim=1;if(!Port_StoryDetachedCapture(source,sStoryForearmObj,floor,BtlCharApi_GetHeight(source))){BtlObj_Destroy(sStoryForearmObj);sStoryForearmObj=-1;return 0;}sStoryForearmLife=180;return 1;}
+void Port_StoryDetachedStep(void){extern int Port_StoryTienArmSceneActive(void);extern void Port_StoryDetachedClear(void),Port_StoryDetachedMove(void);if(sStoryForearmObj<0)return;if(!Port_StoryTienArmSceneActive()){Port_StoryDetachedClear();BtlObj_Destroy(sStoryForearmObj);sStoryForearmObj=-1;if(sStoryForearmRes>=0)BtlRes_Free(sStoryForearmRes);sStoryForearmRes=-1;return;}Port_StoryDetachedMove();}
+#endif

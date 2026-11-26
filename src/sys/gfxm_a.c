@@ -124,10 +124,26 @@ extern int Port_FxOff(int bit); /* port/src/gs/gs_draw.c: an effect switched off
 #endif
 
 /* Updates the views (unless the battle is paused) and draws those with a strength. */
+#ifdef PORT
+static int sStoryFocusBlurDraw;
+#endif
 void StgPanBlur_Draw(void) {
     s32 on0 = 1;
     s32 on1 = 1;
-
+#ifdef PORT
+    {extern int Port_StoryFocusBlur(void);
+     if(gStgPanBlur&&Port_StoryFocusBlur()&&!Port_FxOff(32)&&!Battle_IsSplitScreen()){
+      StgPanBlurView saved=gStgPanBlur->view[0];int k;
+      gStgPanBlur->view[0].strength=.85f;
+      for(k=0;k<2;k++){gStgPanBlur->view[0].layer[k].ofs.x=k?-5.f:3.f;gStgPanBlur->view[0].layer[k].ofs.y=0;
+       gStgPanBlur->view[0].layer[k].color.w=k?48.f:72.f;}
+      Gfx_AddDefaultEnv();Dma_AddZbuf(0xE0,1);Dma_AddData(gStgPanBlur->tex.upload,0x10);Dma_AddTexFlush();
+      Dma_AddFrame((gGfx.frame&1)?0:0x70,8,0xFFFFFF);
+      GfxPost_DrawDepthClut(0,GFXPOST_DEPTH_TBP,gStgPanBlur->tex.cbp,0x44);StgPanBlur_CopyScreen();
+      sStoryFocusBlurDraw=1;StgPanBlur_DrawView(&gStgPanBlur->view[0],0);sStoryFocusBlurDraw=0;
+      StgPanBlur_RestoreEnv();gStgPanBlur->view[0]=saved;return;
+     }}
+#endif
     Gfx_AddDefaultEnv();
     Dma_AddZbuf(0xE0, 1);
     if (Battle_IsSplitScreen()) {
@@ -555,6 +571,11 @@ void StgPanBlur_DrawView(StgPanBlurView *view, s32 split) {
     pkt.rgbaq.a = 0x80;
     pkt.rgbaq.q = 1.0f;
     for (i = 0; i < n; i++) {
+#ifdef PORT
+        /* Native shifted-screen blur fades into the outer quarters only.
+           The central 256 pixels and subtitles/overlays drawn later remain sharp. */
+        if(sStoryFocusBlurDraw){int edge=i<n/2?i:n-1-i;pkt.rgbaq.a=edge<4?(4-edge)*28:0;}
+#endif
         u1 = u + step;
         pkt.uv0.u = (u << 4) + 8;
         pkt.uv0.v = 8;
@@ -1090,6 +1111,7 @@ void GfxPost_DrawTex16(s32 tbp, u64 alpha) {
     tag = p;
     p += 2;
     for (i = 0; i < n; i++) {
+
         u1 = u + step;
         GfxPostQuad_Set(&q, 0x700, 0x720, u, 0, u1, h, x, 0, w, h, half);
         p[0] = (s64)q.u0 | ((s64)q.v0 << 16);
@@ -1218,6 +1240,7 @@ void GfxPost_DrawDepthClutAt(s32 half, s32 tbp, s32 cbp, u64 alpha, s32 dx, s32 
     tag = p;
     p += 2;
     for (i = 0; i < n; i++) {
+
         u1 = u + step;
         GfxPostQuad_Set(&q, 0x700, 0x720, u, 0, u1, h, x, 0, w, h, half);
         p[0] = (s64)q.u0 | ((s64)q.v0 << 16);
@@ -1281,6 +1304,7 @@ void GfxPost_DrawTex16Texa(s32 tbp, u64 alpha, u8 ta0) {
     tag = p;
     p += 2;
     for (i = 0; i < n; i++) {
+
         u1 = u + step;
         GfxPostQuad_Set(&q, 0x700, 0x720, u, 0, u1, h, x, 0, w, h, half);
         p[0] = (s64)q.u0 | ((s64)q.v0 << 16);

@@ -3,7 +3,7 @@
 #include "mod_cpu_form_tiers.inc"
 #include "mod_power_ratio.h"
 extern int Port_TargetHuman(int),Port_Team(int),Port_CamTarget(int),Battle_GetMode(void),Port_ModesFight(void);
-typedef struct CpuTacticsState {int age,nextEval,nextTransform,lastHp,chara;} CpuTacticsState;
+typedef struct CpuTacticsState {int age,nextEval,nextTransform,lastHp,chara;int target,formAge,formChara,lastBaseSlot,reverts;unsigned triedSlot;} CpuTacticsState;
 static CpuTacticsState sCpuTactics[12];
 static unsigned sCpuPolicyLogged;
 static int sCpuFusionEval[12],sCpuFusionChoice[12];
@@ -11,7 +11,7 @@ static int sCpuFusionEval[12],sCpuFusionChoice[12];
    re-evaluated as soon as the change settles instead of waiting out the ordinary cooldown. */
 static int sCpuChain[12];
 static int ct_read(const void *p,int o){return *(const int*)((const unsigned char*)p+o);}
-void Port_CpuTacticsReset(void){int i;sCpuPolicyLogged=0;for(i=0;i<12;i++){sCpuTactics[i].age=sCpuTactics[i].nextEval=sCpuTactics[i].nextTransform=sCpuTactics[i].lastHp=0;sCpuTactics[i].chara=-1;sCpuFusionEval[i]=sCpuFusionChoice[i]=sCpuChain[i]=0;}}
+void Port_CpuTacticsReset(void){int i;sCpuPolicyLogged=0;for(i=0;i<12;i++){sCpuTactics[i].age=sCpuTactics[i].nextEval=sCpuTactics[i].nextTransform=sCpuTactics[i].lastHp=0;sCpuTactics[i].chara=-1;sCpuTactics[i].target=-1;sCpuTactics[i].formAge=0;sCpuTactics[i].formChara=-1;sCpuTactics[i].lastBaseSlot=0;sCpuTactics[i].reverts=0;sCpuTactics[i].triedSlot=0;sCpuFusionEval[i]=sCpuFusionChoice[i]=sCpuChain[i]=0;}}
 static int ct_gate(void){return !Port_NetActive()&&!BattleReplay_IsActive()&&BtlSeq_GetState()==3&&Battle_GetMode()!=1&&Battle_GetMode()!=5&&Battle_GetMode()!=6&&Port_ModesFight()!=3;}
 /* The stock TeamSel transformation rule is separate from the mod CPU scopes.
    Extras inherit side1's stock rule, even allied extras. An enabled scope is
@@ -53,9 +53,9 @@ static int Port_CpuTransformSlot(BtlActJChr *c){
  static const int queues[]={0x94c,0x954,0x958,0x95c,0x960};
  CpuTacticsState *s;BtlActJChr *enemy;BtlActJMember *m,*em;BtlActJGauge *g,*eg;
  int who=c->player,target,scope,preset,action,k,current,family,tier;
- int ownHpMax,ownHp,enemyHp,need,jump,best=-1,bestTier=0,bestCost=0;
+ int ownHpMax,ownHp,enemyHp,need,jump,best=-1,bestTier=0,bestCost=0,bestDest=0;
  int haveFamily=0,haveAny=0;
- long long ownPow,enemyPow;
+ long long ownPow,enemyPow,bestPow=0;
  if(who<0||who>=12||!ct_gate()||Port_TargetHuman(who)||ct_read(c,0x1278)!=1)return -1;
  scope=Port_Setting(Port_ModesFight()!=2&&Port_Team(who)==Port_Team(0)?"cpu_transform_allies":"cpu_transform_enemies",0);
  {int scenario=Port_ScenarioCpuScope(who);if(scenario>=0)scope=scenario;}
@@ -75,6 +75,18 @@ static int Port_CpuTransformSlot(BtlActJChr *c){
  ownHpMax=ct_read(g,4);ownHp=g->health;enemyHp=eg->health;
  s->lastHp=ownHp;
  if(ownPow<=0||enemyPow<=0||ownHp<=0||enemyHp<=0)return -1;
+ /* Scenario absorptions are objectives, not strength-pressure choices. Do not
+    bypass native action/stock/target checks or queue a form without its donors. */
+ {extern int Port_ScenarioCpuFormGoal(int,int,int);int ready=1;
+  if(s->age<s->nextTransform)ready=0;
+  action=BtlAct_GetCurrent(c);if((action!=7&&action!=11&&action!=15)||BtlChar_IsFrozen(c)||ChrCam_IsCutActive(c))ready=0;
+  for(k=0;k<5;k++)if(ct_read(c,queues[k])!=-1)ready=0;
+  if(ct_read(c,0xd98)||ct_read(c,0xdac)||ct_read(c,0xdb8))ready=0;
+  if(ready)for(k=0;k<4;k++){int dest=BtlParam_GetSlotId(c,k);dest=Port_Beta8FormSlotTargetForCostume(current,m->costume,k,dest);
+   if(!Port_ScenarioCpuFormGoal(who,current,dest)||!BtlAct_CanTransform(c,k,1,1))continue;
+   sCpuChain[who]=1;fprintf(stderr,"bt3: cpu scenario progression: actor%d %d->%d slot%d native admitted\n",who,current,dest,k);return k;
+  }
+ }
  /* Only bother when the opponent is at least roughly as strong (within 10% below us). */
  if(!PU_AtLeastPercent(enemyPow,ownPow,90))return -1;
  /* Far stronger opponent: transform at once, before any damage. Waiting to fall behind on health would let a
@@ -90,27 +102,60 @@ static int Port_CpuTransformSlot(BtlActJChr *c){
  action=BtlAct_GetCurrent(c);if((action!=7&&action!=11&&action!=15)||BtlChar_IsFrozen(c)||ChrCam_IsCutActive(c))return -1;
  for(k=0;k<5;k++)if(ct_read(c,queues[k])!=-1)return -1;
  if(ct_read(c,0xd98)||ct_read(c,0xdac)||ct_read(c,0xdb8))return -1;
- /* Opponent far stronger: go all the way to the top form. Otherwise advance a single step, never skipping a
-    stage. */
+ /* Otra pelea / otro rival: lo probado y el tiempo en la forma no valen. */
+ if(s->target!=target){s->target=target;s->triedSlot=0;s->lastBaseSlot=0;s->reverts=0;s->formAge=0;s->formChara=current;}
+ if(s->formChara!=current){s->formChara=current;s->formAge=0;}else if(s->formAge<1000000)s->formAge++;
+ if(family>0&&tier>0){
+  /* Estamos en una forma, no en la base. Si ya lleva un rato y el rival sigue por delante, esta rama no alcanza:
+     se vuelve a la base de la MISMA familia y se marca la SALIDA que llevo a esta rama, para que la proxima
+     eleccion desde base vaya por otra (el Kaioken de Goku medio que no llega, y entonces SSJ). Las ramas son las
+     salidas de la base, no las familias: dos ramas pueden compartir familia y diferir solo en la salida.
+     Tiempo de prueba: 48 evaluaciones (~16 s a 3 Hz); si el rival saca mucha ventaja de vida, 16 (~5 s). */
+  int spent=48;
+  if(enemyHp-ownHp>=ownHpMax/3)spent=16;
+  if(s->formAge>=spent&&s->reverts<3){
+   for(k=0;k<4;k++){
+    int dest=BtlParam_GetSlotId(c,k),df,dt;
+    if((current>=291&&current<=299)||current==95||current==97)dest=Port_Beta8FormSlotTargetForCostume(current,BtlMember_GetActive(c)->costume,k,dest);
+    if(dest<0||dest>=330||dest==255||dest==current)continue;ct_tier(dest,&df,&dt);
+    if(df!=family||dt!=0)continue;                          /* solo la base de esta familia */
+    if(!BtlAct_CanTransform(c,k,0,1))continue;              /* volver no cuesta ki */
+    s->triedSlot|=1u<<(s->lastBaseSlot&3);s->reverts++;s->formAge=0;sCpuChain[who]=0;
+    fprintf(stderr,"bt3: cpu transform: actor%d vuelve a base (salida%d no alcanzo, %lld vs %lld), slot%d base%d\n",who,s->lastBaseSlot,ownPow,enemyPow,k,dest);
+    return k;
+   }
+  }
+ }
+ /* Rival mucho mas fuerte: la rama MAS PODEROSA por la etiqueta de poder del roster, no el escalon mas alto de la
+    propia familia (eso mandaba a Kaioken x20 teniendo SSJ). Si no se salta, avanza un solo paso. */
  for(k=0;k<4;k++){
   int dest=BtlParam_GetSlotId(c,k),cost=BtlParam_GetSlotCost(c,k),df,dt,inFamily;
+  long long pw;
   if((current>=291&&current<=299)||current==95||current==97)dest=Port_Beta8FormSlotTargetForCostume(current,BtlMember_GetActive(c)->costume,k,dest);
-  if(dest<0||dest>=329||dest==255||dest==current)continue;ct_tier(dest,&df,&dt);
+  if(dest<0||dest>=330||dest==255||dest==current)continue;ct_tier(dest,&df,&dt);
   if(family&&family==df&&dt<=tier)continue;
   inFamily=(family&&family==df&&dt>tier);
   if(cost<=0&&!inFamily)continue;
   if(!BtlAct_CanTransform(c,k,1,1))continue;
-  if(inFamily){
-   if(!haveFamily){haveFamily=1;best=k;bestTier=dt;}
-   else if((jump&&dt>bestTier)||(!jump&&dt<bestTier)){best=k;bestTier=dt;}
+  /* Desde la base no se repite la salida de una rama que ya se probo y no alcanzo. */
+  if(tier==0&&(s->triedSlot&(1u<<(k&3))))continue;
+  pw=Port_CharaPowerValue(dest,BtlMember_GetActive(c)->costume);
+  if(jump){
+   if(best<0||pw>bestPow||(pw==bestPow&&cost>bestCost)){best=k;bestPow=pw;bestCost=cost;bestDest=dest;}
+  }else if(inFamily){
+   if(!haveFamily){haveFamily=1;best=k;bestTier=dt;bestDest=dest;}
+   else if(dt<bestTier){best=k;bestTier=dt;bestDest=dest;}
   }else if(!haveFamily){
-   if(!haveAny){haveAny=1;best=k;bestCost=cost;}
-   else if((jump&&cost>bestCost)||(!jump&&cost<bestCost)){best=k;bestCost=cost;}
+   if(!haveAny){haveAny=1;best=k;bestCost=cost;bestDest=dest;}
+   else if(cost<bestCost){best=k;bestCost=cost;bestDest=dest;}
   }
  }
+ /* Todas las salidas ya se probaron: se olvidan y se vuelve a empezar. */
+ if(best<0&&s->triedSlot){s->triedSlot=0;return -1;}
  if(best>=0){
+  if(tier==0)s->lastBaseSlot=best;
   sCpuChain[who]=jump;
-  fprintf(stderr,"bt3: cpu transform: actor%d slot%d power %lld vs %lld, health %d vs %d, jump%d\n",who,best,ownPow,enemyPow,ownHp,enemyHp,jump);
+  fprintf(stderr,"bt3: cpu transform: actor%d slot%d destino%d power %lld vs %lld, health %d vs %d, jump%d rama%d paso%d actual%d\n",who,best,bestDest,ownPow,enemyPow,ownHp,enemyHp,jump,family,tier,current);
  }
  return best;
 }

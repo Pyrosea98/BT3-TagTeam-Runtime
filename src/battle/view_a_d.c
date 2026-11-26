@@ -15,9 +15,13 @@ static int sChrViewFitPending,sChrViewFitChara;
 static int sChrViewDynamic;
 static int sChrViewTournament;
 void Port_ChrViewTournament(int on){sChrViewTournament=on;}
+static s32 sStagePreviewSize;
 static void *sStagePreviewBuffer; /* transferred to the viewer resource; Heap_Free owns cleanup */
 static int sStagePreviewFile=-1,sStagePreviewId=-1;static float sStagePreviewAngle,sStagePreviewPitch;
 extern void BtlRes_FreeSingle(void *);
+extern void Port_StageSurfacePreviewInit(s32 size);
+extern void Port_StageSurfacePreviewDraw(void);
+extern void Port_StageSurfacePreviewTerm(void);
 #endif
 
 /*
@@ -474,10 +478,14 @@ void ChrView_Update(void) {
         Dbg_ProfMark(gBattleProf);
         Gfx_MarkPass(4);
         Gfx_AddDefaultEnv();
-        #ifdef PORT
-    if(sStagePreviewFile<0)
-    #endif
-    BtlScene_Draw(1);
+#ifdef PORT
+        if (sStagePreviewFile >= 0) {
+            Port_StageSurfacePreviewDraw();
+        } else
+#endif
+        {
+            BtlScene_Draw(1);
+        }
         Ot_Draw();
         Dbg_ProfColor(gBattleProf, 0x804040FF);
         Dbg_ProfMark(gBattleProf);
@@ -530,10 +538,14 @@ void ChrView_Init(void) {
     StgAmb_Term();
     StgFx_Init();
     Ot_Init();
-    #ifdef PORT
-    if(sStagePreviewFile<0)
-    #endif
-    BtlScene_Init(8);
+#ifdef PORT
+    if (sStagePreviewFile >= 0) {
+        Port_StageSurfacePreviewInit(sStagePreviewSize);
+    } else
+#endif
+    {
+        BtlScene_Init(8);
+    }
     Fade_Start(0, 1, 1.0f);
 }
 
@@ -553,6 +565,11 @@ void ChrView_Term(void) {
     Job_Clear();
     BtlObj_Term();
     OrbitCam_Term();
+#ifdef PORT
+    if (sStagePreviewFile >= 0) {
+        Port_StageSurfacePreviewTerm();
+    }
+#endif
     StgFx_Term();
     BtlStage_Term();
     #ifdef PORT
@@ -587,7 +604,7 @@ int Port_StagePreviewStep(int stage){
    sStagePreviewBuffer=(void *)Port_GameBigAlloc(size);
    if(!sStagePreviewBuffer)return 0;
   }
-  sStagePreviewFile=file;ChrView_Init();sStagePreviewId=stage;sStagePreviewAngle=3.14159f;
+  sStagePreviewFile=file;sStagePreviewSize=size;ChrView_Init();sStagePreviewId=stage;sStagePreviewAngle=3.14159f;
   gChrView->stageOn=1;gChrView->visible=1;
   OrbitCam_SetFloorClamp(0);OrbitCam_SetPadLocked(1);radius=BtlStage_GetRadius();if(!(radius>50&&radius<100000))radius=400;radius*=.55f;sStagePreviewPitch=-.25f;if(stage==20||stage==21){radius*=1.6f;sStagePreviewPitch=-.45f;}
   OrbitCam_SetTarget(0,-radius*((stage==20||stage==21)?.45f:.15f),0);OrbitCam_SetDist(radius);OrbitCam_SetDistRange(radius,radius);

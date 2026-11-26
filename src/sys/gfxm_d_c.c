@@ -26,6 +26,14 @@
 #include "sys/gfx.h"
 #include "sys/gfxm_d_c.h"
 #include "battle/btl_cam.h"
+#ifdef PORT
+static void blood_part_marker(ObjDrawObj *obj,int node) {
+    extern void Port_GsBloodPart(int,int,int);
+    extern int Port_BloodSurfaceActor(int,int);
+    int actor=Port_BloodSurfaceActor(((s32*)obj)[0],((s32*)obj)[4]);
+    Port_GsBloodPart(0,actor,node);
+}
+#endif
 
 extern void Vec4_Copy(Vec4 *dst, Vec4 *src);
 extern void Vec4_Add(Vec4 *dst, Vec4 *a, Vec4 *b);
@@ -539,6 +547,9 @@ void ObjDraw_DrawParts(ObjDrawObj *obj, ObjDrawView *view, s32 mode, u64 tex0, u
                         headNode = node;
                         headPart = part;
                     } else {
+#ifdef PORT
+                        blood_part_marker(obj,part->node);
+#endif
                         ObjDrawPkt *pkt = Vu1Pkt_CallProg0((part->node == 0x30 && BtlObj_GetSubState(obj) != -1)
                                                                ? mdl->chains[BtlObj_GetSubState(obj)]
                                                                : part->chain);
@@ -608,6 +619,9 @@ void ObjDraw_DrawParts(ObjDrawObj *obj, ObjDrawView *view, s32 mode, u64 tex0, u
         if (!noMask) {
             ObjGs_AddFrameMaskOpaque(fbmsk);
         }
+#ifdef PORT
+        blood_part_marker(obj,headPart->node);
+#endif
         pkt = Vu1Pkt_CallProg0(headPart->chain);
         Mtx_Copy(&pkt->mtxB, &headNode->mtxB);
         Mtx_Copy(&pkt->mtxA, &headNode->mtxA);
@@ -622,6 +636,9 @@ void ObjDraw_DrawParts(ObjDrawObj *obj, ObjDrawView *view, s32 mode, u64 tex0, u
             ObjGs_AddFrameMaskBlend(fbmsk);
         }
     }
+#ifdef PORT
+    blood_part_marker(obj,-1);
+#endif
 }
 
 /* Chooses the light direction of the object in this view (stored in view->lightDir) from its colour flags and

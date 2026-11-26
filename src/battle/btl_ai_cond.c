@@ -2325,7 +2325,15 @@ void AiThink_ResetSide(s32 side, s32 owned) {
     }
     memset(ai, 0, sizeof(AiThWork));
     if (owned == 0) {
+#ifdef PORT
+        /* Roster indices and object slots can diverge after scripted loads.
+           Rebind this controller from its fighter, never an unrelated object. */
+        {extern void*BtlChar_Get(s32);extern AiThObj*BtlChar_GetObj(void*);
+         void*c=BtlChar_Get(side);AiThObj*obj=c?BtlChar_GetObj(c):NULL;
+         param=obj?obj->param:NULL;}
+#else
         param = BtlObj_Get(side)->param;
+#endif
         strcpy(name, "tpChar->data.pparam_com");
     }
     if (param == NULL) {

@@ -98,11 +98,20 @@ BattleMemberPool *Battle_GetWork5A8(void) {
 
 /* Loads everything a battle needs (blocking, behind the loading screen) and creates the two sides' objects. */
 s32 Battle_Load(void) {
+#ifdef PORT
+    extern unsigned Port_StoryPresentationClock(void);
+    extern char *getenv(const char *);
+    extern int printf(const char *,...);
+    unsigned loadStart=Port_StoryPresentationClock();
+#endif
     BtlObj_Init(1);
     Gsc_InitDefault(gBtlScriptCommands);
     BtlScript_Init();
     BtlLoad_PushInitialJob();
     Load_RunBlocking();
+#ifdef PORT
+    if(getenv("BT3_STORY_LOAD_TRACE"))printf("story load resources complete %u ms\n",Port_StoryPresentationClock()-loadStart);
+#endif
     BattleSide_SetObjId(0, BtlObj_CreateChara(BattleSide_GetModelSlot(0)));
     BattleSide_SetObjId(1, BtlObj_CreateChara(BattleSide_GetModelSlot(1)));
 #ifdef PORT

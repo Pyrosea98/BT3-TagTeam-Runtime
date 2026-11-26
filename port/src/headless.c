@@ -123,6 +123,17 @@ int __wrap_Progress_Main(int arg) {
     path = getenv("BT3_REPLAY");
 
     if (path == NULL && getenv("BT3_DEMO") == NULL) {
+        /* Private selector acceptance fixture, like the Story probe. The normal
+         * launcher explicitly clears this variable. Keep real catalog/UI code. */
+        {static int selected;
+         if(getenv("BT3_SELECT_PROBE")&&!selected&&gProgress&&gSaveData){
+             extern int Port_ModesChoosePlayers(int,int);
+             selected=1;gProgress->flags&=~0x40; /* MPROG_FIRST_RUN */
+             Save_UnlockAll(gSaveData);
+             gProgress->mode=Port_ModesChoosePlayers(0,1);
+             *(int *)((char *)gProgress+0x620)=0;
+             *(int *)((char *)gProgress+0x624)=1;
+         }}
         {
             int r;
             /* An online session (gs/net.c) goes straight to the versus mode's character select, with the game's
@@ -200,7 +211,12 @@ int __wrap_Progress_Main(int arg) {
         }
         printf("bt3: replay %s\n", path);
     } else {
-        Demo_SetupBattle();
+        if(getenv("BT3_BIG_BEAM_FIXTURE")){
+            extern void Port_BigBeamFixtureSetup(int,int,int);
+            int defender=91,attacker=25,slot=2;
+            if(sscanf(getenv("BT3_BIG_BEAM_FIXTURE"),"%d,%d,%d",&defender,&attacker,&slot)!=3||defender<0||defender>329||attacker<0||attacker>329||slot<2||slot>4){fprintf(stderr,"bt3: invalid private beam fixture\n");exit(2);}
+            Port_BigBeamFixtureSetup(defender,attacker,slot);
+        }else Demo_SetupBattle();
         printf("bt3: attract-demo battle\n");
         /* BT3_CHARA=<id> (and BT3_COSTUME=<n>, BT3_VARIANT=1 for the damaged model): side 0's fighter of the demo
            battle, for looking at one character's model without going through the menus */

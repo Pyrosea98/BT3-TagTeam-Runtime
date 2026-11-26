@@ -1,3 +1,4 @@
+#include "mod_combat_damage.h"
 #include "common.h"
 #include "battle/btl_char_coll.h"
 #ifdef PORT
@@ -278,6 +279,9 @@ s32 BtlColl_StartThrow(BtlCollChr *atk, BtlCollChr *def, s32 slot, u32 techFlags
         BtlEvent_Raise(atk->side, 0x2D);
         break;
     }
+#ifdef PORT
+    {extern void Port_StoryPairedRushStarted(int,int,int);Port_StoryPairedRushStarted(atk->side,def->side,slot);}
+#endif
     return 1;
 }
 
@@ -420,7 +424,7 @@ s32 BtlColl_GuardBlast(BtlCollChr *chr, BtlCollHit *hit) {
     if(Port_PowerArmorTier(hit->atk->side,chr->side)>=2){chr->react.id=BTL_REACT_NOFLINCH;chr->react.unk38=3;}else
 #endif
     BtlChar_SetFlag(chr, 0x66);
-    BtlMember_Damage(chr, dmg, 0xC);
+    Port_CombatDamageFrom(chr, dmg, 0xC, hit->atk->side);
     switch (BtlKiBlast_GetTypeOfHit(hit)) {
     case 2:
         BtlCharSnd_RequestAt(&hit->pos, 0, 0x42, 200.0f, 1500.0f);
@@ -478,7 +482,7 @@ s32 BtlColl_GuardStrike(BtlCollChr *chr, BtlCollHit *hit) {
     if(Port_PowerArmorTier(atk->side,chr->side)>=2){chr->react.id=BTL_REACT_NOFLINCH;chr->react.unk38=3;}else
 #endif
     BtlChar_SetFlag(chr, 0x66);
-    BtlMember_Damage(chr, dmg, 0xC);
+    Port_CombatDamageFrom(chr, dmg, 0xC, atk->side);
     time = 0.2f;
     BtlColl_PlayHitSound(NULL, hit, BtlSkill_GetHitSound(atk, slot));
 #ifdef PORT
@@ -560,7 +564,7 @@ s32 BtlColl_GuardRush(BtlCollChr *chr, BtlCollHit *hit) {
         BtlChar_SetFlag(chr, 0x67);
         break;
     }
-    BtlMember_Damage(chr, BtlSuper_GetDamage(atk, slot, 1, 0), 0xC);
+    Port_CombatDamageFrom(chr, BtlSuper_GetDamage(atk, slot, 1, 0), 0xC, atk->side);
     BtlColl_PlayHitSound(NULL, hit, BtlSuper_GetHitSound(atk, slot, alt));
     if (alt) {
 #ifdef PORT
@@ -704,7 +708,7 @@ s32 BtlColl_HitByBlast(BtlCollChr *chr, BtlCollHit *hit) {
         dmg /= hit->atk->hits;
     }
     time = 0.1f;
-    BtlMember_Damage(chr, dmg, 0);
+    Port_CombatDamageFrom(chr, dmg, 0, atk->side);
     ChrCam_AddShake(chr, 3.0f, time);
     BtlChar_Vibrate(chr, 1.0f, time);
     switch (hit->atk->kind) {
@@ -804,7 +808,7 @@ s32 BtlColl_HitByStrike(BtlCollChr *chr, BtlCollHit *hit) {
         fl = 0x400000;
         break;
     }
-    BtlMember_Damage(chr, dmg, fl);
+    Port_CombatDamageFrom(chr, dmg, fl, atk->side);
     ChrCam_AddShake(chr, 3.0f, 0.2f);
     BtlChar_Vibrate(chr, 1.0f, 0.2f);
     switch (slot) {
@@ -859,7 +863,7 @@ void BtlColl_ApplyRushHit(BtlCollChr *chr, BtlCollChr *atk, BtlCollHit *hit, s32
         fl = 0x2000100;
         break;
     }
-    BtlMember_Damage(chr, dmg, fl);
+    Port_CombatDamageFrom(chr, dmg, fl, atk->side);
 #ifdef PORT
     {extern void Port_StoryAttackContact(int,int,int);Port_StoryAttackContact(atk->side,chr->side,0x100+slot);}
 #endif
@@ -926,7 +930,7 @@ void BtlColl_ApplyRushNoFlinch(BtlCollChr *chr, BtlCollChr *atk, BtlCollHit *hit
         fl = 0x2000100;
         break;
     }
-    BtlMember_Damage(chr, dmg, fl);
+    Port_CombatDamageFrom(chr, dmg, fl, atk->side);
 #ifdef PORT
     {extern void Port_StoryAttackContact(int,int,int);Port_StoryAttackContact(atk->side,chr->side,0x100+slot);}
 #endif
@@ -1084,6 +1088,12 @@ s32 BtlColl_HitByRush(BtlCollChr *chr, BtlCollHit *hit) {
             react = BtlSuper_GetReact(atk, slot);
         }
     }
+    #ifdef PORT
+    {extern int Port_BigBeamReturned(void*);
+     /* A returned projectile cannot start a paired catch using a different
+      * fighter's unrelated slot animation. Keep ordinary hit resolution. */
+     if(Port_BigBeamReturned(hit->owner)&&(react==0x1D||react==0x1E||react==BTL_REACT_CAUGHT))react=0xF;}
+    #endif
     if (react == 0) {
         react = 0xF;
     }
@@ -1269,8 +1279,51 @@ s32 BtlColl_TryDodge(s32 objId, BtlCollHit *hit) {
     return 0;
 }
 
+#ifdef PORT
+/* PORT_BIG_CONTACT_BEGIN */
+static int port_big_accept(s32 objId,BtlCollHit *hit,int wantedTier,int owner) {
+    extern int Port_BigDeflectMatch(int,int),Port_PowerArmorTier(int,int);
+    extern void Port_BigDeflectClear(int);
+    BtlCollChr *chr=BtlChar_FindByObjId(objId);float len;
+    if(!chr||owner<0||owner>=16)return 0;
+    if(!BtlChar_TestFlag(chr,0x52)||!BtlChar_IsFree(chr))return 0;
+    if(!Port_BigDeflectMatch(chr->side,owner))return 0;
+    if(Port_PowerArmorTier(owner,chr->side)!=wantedTier)return 0;
+    if(BtlColl_IsFacing(chr,BtlColl_GetHitDir(chr,hit,NULL)))return 0;
+    if(!BtlMember_HasBlast(chr,300000))return 0;
+    len=Vec3_Length(&hit->vel);
+    if(len<.001f)Vec4_Copy(&chr->deflectDir,&BtlChar_GetPos(chr)->unk80);
+    else Vec4_Scale(&chr->deflectDir,&hit->vel,-1.f/len);
+    { /* Native member gauge: blast is the s32 at +0x14. Witness the
+       * accepted cost before training has a chance to replenish it. */
+      extern void Port_Dbg3(const char*,int,int,int,int);
+      int before=((s32*)BtlMember_GetActiveGauge(chr))[5];
+      BtlMember_SubBlast(chr,300000);
+      Port_Dbg3("big beam accepted actor/tier/stockBefore/stockAfter",chr->side,wantedTier,
+          before,((s32*)BtlMember_GetActiveGauge(chr))[5]);
+    }
+    Port_BigDeflectClear(chr->side);
+    BtlChar_SetFxBit(chr,0x2E);BtlEvent_Raise(chr->side,0x58);
+    BtlCharSnd_PlayCommon(chr,0x14);BtlChar_PlayVoice(chr,0xB);
+    return 1;
+}
+static int port_big_contact(s32 objId,BtlCollHit *hit,int wantedTier) {
+    if(hit->type!=BTL_HIT_BLAST||!hit->atk||hit->unk54!=1)return 0;
+    return port_big_accept(objId,hit,wantedTier,hit->atk->side);
+}
+/* Called only after the effect task has established that it can actually
+ * transfer this technique. Native type1 records can have unk54 either0 or1. */
+int Port_BigBeamAccept(s32 objId,BtlCollHit *hit,int wantedTier) {
+    if(hit->type!=BTL_HIT_TECH||!hit->owner||hit->owner->slot<2||hit->owner->slot>4)return 0;
+    return port_big_accept(objId,hit,wantedTier,hit->ownerId);
+}
+/* PORT_BIG_CONTACT_END */
+#endif
 /* Asks the fighter whether it knocks a blast away (deflect); sets the direction the blast leaves in. */
 s32 BtlColl_TryDeflect(s32 objId, BtlCollHit *hit) {
+#ifdef PORT
+    if(port_big_contact(objId,hit,1))return 1;
+#endif
     BtlCollChr *chr;
     s32 perfect = 0;
     Vec4 *vel;
@@ -1359,6 +1412,9 @@ s32 BtlColl_TryDeflect(s32 objId, BtlCollHit *hit) {
 
 /* Asks the fighter whether it sends a blast back (flag 0x52); sets the direction the blast leaves in. */
 s32 BtlColl_TryReflect(s32 objId, BtlCollHit *hit) {
+#ifdef PORT
+    if(port_big_contact(objId,hit,2))return 1;
+#endif
     BtlCollChr *chr;
     Vec4 *vel;
     f32 len;

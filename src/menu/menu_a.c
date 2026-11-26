@@ -1,5 +1,6 @@
 #ifdef PORT
 #include "coop_selection.h"
+#include "plat_songs.h"
 #endif
 #include "common.h"
 #include "menu/menu_a.h"
@@ -825,14 +826,31 @@ static void MainMenu_PortSceneAudio(s32 leaving) {
     extern s32 Port_ModMenuAtmosphere(void);
     extern void StreamSe_Play(s32,s32,s32,s32),StreamSe_Stop(s32);
     extern s32 StreamSe_IsStopped(s32);
-    s32 scene=leaving?0:Port_ModMenuAtmosphere();
-    if(scene!=sPortSceneAudio){
-        if(sPortSceneAudio)StreamSe_Stop(0);
-        if(scene){Bgm_Play(scene==1?0x10B18:0x10B1C);StreamSe_Play(0,scene==1?0x10BDB:0x10BDD,0x28,0);}
-        else if(!leaving&&sPortSceneAudio)Bgm_Play(0x10B16);
-        sPortSceneAudio=scene;sPortSceneRetry=0;
+    s32 scene = leaving ? 0 : Port_ModMenuAtmosphere();
+    s32 ambience = scene == 3 ? 1 : scene;
+    s32 previousAmbience = sPortSceneAudio == 3 ? 1 : sPortSceneAudio;
+    s32 stream = ambience == 1 ? 0x10BDB : 0x10BDD;
+
+    if (scene != sPortSceneAudio) {
+        if (previousAmbience && ambience != previousAmbience) StreamSe_Stop(0);
+        if (scene) {
+            s32 track = scene == 2 ? 0x10B1C : 0x10B18;
+            if (scene == 3) {
+                s32 offset = PortSongs_FindOffsetByFile("story-saiyan-normalized.adx");
+                if (offset >= 0) track = PORT_BGM_FILE(offset);
+            }
+            Bgm_Play(track);
+            if (ambience != previousAmbience) StreamSe_Play(0, stream, 0x28, 0);
+        } else if (!leaving) {
+            Bgm_Play(0x10B16);
+        }
+        sPortSceneAudio = scene;
+        if (ambience != previousAmbience) sPortSceneRetry = 0;
     }
-    if(scene&&++sPortSceneRetry>=120){sPortSceneRetry=0;if(StreamSe_IsStopped(0))StreamSe_Play(0,scene==1?0x10BDB:0x10BDD,0x28,0);}
+    if (scene && ++sPortSceneRetry >= 120) {
+        sPortSceneRetry = 0;
+        if (StreamSe_IsStopped(0)) StreamSe_Play(0, stream, 0x28, 0);
+    }
 }
 
 static s32 MainMenu_PortModes(void) {

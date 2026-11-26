@@ -68,12 +68,17 @@ void Load_RunBlocking(void) {
     s32 busy = 1;
     s32 done = 0;
     s32 prev;
+    f32 fadeSeconds=1.0f;
+#ifdef PORT
+    {extern int Port_StoryActive(void),Port_StoryChapter(void);int ch=Port_StoryChapter();
+     if(Port_StoryActive()&&(ch==17||ch==18))fadeSeconds=.18f;}
+#endif
 
     PadWatch_SetEnabled(0);
     Dma_ResetBuffers();
     Load_InitScreen();
     Fade_ResetAll();
-    Fade_Start(0, 1, 1.0f);
+    Fade_Start(0, 1, fadeSeconds);
     gProgress->flags |= PROGRESS_FLAG_LOADING;
     for (;;) {
         Snd_Update();
@@ -82,7 +87,7 @@ void Load_RunBlocking(void) {
         Pad_Update();
         busy = Job_Run();
         if (prev != busy) {
-            Fade_Start(0, 0, 1.0f);
+            Fade_Start(0, 0, fadeSeconds);
         }
         if (!busy) {
             if (Fade_IsDone(0)) {

@@ -139,6 +139,10 @@ extern void EftObj_SetVisible(s32 obj, s32 show);
 extern void EftObj_Nop(s32 obj, s32 a1);
 
 extern void *gEftBlastObjClass[6];
+#ifdef PORT
+extern f32 sqrtf(f32);
+#include "mod_big_shot.inc"
+#endif
 
 /* Publishes this frame's hit record of a blast object. */
 void EftBlastObj_AddHit(EftOTask *task) {
@@ -401,10 +405,16 @@ void EftBlastObj_Init(EftOTask *task, EftBlastObjArg *arg) {
         EftBlastObj_InitModel(task);
     }
     BtlTask_SetOwnerTag(task, EFT_OWNER_TAG(src->objId));
+#ifdef PORT
+    big_shot_register(task);
+#endif
 }
 
 /* Term callback. */
 void EftBlastObj_Term(EftOTask *task) {
+#ifdef PORT
+    big_shot_forget(task);
+#endif
     EftBlastObj *w = task->work;
 
     if (w->flags & EFT_BLASTOBJ_MODEL) {
@@ -416,6 +426,9 @@ void EftBlastObj_Term(EftOTask *task) {
 
 /* Update callback: see the notes at the top of the file. */
 void EftBlastObj_Update(EftOTask *task) {
+#ifdef PORT
+    if(big_shot_step(task))return;
+#endif
     EftBlastObj *w = task->work;
     EftOSrc *src = w->src;
 
@@ -470,6 +483,9 @@ void EftBlastObj_Update(EftOTask *task) {
 
 /* Post-update callback: reacts to what the hit pass left in the task. */
 void EftBlastObj_PostUpdate(EftOTask *task) {
+#ifdef PORT
+    if(big_shot_post(task))return;
+#endif
     EftBlastObj *w = task->work;
 
     if (BtlScene_IsCharStopped(w->src->objId)) {

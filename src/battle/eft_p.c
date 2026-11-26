@@ -116,6 +116,9 @@ static inline f32 EftDisc_Clamp(f32 x, f32 lo, f32 hi) {
     return x;
 }
 
+#ifdef PORT
+#include "mod_big_disc.inc"
+#endif
 /* Post-update callback: ends the disc on a hit result; a technique piece also updates and spawns its emitter parts. */
 void EftDisc_PostUpdate(EftPTask *task) {
     EftDisc *w = task->work;
@@ -168,6 +171,10 @@ void EftDisc_Reset(EftPTask *task) {
 
 /* Term callback: frees the emitter state, or unlinks a held ki blast disc from its fighter's list. */
 void EftDisc_Term(EftPTask *task) {
+#ifdef PORT
+    Port_BigDiscForget(task);
+    extern void Port_StoryNativeDiscTerm(void*);Port_StoryNativeDiscTerm(task);
+#endif
     EftDisc *w = task->work;
     EftDiscArg *arg = &w->arg;
 
@@ -879,3 +886,29 @@ s32 EftDisc_IsAlive(EftPTask *task) {
     }
     return 0;
 }
+
+#ifdef PORT
+static EftPTask *sStoryDisc;static EftPVec sStoryDiscPos;static float sStoryDiscScale;
+extern void EftMesh_SetMtx(void*,void*);
+void Port_StoryNativeDiscTerm(void*t){if(t==sStoryDisc)sStoryDisc=0;}
+void Port_StoryNativeDiscEnd(void){if(sStoryDisc){EftDisc_Kill(sStoryDisc);sStoryDisc=0;}}
+int Port_StoryNativeDiscUpdate(void*t){EftDisc*w;float k,a;Mtx44 m;
+ if(!sStoryDisc||t!=sStoryDisc)return 0;w=sStoryDisc->work;if(!w)return 1;
+ k=sStoryDiscScale*w->size;a=w->timer*.21f;memset(&m,0,sizeof(m));
+ m.m[0][0]=cosf(a)*k;m.m[0][2]=-sinf(a)*k;m.m[1][1]=k;m.m[2][0]=sinf(a)*k;m.m[2][2]=cosf(a)*k;
+ m.m[3][0]=sStoryDiscPos.x;m.m[3][1]=sStoryDiscPos.y;m.m[3][2]=sStoryDiscPos.z;m.m[3][3]=1;
+ w->arg.pos=sStoryDiscPos;w->flags=EFT_DISC_ALIVE|EFT_DISC_HELD|EFT_DISC_SHOWN|EFT_DISC_GROWN;w->color=(EftPVec){127,118,28,127};w->timer++;EftDisc_StepTex(w);
+ {extern void Port_StoryFitDiscMesh(void*,const EftPVec*,float,float);extern float BtlCharApi_GetHeight(int);Port_StoryFitDiscMesh(w->model,&sStoryDiscPos,sStoryDiscScale*2.f*w->size*5.f,a);}return 1;
+}
+int Port_StoryNativeDiscPlace(int obj,const EftPVec*p,float scale,int palette){EftDiscArg a;
+ if(!gEftDisc||!gEftDisc->mgr||!gEftDisc->mgr->list||!p)return 0;
+ sStoryDiscPos=*p;sStoryDiscScale=scale;
+ if(!sStoryDisc){memset(&a,0,sizeof(a));a.objId=obj;a.kind=0;a.hand=1;a.texB=palette;a.scale=1;a.life=10;a.grow=.3f;a.fade=.7f;
+  sStoryDisc=BtlTaskList_AddTail(gEftDisc->mgr->list,D_002C3B38,&a);}
+ return sStoryDisc!=0;
+}
+#endif
+
+#ifdef PORT
+void Port_StoryNativeDiscReset(void){sStoryDisc=0;}
+#endif

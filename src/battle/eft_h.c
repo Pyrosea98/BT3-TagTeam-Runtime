@@ -296,8 +296,8 @@ INCLUDE_ASM("asm/nonmatchings/battle/eft_h", EftShot_BuildParam);
 /* The slot record of one technique of one character. */
 EftHSlot *EftShot_GetSlot(s32 chr, s32 slot) {
 #ifdef PORT
-    /* Reuse the donor's loaded effect group, but EftShot_Start below still
-       writes the requesting Krilin actor into arg.chr. No donor fighter acts. */
+    /* The authored Genkidama resolves the requesting fighter's own effect group;
+       EftShot_Start retains Krillin as the projectile owner. */
     {extern int Port_StoryTechniqueDonor(int);int donor=Port_StoryTechniqueDonor(chr);
      if(donor>=0&&slot==4)chr=donor;}
 #endif
@@ -324,6 +324,17 @@ void EftShot_Start(EftHStartArg *arg) {
     EftHSlot *s = EftShot_GetSlot(arg->chr, arg->slot);
     EftHTaskClass *cls;
     EftHTask *group;
+    s32 effectSlot = arg->slot;
+#ifdef PORT
+    {
+        extern int Port_StoryManualUltimateActive(int);
+        if (arg->slot == 4 && Port_StoryManualUltimateActive(arg->chr)) {
+            EftHChar *chr = &gEftShot->chars[arg->chr];
+            effectSlot = EFT_H_STORY_ULTIMATE_SLOT;
+            s = &chr->slot[effectSlot];
+        }
+    }
+#endif
 
     if (s == NULL) {
         return;
@@ -352,7 +363,7 @@ void EftShot_Start(EftHStartArg *arg) {
     if (s->param->kind == 0) {
         s->param->life = 60;
     }
-    EftShot_SetCurSlot(arg->chr, arg->slot);
+    EftShot_SetCurSlot(arg->chr, effectSlot);
     EftTechEvt_Start(s, EftShot_GetLeadTime(s), s->param->life);
     BtlTaskList_AddTail(group->children, cls, s);
 }

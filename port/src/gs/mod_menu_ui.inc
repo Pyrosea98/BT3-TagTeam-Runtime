@@ -46,7 +46,17 @@ static int sModLastPlay=-1,sModResumePlay=-1;static int sModMenuLaunching; // ga
 static int sModStoryChain=-1; // the story interlude the menu launches by itself next (-1 none)
 static std::atomic<int> sModMenuSettings{-1};
 extern "C" void Port_ModMenuNativeStay(void){sModMenuLaunching=0;}
-extern "C" int Port_ModMenuAtmosphere(void){int p=sModMenuView.load(std::memory_order_acquire)&255;return p==MM_STORY||p==MM_STORY_RESULT||p==MM_STORY_SAGAS?1:p==MM_SCENARIOS||p==MM_CHALLENGES?2:0;}
+extern "C" int Port_ModMenuAtmosphere(void) {
+ const unsigned view = sModMenuView.load(std::memory_order_acquire);
+ const int page = view & 255;
+ if (page == MM_STORY) {
+  const int chapter = (view >> 8) & 255;
+  if (sModStoryChain < 0 && chapter < ST_COUNT && stChapters[chapter].saga == 0) return 3;
+  return 1;
+ }
+ if (page == MM_STORY_SAGAS || page == MM_STORY_RESULT) return 1;
+ return page == MM_SCENARIOS || page == MM_CHALLENGES ? 2 : 0;
+}
 extern "C" int Port_ModMenuActive(void){return (sModMenuView.load(std::memory_order_acquire)&255)!=0;}
 extern "C" void Port_ModMenuReset(void){sModMenuLaunching=0;sModMenuGame={0,0,0};sModMenuView.store(0,std::memory_order_release);sModMenuSettings.store(-1);sAchievementPick.store(-1);sAchievementBack.store(false);}
 extern "C" int Port_ModMenuStep(unsigned pressed,unsigned repeat,int *players,int *sound){
@@ -107,7 +117,9 @@ extern "C" void Port_ModMenuEnterMain(void){
  if(sModResumePlay>=0){mm_resume(&sModMenuGame,sModResumePlay);sModResumePlay=-1;if(sModMenuGame.page==MM_STORY){int ch=0,z;
    if(Port_StoryLastOutcome(&ch,&z)!=ST_NONE&&ST_Interlude(ch)){ /* back from an interlude: the next one, or the story list */
     int next=stInterludeNext[ch];Port_StoryAcknowledge();if(next>=0)sModStoryChain=next;ch=ST_INTERLUDE_RETURN;}
-   else if(Port_StoryLastOutcome(&ch,&z)!=ST_NONE)sModMenuGame.page=MM_STORY_RESULT;sModMenuGame.cursor=SDL_clamp(ch,0,ST_COUNT-1);sModMenuGame.pick=SDL_clamp(Port_Setting("story_difficulty",1),0,2);sStoryDifficulty.store(sModMenuGame.pick);mod_story_publish();}
+   else if(Port_StoryLastOutcome(&ch,&z)!=ST_NONE){
+    if(ch==4&&getenv("BT3_STORY_REVIEW_CHAIN")){Port_StoryAcknowledge();sModStoryChain=17;}else sModMenuGame.page=MM_STORY_RESULT;
+   }sModMenuGame.cursor=SDL_clamp(ch,0,ST_COUNT-1);sModMenuGame.pick=SDL_clamp(Port_Setting("story_difficulty",1),0,2);sStoryDifficulty.store(sModMenuGame.pick);mod_story_publish();}
   sModMenuView.store((unsigned)sModMenuGame.page|((unsigned)sModMenuGame.cursor<<8),std::memory_order_release);}
  else {sModMenuGame.page=MM_ROOT;sModMenuGame.cursor=0;sModMenuView.store(MM_ROOT,std::memory_order_release);}
 }

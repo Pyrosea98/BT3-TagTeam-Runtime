@@ -565,6 +565,8 @@ void EftAura_Setup(EftAuraWork *aura, s32 objId) {
     }
 #ifdef PORT
     aura->scale *= Port_Beta8AuraMultiplier(BtlCharApi_GetChara(objId))*Port_Beta8ChargeScale(objId);
+    {extern int Port_StoryExecutionAura(int);if(Port_StoryExecutionAura(objId))aura->scale*=.40f;}
+    {extern int Port_StoryRescueAura(int);if(Port_StoryRescueAura(objId))aura->scale*=.55f;}
 #endif
 }
 

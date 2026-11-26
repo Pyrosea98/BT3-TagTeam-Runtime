@@ -37,12 +37,14 @@ typedef struct EftPTask {
 
 /* Definition and source of a technique (EftJDef / EftJSrc of eft_j.h); only what is read here. */
 typedef struct EftPDef {
-    /* 0x00 */ u8 unk0[0x3C];
+    /* 0x00 */ s16 id;
+    /* 0x02 */ u8 unk2[0x3A];
     /* 0x3C */ s32 flags;   /* bit 0: the technique adds hit records */
 } EftPDef;
 
 typedef struct EftPSrc {
-    /* 0x00 */ u8 unk0[0x24];
+    /* 0x00 */ s32 objId;
+    /* 0x04 */ u8 unk4[0x20];
     /* 0x24 */ EftPDef *def;
 } EftPSrc;
 

@@ -1,7 +1,49 @@
 #include "common.h"
 #include "menu/menu_v.h"
 #ifdef PORT
+#include "sys/pad.h"
 extern MTexRes *Port_MenuChip(s32 chara, s32 costume);
+static int sPotaraHealthEdit;
+static int sPotaraHealthDraft;
+
+static int EvoZ_PotaraCombo(u32 mask) {
+    return (gPad[0].gamePressed & mask) != 0 && (gPad[0].gameHeld & mask) == mask;
+}
+
+static void EvoZ_PotaraStartHealth(EvoZ *ez) {
+    extern int Port_PotaraHealthBars(int);
+    sPotaraHealthDraft = Port_PotaraHealthBars(ez->side->chara);
+    if (sPotaraHealthDraft < 1 || sPotaraHealthDraft > 100) {
+        sPotaraHealthDraft = 100;
+    }
+    sPotaraHealthEdit = 1;
+    Snd_PlaySe(1, 1);
+}
+
+static int EvoZ_PotaraEditHealth(EvoZ *ez) {
+    extern int Port_PotaraRedEnabled(int);
+    extern void Port_PotaraSetOptions(int,int,int);
+    if (!sPotaraHealthEdit) {
+        return 0;
+    }
+    if (gPad[0].gameRepeat & PADG_LEFT) {
+        if (sPotaraHealthDraft > 1) sPotaraHealthDraft--;
+        Snd_PlaySe(1, 0);
+    } else if (gPad[0].gameRepeat & PADG_RIGHT) {
+        if (sPotaraHealthDraft < 100) sPotaraHealthDraft++;
+        Snd_PlaySe(1, 0);
+    } else if (gPad[0].gamePressed & PADG_CROSS) {
+        Port_PotaraSetOptions(ez->side->chara, Port_PotaraRedEnabled(ez->side->chara), sPotaraHealthDraft);
+        sPotaraHealthEdit = 0;
+        Snd_PlaySe(1, 1);
+    } else if (gPad[0].gamePressed & PADG_TRIANGLE) {
+        sPotaraHealthEdit = 0;
+        Snd_PlaySe(1, 2);
+    } else {
+        return 1;
+    }
+    return 1;
+}
 #endif
 
 /*
@@ -209,6 +251,21 @@ void EvoZ_Input(EvoZ *ez, s32 *result) {
         }
         break;
     case EVOZ_ST_SLOTS:
+#ifdef PORT
+        /* L3+R3 toggles the red-Potara permission for the selected character. It is
+           independent of the current set, so all three saved sets keep working. */
+        if (EvoZ_PotaraCombo(PADG_L3 | PADG_R3)) {
+            extern int Port_PotaraRedEnabled(int);
+            extern void Port_PotaraSetOptions(int,int,int);
+            int chara = ez->side->chara;
+            Port_PotaraSetOptions(chara, !Port_PotaraRedEnabled(chara), Port_PotaraHealthBars(chara));
+            Snd_PlaySe(1, 1);
+        } else if (EvoZ_PotaraCombo(PADG_L2 | PADG_R2)) {
+            EvoZ_PotaraStartHealth(ez);
+        } else if (EvoZ_PotaraEditHealth(ez)) {
+            break;
+        } else
+#endif
         if (gPad[0].gameRepeat & 8) {
             EvoZ_ClipGoto(ez, 2, EVOZ_CLIP_SLOT, 0, "fl_off_start");
             if (ez->cur[3] == 7) {

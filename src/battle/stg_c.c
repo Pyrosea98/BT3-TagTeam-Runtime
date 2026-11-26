@@ -771,6 +771,18 @@ void StgTint_Release(void) {
 void StgTint_DrawBack(void) {
     StgTint *tint = &gStgTint.slot[0];
 
+#ifdef PORT
+    /* Draw a local composition; do not mutate native technique ramps/ownership. */
+    {extern int Port_GroundChargeSkyLevel(void);Vec4 color={0,0,0,0};int level=Port_GroundChargeSkyLevel();
+     if(tint->flags&STG_TINT_ON){StgTint_CalcColor(tint);color=tint->color;}
+     float alpha=(float)level*.09f;
+     if(alpha>color.w)color=(Vec4){0,0,0,alpha};
+     if(color.w>0)GfxPost_DrawTintRect(0x44,&color);
+     {extern int Port_GroundChargeStormLevel(void),BtlChar_FrameMod(int),Port_StoryActive(void);int storm=Port_StoryActive()?Port_GroundChargeStormLevel():0,tick=BtlChar_FrameMod(240);if(storm>0&&(tick==0||tick==1||tick==5)){Vec4 flash={255,255,255,tick==5?18:38};GfxPost_DrawTintRect(0x44,&flash);}}
+
+     gStgTintColor0[0]=color.x;gStgTintColor0[1]=color.y;gStgTintColor0[2]=color.z;gStgTintColor0[3]=color.w;
+    }
+#else
     if (tint->flags & STG_TINT_ON) {
         StgTint_CalcColor(tint);
         GfxPost_DrawTintRect(0x44, &tint->color);
@@ -784,6 +796,7 @@ void StgTint_DrawBack(void) {
         gStgTintColor0[2] = 0;
         gStgTintColor0[3] = 0;
     }
+#endif
     tint = &gStgTint.slot[1];
     if (tint->flags & STG_TINT_ON) {
         StgTint_CalcColor(tint);

@@ -84,6 +84,7 @@ case 155:mask=12u;break;
 case 158:mask=12u;break;
 case 165:mask=24u;break;
 case 232:mask=8u;break;
+case 243:mask=8u;break; /* ISO438 costume4 belongs to Bardock God329. */
 case 166:mask=6u;break;
 case 210:mask=2u;break;
 default:break;}return !(mask&(1u<<slot));}

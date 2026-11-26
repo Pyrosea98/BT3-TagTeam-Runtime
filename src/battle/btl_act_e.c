@@ -1,3 +1,4 @@
+#include "mod_combat_damage.h"
 #include "common.h"
 #include "battle/btl_act_e.h"
 
@@ -72,6 +73,9 @@ extern s32 BtlAct_GetRequested(BtlActEChr *chr);
 
 extern BtlActERoster *gBtlChars;
 extern s32 BtlOpp_GetClashCountB(BtlActEChr *chr);
+#ifdef PORT
+extern s32 BtlOpp_GetPlayer(BtlActEChr *chr);
+#endif
 extern void BtlChar_ClearFlagRange(BtlActEChr *chr, u32 a, u32 b);
 extern s32 BtlMember_HasAbility(BtlActEChr *chr, s32 n);
 extern s32 BtlMember_AddKi(BtlActEChr *chr, s32 amount);
@@ -1345,7 +1349,7 @@ void Port_AssistRushVictim(int who,int winner,int damage){
  extern BtlActEChr*BtlChar_Get(s32);extern void BtlMove_SetHeading(BtlActEChr*,f32,f32);extern f32 atan2f(f32,f32);extern s32 gPortTarget[];
  BtlActEChr*c=BtlChar_Get(who),*w=BtlChar_Get(winner);BtlActEPose*p,*q;s32 old;
  if(!c||!w)return;p=BtlChar_GetPos(c);q=BtlChar_GetPos(w);if(!p||!q)return;
- old=gPortTarget[who];gPortTarget[who]=winner;if(damage>0)BtlMember_Damage(c,damage,0x18B);gPortTarget[who]=old;
+ old=gPortTarget[who];gPortTarget[who]=winner;if(damage>0)Port_CombatDamageFrom(c,damage,0x18B,winner);gPortTarget[who]=old;
  /* D5 ground recoil travels backward; its air motion travels forward. */
  if(BtlAct_IsAirMotion(c,1))BtlMove_SetHeading(c,atan2f(p->pos.x-q->pos.x,p->pos.z-q->pos.z),0.0f);
  else BtlMove_SetHeading(c,atan2f(q->pos.x-p->pos.x,q->pos.z-p->pos.z),0.0f);
@@ -1356,7 +1360,7 @@ void Port_StoryBeamVictim(int who,int winner,int damage){
  extern s32 gPortTarget[];s32 old=gPortTarget[who];
  BtlChar_ClearFlag(c,0xFA);BtlChar_ClearFlag(c,0xFB);
  /* A story beam is a real hit, not assist-only damage (NO_HIT). */
- gPortTarget[who]=winner;if(damage>0)BtlMember_Damage(c,damage,0x1C3);gPortTarget[who]=old;
+ gPortTarget[who]=winner;if(damage>0)Port_CombatDamageFrom(c,damage,0x1C3,winner);gPortTarget[who]=old;
  Port_AssistRushVictim(who,winner,0);
 }
 
@@ -1478,8 +1482,8 @@ void BtlAct_ClashBlowsHandler(BtlActEChr *chr, s32 phase) {
                 if (BtlAnim_PassedRatio(chr, 0.5f)) {
 #ifdef PORT
                     {extern int Port_AssistRushLocal(void),Port_AssistRushFinish(int,int,int);
-                     if(Port_AssistRushLocal())BtlMember_Damage(chr,Port_AssistRushFinish(chr->player,BtlOpp_GetClashCountB(chr),60),0x18B);
-                     else BtlMember_Damage(chr,BtlOpp_GetClashCountB(chr)*60,8);}
+                     if(Port_AssistRushLocal())Port_CombatDamageFrom(chr,Port_AssistRushFinish(chr->player,BtlOpp_GetClashCountB(chr),60),0x18B,BtlOpp_GetPlayer(chr));
+                     else Port_CombatDamageFrom(chr,BtlOpp_GetClashCountB(chr)*60,8,BtlOpp_GetPlayer(chr));}
 #else
                     BtlMember_Damage(chr, BtlOpp_GetClashCountB(chr) * 60, 8);
 #endif
@@ -1667,8 +1671,8 @@ s32 BtlAct_ClashExchangeHandler(BtlActEChr *chr, s32 phase) {
                 if (BtlAnim_PassedRatio(chr, 0.5f)) {
 #ifdef PORT
                     {extern int Port_AssistRushLocal(void),Port_AssistRushFinish(int,int,int);
-                     if(Port_AssistRushLocal())BtlMember_Damage(chr,Port_AssistRushFinish(chr->player,BtlOpp_GetClashCountB(chr),600),0x18B);
-                     else BtlMember_Damage(chr,BtlOpp_GetClashCountB(chr)*600,8);}
+                     if(Port_AssistRushLocal())Port_CombatDamageFrom(chr,Port_AssistRushFinish(chr->player,BtlOpp_GetClashCountB(chr),600),0x18B,BtlOpp_GetPlayer(chr));
+                     else Port_CombatDamageFrom(chr,BtlOpp_GetClashCountB(chr)*600,8,BtlOpp_GetPlayer(chr));}
 #else
                     BtlMember_Damage(chr, BtlOpp_GetClashCountB(chr) * 600, 8);
 #endif

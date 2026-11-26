@@ -7,6 +7,10 @@
 
 #ifdef PORT
 extern int Port_FightVsyncs(void);   /* [fight-60] port/src/plat_sys.c */
+extern void *BtlChar_Get(s32 actor);
+extern s32 BtlChar_GetCount(void);
+extern s32 BtlInput_IsHeld(void *chr,u32 mask);
+extern void Port_StoryPowerShortcutTick(s32 actor,s32 comboHeld);
 #endif
 
 /*
@@ -147,6 +151,8 @@ s32 Battle_Restart(void) {
 #ifdef PORT
     extern void PortPanels_SetSceneVisible(int);
     PortPanels_SetSceneVisible(0);
+    /* Pelea nueva: no queda ningun efecto propio vivo de la anterior. */
+    {extern void Port_Fx_Clear(void);Port_Fx_Clear();}
 #endif
     Snd_StopBankAndResume(0x3C);
     PORT_HEAPCHK("after Snd_StopBankAndResume");
@@ -210,6 +216,9 @@ s32 Battle_Init(void) {
 /* Stores the result and destroys every battle subsystem. */
 s32 Battle_Term(void) {
     BattleResult_Finish();
+#ifdef PORT
+    {extern void Port_Fx_Clear(void);Port_Fx_Clear();}
+#endif
     Adx_StopAll();
     BtlChar_FreeAll();
     BtlCam_Term();
@@ -233,6 +242,22 @@ s32 Battle_Update(void) {
     s32 singleView;
 
     BtlChars_UpdateInput();
+#ifdef PORT
+    if (getenv("BT3_STORY_POWER_TEST")) {
+        for (i = 0; i < BtlChar_GetCount(); i++) {
+            void *chr = BtlChar_Get(i);
+            if (chr) {
+                Port_StoryPowerShortcutTick(i,
+                    BtlInput_IsHeld(chr,0x00000200) && /* L2 */
+                    BtlInput_IsHeld(chr,0x00001000) && /* R2 */
+                    BtlInput_IsHeld(chr,0x00004000) && /* L1 */
+                    BtlInput_IsHeld(chr,0x00000800) && /* R1 */
+                    BtlInput_IsHeld(chr,0x00000020) && /* D-pad down */
+                    BtlInput_IsHeld(chr,0x10000000));   /* PlayStation Cross */
+            }
+        }
+    }
+#endif
 
     PORT_HEAPCHK("update: after BtlChars_UpdateInput");
     BtlChars_UpdateMain();
@@ -266,6 +291,9 @@ s32 Battle_Update(void) {
     PORT_HEAPCHK("update: after BtlChars_EndFrame");
     BtlObj_UpdateAll();
 #ifdef PORT
+    {extern void Port_StoryFinalizeGeometry(void);Port_StoryFinalizeGeometry();}
+#endif
+#ifdef PORT
     {extern void Port_ExtraConsumedUpdate(void);Port_ExtraConsumedUpdate();}
 #endif
     PORT_HEAPCHK("update: after BtlObj_UpdateAll");
@@ -288,6 +316,18 @@ s32 Battle_Update(void) {
     }
     BtlScene_SetSingleView(singleView);
     PORT_HEAPCHK("update: after BtlScene_SetSingleView");
+#ifdef PORT
+    /* La sangre envejece con la simulacion, no con los cuadros dibujados: mismo ritmo a cualquier FPS y detenida
+       mientras la pelea esta en pausa (Battle_Loop corre Battle_Update tambien en pausa). */
+    {
+        extern void Port_Fx_Tick(void);
+        extern void Port_BloodProgressTick(void);
+        if (!(Battle_GetWork()->flags & BATTLE_FLAG_PAUSE)) {
+            Port_Fx_Tick();
+            Port_BloodProgressTick();
+        }
+    }
+#endif
     return singleView == 0;
 }
 

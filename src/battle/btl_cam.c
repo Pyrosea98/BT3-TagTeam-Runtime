@@ -700,6 +700,12 @@ void BtlCam_SelectView(s32 idx) {
 /* Loads the selected view's matrices (and scissor) for drawing. */
 void BtlCam_ApplyView(s32 scissor) {
 #ifdef PORT
+    /* Impact insert is a draw-only view: native movie camera keeps advancing
+       and resumes automatically; no fixed-camera stop or animation mutation. */
+    {extern int Port_StoryPiercingCamera(void*,void*);static View impact;Vec4 eye,rot;
+     if(gDemoCam&&Port_StoryPiercingCamera(&eye,&rot)){impact=gDemoCam->view;View_SetTransform(&impact.world2view,&impact.world2view2,&eye,&rot);View_UpdateMatrices(&impact,&eye);gDemoCam->view=impact;View_Apply(&gDemoCam->view,scissor);gBtlCamView=&gDemoCam->view;return;}}
+#endif
+#ifdef PORT
     /* Battle_Draw reapplies each player view after UpdateOverride. The Story
        director must own this actual draw boundary as well. */
     {extern int Port_StoryApplyFixedCamera(void);if(Port_StoryApplyFixedCamera()){DemoCam_Update();gBtlCamView=&gDemoCam->view;return;}}

@@ -343,6 +343,9 @@ void EftDiscMgr_Reset(void) {
 
 /* Term callback of the manager. */
 void EftDiscMgr_Term(void) {
+#ifdef PORT
+ extern void Port_StoryNativeDiscReset(void);Port_StoryNativeDiscReset();
+#endif
     BtlPool_Free(BtlPool_GetCurrent(), gEftDisc->res);
     BtlPool_Free(BtlPool_GetCurrent(), gEftDisc);
     gEftDisc = NULL;
@@ -441,6 +444,9 @@ void EftDisc_Init(EftOTask *task, EftODiscArg *arg) {
 
 /* Update callback of a disc: see the notes at the top of the file. */
 void EftDisc_Update(EftOTask *task) {
+#ifdef PORT
+    extern int Port_StoryNativeDiscUpdate(void*);if(Port_StoryNativeDiscUpdate(task))return;
+#endif
     Vec4 v[2];
     Vec4 c;
     Mtx44 mtx;

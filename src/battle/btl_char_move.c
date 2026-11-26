@@ -1,5 +1,16 @@
 #include "common.h"
 #include "battle/btl_char_move.h"
+#ifdef PORT
+#include "mod_big_deflect.h"
+static int port_big_owner[16];
+static unsigned int port_big_valid;
+void Port_BigDeflectReset(void) { port_big_valid=0; }
+void Port_BigDeflectClear(int actor) { if(actor>=0&&actor<16)port_big_valid&=~(1u<<actor); }
+int Port_BigDeflectMatch(int actor,int owner) {
+    if(actor<0||actor>=16||!(port_big_valid&(1u<<actor)))return 0;
+    return port_big_owner[actor]==owner;
+}
+#endif
 
 /* Fighter movement, 0x1DC9A0-0x1E0290 (see battle/btl_char_move.h for the model and the structures).
  *
@@ -339,6 +350,35 @@ s32 BtlMove_IsBlastIncoming(BtlMoveChr *chr, s32 a, s32 b, s32 c, f32 limit) {
     }
     return 0;
 }
+
+#ifdef PORT
+int Port_BigDeflectScan(int actor) {
+    extern int Port_BloodReviewEnabled(int);
+    extern BtlMoveChr *BtlChar_Get(s32);
+    extern int Port_PowerArmorTier(int,int);
+    extern int BtlMember_HasBlast(BtlMoveChr*,int);
+    BtlMoveChr *chr;BtlMoveBlastList *list;int i;
+    if(actor<0||actor>=16||!Port_BloodReviewEnabled(1))return 0;
+    port_big_valid&=~(1u<<actor);
+    chr=BtlChar_Get(actor);if(!chr||!BtlMember_HasBlast(chr,300000))return 0;
+    list=EftHit_GetList();if(!list)return 0;
+    for(i=0;i<list->count&&i<64;i++) {
+        BtlMoveBlastRec *rec=&list->rec[i];Vec4 step,d;float speed,dist;int owner,tier;
+        extern int Port_BigBeamReady(void*),Port_IsEnemy(int,int);
+        /* Only an explicitly registered, fired beam task can be transferred.
+         * The source's +4 is the native technique SLOT, not an effect module. */
+        if(rec->type!=1||!rec->src||rec->src->unk4<2||rec->src->unk4>4||!Port_BigBeamReady(rec->task))continue;
+        owner=rec->src->ownerId;if(owner<0||owner>=16||owner==actor||!Port_IsEnemy(owner,actor))continue;
+        tier=Port_PowerArmorTier(owner,actor);if(tier<1)continue;
+        Vec4_Sub(&step,&rec->pos,&rec->prevPos);
+        Vec4_Sub(&d,&BtlChar_GetPos(chr)->pos,&rec->pos);
+        speed=Vec3_Length(&step);dist=Vec3_Length(&d);
+        if(speed<.001f||Vec3_Dot(&d,&step)<=0||dist/speed>30.f)continue;
+        port_big_owner[actor]=owner;port_big_valid|=1u<<actor;return tier;
+    }
+    return 0;
+}
+#endif
 
 /* Number of type-1 blast records whose source belongs to this fighter. */
 s32 BtlMove_CountOwnBeams(BtlMoveChr *chr) {
@@ -1147,6 +1187,20 @@ void BtlMove_SetLeanZ(BtlMoveChr *chr, f32 v) {
 /* 1 when the push-out moved the fighter this frame (flag 0x5E) and the two overlap in height (or flag 0x5F). */
 s32 BtlMove_IsBlockedByOpponent(BtlMoveChr *chr) {
     Vec4 to;
+#ifdef PORT
+    /* A Story-owned victim does not participate in native push-out. A rush can
+       physically intersect it without ever raising5E: use the same real body
+       centres/radii for that exact authored pair, never a forced success. */
+    {extern int Port_StoryAuthoredVictim(int,int,int),Port_StoryHeld(int);
+     extern int BtlOpp_GetPlayer(BtlMoveChr*),BtlAct_GetCurrentClass(BtlMoveChr*);
+     int at=BtlOpp_GetPlayer(chr),slot=BtlAct_GetCurrentClass(chr);
+     if(BtlChar_TestFlag(chr,0x49)&&Port_StoryHeld(at)&&Port_StoryAuthoredVictim(chr->player,at,slot)){
+      Vec4 own,other,d;float radius=BtlCharApi_GetRadius(chr->objId)+BtlOpp_GetRadius(chr);
+      BtlCharApi_GetBodyPos(chr->objId,&own);BtlOpp_GetObjVecFA0(chr,&other);Vec4_Sub(&d,&other,&own);
+      if(radius>0&&Vec3_Dot(&d,&d)<=radius*radius)return 1;
+     }}
+#endif
+
 
     if (BtlChar_TestFlag(chr, 0x5E)) {
         if (BtlChar_TestFlag(chr, 0x5F)) {

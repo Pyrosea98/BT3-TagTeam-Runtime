@@ -929,6 +929,16 @@ s32 BtlAct_GuardHandler(Chr *chr, s32 phase) {
                 case 0xF5:
                     break;
             }
+#ifdef PORT
+            {extern int Port_BigDeflectScan(int);
+             if(BtlInput_TestAction(chr,95,1)){
+                 int tier=Port_BigDeflectScan(chr->side);
+                 if(tier){extern void Port_Dbg3(const char*,int,int,int,int);extern unsigned int gGsFrame;
+                     Port_Dbg3("big beam input queued actor/tier/frame/action",chr->side,tier,gGsFrame,0x3C);
+                     BtlAct_Request(chr,0x3C);return 0;
+                 }
+             }}
+#endif
             BtlDecide_Main(chr, 0x1000000);
             BtlDecide_Attack(chr, 0x400);
             BtlDecide_Common(chr, 6);
@@ -1034,6 +1044,9 @@ s32 BtlAct_Action3B(Chr *chr, s32 phase) {
 
 /* Action 0x3C: animation 0xFD with voice 5 and flag 0x52, then action 0xB. */
 s32 BtlAct_Action3C(Chr *chr, s32 phase) {
+#ifdef PORT
+    if(phase==3){extern void Port_BigDeflectClear(int);Port_BigDeflectClear(chr->side);}
+#endif
     if (phase == 0) {
         BtlAnim_Play(chr, 0xFD, 0.15f);
         BtlChar_PlayVoice(chr, 5);

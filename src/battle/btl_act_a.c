@@ -1,5 +1,9 @@
 #include "common.h"
 #include "battle/btl_act_a.h"
+#ifdef PORT
+#include <stdio.h>
+#include <stdlib.h>
+#endif
 
 /*
  * Fighter action handlers, first group: 0x1E3158..0x1EA5F8 (two parts: to 0x1E6CC0, and from there; the second
@@ -3384,6 +3388,44 @@ s32 BtlAct_BlowRecoverHandler(BtlActBChr *chr, s32 phase) {
     }
 }
 
+#ifdef PORT
+void Port_StoryCh2KrillinFallTrace(void *actor, const char *phase) {
+    BtlActBChr *chr = actor;
+    s32 action;
+    extern int Port_StoryChapter(void), Port_StoryCastActor(int), Port_StoryClothesProtected(int);
+    extern s32 BtlStage_GetWaterLevel(f32 *);
+    extern unsigned int gGsFrame;
+    static int enabled = -1;
+    BtlActBPose *pose;
+    f32 water = 0.0f;
+    s32 hasWater;
+
+    if (enabled < 0) {
+        enabled = getenv("BT3_CH2_KRILLIN_FALL_TRACE") != NULL;
+    }
+    if (!enabled || Port_StoryChapter() != 1 || chr->player != Port_StoryCastActor(1)) {
+        return;
+    }
+    action = BtlAct_GetCurrent(chr);
+    if (action != 0xD8 && action != 0xD9) {
+        return;
+    }
+    pose = BtlChar_GetPos(chr);
+    hasWater = BtlStage_GetWaterLevel(&water);
+    fprintf(stderr, "ch2-krillin frame=%u phase=%s action=%x prev=%x queued=%x motion=%x ko=%d wardrobe=%d "
+                    "xyz=%.6f,%.6f,%.6f ground=%.6f originOffset=%.6f vy=%.6f "
+                    "hasWater=%d water=%.6f immersed=%d surface=%d floor=%d prevFloor=%d snap=%d\n",
+            gGsFrame, phase, (unsigned)action, (unsigned)BtlAct_GetPrev(chr),
+            (unsigned)BtlAct_GetQueued(chr), (unsigned)BtlAnim_GetId(chr),
+            BtlChar_IsDead(chr), Port_StoryClothesProtected(chr->player), pose->pos.x, pose->pos.y, pose->pos.z,
+            pose->ground.y, pose->unk20.y, pose->fallSpeed, hasWater, water,
+            BtlChar_TestFlag(chr, 0x11), BtlChar_TestFlag(chr, 0x12),
+            BtlChar_TestFlag(chr, 0xF), BtlChar_TestPrevFlag(chr, 0xF),
+            BtlChar_TestFlag(chr, 0x1F));
+}
+#endif
+
+
 /* Action 0xD8: lying down (raises battle event 0x22 for the fighter's player). The animation follows
    BtlActB_PickDownAnim every frame unless flag 0x34. With the gauge word +0x28 set the fighter has to mash (chr + 0x1000
    counts the presses down) before it may get up; a dead fighter raises flag 0x137, and once at rest the member change
@@ -3460,6 +3502,9 @@ s32 BtlAct_LieDownHandler(BtlActBChr *chr, s32 phase) {
         }
     }
     if (phase == 2) {
+#ifdef PORT
+        Port_StoryCh2KrillinFallTrace(chr, "decide");
+#endif
         if (!BtlChar_TestFlag(chr, 0xF) && !BtlChar_TestPrevFlag(chr, 0xF) && !BtlChar_TestFlag(chr, 0x1F) &&
             !BtlChar_TestFlag(chr, 0x11)) {
             height = BtlAct_GetHeight(chr);
@@ -3510,11 +3555,17 @@ s32 BtlAct_FallHandler(BtlActBChr *chr, s32 phase) {
         }
         BtlAnim_Play(chr, air ? 0xC7 : 0xC6, blend);
         BtlChar_ClearFlag(chr, 0xE);
+#ifdef PORT
+        Port_StoryCh2KrillinFallTrace(chr, "enter-d9");
+#endif
     }
     if (phase == 1) {
         BtlAnim_AdvanceLoop(chr, 0);
         BtlMove_Step(chr, 6, 5, 7, 0.0f, BTL_KMH(500.0f) * (1.0f / 30.0f));
         BtlMove_Fall(chr);
+#ifdef PORT
+        Port_StoryCh2KrillinFallTrace(chr, "after-fall");
+#endif
         BtlActB_SetReactionFlags(chr);
         if (BtlMember_GetActiveGauge(chr)->unk28) {
             BtlChar_SetFlag(chr, 0x96);
@@ -3529,6 +3580,9 @@ s32 BtlAct_FallHandler(BtlActBChr *chr, s32 phase) {
         }
     }
     if (phase == 2) {
+#ifdef PORT
+        Port_StoryCh2KrillinFallTrace(chr, "decide");
+#endif
         land = 0;
         if (BtlChar_IsStage4Or27()) {
             if (BtlChar_TestFlag(chr, 0xF)) {
@@ -3543,6 +3597,18 @@ s32 BtlAct_FallHandler(BtlActBChr *chr, s32 phase) {
                 land = 1;
             }
         }
+#ifdef PORT
+        /* Stage9 can already clamp a KO to the floor and zero vertical speed.
+           With F unset, FramesToGround then reports "not falling" forever.
+           Finish the normal landing action; do not freeze a revivable body. */
+        {extern int Port_StoryActive(void);float gap=BtlAct_GetHeight(chr);
+         if(!land&&Port_StoryActive()&&BtlChar_IsDead(chr)&&chr->actionFrame>6&&
+            !BtlChar_TestFlag(chr,0x11)&&gap>=-.1f&&gap<=.1f){
+          land=1;
+          {extern char*getenv(const char*);extern void Port_Dbg3(const char*,int,int,int,int);
+           if(getenv("BT3_STORY_ACTOR_LOG"))Port_Dbg3("story KO ground contact",chr->player,(int)(gap*1000),0xD9,0xDC);}
+         }}
+#endif
         if (land) {
             BtlAct_Request(chr, 0xDC);
             if (BtlChar_IsFree(chr) && !BtlChar_TestFlag(chr, 0x1E)) {

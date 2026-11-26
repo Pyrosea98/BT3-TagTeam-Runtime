@@ -1,4 +1,5 @@
 #include "common.h"
+#include <stdio.h>
 #include "battle/btl_capi_b.h"
 
 /*
@@ -1269,8 +1270,15 @@ void BtlCtrl_SetPos(s32 player, Vec4 *pos) {
              velocity, not that offset: the preceding rush left Nappa64 units
              above a correctly reset root. CH7's authored warp owns both. */
           extern int Port_StoryChapter(void);
-          if(Port_StoryChapter()==6){Vec4*offset=(Vec4*)chr->pose.unk20;offset->x=offset->y=offset->z=offset->w=0;}
-          BtlChar_Place(chr,pos,&BtlChar_GetPos(chr)->rot,BtlStage_FindZoneNear(-1,pos));BtlChar_ClearFlag(chr,0xFC);}}
+          extern int Port_StoryGroundedBody(int);
+          extern int Port_StorySceneOwns(int);if(Port_StoryChapter()==6||Port_StoryGroundedBody(player)||Port_StorySceneOwns(player)){Vec4*offset=(Vec4*)chr->pose.unk20;offset->x=offset->y=offset->z=offset->w=0;}
+          BtlChar_Place(chr,pos,&BtlChar_GetPos(chr)->rot,BtlStage_FindZoneNear(-1,pos));
+          /* An authored teleport is a discontinuity, not this frame's old
+             motion. Native aim reads snapshot6; movement/contact use0..5.
+             Invalidate all of them so every consumer sees the committed pose
+             until the normal native passes take fresh snapshots. */
+          {extern void BtlChar_ClearSnapshots(BtlCapiBChr*);BtlChar_ClearSnapshots(chr);}
+          BtlChar_ClearFlag(chr,0xFC);}}
 #endif
     }
 }
@@ -1294,7 +1302,9 @@ void BtlCtrl_SetRot(s32 player, Vec4 *rot) {
 #ifdef PORT
         {extern int Port_StoryActive(void);extern s32 BtlStage_FindZoneNear(s32,Vec4*);
          extern void BtlChar_Place(void*,Vec4*,Vec4*,s32);
-         if(Port_StoryActive()){Vec4*p=&BtlChar_GetPos(chr)->pos;BtlChar_Place(chr,p,rot,BtlStage_FindZoneNear(-1,p));BtlChar_ClearFlag(chr,0xFD);}}
+         if(Port_StoryActive()){Vec4*p=&BtlChar_GetPos(chr)->pos;BtlChar_Place(chr,p,rot,BtlStage_FindZoneNear(-1,p));
+          {extern void BtlChar_ClearSnapshots(BtlCapiBChr*);BtlChar_ClearSnapshots(chr);}
+          BtlChar_ClearFlag(chr,0xFD);}}
 #endif
     }
 }
@@ -2325,6 +2335,17 @@ void Port_StoryReleaseActor(s32 player){
 }
 #endif
 #ifdef PORT
+/* Bounded passive evidence for free CPUs that remain in a neutral/assist pose.
+   No input injection, forced state or memory inspection outside the game. */
+static void st_cpu_idle_report(int actor,int enemy,BtlCapiBChr*c){
+ static int ticks[16],reports[16];int a=BtlAct_GetCurrent(c);extern int Port_AssistHolding(int),Port_SequencePartner(int);
+ if(reports[actor]>=12||!((a==4)||(a==7)||(a==11)||(a==12)||(a==15)||(a==67))){ticks[actor]=0;return;}
+ if(++ticks[actor]<90)return;ticks[actor]=0;reports[actor]++;
+ {extern void Port_StoryAiAudit(int,int,int);Port_StoryAiAudit(actor,-1,-1);}
+ fprintf(stderr,"bt3: story CPU neutral actor%d target%d action%d request%d inject%d frozen%d pair%d assist%d flags11E%d/11F%d/B1%d/FA%d\n",
+  actor,enemy,a,*(int*)((u8*)c+0x94c),*(int*)((u8*)c+0x1278),BtlChar_IsFrozen(c),Port_SequencePartner(actor),Port_AssistHolding(actor),
+  BtlChar_TestFlag(c,0x11E),BtlChar_TestFlag(c,0x11F),BtlChar_TestFlag(c,0xB1),BtlChar_TestFlag(c,0xFA));
+}
 /* A free Story CPU can retain a completed native AI plan after a scene or
    hit reaction. Retry only a stationary neutral CPU, never a human, charge,
    attack, knockdown, frozen fighter or a live paired sequence. */
@@ -2333,10 +2354,14 @@ void Port_StoryResumeCombatActor(s32 player,s32 enemy){
  BtlCapiBChr*c;Vec4 p;s32 action;extern int Port_TargetHuman(s32),Port_SequencePartner(s32);
  extern s32 BtlChar_IsFrozen(BtlCapiBChr*);extern void BtlAiMgr_ResetSide(s32);
  if((u32)player>=16)return;c=BtlChar_Get(player);
- if(!c||BtlChar_IsDead(c)||Port_TargetHuman(player)||enemy<0||Port_SequencePartner(player)>=0||BtlChar_IsFrozen(c)){wait[player]=0;return;}
+ if(c&&!BtlChar_IsDead(c)&&!Port_TargetHuman(player))st_cpu_idle_report(player,enemy,c);
+ if(!c||BtlChar_IsDead(c)||Port_TargetHuman(player)||enemy<0||Port_SequencePartner(player)>=0){wait[player]=0;return;}
+ /* Shared hit-stop can freeze uninvolved allies repeatedly. Pause the neutral
+    recovery clock; erasing it on every hit prevents90free frames accumulating. */
+ if(BtlChar_IsFrozen(c))return;
  action=BtlAct_GetCurrent(c);BtlCharApi_GetPos(c->objId,&p);
  if(action==4){Port_StoryReleaseActor(player);wait[player]=0;last[player]=p;return;}
- if((action!=0xB&&action!=0xC)||Vec3_Length(&(Vec4){p.x-last[player].x,p.y-last[player].y,p.z-last[player].z,0})>.05f){wait[player]=0;last[player]=p;return;}
+ if((action!=0xB&&action!=0xC&&action!=0xF)||Vec3_Length(&(Vec4){p.x-last[player].x,p.y-last[player].y,p.z-last[player].z,0})>.05f){wait[player]=0;last[player]=p;return;}
  last[player]=p;
  if(++wait[player]>=90){wait[player]=0;BtlAiMgr_ResetSide(player);
   {extern void Port_Dbg3(const char*,int,int,int,int);Port_Dbg3("story stationary CPU plan resumed",player,enemy,action,0);}}
@@ -2371,7 +2396,197 @@ void Port_StoryControlProbe(s32 player){BtlCapiBChr*c=BtlChar_Get(player);Pad*p;
 #endif
 
 #ifdef PORT
+/* Whether a motion slot of this fighter holds a real clip (a 64-byte stub decodes to less than a header and is
+   rejected by BtlObjAnim_Load). The table is BtlObj + 0xC0 (bobj_a.h BObjMdl.anims), ids below 0x19E. */
+int Port_StoryClipReady(int player,int anim){ /* the story animation library is present: its launcher sets BT3_STORY_LIBRARY=1.
+   (A table probe was tried first and read the wrong object field: the paired beat never ran.) */
+ static int on=-1;extern char*getenv(const char*);(void)player;(void)anim;if(on<0)on=getenv("BT3_STORY_LIBRARY")!=0;return on;}
 void Port_StoryHoldPose(s32 player,s32 motion){BtlCapiBChr*c=BtlChar_Get(player);extern int Port_StoryActive(void);
- if(c&&Port_StoryActive()&&BtlAct_GetCurrent(c)!=4)BtlCtrl_PlayMotion(player,motion,1,.1f);
+ if(c&&Port_StoryActive()){
+    /* Reference MoveChar has no -l: complete the motion, hold its last frame.
+       Continuing across dialogue -> beam must not rewind the wrist/grip. */
+    if(BtlAct_GetCurrent(c)!=4||BtlAnim_GetId(c)!=motion)BtlCtrl_PlayMotion(player,motion,0,.1f);
+    else{BtlChar_ClearFlag(c,0xFB);BtlChar_ClearFlag(c,0xFA);c->motionLoop=0;}
+   }
 }
+#endif
+
+#ifdef PORT
+void Port_StoryCaptureActorPose(int actor,void*bottom){
+ BtlCapiBChr*c=BtlChar_Get(actor);extern void Port_StoryCaptureBodyPose(void*,void*);
+ if(c)Port_StoryCaptureBodyPose(BtlChar_GetObj(c),bottom);
+}
+#endif
+
+#ifdef PORT
+/* The caller is the native victim movie's completed phase, with the clip still
+   bound. Sample its final frame, not the following neutral/recovery motion. */
+void Port_StoryCaptureCinematicPose(int actor,void*bottom){
+ BtlCapiBChr*c=BtlChar_Get(actor);extern void BtlAnim_JumpToEnd(void*),BtlObjAnim_SamplePose(void*);
+ extern void BtlChar_PoseToObj(void*,int),BtlObjPose_CalcMatrices(void*);
+ extern void Port_StoryCaptureBodyPose(void*,void*);
+ if(c){void*o=BtlChar_GetObj(c);BtlAnim_JumpToEnd(c);BtlObjAnim_SamplePose(o);BtlChar_PoseToObj(c,1);BtlObjPose_CalcMatrices(o);Port_StoryCaptureBodyPose(o,bottom);}
+}
+/* Capture an existing down pose for a persistent Story corpse. The final sampled
+   frame is copied into local joints/look; this is visual-only and never invokes a hit. */
+int Port_StoryCaptureStillPose(int actor,int settle){
+ BtlCapiBChr*c=BtlChar_Get(actor);int anim;extern float BtlAnim_GetFrame(BtlCapiBChr*);
+ extern void BtlAnim_JumpToEnd(void*),BtlObjAnim_SamplePose(void*);
+ extern void BtlChar_PoseToObj(void*,int),BtlObjPose_CalcMatrices(void*),Port_StoryCaptureStillBodyPose(void*,int);
+ if(!c)return 0;anim=BtlAnim_GetId(c);
+ if(settle&&anim!=0xD6){BtlCtrl_PlayMotion(actor,0xD6,0,0.f);return 0;}
+ if(!settle&&((anim!=0xD5&&anim!=0xD6)||BtlAnim_GetFrame(c)<12.f))return 0;
+ {void*o=BtlChar_GetObj(c);if(settle)BtlAnim_JumpToEnd(c);BtlObjAnim_SamplePose(o);BtlChar_PoseToObj(c,1);BtlObjPose_CalcMatrices(o);Port_StoryCaptureStillBodyPose(o,actor);}
+ return 1;
+}
+#endif
+
+#ifdef PORT
+/* Native facial shapes/talk/jaw; no replacement textures and no guessed eye frames. */
+void Port_StoryFaceFrame(int actor,int mode){
+ static unsigned owned,eyeOwned;BtlCapiBChr*c;void*o;
+ extern void BtlObj_SetEyeFrame(void*,unsigned);
+ extern void BtlObj_SetSubState(void*,s32,s32);extern s32 BtlObj_GetMouthMode(void*);
+ if(actor<0||actor>=16||(c=BtlChar_Get(actor))==NULL)return;
+ o=BtlChar_GetObj(c);
+ {extern int Port_StoryVisualObjectId(int,int),Port_FighterObjId(int);extern void*BtlObj_Get(int);int id=Port_FighterObjId(actor),visual=Port_StoryVisualObjectId(actor,id);if(visual!=id){void*v=BtlObj_Get(visual);if(v)o=v;}}
+ /* Surprise is the native fixed open-mouth face, not REST with an
+    unsupported eye texture index. Keep it stable for the authored beat. */
+ if(mode==21||mode==22||mode==23||mode==24||mode==27||mode==28||mode==29){BtlObj_SetEyeFrame(o,2);eyeOwned|=1u<<actor;mode=mode==27?3:mode==28?10:mode==29?9:8;} /* 27: native TALK loop with surprised eyes; 26 remains moon trance. */
+ else if(eyeOwned&(1u<<actor)){BtlObj_SetEyeFrame(o,9);eyeOwned&=~(1u<<actor);}
+ if(mode==25){BtlObj_SetEyeFrame(o,0);eyeOwned|=1u<<actor;mode=6;}
+ if(mode==26){BtlObj_SetEyeFrame(o,3);eyeOwned|=1u<<actor;mode=6;}
+ if(mode==30){BtlObj_SetEyeFrame(o,3);eyeOwned|=1u<<actor;mode=3;}
+ if(mode==20)mode=10;
+ if(mode<0){if(owned&(1u<<actor)){BtlObj_SetSubState(o,0,0);owned&=~(1u<<actor);}return;}
+ if(mode!=0&&mode!=3&&(mode<5||mode>12))return;
+
+ if(BtlObj_GetMouthMode(o)!=mode){
+  int old=BtlObj_GetMouthMode(o);
+  /* Native hold shapes9..12 refuse every transition except REST. */
+  if(old>=9&&old<=12)BtlObj_SetSubState(o,0,0);
+  BtlObj_SetSubState(o,mode,0);
+ }
+ owned|=1u<<actor;
+}
+#endif
+
+#ifdef PORT
+int Port_StoryNativeMovieActive(int actor){
+ BtlCapiBChr*c=BtlChar_Get(actor);int a;if(!c)return 0;a=BtlAct_GetCurrent(c);
+ return BtlChar_TestFlag(c,0x72)||BtlChar_TestFlag(c,0x73)||(a>=0x12A&&a<=0x12F);
+}
+#endif
+
+#ifdef PORT
+void Port_StoryAcceptNativeVictim(int actor,int slot){
+ BtlCapiBChr*c=BtlChar_Get(actor);extern void BtlAct_Request(void*,s32);
+ if(!c||slot<2||slot>4)return;
+ /* StartThrow already populated both native throw blocks. Only release the
+    dialogue's action4, then dispatch its matching victim slot; never idle. */
+ BtlChar_ClearFlag(c,0xFA);BtlChar_ClearFlag(c,0xFB);
+ BtlAct_Request(c,0x137+slot);
+}
+#endif
+
+#ifdef PORT
+/* Frozen corpses do not reach native Stage4/9. Commit their grounded root
+   without advancing/replacing the captured pose or unfreezing the actor. */
+void Port_StoryCommitGroundedBody(int actor){
+ BtlCapiBChr*c=BtlChar_Get(actor);
+ extern void BtlChar_PoseToObj(void*,int),BtlObjPose_CalcMatrices(void*);
+ if(c&&BtlChar_IsFrozen(c)){BtlChar_PoseToObj(c,0);BtlObjPose_CalcMatrices(BtlChar_GetObj(c));}
+}
+#endif
+
+#ifdef PORT
+int Port_StorySampleMotionQ8(int actor,int motion,int frameQ8){
+ BtlCapiBChr*c;extern int Port_StorySampleObjectFrameQ8(void*,int);
+ extern void BtlChar_PoseToObj(void*,int);if(actor<0||actor>=16)return 0;
+ c=BtlChar_Get(actor);if(!c)return 0;
+ {extern void BtlAnim_Play(BtlCapiBChr*,int,float);
+  if(BtlAct_GetCurrent(c)!=4)BtlCtrl_PlayMotion(actor,motion,0,0.f);
+  if(BtlAnim_GetId(c)!=motion)BtlAnim_Play(c,motion,0.f);
+  if(BtlAct_GetCurrent(c)==4)BtlChar_ClearFlag(c,0xFA);
+ }
+ BtlChar_ClearFlag(c,0xFB);c->motionLoop=0;
+ BtlChar_PoseToObj(c,0);return Port_StorySampleObjectFrameQ8(BtlChar_GetObj(c),frameQ8);
+}
+int Port_StorySampleMotion(int actor,int motion,int frame){return Port_StorySampleMotionQ8(actor,motion,frame*256);}
+
+#endif
+
+#ifdef PORT
+void Port_StoryCarryArm(int actor,int capture){BtlCapiBChr*c;if(actor<0||actor>=16)return;c=BtlChar_Get(actor);if(c){
+ extern void Port_StoryCaptureCarryArm(void*),Port_StoryApplyCarryArm(void*);
+ if(capture)Port_StoryCaptureCarryArm(BtlChar_GetObj(c));else Port_StoryApplyCarryArm(BtlChar_GetObj(c));}}
+#endif
+
+#ifdef PORT
+int Port_StoryLoopMotion(int actor,int motion,int tick){BtlCapiBChr*c;float len;extern float BtlAnim_GetLength(BtlCapiBChr*);
+ if(actor<0||actor>=16||tick<0||!Port_StorySampleMotion(actor,motion,0))return 0;c=BtlChar_Get(actor);len=BtlAnim_GetLength(c);
+ if(!(len>=1.f&&len<10000.f))return 0;return Port_StorySampleMotion(actor,motion,tick%(int)len);}
+void Port_StoryImpactSound(int actor,int sound){BtlCapiBChr*c;extern void BtlCharSnd_PlayCommonFar(BtlCapiBChr*,int);
+ if(actor<0||actor>=16)return;c=BtlChar_Get(actor);if(c)BtlCharSnd_PlayCommonFar(c,sound);}
+#endif
+
+#ifdef PORT
+/* Read only the jaw target of the current authored face; no body motion changes. */
+int Port_StoryObjectJawQ12(void*raw){
+ int a,n;extern int Port_StoryJawQ12(int),Port_StoryActive(void),Port_StoryChapter(void),BtlChar_GetCount(void);
+ if(!raw||!Port_StoryActive())return 0;
+ n=BtlChar_GetCount();if(n>16)n=16;
+ for(a=0;a<n;a++){BtlCapiBChr*c=BtlChar_Get(a);if(c&&BtlChar_GetObj(c)==raw)return Port_StoryJawQ12(a);}
+ return 0;
+}
+#endif
+
+#ifdef PORT
+int Port_StorySbcContact(int actor,int frame){
+ BtlCapiBChr*c=BtlChar_Get(actor);extern float BtlAnim_GetFrame(BtlCapiBChr*);
+ return c&&BtlAnim_GetId(c)==358&&BtlAnim_GetFrame(c)>=(float)frame;
+}
+#endif
+
+#ifdef PORT
+/* Explicit sampled-scene root update. Unlike the corpse-only helper, this
+   also commits the live sparring actors without requiring the KO freeze. */
+/* Authored scene boundary only: a flight display offset is not a new origin. */
+void Port_StoryResetSceneOffset(int actor){
+ BtlCapiBChr*c=BtlChar_Get(actor);if(c){Vec4*offset=(Vec4*)c->pose.unk20;
+ offset->x=offset->y=offset->z=offset->w=0;}
+}
+void Port_StoryCommitSampledRoot(int actor){
+ BtlCapiBChr*c=BtlChar_Get(actor);extern void BtlChar_PoseToObj(void*,int),BtlObjPose_CalcMatrices(void*);
+ if(c){BtlChar_PoseToObj(c,0);BtlObjPose_CalcMatrices(BtlChar_GetObj(c));}
+}
+#endif
+
+#ifdef PORT
+/* A private authored donor slot belongs to this actor's own animation bank.
+   BtlAnim_Play otherwise interprets the reserved slot's stock table flags as
+   a victim motion and loads it from the opponent (whose slot is empty). */
+int Port_StorySampleOwnMotionQ8(int actor,int motion,int frameQ8){
+ BtlCapiBChr*c=BtlChar_Get(actor);int changed;void*o;
+ extern void BtlObjAnim_Play(void*,int,int,int);
+ extern int Port_StorySampleObjectFrameQ8(void*,int);
+ if(!c)return 0;changed=BtlAnim_GetId(c)!=motion;
+ Port_StorySampleMotionQ8(actor,motion,frameQ8);o=BtlChar_GetObj(c);
+ if(changed)BtlObjAnim_Play(o,0,motion,1);
+ return Port_StorySampleObjectFrameQ8(o,frameQ8);
+}
+#endif
+
+#ifdef PORT
+void Port_StoryHurtVoice(int actor){
+    struct StoryVoiceEntry {s16 first,count;f32 interval;};
+    extern struct StoryVoiceEntry *BtlChar_GetVoiceEntry(int);
+    extern int Port_StoryVoiceHurt(int);
+    struct StoryVoiceEntry *ent=BtlChar_GetVoiceEntry(1);
+    if(BtlChar_Get(actor) && ent && ent->count>0)Port_StoryVoiceHurt(ent->first);
+}
+#endif
+
+#ifdef PORT
+int Port_StoryDiscPalette(int actor){extern int BtlKiBlast_GetUnk3(void*);BtlCapiBChr*c=BtlChar_Get(actor);int kind=c?BtlKiBlast_GetUnk3(c):2;return kind==2?1:kind==4?2:kind==6?3:0;}
 #endif

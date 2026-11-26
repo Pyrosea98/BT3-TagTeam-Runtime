@@ -29,6 +29,9 @@
  */
 #include "common.h"
 #include "battle/eft_det_b.h"
+#ifdef PORT
+#include "mod_terrain_bridge.h"
+#endif
 
 extern void *memset(void *dst, s32 c, u32 n);
 extern f32 sqrtf(f32 x);
@@ -89,11 +92,24 @@ extern s32 BtlCharApi_TestStageBreakB(s32 objId);
 extern StgColStage *gBtlStage;
 extern s32 gStgColMode;
 extern void *gStgColMesh;
+#ifdef PORT
+extern int gPortTerrainStaticWalk;
+#endif
 extern s32 gStgColZoneMisses;
 extern s32 gStgColZoneVisits;
 extern f32 gStgColFar[];
 extern StgColVec D_002EC2C0;       /* zero vector */
 extern StgColVec D_002EC2E0;       /* (0, 1, 0): down */
+
+#ifdef PORT
+/* Called at scar admission, not from the non-reentrant collision walker. */
+void Port_TerrainCollectStatic(void*state,void*input){
+ extern void Port_TerrainCollectMesh(void*,void*,void*);unsigned i,n;
+ if(!gBtlStage)return;n=*((u32*)((u8*)gBtlStage+0x38));if(n>4096)return;
+ for(i=0;i<n;i++)Port_TerrainCollectMesh(state,input,gBtlStage->zones[i].mesh);
+}
+extern s32 ColMesh_TerrainWalls(StgColBox*,void*,StgColCb);
+#endif
 
 /* Queries test the zone's static mesh, whole objects and broken objects. */
 void StgCol_SetModeAll(void) {
@@ -115,10 +131,19 @@ s32 StgCol_QueryZone(StgColResult *res, StgColZone *zone, StgColBox *box, void *
     memset(res, 0, sizeof(StgColResult));
     if (gStgColMode == 0) {
         gStgColMesh = zone->mesh;
-        if (ColMesh_WalkBox(gStgColMesh, box, ctx, cb)) {
+        {s32 hit;
+#ifdef PORT
+        gPortTerrainStaticWalk=1;
+#endif
+        hit=ColMesh_WalkBox(gStgColMesh, box, ctx, cb);
+#ifdef PORT
+        gPortTerrainStaticWalk=0;
+        hit|=ColMesh_TerrainWalls(box,ctx,cb);
+#endif
+        if (hit) {
             res->hit = 1;
             res->ground = 1;
-        }
+        }}
     }
     for (i = 0; i < zone->recCount; i++) {
         StgColRec *rec = &recs[i];
@@ -136,7 +161,17 @@ s32 StgCol_QueryZone(StgColResult *res, StgColZone *zone, StgColBox *box, void *
             }
         }
         gStgColMesh = rec->mesh;
-        if (ColMesh_WalkBox(gStgColMesh, box, ctx, cb)) {
+        {s32 touched;
+#ifdef PORT
+        /* Broken static foundations follow the crater; whole objects and moving
+         * debris retain the native path. */
+        gPortTerrainStaticWalk=rec->broken!=0;
+#endif
+        touched=ColMesh_WalkBox(gStgColMesh, box, ctx, cb);
+#ifdef PORT
+        gPortTerrainStaticWalk=0;
+#endif
+        if (touched) {
             res->recMask |= 1LL << i;
             res->hit = 1;
             res->rec = 1;
@@ -144,6 +179,7 @@ s32 StgCol_QueryZone(StgColResult *res, StgColZone *zone, StgColBox *box, void *
                 res->obj = 1;
                 res->objMask |= 1LL << rec->obj;
             }
+        }
         }
     }
     return res->hit;
@@ -435,6 +471,9 @@ void StgCol_UpdateFighter(StgColFighter *obj, s32 keepSphere, s32 grow) {
         StgCol_MoveFighter(obj, &ctx, zone, steps, &step, &delta, 0, keepSphere);
     }
     pose->zone = zone;
+#ifdef PORT
+    {static int once[16];int id=obj->objId;int knock=BtlCharApi_TestStageBreakB(id);if(id>=0&&id<16){if(!knock)once[id]=0;else if(Port_TerrainEnabled()&&!once[id]&&(work->flags&STGCOL_HIT_WALL)&&dist>3.f&&ctx.poly.nrm.y<-.82f){extern float BtlCharApi_GetHeight(int);TdEvent e;float h=BtlCharApi_GetHeight(id);memset(&e,0,sizeof(e));if(h<1||h>100)h=20;e.owner=id;e.fx=1;e.ax=e.bx=ctx.sphere.pos.x;e.az=e.bz=ctx.sphere.pos.z;e.ay=(ctx.poly.nrm.w-ctx.poly.nrm.x*e.ax-ctx.poly.nrm.z*e.az)/ctx.poly.nrm.y;e.r=h*.9f;e.depth=e.r*.3f;e.sx=-ctx.poly.nrm.x/ctx.poly.nrm.y;e.sz=-ctx.poly.nrm.z/ctx.poly.nrm.y;Port_TerrainAdd(&e);once[id]=1;}}}
+#endif
 }
 
 /* A fighter's body touched unbroken stage object idx. */

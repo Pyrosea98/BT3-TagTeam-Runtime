@@ -289,7 +289,7 @@ static const ModTranslation sModTranslations[]={
  {"The bloom around bright things and the sky's glare.","El halo de los objetos brillantes y el resplandor del cielo."},
  {"The blur of the scenery while the view turns or moves fast.","El desenfoque al girar o mover la cámara rápidamente."},
  {"The game reads the controller, computes, and then waits before the picture is shown:\nabout 33 ms in a fight. With this on the wait comes first, so the picture follows\nyour press by the few milliseconds the machine needs. The game itself is unchanged.\nNot used online or with in-between pictures. Off by default: on a machine that\ncannot keep up it may stutter where the original order would not.","Reduce la espera entre pulsar un botón y ver la respuesta. Experimental: puede causar tirones en equipos lentos. No se usa en línea ni con interpolación."},
- {"The game's own vibration (hits, clashes, charging), on this player's controller.\nThe game's Options > Controller > Vibration has to be on as well: it is, unless you turned it off.\nThe game gives none in a replay or for a side the computer plays.","Vibración del mando de este jugador durante golpes, choques y cargas de energía."},
+ {"The game's own vibration (hits, clashes, charging), on this player's controller.\nThis setting controls vibration; the retired game's option is not required.\nThe game gives none in a replay or for a side the computer plays.","Vibración del mando de este jugador durante golpes, choques y cargas de energía. Este ajuste controla la vibración sin depender de la antigua opción del juego. No hay vibración en las repeticiones ni para los luchadores de la CPU."},
  {"The haze that colours distant things.","La neblina que tiñe los objetos lejanos."},
  {"The host's choices apply to both players.","Las opciones del anfitrión se aplican a ambos jugadores."},
  {"The host's game is a different version. Both players need the same release.","El anfitrión tiene otra versión. Ambos necesitan la misma versión."},
@@ -458,6 +458,15 @@ static const ModTranslation sModTranslations[]={
  {"Left paddle 2","Palanca trasera izquierda 2"},
  {"Touchpad","Panel táctil"},
  {"Button %d","Botón %d"},
+ {" (relay)"," (retransmisión)"},
+ {"rollback off","Rollback desactivado"},
+ {"The other player's game is a different version.","El otro jugador tiene una versión diferente del juego."},
+ {"The two games no longer agree (desync): the match has ended.","Los juegos se desincronizaron. La partida terminó."},
+ {"The other player left the match.","El otro jugador abandonó la partida."},
+ {"The connection to the other player was lost.","Se perdió la conexión con el otro jugador."},
+ {"Tenkaichi Budokai Online: your opponent is here! The match begins.","Tenkaichi Budokai Online: ¡tu rival ha llegado! Empieza la partida."},
+ {"Tenkaichi Budokai Online: the room was closed.","Tenkaichi Budokai Online: se cerró la sala."},
+ {"Update available: 0.%d.%d. F1 for the download page.","Actualización disponible: 0.%d.%d. Pulsa F1 para abrir la página de descarga."},
 };
 static const char *mod_l10n(const char *text){
  if(Port_Setting("mod_language",1)!=1)return text;

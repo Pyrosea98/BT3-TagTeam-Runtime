@@ -94,6 +94,7 @@ void BtlChange_Reset(void) {
     memset(&gBtlChars->change, 0, sizeof(BtlChangeQueue));
 #ifdef PORT
     sPortChangeMoreCount = 0;
+    {extern void Port_StoryNappaOutfitReset(void);Port_StoryNappaOutfitReset();}
     {extern void Port_BodyChangeReset(void);Port_BodyChangeReset();}
 #endif
 }
@@ -128,6 +129,15 @@ void BtlChange_Update(void) {
        Keep the real loader/commit path: grant READY, never discard an active job. */
     {extern s32 Port_StoryRetired(s32),Port_StorySceneParked(s32);
      if(q->cur&&q->state==BTL_CHANGE_LOADED&&(Port_StoryRetired(q->cur->player)||Port_StorySceneParked(q->cur->player)))q->state=BTL_CHANGE_READY;}
+    /* Do not strand an ordinary damage load when a Story scene replaces its attack action. */
+    {extern int Port_StoryAdoptWardrobeLoad(int,int,int,int);
+     if(q->cur&&q->cur->kind==BTL_CHANGE_KIND_CHARA&&q->state==BTL_CHANGE_LOADED)
+       Port_StoryAdoptWardrobeLoad(q->cur->player,q->cur->chara,q->cur->costume,q->cur->variant);}
+    /* A scripted outfit change has no native attack action to acknowledge it. */
+    {extern int Port_StoryNappaOutfitOwns(int,int,int,int);
+     if(q->cur&&q->cur->kind==BTL_CHANGE_KIND_CHARA&&q->state==BTL_CHANGE_LOADED&&
+        Port_StoryNappaOutfitOwns(q->cur->player,q->cur->chara,q->cur->costume,q->cur->variant))
+       q->state=BTL_CHANGE_READY;}
     Port_ChangeRefill();
 #endif
     if (q->state == BTL_CHANGE_DONE) {

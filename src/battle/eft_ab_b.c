@@ -414,6 +414,10 @@ s32 EftTransform_Start(EftTransformArg *req) {
     EftTransformArg arg = *req;
     EftAbTask *task;
 
+#ifdef PORT
+    {extern int Port_StoryCh9QuietRevert(int);if(Port_StoryCh9QuietRevert(arg.objId))return 0;}
+#endif
+
     if (gEftTransform->busy != 0) {
         return 0;
     }

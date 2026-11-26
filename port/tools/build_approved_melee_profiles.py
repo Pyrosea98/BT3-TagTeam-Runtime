@@ -23,7 +23,7 @@ def main():
     available={(int(r['id']),int(r['costume'])-1):r for r in routes if not int(r['damaged'])}
     # Explicit real costume powers; old host costumes also remain correct if used.
     keys={(cid,0):power for cid,power in POWERS.items()}
-    keys.update({(54,1):40000,(59,1):80000,(60,1):1000,
+    keys.update({(54,1):40000,(59,1):80000,(60,1):5000,(60,2):5000,(60,3):5000,
                  (147,1):80,(147,2):80,(147,3):100,
                  (76,2):100,(116,3):30})
     # Super17FP's native stock table exposes four costumes with the same authored power.

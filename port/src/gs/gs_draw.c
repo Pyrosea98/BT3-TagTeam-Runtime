@@ -23,6 +23,10 @@
 #include "game_icon_rgba.inc"
 #include "gs_internal.h"
 #include "gs_draw.h"
+#include "mod_terrain_bridge.h"
+#include "mod_terrain_cache.h"
+static TdCache sTerrainCache;
+#include "mod_ground_materials.h"
 #include "ui.h"         /* PortVideo and the window helpers */
 #include "gs_texpack.h" /* texture packs (replacement textures) */
 #include "menu_text.h"  /* editable labels in the original menu texture slots */
@@ -131,6 +135,12 @@ typedef struct Tex {
 static Tex sTex[MAX_TEX];
 static uint16_t sTexBucket[TEX_BUCKETS]; /* index + 1 of a cache entry, 0 = empty (open addressing) */
 static Tex *sLast; /* the entry the previous lookup returned */
+static int sBloodActor=-1,sBloodPart=-1;
+#include "mod_blood_surface.inc"
+void GsGpu_BloodPart(uint64_t value) {
+    if((uint32_t)(value>>32)!=0x424C4F44u){sBloodActor=sBloodPart=-1;return;}
+    sBloodActor=((int)value&255)-1;sBloodPart=(((int)value>>8)&511)-1;
+}
 
 /* The 256-colour tables as textures, by hash of the palette entries they use (64 slots). */
 static struct { uint32_t hash, last; GsTex tex; } sCluts[MAX_CLUTS];
@@ -338,7 +348,105 @@ static GsTex tbo_texture(uint32_t id) {
    the texture and takes the decoded pixels (freed after it has uploaded them). */
 extern unsigned Port_Beta8TraceEpoch(void);
 extern void Port_Beta8TraceTexture(unsigned,unsigned long long,unsigned,const void*,unsigned,int);
+#include <pthread.h>
+/* Decoding a texture's rows: a large one is shared among worker threads (and the caller), which only read GS memory
+   while the caller waits, so nothing after it changes. When a fight's first effects come, one frame decodes 10 to
+   100 new textures; on one thread that was 20 to 30 ms of the frame. BT3_TEX_THREADS=<n>: that many workers (0: none;
+   by default the logical processors less two, at most 7). */
+typedef struct TexDecode {
+    uint32_t tbp, tbw, psm, bits, tw, th;
+    const uint32_t *lut; /* a palette's colours by index (bits <= 8) */
+    uint32_t *px;
+} TexDecode;
+
+static void tex_decode_rows(const TexDecode *d, uint32_t y0, uint32_t y1) {
+    uint32_t x, y;
+    for (y = y0; y < y1; y++) {
+        for (x = 0; x < d->tw; x++) {
+            uint32_t c = Gs_VramRead(d->tbp, d->tbw, d->psm, x, y);
+            /* (alpha is kept as the GS has it, 0x80 = opaque, up to 0xFF: the shader rescales it. Values above 0x80
+               matter: the see-through pass gives palettes alpha 0xF9 to write an id) */
+            d->px[y * d->tw + x] = d->bits > 8 ? Gs_Expand(c, d->psm) : d->lut[d->bits == 8 ? c & 0xFF : c & 0xF];
+        }
+    }
+}
+
+#define TEX_DECODE_CHUNK 16 /* rows taken at a time */
+static pthread_mutex_t sDecLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t sDecWake = PTHREAD_COND_INITIALIZER, sDecDone = PTHREAD_COND_INITIALIZER;
+static const TexDecode *sDecJob;
+static unsigned sDecGen, sDecNext, sDecBusy;
+static int sDecWorkers = -1;
+
+static void tex_decode_share(const TexDecode *d) { /* takes chunks of rows until there are none left */
+    for (;;) {
+        uint32_t y0 = __atomic_fetch_add(&sDecNext, TEX_DECODE_CHUNK, __ATOMIC_RELAXED);
+        if (y0 >= d->th) {
+            return;
+        }
+        tex_decode_rows(d, y0, y0 + TEX_DECODE_CHUNK < d->th ? y0 + TEX_DECODE_CHUNK : d->th);
+    }
+}
+
+static void *tex_decode_worker(void *unused) {
+    unsigned seen = 0;
+    (void)unused;
+    for (;;) {
+        const TexDecode *d;
+        pthread_mutex_lock(&sDecLock);
+        while (sDecGen == seen) {
+            pthread_cond_wait(&sDecWake, &sDecLock);
+        }
+        seen = sDecGen;
+        d = sDecJob;
+        pthread_mutex_unlock(&sDecLock);
+        tex_decode_share(d);
+        pthread_mutex_lock(&sDecLock);
+        if (--sDecBusy == 0) {
+            pthread_cond_signal(&sDecDone);
+        }
+        pthread_mutex_unlock(&sDecLock);
+    }
+    return NULL;
+}
+
+static void tex_decode(const TexDecode *d) {
+    if (sDecWorkers < 0) {
+        const char *e = getenv("BT3_TEX_THREADS");
+        int n = e != NULL ? atoi(e) : SDL_GetNumLogicalCPUCores() - 2, i;
+        sDecWorkers = n < 0 ? 0 : n > 7 ? 7 : n;
+        for (i = 0; i < sDecWorkers; i++) {
+            pthread_t t;
+            if (pthread_create(&t, NULL, tex_decode_worker, NULL) != 0) {
+                sDecWorkers = i;
+                break;
+            }
+            pthread_detach(t);
+        }
+    }
+    if (sDecWorkers == 0 || d->tw * d->th < 16384) { /* (a small one: waking the workers would cost more) */
+        tex_decode_rows(d, 0, d->th);
+        return;
+    }
+    pthread_mutex_lock(&sDecLock);
+    sDecJob = d;
+    __atomic_store_n(&sDecNext, 0, __ATOMIC_RELAXED);
+    sDecBusy = (unsigned)sDecWorkers;
+    sDecGen++;
+    pthread_cond_broadcast(&sDecWake);
+    pthread_mutex_unlock(&sDecLock);
+    tex_decode_share(d);
+    pthread_mutex_lock(&sDecLock);
+    while (sDecBusy != 0) {
+        pthread_cond_wait(&sDecDone, &sDecLock);
+    }
+    pthread_mutex_unlock(&sDecLock);
+}
+
 static GsTex texture_get(int ctx) {
+    extern unsigned long long Port_Fx_GetSurfaceState(int);
+    unsigned long long bloodState=ctx==0?Port_Fx_GetSurfaceState(sBloodActor):0;
+    static int bloodDump=-1;
     uint64_t t0 = gGs.tex0[ctx] & 0x1FFFFFFFFFFFFFFFull, texa = gGs.texa;
     uint32_t tbp = t0 & 0x3FFF, tbw = (t0 >> 14) & 0x3F, psm = (t0 >> 20) & 0x3F, tw = 1u << ((t0 >> 26) & 15), th = 1u << ((t0 >> 30) & 15);
     uint32_t cbp = (t0 >> 37) & 0x3FFF, cpsm = (t0 >> 51) & 15;
@@ -367,6 +475,15 @@ static GsTex texture_get(int ctx) {
     if (sTexPackOn && TexPack_Count() != 0) {
         gen ^= 0x5BD1E995u; /* with the pack and without it are different textures: switching it takes effect at once */
     }
+    if(bloodDump<0)bloodDump=getenv("BT3_BLOOD_SURFACE_DUMP")!=NULL;
+    if(bloodState&&!blood_surface_may_paint((int)tw,(int)th,bloodState,sBloodPart))bloodState=0;
+    /* Unmodified sheets share the native cache key. Wounds depend on the part
+       and packed appearance; only the diagnostic dump needs actor identity. */
+    if(bloodDump&&sBloodActor>=0&&sBloodActor<16&&sBloodPart>=0)
+        gen^=(uint32_t)(sBloodActor+1)*0x9E3779B9u^(uint32_t)(sBloodPart+1)*0x85EBCA6Bu;
+    else if(bloodState)
+        gen^=(uint32_t)(sBloodPart+1)*0x85EBCA6Bu;
+    gen^=(uint32_t)bloodState*0x27D4EB2Du^(uint32_t)(bloodState>>32)*0x165667B1u;
     if (sLast != NULL && sLast->tex0 == t0 && sLast->texa == texa && sLast->gen == gen) {
         sLast->last = gGsFrame;
         if(traceEpoch)Port_Beta8TraceTexture(traceEpoch,t0,gen,NULL,0,1);
@@ -435,23 +552,44 @@ static GsTex texture_get(int ctx) {
     px = !replaced || MenuText_MayHaveBattleTexture((int)tw, (int)th, bits <= 8) ?
          malloc((size_t)tw * th * 4) : NULL;
     if (!replaced && px == NULL) { return gsWhite; }
-    for (y = 0; px != NULL && y < th; y++) {
-        for (x = 0; x < tw; x++) {
-            uint32_t c = Gs_VramRead(tbp, tbw, psm, x, y), a;
-            if (bits > 8) {
-                c = Gs_Expand(c, psm);
-            } else if (bits == 8) {
-                c = (c & 0xE7) | ((c & 8) << 1) | ((c & 0x10) >> 1);
-                c = Gs_Expand(Gs_VramRead(cbp, 1, cpsm, c & 15, c >> 4), cpsm);
-            } else {
-                c = Gs_Expand(Gs_VramRead(cbp, 1, cpsm, c & 7, c >> 3), cpsm);
+    {
+        uint32_t lut[256];
+        if (px != NULL && bits <= 8) {
+            for (i = 0; i < (bits == 8 ? 256u : 16u); i++) {
+                if (bits == 8) {
+                    uint32_t n = (i & 0xE7) | ((i & 8) << 1) | ((i & 0x10) >> 1);
+                    lut[i] = Gs_Expand(Gs_VramRead(cbp, 1, cpsm, n & 15, n >> 4), cpsm);
+                } else {
+                    lut[i] = Gs_Expand(Gs_VramRead(cbp, 1, cpsm, i & 7, i >> 3), cpsm);
+                }
             }
-            (void)a; /* alpha is kept as the GS has it (0x80 = opaque, up to 0xFF): the shader rescales it. Values
-                        above 0x80 matter: the see-through pass gives palettes alpha 0xF9 to write an id */
-            px[y * tw + x] = c;
+        }
+        if (px != NULL) {
+            TexDecode d = {tbp, tbw, psm, bits, tw, th, lut, px};
+            tex_decode(&d);
         }
     }
     if(traceEpoch)Port_Beta8TraceTexture(traceEpoch,t0,gen,px,px?tw*th*4:0,0);
+    if(px&&!replaced&&sBloodActor>=0&&sBloodActor<16&&sBloodPart>=0&&sBloodPart<64) {
+        const char *dir=getenv("BT3_BLOOD_SURFACE_DUMP");
+        static uint64_t seen[16];uint64_t bit=UINT64_C(1)<<sBloodPart;
+        if(dir&&!(seen[sBloodActor]&bit)&&tw>16&&th>16){
+            char file[640];SDL_Surface *surface;
+            seen[sBloodActor]|=bit;
+            snprintf(file,sizeof(file),"%s/actor%d-part%d-%ux%u.png",dir,sBloodActor,sBloodPart,tw,th);
+            surface=SDL_CreateSurfaceFrom(tw,th,SDL_PIXELFORMAT_RGBA32,px,tw*4);
+            if(surface){SDL_SavePNG(surface,file);SDL_DestroySurface(surface);}
+            fprintf(stderr,"bt3: blood surface actor%d part%d ctx%d tex%llx %ux%u\n",sBloodActor,sBloodPart,ctx,(unsigned long long)t0,tw,th);
+        }
+    }
+    if(px&&!replaced&&bloodState){
+        int painted=blood_surface_apply(px,tw,th,bloodState,sBloodPart);
+        static unsigned logged[16][64];unsigned level=bloodState&3;
+        if(painted&&sBloodActor>=0&&sBloodActor<16&&sBloodPart>=0&&sBloodPart<64&&!(logged[sBloodActor][sBloodPart]&(1u<<level))){
+            logged[sBloodActor][sBloodPart]|=1u<<level;
+            fprintf(stderr,"bt3: blood surface painted actor%d part%d level%u pixels%d\n",sBloodActor,sBloodPart,level,painted);
+        }
+    }
     if (px != NULL) {
         battleText = MenuText_IsBattleTexture((const uint8_t *)px, (int)tw, (int)th, bits <= 8);
     }
@@ -1398,7 +1536,59 @@ void GsGpu_DrawVu6(int ctx, const float *vertices, uint32_t count, const float *
 
 /* Vertex program 4 as a shader: one strip of stage geometry (see shaders/vu4.vert). Vertices: position, colour
    (0..255 floats), texture coordinates, 48 bytes; the screen matrix is VU memory 0..3. */
-void GsGpu_DrawVu4(int ctx, const float *vertices, uint32_t count, const float *consts) {
+/* Owned renderer texture, RGBA alpha follows the native GS 0x80 convention. */
+static GsTex sTerrainSoilTex,sTerrainMaterialTex[20];static int sTerrainSoilMissing,sTerrainSoilPass,sTerrainMaterial;
+static unsigned sTerrainMaterialMissing;
+static int sTerrainSoilStage;
+static int terrain_soil_variant(int stage){
+ switch(stage){
+  case 23: return 9;
+  case 0: return 9;
+  case 24: return 10;
+  case 1: return 11;
+  case 2: return 12;
+  case 3: return 13;
+  case 14: return 14;
+  case 19: return 15;
+  case 25: return 16;
+  case 26: return 17;
+  case 31: return 18;
+  case 32: return 19;
+  default: return -1;
+ }
+}
+static GsTex terrain_load_soil(int m){
+ static const char*names[]={"soil","soil","urban","rock","ice","soil","alien","desert","soil","wasteland","wasteland_night","rocky","namek","namek_dying","glacier","canyon","rocky_evening","rocky_night","canyon_evening","canyon_night"};
+ unsigned char *p;FILE*f;size_t n;char path[2048];const char*base;
+ sTerrainSoilTex=sTerrainMaterialTex[m];if(sTerrainSoilTex||(sTerrainMaterialMissing&(1u<<m)))return sTerrainSoilTex;
+ if(!sBackend||sBackend->texSlotsLeft()<=0)return 0;
+ base=SDL_GetBasePath();snprintf(path,sizeof(path),"%sassets/terrain/crater_%s.rgba",base?base:"",names[m]);f=fopen(path,"rb");
+ if(!f){sTerrainMaterialMissing|=1u<<m;fprintf(stderr,"bt3: terrain material unavailable: %s\n",path);return 0;}
+ p=malloc(256*256*4);if(!p){fclose(f);return 0;}n=fread(p,1,256*256*4,f);if(n!=256*256*4||fgetc(f)!=EOF){free(p);fclose(f);sTerrainMaterialMissing|=1u<<m;return 0;}fclose(f);
+ for(n=3;n<256*256*4;n+=4)p[n]=(p[n]+1)/2;
+ sTerrainSoilTex=tbo_upload((uint32_t*)p,256,256);sTerrainMaterialTex[m]=sTerrainSoilTex;return sTerrainSoilTex;
+}
+static GsTex terrain_soil_texture(void){
+ int look=terrain_soil_variant(sTerrainSoilStage);
+ GsTex tex=look>=0?terrain_load_soil(look):0;
+ if(tex)return tex;
+ return terrain_load_soil(sTerrainMaterial>1&&sTerrainMaterial<8?sTerrainMaterial:0);
+}
+static void terrain_soil_tint(int stage,float*rgb){int mat=0,i;
+ int look=terrain_soil_variant(stage);
+ if(look>=0&&!(sTerrainMaterialMissing&(1u<<look))){
+  rgb[0]=rgb[1]=rgb[2]=128.f;
+  if(stage==14){rgb[0]=107.5f;rgb[1]=116.5f;rgb[2]=123.f;}
+  return;
+ }
+ rgb[0]=117.5f;rgb[1]=83.75f;rgb[2]=52.5f;
+ mat=Port_TerrainGetMaterial(stage);if(mat<0)for(i=0;i<(int)(sizeof(sGcGroundProfiles)/sizeof(*sGcGroundProfiles));i++)if(sGcGroundProfiles[i].stage==stage){mat=sGcGroundProfiles[i].material;break;}
+ if(mat!=1&&mat!=8&&mat!=0){rgb[0]=rgb[1]=rgb[2]=128;return;}
+ switch(mat){case 3:rgb[0]=161.25f;rgb[1]=123.75f;rgb[2]=77.5f;break;case 4:rgb[0]=200;rgb[1]=230;rgb[2]=255;break;case 6:rgb[0]=103.75f;rgb[1]=63.75f;rgb[2]=56.25f;break;case 7:rgb[0]=157.5f;rgb[1]=135;rgb[2]=105;break;case 8:rgb[0]=148.75f;rgb[1]=80;rgb[2]=91.25f;break;}
+}
+static int sLiquidDrawing;
+static float sTerrainGpuVertices[8190*12];
+static void gs_draw_vu4_vertices(int ctx, const float *vertices, uint32_t count, const float *consts, int triangleList) {
     if (GS_NO_PICTURE) { /* a frame that is only being re-run, or one that is skipped: nothing is drawn */
         return;
     }
@@ -1406,13 +1596,23 @@ void GsGpu_DrawVu4(int ctx, const float *vertices, uint32_t count, const float *
     GsDraw d, *last;
     float us, vs;
     uint32_t i, k;
+    uint32_t step = triangleList ? 3u : 1u;
+    uint32_t indices = step == 3u ? count : (count - 2u) * 3u;
 
-    if (count < 3 || gsVuVertCount + count > MAX_VU_VERTS || gsVuIdxCount + (count - 2) * 3 > MAX_VU_IDX || gsDrawCount == MAX_DRAWS ||
+    if (count < 3 || gsVuVertCount + count > MAX_VU_VERTS || gsVuIdxCount + indices > MAX_VU_IDX || gsDrawCount == MAX_DRAWS ||
         gsVuUniCount == MAX_VU_UNIFORMS) {
         return;
     }
     if (!draw_state(ctx, 0, 0, 2, &d, &us, &vs)) {
         return;
+    }
+    if(sLiquidDrawing)d.sampler=1; /* repeat native liquid tiles over the extended sheet */
+    if(sTerrainSoilPass){
+        uint32_t m=(uint32_t)(gGs.frame[ctx]>>32),wmask=((m&255)!=255?GS_CC_R:0)|((m&0xFF00)!=0xFF00?GS_CC_G:0)|((m&0xFF0000)!=0xFF0000?GS_CC_B:0)|((m&0xFF000000u)!=0xFF000000u?GS_CC_A:0);
+        d.tex=sTerrainSoilTex;d.tex_is_target=0;d.sampler=1;
+        d.pipeline=sBackend->pipeGet(blend_key(0x44,1)|(2u<<10)|(wmask<<16)|(2u<<20)|(sTerrainSoilPass==2?(1u<<12):(1u<<23)));if(d.pipeline<0)return;
+        d.mode[0]=1;d.mode[1]=0;d.mode[2]=1;d.mode[3]=0;d.misc[0]=d.misc[1]=d.misc[2]=0;d.blendc=0;
+        memset(d.rect,0,sizeof(d.rect));memset(d.orig,0,sizeof(d.orig));
     }
     date_snapshot(&d);
     memset(&u, 0, sizeof(u));
@@ -1423,7 +1623,7 @@ void GsGpu_DrawVu4(int ctx, const float *vertices, uint32_t count, const float *
     if (depth_frac()) { u.misc[2] = -u.misc[2]; }
     d.vu = 2;
     d.first = gsVuIdxCount;
-    for (i = 0; i + 2 < count; i++) { /* strip -> triangles */
+    for (i = 0; i + 2 < count; i += step) { /* Explicit triangles for remeshed terrain, strips for native meshes. */
         for (k = 0; k < 3; k++) {
             gsVuIdx[gsVuIdxCount++] = gsVuVertCount + i + k;
         }
@@ -1441,6 +1641,143 @@ void GsGpu_DrawVu4(int ctx, const float *vertices, uint32_t count, const float *
     d.uniform = (int)gsVuUniCount;
     gsVuUni[gsVuUniCount++] = u;
     gsDraws[gsDrawCount++] = d;
+}
+
+static void gs_draw_vu4_raw(int ctx, const float *vertices, uint32_t count, const float *consts) {
+    gs_draw_vu4_vertices(ctx, vertices, count, consts, 0);
+}
+
+static void terrain_draw_cached(int ctx, const float *vertices, unsigned triangles, const float *consts) {
+    const unsigned batchTriangles = sizeof(sTerrainGpuVertices) / (36 * sizeof(float));
+    while (triangles) {
+        unsigned batch = triangles < batchTriangles ? triangles : batchTriangles;
+        gs_draw_vu4_vertices(ctx, vertices, batch * 3, consts, 1);
+        vertices += batch * 36;
+        triangles -= batch;
+    }
+}
+
+/* One shared CPU remesh feeds both Vulkan and OpenGL; GPU never mutates simulation terrain. */
+static int sTerrainStagePass,sTerrainWallsViews;
+#include "mod_liquid_surface.h"
+static int sLiquidPass,sLiquidEnabled,sLiquidViews;static float sLiquidY,sLiquidMatrices[8][16];static int sLiquidCtx[8];static uint64_t sLiquidScissor[8],sLiquidOffset[8];
+static float sTerrainWallsMatrix[8][16];
+typedef struct {int ctx,n;const float*constants;} TerrainGpuEmit;
+
+static void terrain_gpu_flush(TerrainGpuEmit*e){if(e->n){gs_draw_vu4_vertices(e->ctx,sTerrainGpuVertices,e->n,e->constants,1);e->n=0;}}
+static void terrain_gpu_emit(const float *triangle, void *user) {
+    TerrainGpuEmit *emit = user;
+    if (emit->n + 3 > 8190) terrain_gpu_flush(emit);
+    memcpy(sTerrainGpuVertices + emit->n * 12, triangle, 3 * 12 * sizeof(float));
+    emit->n += 3;
+}
+/* BT3_TERRAIN_PROFILE=1 (default off): one line per second in terrain-profile.log beside the game.
+   Slots: 0 stage draw, 2 collision walk, 3 crater wall query, 4 scar commit, 5 structures, 6 lock spin, 7 leaves.
+   Int/pointer ABI only: the simulation side calls these too. */
+#define TP_SLOTS 10
+static unsigned sTpUs[TP_SLOTS],sTpN[TP_SLOTS],sTpMax[TP_SLOTS];static int sTpOn=-1;
+int Port_TerrainProfOn(void){if(sTpOn<0){const char*e=getenv("BT3_TERRAIN_PROFILE");sTpOn=e&&atoi(e)!=0;}return sTpOn;}
+unsigned Port_TerrainProfNow(void){return Port_TerrainProfOn()>0?(unsigned)(SDL_GetTicksNS()/1000u):0u;}
+void Port_TerrainProfAdd(int slot,unsigned t0){unsigned d;if(sTpOn<=0||slot<0||slot>=TP_SLOTS)return;d=(unsigned)(SDL_GetTicksNS()/1000u)-t0;
+ __atomic_fetch_add(&sTpUs[slot],d,__ATOMIC_RELAXED);__atomic_fetch_add(&sTpN[slot],1u,__ATOMIC_RELAXED);if(d>sTpMax[slot])sTpMax[slot]=d;}
+void Port_TerrainProfValue(int slot,unsigned v){if(sTpOn>0&&slot>=0&&slot<TP_SLOTS&&v>sTpMax[slot])sTpMax[slot]=v;}
+void Port_TerrainProfCount(int slot){if(sTpOn>0&&slot>=0&&slot<TP_SLOTS)__atomic_fetch_add(&sTpN[slot],1u,__ATOMIC_RELAXED);}
+extern int Port_TerrainProfInfo(int);
+static void terrain_prof_frame(void){
+ static FILE*f;static unsigned start,last,frames,worst,tb,th;static uint64_t rb,rf;unsigned now,d,i;
+ if(Port_TerrainProfOn()<=0)return;now=Port_TerrainProfNow();
+ if(!start){start=last=now?now:1;rb=sTerrainCache.builds;rf=sTerrainCache.failures;tb=Port_TerrainProfInfo(0);th=Port_TerrainProfInfo(1);return;}
+ d=now-last;last=now;frames++;if(d>worst)worst=d;
+ if(now-start<1000000u)return;
+ if(!f){const char*b=SDL_GetBasePath();char path[2048];snprintf(path,sizeof(path),"%sterrain-profile.log",b?b:"");f=fopen(path,"a");if(!f){sTpOn=0;return;}
+  fprintf(f,"# fps | frame avg/worst ms | per second ms(calls,worst ms): draw=stage draw, walk=collision walks, wallq=crater wall queries, commit=scar rebuilds, struct=structure updates, spin=lock waits | leaves | render cache builds/fallbacks/MiB | collision cache builds/hits | scars, biggest radius, wall tris\n");}
+ {static const char*names[7]={"draw","leafremesh","walk","wallq","commit","struct","spin"};unsigned span=now-start;
+  fprintf(f,"%3u fps | %6.2f / %7.2f ms |",frames*1000000u/span,span/1000.0/frames,worst/1000.0);
+  for(i=0;i<7;i++)fprintf(f," %s %.1f(%u,%.1f)",names[i],sTpUs[i]/1000.0,sTpN[i],sTpMax[i]/1000.0);
+  fprintf(f," cb %.1f(%u,%.1f) boxmax %u",sTpUs[8]/1000.0,sTpN[8],sTpMax[8]/1000.0,sTpMax[9]);
+  fprintf(f," | leaves %u | rc %u/%u/%.1f | cc %d/%d | scars %d r%d walls %d\n",sTpN[7],(unsigned)(sTerrainCache.builds-rb),(unsigned)(sTerrainCache.failures-rf),sTerrainCache.bytes/1048576.0,
+   Port_TerrainProfInfo(0)-(int)tb,Port_TerrainProfInfo(1)-(int)th,Port_TerrainProfInfo(2),Port_TerrainProfInfo(3),Port_TerrainProfInfo(4));fflush(f);}
+ for(i=0;i<TP_SLOTS;i++){__atomic_store_n(&sTpUs[i],0u,__ATOMIC_RELAXED);__atomic_store_n(&sTpN[i],0u,__ATOMIC_RELAXED);sTpMax[i]=0;}
+ start=now;frames=0;worst=0;rb=sTerrainCache.builds;rf=sTerrainCache.failures;tb=Port_TerrainProfInfo(0);th=Port_TerrainProfInfo(1);
+}
+/* All stage strips and liquid views in a rendered frame share one simulation snapshot. */
+static TdState sTerrainFrame;
+static float sTerrainFrameBounds[TD_MAX][4];
+static int sTerrainFrameCount = -1;
+
+static int terrain_frame_count(void) {
+    if (sTerrainFrameCount < 0) {
+        sTerrainFrameCount = Port_TerrainSnapshot(&sTerrainFrame);
+        if (sTerrainFrameCount) {
+ sTerrainSoilStage=sTerrainFrame.stage;
+ sTerrainMaterial=Port_TerrainGetMaterial(sTerrainFrame.stage);if(sTerrainMaterial<0){int k;sTerrainMaterial=0;for(k=0;k<(int)(sizeof(sGcGroundProfiles)/sizeof(*sGcGroundProfiles));k++)if(sGcGroundProfiles[k].stage==sTerrainFrame.stage){sTerrainMaterial=sGcGroundProfiles[k].material;break;}}
+        }
+        for (int i = 0; i < sTerrainFrameCount; ++i)
+            td_bounds(&sTerrainFrame.scars[i], sTerrainFrameBounds[i]);
+    }
+    return sTerrainFrameCount;
+}
+
+static void gs_draw_vu4_stage(int ctx,const float*vertices,uint32_t count,const float*consts);
+void GsGpu_DrawVu4(int ctx,const float*vertices,uint32_t count,const float*consts){unsigned t0;
+ if(!sTerrainStagePass||Port_TerrainProfOn()<=0){gs_draw_vu4_stage(ctx,vertices,count,consts);return;}
+ t0=Port_TerrainProfNow();gs_draw_vu4_stage(ctx,vertices,count,consts);Port_TerrainProfAdd(0,t0);
+}
+static void gs_draw_vu4_stage(int ctx,const float*vertices,uint32_t count,const float*consts){
+ TdState *terrain = &sTerrainFrame;
+ TerrainGpuEmit emit={ctx,0,consts};uint32_t i;
+ if(GS_NO_PICTURE)return;
+ if(sLiquidPass&&sLiquidEnabled){float plane[48];if(LS_Quad(vertices,count,sLiquidY,0,0,1,1,plane)){
+  int view;gs_draw_vu4_raw(ctx,vertices,count,consts);
+  for(view=0;view<sLiquidViews;view++)if(sLiquidCtx[view]==ctx&&sLiquidScissor[view]==gGs.scissor[ctx]&&sLiquidOffset[view]==gGs.xyoffset[ctx]&&!memcmp(sLiquidMatrices[view],consts,64))break;
+  if(view==sLiquidViews&&view<8&&terrain_frame_count()){
+   int j,emitted=0;uint64_t keys[8192];unsigned char used[8192]={0};sLiquidCtx[sLiquidViews]=ctx;sLiquidScissor[sLiquidViews]=gGs.scissor[ctx];sLiquidOffset[sLiquidViews]=gGs.xyoffset[ctx];memcpy(sLiquidMatrices[sLiquidViews++],consts,64);sLiquidDrawing=1;
+   for(j=0;j<terrain->count;j++){TdScar*scar=terrain->scars+j;float bb[4],x,z;if(scar->ay >= sLiquidY || scar->ay+scar->depth<sLiquidY)continue;td_bounds(scar,bb);
+    /* Tile only newly exposed liquid; keep the original sheet unchanged.
+       Small quads avoid the depth precision cracks of a map-wide quad. */
+    for(x=floorf(bb[0]/256.f)*256.f;x<bb[2];x+=256.f)for(z=floorf(bb[1]/256.f)*256.f;z<bb[3];z+=256.f){
+     int ix=(int)(x/256.f),iz=(int)(z/256.f);uint64_t key=((uint64_t)(uint32_t)ix<<32)|(uint32_t)iz;unsigned slot=((uint32_t)ix*73856093u^(uint32_t)iz*19349663u)&8191u;
+     if(emitted>=4096)continue;while(used[slot]&&keys[slot]!=key)slot=(slot+1)&8191u;if(used[slot])continue;used[slot]=1;keys[slot]=key;emitted++;
+     if (LS_Quad(vertices,count,sLiquidY,x,z,x+256.f,z+256.f,plane)) {
+         /* A horizon sheet spans thousands of units per repeat. Newly exposed
+            liquid is viewed at fighter distance and needs a local tile scale. */
+         if (terrain->stage == 2 || terrain->stage == 3 || terrain->stage == 12) {
+             for (int corner = 0; corner < 4; ++corner) {
+                 float *v = plane + corner * 12;
+                 v[8] = v[0] / 96.f;
+                 v[9] = v[2] / 96.f;
+                 if (terrain->stage == 3) v[4] = v[5] = v[6] = 128.f;
+             }
+         }
+         gs_draw_vu4_raw(ctx,plane,4,consts);
+     }
+    }
+   }sLiquidDrawing=0;
+  }return;
+ }}
+ if(!sTerrainStagePass||!terrain_frame_count()){gs_draw_vu4_raw(ctx,vertices,count,consts);return;}
+ /* Draw each view's shared closure once; camera matrices are never baked. */
+ {int view;for(view=0;view<sTerrainWallsViews;view++)if(!memcmp(sTerrainWallsMatrix[view],consts,64))break;
+ if(view==sTerrainWallsViews&&view<8&&terrain_soil_texture()){
+ memcpy(sTerrainWallsMatrix[sTerrainWallsViews++],consts,64);sTerrainSoilPass=2;
+ Port_TerrainWalls(terrain,0,terrain_gpu_emit,&emit);terrain_gpu_flush(&emit);sTerrainSoilPass=0;}}
+
+ {float x0=1.e9f,x1=-1.e9f,z0=1.e9f,z1=-1.e9f,y0=1.e9f,y1=-1.e9f;int k,hit=0;for(i=0;i<count;i++){const float*v=vertices+i*12;x0=td_min(x0,v[0]);x1=td_max(x1,v[0]);z0=td_min(z0,v[2]);z1=td_max(z1,v[2]);y0=td_min(y0,v[1]);y1=td_max(y1,v[1]);}for(k=0;k<terrain->count;k++){const float *b = sTerrainFrameBounds[k]; TdScar*c=terrain->scars+k;if(x0<b[2]&&x1>b[0]&&z0<b[3]&&z1>b[1]&&y0<c->ay+(fabsf(c->sx)+fabsf(c->sz))*(c->r+td_max(x1-x0,z1-z0))+1.2f*c->r+c->depth+8&&y1>c->ay-(fabsf(c->sx)+fabsf(c->sz))*(c->r+td_max(x1-x0,z1-z0))-1.2f*c->r-c->depth-8){hit=1;break;}}if(!hit){gs_draw_vu4_raw(ctx,vertices,count,consts);return;}}
+ {float rgb[3];TcEntry*cached;uint64_t test=gGs.test[ctx];int opaque=!((gGs.zbuf[ctx]>>32)&1)&&(!((gGs.prim>>6)&1)||((test&1)&&((test>>4)&255)>=127&&(((test>>1)&7)==5||((test>>1)&7)==6)));
+ terrain_soil_tint(terrain->stage,rgb);cached=TC_Get(&sTerrainCache,terrain,vertices,count,rgb);
+ for(i=0;opaque&&i<count;i++)if(vertices[i*12+7]<127)opaque=0;
+ if(cached){
+  unsigned start=0;/* Untouched runs remain in their original strips, no baked copies. */
+  while(start+2<count){unsigned end=start;if(cached->changed[start]){start++;continue;}while(end+2<count&&!cached->changed[end])end++;gs_draw_vu4_raw(ctx,vertices+start*12,end-start+2,consts);start=end;}
+  terrain_draw_cached(ctx,cached->base.v,cached->base.n,consts);
+  if(opaque&&cached->soil.n&&terrain_soil_texture()){sTerrainSoilPass=1;terrain_draw_cached(ctx,cached->soil.v,cached->soil.n,consts);sTerrainSoilPass=0;}
+ }else{
+  /* Allocation/budget failure keeps the exact dynamic path, never a stale or flat collision surface. */
+  for(i=0;i+2<count;i++){const float*v=vertices+i*12;if(!Port_TerrainRemesh(terrain,v,terrain_gpu_emit,&emit))terrain_gpu_emit(v,&emit);}terrain_gpu_flush(&emit);
+  if(opaque&&terrain_soil_texture()){sTerrainSoilPass=1;for(i=0;i+2<count;i++)TD_Soil(terrain,vertices+i*12,rgb,terrain_gpu_emit,&emit);terrain_gpu_flush(&emit);sTerrainSoilPass=0;}
+ }
+ }
+
 }
 
 /* Vertex program 0 as a shader: one strip of the fighters' models (see shaders/vu0.vert and gs_vu1.c). The strip
@@ -1568,6 +1905,11 @@ void GsGpu_FbUpload(int second) {
 }
 
 void GsGpu_Native(int effect) {
+    if(((unsigned)effect&0xf0000000u)==0x60000000u){int y=effect&0x0fffffff;if(y&0x08000000)y|=(int)0xf0000000u;sLiquidY=y*.01f;sLiquidEnabled=1;return;}
+    if(effect==0x7D02||effect==0x7D03){sLiquidPass=effect==0x7D02;return;}
+    if(effect==0x7D04){sLiquidEnabled=sLiquidPass=0;return;}
+
+    if(effect==0x7D00||effect==0x7D01){sTerrainStagePass=effect==0x7D00;return;}
     if (GS_NO_PICTURE) { /* a frame that is only being re-run, or one that is skipped: nothing is drawn */
         return;
     }
@@ -1855,6 +2197,8 @@ int GsGpu_Init(void) {
             return 0;
         }
     }
+    TC_Clear(&sTerrainCache);
+    sTerrainSoilTex=0;memset(sTerrainMaterialTex,0,sizeof(sTerrainMaterialTex));sTerrainMaterialMissing=0;sTerrainMaterial=0;sTerrainSoilMissing=sTerrainSoilPass=sTerrainStagePass=0;
     gsWhite = sb->whiteTex();
     gsFxOff = (unsigned)(getenv("BT3_FX_OFF") != NULL ? atoi(getenv("BT3_FX_OFF")) : Port_Setting("fx_off", 0)) & 63;
     gsGlowPercent = getenv("BT3_GLOW") != NULL ? atoi(getenv("BT3_GLOW")) : Port_Setting("glow", GLOW_DEFAULT);
@@ -4271,6 +4615,10 @@ static void skip_decide(void) {
 }
 
 void GsGpu_FrameEnd(void) {
+    terrain_prof_frame();
+    sTerrainFrameCount = -1;
+    sTerrainWallsViews=0;sLiquidViews=0;sLiquidPass=0;
+    if(sTerrainCache.valid){TdState t;if(!Port_TerrainSnapshot(&t))TC_Clear(&sTerrainCache);}
     if (gPortResim) { /* a frame that is only being re-run: nothing was recorded, nothing is shown */
         return;
     }

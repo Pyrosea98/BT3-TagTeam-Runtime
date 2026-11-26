@@ -31,3 +31,54 @@ int Port_RosterLevelWrite(int cid,int level,int exp){char path[1100],tmp[1100];u
  if(rename(tmp,path))goto fail;
 #endif
  return 1;fail:memcpy(rp_level[cid],old,sizeof(old));return 0;}
+
+/* Added-fighter options use their own file, separate from the native card and equipment. */
+static uint16_t rp_potara[330];
+static int rp_potara_loaded;
+static int rp_potara_path(char *path,size_t size,const char *extension){
+ const char *root=getenv("BT3_SAVES");
+ if(!root||!*root)root="saves";
+ int n=snprintf(path,size,"%s/roster-potara-v1%s",root,extension);
+ return n>0&&(size_t)n<size;
+}
+static void rp_potara_load(void){
+ char path[1100];uint32_t header[3];FILE *f;
+ if(rp_potara_loaded)return;
+ rp_potara_loaded=1;
+ if(!rp_potara_path(path,sizeof(path),".dat")||!(f=fopen(path,"rb")))return;
+ int ok=fread(header,sizeof(header),1,f)==1&&header[0]==0x31545250u&&
+     header[1]==sizeof(rp_potara)&&fread(rp_potara,1,sizeof(rp_potara),f)==sizeof(rp_potara)&&
+     fgetc(f)==EOF&&header[2]==rp_hash(rp_potara,sizeof(rp_potara));
+ fclose(f);
+ if(!ok)memset(rp_potara,0,sizeof(rp_potara));
+}
+int Port_RosterPotaraRead(int cid){
+ if(cid<0||cid>=(int)(sizeof(rp_potara)/sizeof(*rp_potara)))return 0;
+ rp_potara_load();
+ return rp_potara[cid];
+}
+int Port_RosterPotaraWrite(int cid,int options){
+ char path[1100],tmp[1100];uint32_t header[3];FILE *f;
+ if(cid<0||cid>=(int)(sizeof(rp_potara)/sizeof(*rp_potara))||
+    (options&~0xc07f)||(options&127)>100)return 0;
+ if(!rp_potara_path(path,sizeof(path),".dat")||!rp_potara_path(tmp,sizeof(tmp),".tmp"))return 0;
+ rp_potara_load();
+ uint16_t before=rp_potara[cid];
+ if(before==options)return 1;
+ f=fopen(tmp,"wb");
+ if(!f)return 0;
+ rp_potara[cid]=(uint16_t)options;
+ header[0]=0x31545250u;
+ header[1]=sizeof(rp_potara);
+ header[2]=rp_hash(rp_potara,sizeof(rp_potara));
+ int ok=fwrite(header,sizeof(header),1,f)==1&&
+     fwrite(rp_potara,1,sizeof(rp_potara),f)==sizeof(rp_potara);
+ if(fclose(f))ok=0;
+#ifdef _WIN32
+ if(ok)ok=MoveFileExA(tmp,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
+#else
+ if(ok)ok=rename(tmp,path)==0;
+#endif
+ if(!ok)rp_potara[cid]=before;
+ return ok;
+}

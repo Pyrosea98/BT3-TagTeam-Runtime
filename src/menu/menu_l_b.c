@@ -403,7 +403,19 @@ void SoloSel_Draw(void) {
     Flash_FindLabel(flash, NULL, "mc_name_text_l", &ref);
     TextBox_AttachLine(flash, &ref, 0, 0, gSoloSel->sel->image, &gSoloSel->box[0]);
     Flash_FindLabel(flash, NULL, "mc_form_text_l", &ref);
-    TextBox_AttachLine(flash, &ref, 0, 0, gSoloSel->sel->image, &gSoloSel->box[1]);
+#ifdef PORT
+    {
+        extern int Port_CharaPowerText(int, int, unsigned short *, int);
+        extern void TextBox_AttachString(MFlash *, MFlashRef *, s32, s32, u16 *, MTextBox *);
+        static u16 power[48];
+        if (Port_CharaPowerText(gSoloSel->sel->image, SS_CUR.costume, power, 48))
+            TextBox_AttachString(flash, &ref, 0, 0, power, &gSoloSel->box[1]);
+        else
+#endif
+        TextBox_AttachLine(flash, &ref, 0, 0, gSoloSel->sel->image, &gSoloSel->box[1]);
+#ifdef PORT
+    }
+#endif
     flash = &gSoloSel->flash[2];
     uv.x0 = 0x20;
     uv.y0 = 0;

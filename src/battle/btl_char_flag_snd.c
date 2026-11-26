@@ -38,6 +38,10 @@ extern void BtlCharApi_GetNodePos(s32 objId, s32 node, Vec4 *out); /* world posi
 extern s32 BtlSuper_GetFlags(BtlFlagChr *chr, s32 slot);       /* attribute word of technique `slot` */
 
 extern BtlFlagRoster *gBtlChars;
+#ifdef PORT
+extern void *BtlMember_GetActive(void*);
+#include "mod_gogetto_voice.h"
+#endif
 /* Sample bank of request kinds 0..3; none for the rest. Defined here: this object's first rodata. */
 const s32 gBtlSndBankMask[8] = { 4, 8, 0x10, 0x20, -1, -1, -1, -1 };
 
@@ -109,6 +113,13 @@ void BtlCharSnd_Request(Vec4 *pos, s32 owner, s32 kind, f32 near, f32 far, s32 i
     BtlFlagSndReq *req;
     s32 ok;
 
+#ifdef PORT
+    extern int Port_StoryTienArmBeatActive(void);
+    /* The sampled arm-cut motion replays movement cues. The scene owns its impact cue. */
+    if (kind == 0 && (id == 0 || id == 1) && Port_StoryTienArmBeatActive()) {
+        return;
+    }
+#endif
     if (gBtlChars != NULL) {
         ok = list->count < 4;
         req = &list->req[list->count];
@@ -283,6 +294,9 @@ void BtlCharSnd_PlayRequests(void) {
         case 5:
         case 6:
             BtlCharSnd_CalcVolPan(&req->pos, &vol, &pan, req->p.near, req->p.far);
+#ifdef PORT
+            {int*member=BtlMember_GetActive(chr);if(member)chara=GV_StreamDonor(member[0],chara);}
+#endif
             Voice_PlayCharaEx(owner, chara, req->p.id, vol, pan);
             break;
         case 7:

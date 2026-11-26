@@ -1,6 +1,9 @@
+#include "mod_power_display.h"
 // Port of our ring/hexagon/compact battle gauges. Native-resolution vector drawing;
 // portraits are exact original costume pixels. No gameplay writes on this thread.
 #include "fight_panels.h"
+#include "mod_hud_trails.h"
+static HtState sMhTrail[FP_ACTORS];
 #include <math.h>
 #include <chrono>
 struct MhTiming {
@@ -58,9 +61,70 @@ static void mh_target(ImDrawList *d,ImVec2 c,float r){
   d->AddLine(b,e,IM_COL32(255,219,120,210),1.1f*k);
  }
 }
-static void mh_gauge(ImDrawList *d,const FpActor &a,ImVec2 c,float r,bool hex,bool layered,float t,bool effects,bool label){
+static void mh_potara_icons(ImDrawList *d, unsigned flags, ImVec2 center, float radius, bool hex) {
+ // Leave the life number at the crest and trace the inner shoulders on the hex.
+ const float circleOffsets[] = {.37f, .64f, .88f};
+ const float hexOffsets[] = {.32f, .57f, .76f};
+ const float badgeRadius = radius * (hex ? .118f : .135f);
+ const float stroke = fmaxf(1.f, radius * .04f);
+ int slot = 0;
+ // Red permission comes first and remains visible with an empty custom set.
+ for (int position = 0; position < 6; ++position) {
+  const int icon = (position + 5) % 6;
+  if (!(flags & (1u << icon))) continue;
+  const float x = (hex ? hexOffsets : circleOffsets)[slot / 2];
+  const float rim = hex ? .866f * fminf(1.f, 2.f * (1.f - x)) : sqrtf(1.f - x * x);
+  // A sloped hex edge needs more vertical inset to clear the same stroke.
+  const float offset = hex ? (x <= .5f ? -.23f : -.40f) : .255f;
+  const ImVec2 badge(center.x + (slot % 2 ? x : -x) * radius,
+                     center.y - (rim + offset) * radius);
+  ++slot;
+  const bool bonus = (flags & (1u << (8 + icon))) != 0;
+  const ImU32 ink = icon == 5 ? IM_COL32(255, 65, 80, 255) :
+                    bonus ? (icon == 4 ? IM_COL32(117, 224, 155, 235) : IM_COL32(240, 204, 112, 235))
+                           : IM_COL32(241, 129, 120, 235);
+  d->AddCircleFilled(badge, badgeRadius, IM_COL32(18, 31, 46, 205), hex ? 6 : 16);
+  const float s = badgeRadius * .58f;
+  const auto point = [badge, s](float px, float py) { return ImVec2(badge.x + s * px, badge.y + s * py); };
+  const auto line = [&](float ax, float ay, float bx, float by) {
+   d->AddLine(point(ax, ay), point(bx, by), ink, stroke);
+  };
+  switch (icon) {
+   case 0: // Melee: blade and crossguard.
+    line(-.8f, .8f, .8f, -.8f);
+    line(-.85f, 0.f, 0.f, .85f);
+    break;
+   case 1: // Blast: projectile and trail.
+    d->AddCircleFilled(point(.45f, 0.f), s * .5f, ink, 8);
+    line(-1.f, 0.f, 0.f, 0.f);
+    break;
+   case 2: { // Defense: shield.
+    const ImVec2 shield[] = {point(-.8f, -.75f), point(.8f, -.75f), point(.65f, .25f),
+                             point(0.f, .95f), point(-.65f, .25f)};
+    d->AddPolyline(shield, 5, ink, stroke, ImDrawFlags_Closed);
+    break;
+   }
+   case 3: // Ki: lightning.
+    line(.25f, -.95f, -.55f, .08f);
+    line(-.55f, .08f, .55f, -.08f);
+    line(.55f, -.08f, -.25f, .95f);
+    break;
+   case 4: // Regeneration.
+    line(-.85f, 0.f, .85f, 0.f);
+    line(0.f, -.85f, 0.f, .85f);
+    break;
+   case 5: // Red Potara permission: hook and gem.
+    line(0.f, -.1f, 0.f, -.85f);
+    line(0.f, -.85f, .55f, -1.05f);
+    d->AddCircleFilled(point(0.f, .45f), s * .62f, ink, 12);
+    break;
+  }
+ }
+}
+static void mh_gauge(ImDrawList *d,const FpActor &a,ImVec2 c,float r,bool hex,bool layered,float t,bool effects,bool label,int actor){
  float hp=layered?(a.hp>0?(float)((a.hp-1)%10000+1)/10000:0):a.hpMax>0?(float)a.hp/a.hpMax:0;
  int layers=a.hp>0?(a.hp-1)/10000:0;float ki=a.kiMax>0?(float)a.ki/a.kiMax:0;
+ const HtState &trail=sMhTrail[actor];float trailHi=layered?mh_clamp((trail.high*a.hpMax-layers*10000.f)/10000.f):trail.high,trailLo=layered?mh_clamp((trail.low*a.hpMax-layers*10000.f)/10000.f):trail.low;float maxKi=mh_clamp(a.maxPower/30000.f);
  float k=r/17;const float pi=3.14159265f;
  d->AddCircleFilled(ImVec2(c.x+1*k,c.y+2*k),r+3*k,IM_COL32(0,4,14,(int)(105*sMhConfig.background)),48);
  d->AddCircleFilled(c,r-2*k,IM_COL32(18,31,46,(int)(115*sMhConfig.background)),48);
@@ -73,12 +137,15 @@ static void mh_gauge(ImDrawList *d,const FpActor &a,ImVec2 c,float r,bool hex,bo
   ImU32 hpColor=layered?mh_health(layers):(hp<.3f?IM_COL32(245,41,31,242):IM_COL32(51,232,97,242));
   mh_arc(d,c,r,start,start+span,layered&&layers?mh_health(layers-1,115):IM_COL32(145,171,189,115),2.6f*k);
   mh_arc(d,c,r,start,start+span*mh_clamp(hp),hpColor,2.6f*k);
+  if(trailHi>hp)mh_arc(d,c,r,start+span*hp,start+span*trailHi,IM_COL32(255,65,55,245),3*k);
+  if(trailLo<hp)mh_arc(d,c,r,start+span*trailLo,start+span*hp,IM_COL32(115,255,150,250),3*k);
   int segments=layered?5:1;float kr=layered?r:r-3.8f*k;
   for(int i=0;i<segments;i++){float lo=(float)i/segments,hi=(float)(i+1)/segments,part=mh_clamp(ki*segments-i);
    float ka=layered?pi*(1-hi):start+lo*span,kb=layered?pi*(1-lo):start+hi*span;
    float gap=layered?.025f:0;mh_arc(d,c,kr,ka+gap,kb-gap,IM_COL32(145,171,189,115),2.6f*k);
-   if(layered)mh_arc(d,c,kr,kb-gap-(kb-ka-2*gap)*part,kb-gap,IM_COL32(41,168,255,242),2.6f*k);
-   else mh_arc(d,c,kr,ka,ka+(kb-ka)*part,IM_COL32(41,168,255,242),2.6f*k);
+   if(layered)mh_arc(d,c,kr,kb-gap-(kb-ka-2*gap)*part,kb-gap,IM_COL32(255,211,65,242),2.6f*k);
+   else mh_arc(d,c,kr,ka,ka+(kb-ka)*part,IM_COL32(255,211,65,242),2.6f*k);
+   float mp=mh_clamp(maxKi*segments-i);if(layered)mh_arc(d,c,kr,kb-gap-(kb-ka-2*gap)*mp,kb-gap,IM_COL32(45,160,255,255),3*k);else mh_arc(d,c,kr,ka,ka+(kb-ka)*mp,IM_COL32(45,160,255,255),3*k);
   }
  }else{
   ImVec2 up[4]={ImVec2(c.x-r,c.y),ImVec2(c.x-r*.5f,c.y-r*.866f),ImVec2(c.x+r*.5f,c.y-r*.866f),ImVec2(c.x+r,c.y)};
@@ -86,7 +153,9 @@ static void mh_gauge(ImDrawList *d,const FpActor &a,ImVec2 c,float r,bool hex,bo
   mh_line_track(d,up,4,0,1,IM_COL32(18,34,48,230),4*k);mh_line_track(d,down,4,0,1,IM_COL32(18,34,48,230),4*k);
   if(layered&&layers>0)mh_line_track(d,up,4,0,1,mh_health(layers-1,75),3*k);
   mh_line_track(d,up,4,0,mh_clamp(hp),mh_health(layers),2.6f*k);
-  int segments=layered?5:1;for(int i=0;i<segments;i++){float lo=(float)i/segments+.008f,hi=(float)(i+1)/segments-.008f;mh_line_track(d,down,4,lo,lo+(hi-lo)*mh_clamp(ki*segments-i),IM_COL32(88,202,255,235),2.5f*k);}
+  if(trailHi>hp)mh_line_track(d,up,4,hp,trailHi,IM_COL32(255,65,55,245),3*k);
+  if(trailLo<hp)mh_line_track(d,up,4,trailLo,hp,IM_COL32(115,255,150,250),3*k);
+  int segments=layered?5:1;for(int i=0;i<segments;i++){float lo=(float)i/segments+.008f,hi=(float)(i+1)/segments-.008f;mh_line_track(d,down,4,lo,lo+(hi-lo)*mh_clamp(ki*segments-i),IM_COL32(255,211,65,235),2.5f*k);mh_line_track(d,down,4,lo,lo+(hi-lo)*mh_clamp(maxKi*segments-i),IM_COL32(45,160,255,255),3*k);}
  }
  // Prior HUD stock ticks, including one partially filled next stock; no new long bar.
  int stocks=a.blast/100000,limit=a.blastMax/100000;float charge=stocks<limit?(a.blast%100000)/100000.f:0;int slots=stocks+(stocks<limit);float step=4*k,left=c.x-slots*step*.5f;
@@ -94,7 +163,7 @@ static void mh_gauge(ImDrawList *d,const FpActor &a,ImVec2 c,float r,bool hex,bo
  char str[80];float infoY=c.y+r+(a.fusionSeconds>0&&sMhConfig.timer?35:27)*k;
  if(layered){snprintf(str,sizeof(str),"%d",a.hp>0?layers+1:0);mh_text(d,ImVec2(c.x,c.y-r-8*k),7*k,IM_COL32(237,249,255,255),str,true);}
  if(label){if(a.player>0)snprintf(str,sizeof(str),"P%d",a.player);else snprintf(str,sizeof(str),"COM");mh_text(d,ImVec2(c.x,c.y+r+(a.fusionSeconds>0&&sMhConfig.timer?17:8)*k),6*k,IM_COL32(221,238,250,240),str,true);}
- if(a.fusionMove>=0&&sMhConfig.owner){if(a.fusionMove!=a.fusionAttack)snprintf(str,sizeof(str),"Move P%d / Attack P%d",a.fusionMove+1,a.fusionAttack+1);else snprintf(str,sizeof(str),"P%d",a.fusionAttack+1);mh_text(d,ImVec2(c.x,infoY),6*k,IM_COL32(101,218,255,255),str,true,80*k);infoY+=9*k;
+ if(a.fusionMove>=0&&sMhConfig.owner){if(a.fusionMove!=a.fusionAttack)snprintf(str,sizeof(str),sMhConfig.es?"Mover P%d / Atacar P%d":"Move P%d / Attack P%d",a.fusionMove+1,a.fusionAttack+1);else snprintf(str,sizeof(str),"P%d",a.fusionAttack+1);mh_text(d,ImVec2(c.x,infoY),6*k,IM_COL32(101,218,255,255),str,true,80*k);infoY+=9*k;
  if(sMhConfig.countdown&&sMhConfig.controls!=4&&sMhConfig.controls!=5){snprintf(str,sizeof(str),"%ds",a.fusionSwap);mh_text(d,ImVec2(c.x,infoY),6*k,IM_COL32(255,213,104,255),str,true);infoY+=9*k;}}
  if(a.fusionSeconds>0&&sMhConfig.timer){
   float remaining=mh_clamp(a.fusionProgress/1000.f),outer=r+12*k;const int pieces=24;
@@ -127,6 +196,7 @@ static void mh_gauge(ImDrawList *d,const FpActor &a,ImVec2 c,float r,bool hex,bo
   if(bolts)for(int j=0;j<2;j++){int frame=((int)(t*12)+a.chara+j*2)&3;float u=(frame&1)*.5f,v=(frame>>1)*.5f,angle=j?-.38f:2.76f,sz=r*1.04f;ImVec2 pos(c.x+cosf(angle)*r*1.1f-sz*.5f,c.y+sinf(angle)*r*1.1f-sz*.5f);d->AddImage(ImTextureRef((ImTextureID)(intptr_t)bolts),pos,ImVec2(pos.x+sz,pos.y+sz),ImVec2(j?u+.5f:u,v),ImVec2(j?u:u+.5f,v+.5f),IM_COL32(255,255,255,240));}
 
  }
+ if (a.potaraIcons) mh_potara_icons(d, a.potaraIcons, c, r, hex);
 }
 // The defuse cinematic's crack: lightning down the front of the body, three glow layers as in tools/defuse-previewer.
 static bool mh_defuse_any(const FpState &st){for(int i=0;i<FP_CRACKS;i++)if(st.defuse[i].active)return true;return false;}
@@ -148,7 +218,8 @@ static void mod_battle_hud_draw(){
  MhTiming timing;
  static FpState st;static float phase;int mode=Port_Setting("mod_hud_style",1);if(!PortPanels_Read(&st)||!st.battle||gUiPresentW<=0||gUiPresentH<=0)return;
  if(mh_defuse_any(st))mh_defuse_lights(ImGui::GetBackgroundDrawList(),st,gUiPresentW/512.f,gUiPresentH/448.f);
- if(!st.gauges)return;
+ if(!st.gauges){memset(sMhTrail,0,sizeof(sMhTrail));return;}
+ for(int i=0;i<FP_ACTORS;i++){if(i>=st.actorCount||!st.actor[i].present){sMhTrail[i].ready=0;continue;}const FpActor&a=st.actor[i];HT_Update(sMhTrail+i,a.chara,a.costume,a.hp,a.hpMax,st.paused?0:ImGui::GetIO().DeltaTime);}
  sMhConfig={mh_clamp(Port_Setting("mod_hud_background_percent",100)/100.f),Port_Setting("show_hud_portraits",1)!=0,Port_Setting("show_fusion_control_owner",1)!=0,Port_Setting("show_fusion_control_countdown",1)!=0,Port_Setting("show_fusion_timer",1)!=0,Port_Setting("mod_language",1)==1,Port_Setting("coop_fusion_controls",0)};
  float opacity=mh_clamp(Port_Setting("mod_hud_opacity_percent",100)/100.f);if(mode!=0&&opacity<=0)return;
  float sx=gUiPresentW/512.f,sy=gUiPresentH/448.f;bool layered=Port_Setting("hud_layered_gauges",1)!=0,fx=Port_Setting("show_hud_sparking_effects",1)!=0,names=Port_Setting("mod_hud_names",1)!=0;
@@ -178,7 +249,7 @@ static void mod_battle_hud_draw(){
    // Anchor the lowest label above the head, never clamp it down onto the model.
    ImVec2 c(roundf(mh_clamp(head.x,lo.x+r*1.8f,hi.x-r*1.8f)),roundf(head.y-below-22*sy*scale));
    if(c.y-above<lo.y||c.y+below>hi.y)continue;
-   mh_gauge(d,a,c,r,hex,layered,phase,fx,true);
+   mh_gauge(d,a,c,r,hex,layered,phase,fx,true,i);
    if(i==v.target&&a.hp>0)mh_target(d,c,r);
    if(names)mh_text(d,ImVec2(c.x,c.y+r+(a.fusionSeconds>0&&sMhConfig.timer?25:17)*(r/17)),6*(r/17),IM_COL32(232,244,255,245),a.name,true,110*(r/17));
   }
@@ -186,9 +257,12 @@ static void mod_battle_hud_draw(){
    int who=role?v.target:v.me;if(who<0||who>=st.actorCount||!st.actor[who].present)continue;const FpActor &a=st.actor[who];
    float k=sy*scale*(st.viewCount>2?.65f:.85f),w=fminf(118*k,(hi.x-lo.x)*.46f),h=50*k,x=role?hi.x-w-5*k:lo.x+5*k,y=lo.y+6*k;
    d->AddRectFilled(ImVec2(x,y),ImVec2(x+w,y+h),IM_COL32(10,24,42,(int)(118*sMhConfig.background)),8*k);d->AddLine(ImVec2(x+6*k,y+h),ImVec2(x+w-6*k,y+h),IM_COL32(225,182,80,165),k);
-   mh_gauge(d,a,ImVec2(x+24*k,y+24*k),17*k,hex,layered,phase,fx,false);
+   mh_gauge(d,a,ImVec2(x+24*k,y+24*k),17*k,hex,layered,phase,fx,false,who);
    if(names)mh_text(d,ImVec2(x+46*k,y+8*k),8*k,IM_COL32(237,246,255,255),a.name,false,w-50*k);
-   char value[80];snprintf(value,sizeof(value),"%d / %d",a.hp,a.hpMax);mh_text(d,ImVec2(x+46*k,y+21*k),7*k,IM_COL32(123,241,164,255),value,false,w-50*k);
+   char hp[32],maxHp[32],value[80];
+   Port_FormatPowerInteger(a.hp,hp,sizeof(hp));
+   Port_FormatPowerInteger(a.hpMax,maxHp,sizeof(maxHp));
+   snprintf(value,sizeof(value),"%s / %s",hp,maxHp);mh_text(d,ImVec2(x+46*k,y+21*k),7*k,sMhTrail[who].notice>0&&sMhTrail[who].delta<0?IM_COL32(255,85,75,255):IM_COL32(123,241,164,255),value,false,w-50*k);
    snprintf(value,sizeof(value),"Ki %.1f",a.ki/20000.f);mh_text(d,ImVec2(x+46*k,y+32*k),7*k,IM_COL32(112,211,255,255),value);
   }
   if(mode==0&&v.me>=0&&v.me<st.actorCount){const FpActor&a=st.actor[v.me];if(a.assistKind&&(a.assistState||a.assistHelpers)){
@@ -216,7 +290,7 @@ static void mod_battle_hud_draw(){
   // Normal-HUD players still see a readable fusion countdown, independent of replacement gauges.
   if(mode==0&&sMhConfig.timer)for(int role=0;role<2;role++){
    int who=role?v.target:v.me;if(who<0||who>=st.actorCount||!st.actor[who].present||st.actor[who].fusionSeconds<=0)continue;
-   char text[48];int secs=st.actor[who].fusionSeconds;snprintf(text,sizeof(text),"Fusion %d:%02d",secs/60,secs%60);
+   char text[48];int secs=st.actor[who].fusionSeconds;snprintf(text,sizeof(text),sMhConfig.es?"Fusión %d:%02d":"Fusion %d:%02d",secs/60,secs%60);
    mh_text(d,ImVec2(role?hi.x-75*sy:lo.x+6*sy,lo.y+56*sy),9*sy,IM_COL32(255,215,104,255),text);
   }
   // Apply opacity to this viewport's vertices only, including portraits/text.

@@ -91,6 +91,11 @@ s32 BtlGame_IsReplay(void) {
 }
 
 /* Returns the menu tree for the battle: which = 0 the pause menu, 1 the result menu (modes 0 and 1 only). */
+#ifdef PORT
+static BtlMenu sTeamResult;
+static BtlMenuItem sTeamItems[6];
+#endif
+
 BtlMenu *PauseMenu_GetMenu(s32 which) {
     BtlMenu *menu = NULL;
 
@@ -145,6 +150,11 @@ BtlMenu *PauseMenu_GetMenu(s32 which) {
         case 0:
             if (!BattleReplay_IsActive()) {
                 menu = &gPauseMenuResultVersus;
+#ifdef PORT
+                extern int Port_ModSelectPlanCount(void);
+                if (sTeamResult.items && Port_ModSelectPlanCount() > 0)
+                    menu = &sTeamResult;
+#endif
             } else if (!BattleReplay_IsLoaded()) {
                 menu = &gPauseMenuResultReplayRec;
             } else {
@@ -357,6 +367,16 @@ void PauseMenu_Init(void) {
         }
     }
 #endif
+#ifdef PORT
+    sTeamResult = gPauseMenuResultVersus;
+    sTeamResult.items = NULL;
+    if (sTeamResult.count <= 6) {
+        sTeamResult.items = sTeamItems;
+        for (int i = 0; i < sTeamResult.count; ++i)
+            sTeamItems[i] = gPauseMenuResultVersus.items[i];
+        PauseMenu_PortRemove(&sTeamResult, 0xE);
+    }
+#endif
     BtlMenu_Init();
 }
 
@@ -374,7 +394,15 @@ s32 PauseMenu_Update(s32 pad, s32 which) {
 
     gPauseMenuWhich = which;
     menu = PauseMenu_GetMenu(which);
+#ifdef PORT
+    {
+        extern void *Port_StoryUltimateText(void *, void *, int);
+        PauseMenuObj *obj = BtlObj_Get(BattleSide_GetObjId(pad));
+        BtlMenu_SetScript(Port_StoryUltimateText(obj, obj ? obj->skillText : NULL, 0));
+    }
+#else
     BtlMenu_SetScript(BtlObj_Get(BattleSide_GetObjId(pad))->skillText);
+#endif
     set = BattleResult_Set;
     if (BtlMenu_Update(which, NULL, menu, pad)) {
         Battle_GetWork()->flags &= ~BATTLE_FLAG_PAUSE;

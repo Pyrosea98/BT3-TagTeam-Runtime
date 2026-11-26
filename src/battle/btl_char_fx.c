@@ -5,6 +5,101 @@ extern s32 BtlCharApi_GetChara(s32);
 #endif
 #include "battle/btl_char_member.h"
 #ifdef PORT
+#include "battle/battle_setup.h"
+extern BtlMemberChr *BtlChar_Get(s32);
+extern void BtlChar_ClearFlag(BtlMemberChr*,s32);
+#include "mod_big_beam_probe.inc"
+#include "mod_blood.h"
+#include "plat_fx.h"
+#include "mod_blood_progress.h"
+static BloodProgress blood_progress;
+static int blood_logged_level[16];
+static int blood_surface_objects[16],blood_surface_native[16];
+static unsigned int blood_surface_valid;
+int Port_BloodSurfaceActor(int type,int object) {
+    int i;(void)type;
+    if(object<0)return -1;
+    for(i=0;i<16;i++)if((blood_surface_valid&(1u<<i))&&(blood_surface_objects[i]==object||blood_surface_native[i]==object))return i;
+    return -1;
+}
+void Port_BloodProgressClear(void) {
+    blood_surface_valid=0;
+    int i;for(i=0;i<16;i++){blood_logged_level[i]=-1;blood_surface_objects[i]=blood_surface_native[i]=-1;}
+    BloodProgress_Clear(&blood_progress);
+}
+/* Keep the highest threshold for each active member. Inactive members are
+ * hidden, and changing members must not transfer an old body's wounds. */
+void Port_BloodProgressTick(void) {
+    extern int Port_BloodReviewEnabled(int);
+    extern BtlMemberChr *BtlChar_Get(s32);
+    extern int Port_StoryMouthPose(int,Vec4*,Vec4*);
+    extern int Port_StorySceneActor(int);
+    int i;
+    big_beam_fixture_tick();
+    for(i=0;i<16;i++) {
+        BtlMemberChr *c;BtlMember *m;BtlMemberGauge *g;int level=0,prior,r,b,green;Vec4 p,d;float h;
+        Port_Fx_SurfaceState(i,0,0,0,0,0);
+        blood_surface_objects[i]=blood_surface_native[i]=-1;
+        blood_surface_valid&=~(1u<<i);
+        if(!Port_BloodReviewEnabled(0))continue;
+        if(i>=BtlChar_GetCount()||!(c=BtlChar_Get(i)))continue;
+        m=BtlMember_GetActive(c);g=BtlMember_GetActiveGauge(c);
+        if(!m||!g||g->healthMax<=0)continue;
+        {extern unsigned int gGsFrame;extern int Port_BloodFixtureLevel(int);int review=Port_BloodFixtureLevel(gGsFrame);
+         if(review) {
+             extern int Port_BloodFixtureDamageAt(int);
+             extern void BtlChar_SetHeldFlag(BtlMemberChr*,s32);
+             g->health=(int)((long long)g->healthMax*(review==1?85:review==2?60:30)/100);
+             /* Private progression test: request the native finisher wardrobe transition. */
+             if(i==0&&Port_BloodFixtureDamageAt(gGsFrame)&&g->variant==0)
+                 BtlChar_SetHeldFlag(c,0xAB);
+         }}
+        prior=BloodProgress_Get(&blood_progress,(u32)m);
+        /* Story reserves can be visible while their live gauge is parked at zero.
+         * Keep real wounds from earlier combat without treating parking as a KO. */
+        if(g->health<=0&&Port_StorySceneActor(i))
+            level=Blood_None(m->chara)?0:prior;
+        else
+            level=BloodProgress_Update(&blood_progress,(u32)m,g->health,g->healthMax,Blood_None(m->chara));
+        if(level!=blood_logged_level[i]){
+            extern void Port_Dbg3(const char*,int,int,int,int);
+            Port_Dbg3("blood progress actor/health/max/level",i,g->health,g->healthMax,level);
+            blood_logged_level[i]=level;
+        }
+        if(!Port_Fx_Enabled()||!level)continue;
+        Blood_Color(m->chara,&r,&green,&b);
+        {const char *name=Port_CharaName(m->chara);int profile=0;
+         if(blood_has(name,"Piccolo")||blood_has(name,"Piccoro"))profile=1;
+         if(blood_has(name,"Raditz"))profile=2;
+         if(blood_has(name,"Goku"))profile=3;
+         if(blood_has(name,"Krillin")||blood_has(name,"Krilin"))profile=4;
+         if(blood_has(name,"Gohan")||blood_has(name,"Vegeta"))profile=5;
+         if(!profile&&(m->chara==22||m->chara==23||m->chara==155||m->chara==167))profile=1;
+         if(!profile&&(m->chara==57))profile=3;
+         if(!profile&&(m->chara==3||m->chara==7||m->chara==12||m->chara==13||m->chara==29||m->chara==30||m->chara==31||m->chara==32||m->chara==33||m->chara==34||m->chara==35||m->chara==36||m->chara==37||m->chara==38||m->chara==46||m->chara==71||m->chara==122||m->chara==161||m->chara==182||m->chara==202||m->chara==236||m->chara==240||m->chara==244||m->chara==309||m->chara==316))profile=5;
+         Port_Fx_SurfaceState(i,level,profile,r,green,b);}
+        {extern int Port_StoryVisualObjectId(int,int);
+         blood_surface_native[i]=c->objId;
+         blood_surface_objects[i]=Port_StoryVisualObjectId(i,c->objId);
+         blood_surface_valid|=1u<<i;}
+        /* Surface damage survives an unavailable mouth pose. Only the
+         * transient jets need it; no persistent screen-space lines remain. */
+        if(!Port_StoryMouthPose(i,&p,&d))continue;
+        {extern float BtlCharApi_GetHeight(s32);h=BtlCharApi_GetHeight(c->objId);}
+        if(level>=2&&prior<2){
+            extern void Port_Fx_WorldMouthSpit(const Vec4*,const Vec4*,int);
+            Vec4 left=d,right=d;
+            left.x=d.x*.9950042f+d.z*.0998334f;left.z=d.z*.9950042f-d.x*.0998334f;
+            right.x=d.x*.9950042f-d.z*.0998334f;right.z=d.z*.9950042f+d.x*.0998334f;
+            Port_Fx_SetTint(r,green,b);
+            Port_Fx_WorldMouthSpit(&p,&left,(int)(h*64));
+            Port_Fx_WorldMouthSpit(&p,&right,(int)(h*64));
+            Port_Fx_ResetTint();
+        }
+    }
+}
+#endif
+#ifdef PORT
 extern void BtlCharApi_ShakeCamsNear(Vec4*,f32,f32,f32,f32);
 #endif
 
@@ -262,6 +357,35 @@ void BtlChar_SpawnFxBits0(BtlMemberChr *chr) {
 }
 
 /* Spawns the hit effect and plays the hit sound requested by fx bits 0x1B..0x27. */
+#ifdef PORT
+/* Donde termina la sangre: aca ya se sabe el punto de impacto. La decision (si el golpe entro, y de que tipo) la
+   tomo btl_char_hit.c con la reaccion RESUELTA del rival; esto solo consume ese pedido. Si el juego no pide efecto
+   para este golpe, no hay pedido y no hay sangre. */
+extern int Port_Fx_Take(int objId, int *kind, float *scale, int *spit);
+extern void Port_Fx_BloodAt(int x, int y, int kind, int scaleQ8, int spit);
+extern s32 Port_ProjectPoint(Vec4 *pos, s32 *x, s32 *y);
+
+static void port_blood_at_hit(BtlMemberChr *chr, Vec4 *pos) {
+    s32 x, y;
+    int kind, spit;
+    float scale;
+
+    if (pos == NULL || !Port_Fx_Take(chr->objId, &kind, &scale, &spit)) {
+        return;
+    }
+    if (!Port_ProjectPoint(pos, &x, &y)) {
+        return;
+    }
+    /* Ordinary hits use small world-space droplets too, never a centred
+       screen splash. The explicit CH2 mouth cue remains independently timed. */
+    {Vec4 rot,dir;extern void Port_Fx_WorldSpit(const Vec4*,const Vec4*,int);
+     extern float BtlCharApi_GetHeight(s32),BtlCharApi_GetGroundY(s32);
+     BtlCharApi_GetRot(chr->objId,&rot);dir.x=sinf(rot.y);dir.y=0;dir.z=cosf(rot.y);dir.w=BtlCharApi_GetGroundY(chr->objId);
+     Port_Fx_WorldSpit(pos,&dir,(int)(BtlCharApi_GetHeight(chr->objId)*scale*(spit?1.f:.45f)*256.f));
+    }
+}
+#endif
+
 void BtlChar_SpawnHitFx(BtlMemberChr *chr) {
     BtlMemberHitFxReq req;
     s32 sound = -1;
@@ -480,9 +604,55 @@ void BtlChar_SpawnHitFx(BtlMemberChr *chr) {
     if (sound >= 0) {
         BtlCharSnd_PlayCommon(chr, sound);
     }
+#ifdef PORT
+    if(req.kind>=0)port_blood_at_hit(chr,&req.pos);
+    else port_blood_at_hit(chr,NULL);
+#endif
 }
 
 #ifdef PORT
+/* Authored piercing impact: actual actor chest, independent of physical-hit filters.
+   Projection is scoped to this one contact; disabled FX is a no-op. */
+void Port_StoryBloodImpact(s32 actor,float scale){
+ extern void Port_StoryMouthBlood(int,int);
+ Port_StoryMouthBlood(actor,(int)(scale*256.f));
+}
+
+
+
+/* CH2 knee: native physical hit, at the actual abdomen rather than an energy flash. */
+void Port_StoryBodyImpact(int actor){
+ extern BtlMemberChr*BtlChar_Get(s32);BtlMemberChr*c;BtlMemberHitFxReq req;
+ if(actor<0||actor>=16||(c=BtlChar_Get(actor))==NULL)return;memset(&req,0,sizeof(req));req.objId=c->objId;req.kind=2;
+ BtlCharApi_GetNodePos(c->objId,0x10,&req.pos);req.dir.z=1.f;EftImpact_SpawnHit(&req);
+}
+int Port_StoryMouthPose(int actor,Vec4*out,Vec4*forward){
+ extern BtlMemberChr*BtlChar_Get(s32);BtlMemberChr*c;Vec4 mouth,dir;Mtx44 jaw,head;float h,len;int object;extern int Port_StoryVisualObjectId(int,int);
+ extern void BtlCharApi_GetNodeMtx(s32,s32,Mtx44*);
+ extern float BtlCharApi_GetHeight(s32),BtlCharApi_GetGroundY(s32);
+ if(actor<0||actor>=16||(c=BtlChar_Get(actor))==NULL)return 0;
+ /* Native joint31 is the jaw;2E was the neck/head look anchor. Follow
+    the evaluated head basis, including the reaction's pitch, not root yaw. */
+ object=Port_StoryVisualObjectId(actor,c->objId);
+ BtlCharApi_GetNodeMtx(object,0x31,&jaw);BtlCharApi_GetNodeMtx(object,0x2F,&head);
+ mouth=*(Vec4*)&jaw.m[3];h=BtlCharApi_GetHeight(c->objId);
+ dir.x=-head.m[2][0];dir.y=-head.m[2][1];dir.z=-head.m[2][2];
+ len=sqrtf(dir.x*dir.x+dir.y*dir.y+dir.z*dir.z);if(!(len>.001f))return 0;
+ dir.x/=len;dir.y/=len;dir.z/=len;dir.w=BtlCharApi_GetGroundY(c->objId);
+ /* The jaw joint is the hinge, above the lip opening. Offset to the lip
+    in evaluated head-local down/forward directions, not world vertical. */
+ {float dy=sqrtf(head.m[1][0]*head.m[1][0]+head.m[1][1]*head.m[1][1]+head.m[1][2]*head.m[1][2]);
+  if(dy>.001f){mouth.x+=head.m[1][0]/dy*h*.08f;mouth.y+=head.m[1][1]/dy*h*.08f;mouth.z+=head.m[1][2]/dy*h*.08f;}}
+ mouth.x+=dir.x*h*.035f;mouth.y+=dir.y*h*.035f;mouth.z+=dir.z*h*.035f;mouth.w=1.f;
+ *out=mouth;*forward=dir;return 1;
+}
+void Port_StoryMouthBlood(int actor,int scaleQ8){
+ Vec4 p,d;extern void Port_Fx_WorldMouthSpit(const Vec4*,const Vec4*,int);
+ extern float BtlCharApi_GetHeight(s32);extern BtlMemberChr*BtlChar_Get(s32);
+ if(!Port_Fx_Enabled()||!Port_StoryMouthPose(actor,&p,&d))return;
+ {extern void Port_StoryFaceFrame(int,int);Port_StoryFaceFrame(actor,10);}
+ Port_Fx_WorldMouthSpit(&p,&d,(int)(BtlCharApi_GetHeight(BtlChar_Get(actor)->objId)*scaleQ8));
+}
 /* Explicit story contact: native impact task at the actual victim's chest. */
 void Port_StoryHitFx(s32 actor){
  extern BtlMemberChr *BtlChar_Get(s32);
@@ -544,7 +714,7 @@ extern s32 EftCharge_IsActive(s32 objId);
 extern void EftCharge_Start(s32 *arg);
 extern void EftCharge_Burst(s32 objId);
 extern void EftCharge_Stop(s32 objId);
-extern void EftBlastCharge_Start(FxHitArg *arg);
+extern s32 EftBlastCharge_Start(FxHitArg *arg);
 #ifdef PORT /* PC build: by value, as the definition takes it (the PS2 passes a struct of this size by address) */
 extern void EftRay_CreateByValue(FxLineArg arg);
 #define EftRay_CreateByValue(arg) EftRay_CreateByValue(*(FxLineArg *)(arg))
@@ -1012,6 +1182,23 @@ void BtlFx_UpdateGroundFx(FxChr *chr) {
         BtlChar_ClearFxBit(chr, 0x35);
         BtlChar_ClearFxBit(chr, 0x36);
     }
+#ifdef PORT
+    {extern void Port_GroundChargeTouch(int,void*,void*,int,float,int,long long);extern long long Port_CharaPowerValue(int,int);extern int BtlCharApi_GetCostume(int);extern float BtlCharApi_GetHeight(int);extern int Battle_GetStage(void);extern int BtlAct_GetCurrent(void*),Port_SequencePartner(int),Port_StoryHeld(int),BtlCharApi_IsHidden(int);
+     FxPose*p=BtlChar_GetPos(chr);int wet=BtlStage_GetWaterLevel(&water)&&p->unkB0.y>=water;
+     long long power=Port_CharaPowerValue(BtlCharApi_GetChara(chr->objId),BtlCharApi_GetCostume(chr->objId));
+     {extern void Port_GroundChargeAtmosphereTouch(int,long long,int,int,int);
+      int eligible=!BtlCharApi_IsHidden(chr->objId)&&!Port_StoryHeld(chr->player)&&Port_SequencePartner(chr->player)<0&&BtlMember_GetHealthRatio((BtlMemberChr*)chr)>0;
+      Port_GroundChargeAtmosphereTouch(chr->player,power,BtlAct_GetCurrent(chr)==0x37&&BtlChar_TestFxBit(chr,7),BtlChar_TestFlag(chr,6),eligible);}
+
+     int ok=BtlAct_GetCurrent(chr)==0x37&&BtlChar_TestFxBit(chr,7)&&BtlChar_TestFlag(chr,0xF)&&!wet&&!BtlCharApi_IsHidden(chr->objId)&&!Port_StoryHeld(chr->player)&&Port_SequencePartner(chr->player)<0;
+     /* Native0x36 can be cleared for its legacy emitter; it is not a ground-contact oracle. */
+     {extern int Port_Setting(const char*,int);extern void Port_GroundTrace(const char*,int,int,int,int);static int seen[16];
+      if(Port_Setting("ground_charge_fx",0)>0&&BtlAct_GetCurrent(chr)==0x37&&BtlChar_TestFxBit(chr,7)&&chr->player>=0&&chr->player<16&&seen[chr->player]++<12){
+       int why=(BtlChar_TestFlag(chr,0xF)?1:0)|(wet?2:0)|(BtlCharApi_IsHidden(chr->objId)?4:0)|(Port_StoryHeld(chr->player)?8:0)|(Port_SequencePartner(chr->player)>=0?16:0);
+       Port_GroundTrace("admission(actor,ok,flags,normalYx100)",chr->player,ok,why,(int)(p->unkC0.y*100));}}
+     Port_GroundChargeTouch(chr->player,&p->unkB0,&p->unkC0,ok,BtlCharApi_GetHeight(chr->objId),Battle_GetStage(),power);
+    }
+#endif
     if (BtlChar_IsFxBitNew(chr, 0x30)) {
         EftGndDust_SetSlide(chr->objId, 0, 1.0f);
     }
@@ -1553,7 +1740,38 @@ void Port_StoryChargeSpark(s32 actor,s32 on){
  FxChr*c=(FxChr*)BtlChar_Get(actor);FxHitArg arg;
  if(!c)return;
  if(!on){EftBlastCharge_Stop(c->objId);return;}
- memset(&arg,0,sizeof(arg));arg.objId=c->objId;arg.kind=0x10;arg.pos.z=1.f;
- EftBlastCharge_Start(&arg); /* native node-attached glow at the charging hand */
+ memset(&arg,0,sizeof(arg));arg.objId=c->objId;arg.kind=0x1F;arg.pos.z=1.f;arg.unk18=BtlKiBlast_GetUnk3(c);arg.scale=1.f;
+ {extern void Port_Dbg3(const char*,int,int,int,int);int ok=EftBlastCharge_Start(&arg);Port_Dbg3("story native hand glow",actor,c->objId,arg.kind,ok);} /* same node mapping as native request17 */
+}
+#endif
+
+#ifdef PORT
+/* Piercing entry/exit follow the visible torso and actual caster-to-victim line.
+   This emits only particles: baked wound geometry remains the native model's. */
+void Port_StoryPiercingBlood(int actor,int caster){
+ extern BtlMemberChr*BtlChar_Get(s32);extern int Port_StoryVisualObjectId(int,int);
+ extern float BtlCharApi_GetHeight(s32),BtlCharApi_GetGroundY(s32);
+ extern void Port_Fx_WorldSpit(const Vec4*,const Vec4*,int);
+ BtlMemberChr*c,*by;Vec4 at,from,d,entry,exit;float h,len;int object;
+ if(!Port_Fx_Enabled()||!(c=BtlChar_Get(actor))||!(by=BtlChar_Get(caster)))return;
+ object=Port_StoryVisualObjectId(actor,c->objId);h=BtlCharApi_GetHeight(c->objId);
+ BtlCharApi_GetNodePos(object,3,&at);BtlCharApi_GetNodePos(by->objId,3,&from);
+ d.x=at.x-from.x;d.y=at.y-from.y;d.z=at.z-from.z;len=sqrtf(d.x*d.x+d.y*d.y+d.z*d.z);if(len<.001f)return;
+ d.x/=len;d.y/=len;d.z/=len;d.w=BtlCharApi_GetGroundY(c->objId);
+ entry=exit=at;entry.x-=d.x*h*.12f;entry.y-=d.y*h*.12f;entry.z-=d.z*h*.12f;
+ exit.x+=d.x*h*.12f;exit.y+=d.y*h*.12f;exit.z+=d.z*h*.12f;
+ Port_Fx_WorldSpit(&exit,&d,(int)(h*140.f));d.x=-d.x;d.y=-d.y;d.z=-d.z;
+ Port_Fx_WorldSpit(&entry,&d,(int)(h*100.f));
+}
+#endif
+
+
+#ifdef PORT
+/* Authored sparring contact: the native guard spark at the evaluated fist,
+   without combat damage, cinematic blood or a head-centred energy flash. */
+void Port_StoryGuardImpact(int actor,const Vec4*point){
+ extern BtlMemberChr*BtlChar_Get(s32);BtlMemberChr*c;FxPosArg req;
+ if(actor<0||actor>=16||!point||(c=BtlChar_Get(actor))==NULL)return;
+ memset(&req,0,sizeof(req));req.objId=c->objId;req.kind=9;req.pos=*point;req.pos2.z=1.f;EftImpact_SpawnHitScaled(&req,.28f);
 }
 #endif

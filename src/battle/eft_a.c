@@ -151,6 +151,24 @@ void EftHit_Add(EftHitRec *rec) {
     }
 #ifdef PORT
     {extern s32 Port_StorySkyShot(s32);if(Port_StorySkyShot(rec->objId))return;}
+    {extern int Port_BloodReviewEnabled(int);
+     if(Port_BloodReviewEnabled(1)) {
+         static u32 keys[64];static int used;
+         u32 key=rec->src?(u32)rec->src->def:(u32)rec->atk;int j;
+         key^=(u32)(rec->objId+1)*0x9E3779B9u;
+         for(j=0;j<used&&keys[j]!=key;j++);
+         if(j==used&&used<64){extern void Port_Dbg3(const char*,int,int,int,int);keys[used++]=key;
+             {extern unsigned int gGsFrame;Port_Dbg3("big attack first renderFrame/owner/type/effect",gGsFrame,rec->objId,rec->type,rec->src?rec->src->def->unk0:0);}
+             Port_Dbg3("big attack record owner/type/unk54/flags",rec->objId,rec->type,rec->unk54,rec->flags);
+             if(rec->src&&rec->src->def){
+                 Port_Dbg3("big attack effectId/slot/kind/shape",rec->src->def->unk0,rec->src->slot,rec->src->def->kind,rec->src->def->shape);
+                 Port_Dbg3("big attack definition flags/task/level/scaleQ8",rec->src->def->flags,(u32)rec->task,rec->level,(int)(rec->src->def->scale*256));
+                   {extern int Port_BigBeamReady(void*);Port_Dbg3("big attack transferable/task/speedQ8/stepQ8",Port_BigBeamReady(rec->task),(u32)rec->task,
+                     (int)(sqrtf(Vec3_Dot(&rec->vel,&rec->vel))*256),(int)((rec->pos.x-rec->prevPos.x)*256));}
+                   Port_Dbg3("big attack actual module/owner/slot/effect",((s8*)rec->src->def)[0x0D],rec->objId,rec->src->slot,rec->src->def->unk0);
+             }
+         }
+     }}
 #endif
     *(gEftHitList->rec + gEftHitList->count) = *rec;
     gEftHitList->count++;
@@ -943,6 +961,9 @@ void EftHit_SpawnBlastImpact(EftHitRec *rec) {
 }
 
 /* Spawns the impact effect of a technique: on a fighter (definition impactFx) or on the stage (groundFx). */
+#ifdef PORT
+extern void Port_TerrainTechniqueContact(void*,void*,int);
+#endif
 void EftHit_SpawnTechImpact(EftHitRec *rec) {
     EftVec dir;
     EftHitSrc *src;
@@ -971,6 +992,9 @@ void EftHit_SpawnTechImpact(EftHitRec *rec) {
             if (spawn) {
                 arg = (EftImpactArg){ pos, dir, src->def->impactFx, rec->objId, 0 };
                 EftImpact_SpawnBlast(arg, rec->src->def->impactScale, 0.5f);
+#ifdef PORT
+                Port_TerrainTechniqueContact(rec,&rec->task->pos,0);
+#endif
             }
         }
     } else if (rec->task->flags & EFT_TASK_HIT_STAGE) {
@@ -1980,3 +2004,17 @@ void EftGfx_DrawSprite(EftVec *pos, EftVec *color, f32 w, f32 h, f32 u0, f32 v0,
     e->tail->next = (OtPrim *)p;
     e->tail = (OtPrim *)p;
 }
+
+#ifdef PORT
+#include "mod_ground_charge.inc"
+#endif
+
+#ifdef PORT
+/* A scripted execution's actual world-space energy burst; no fabricated beam
+   collision, hit record, damage callback or full-screen blood overlay. */
+void Port_StoryExplosion(int objId,float scale){
+ EftImpactArg arg;memset(&arg,0,sizeof(arg));
+ BtlCharApi_GetNodePos(objId,3,&arg.pos);arg.pos.w=1;arg.dir.y=-1;arg.objId=objId;
+ EftImpact_SpawnBlast(arg,scale,.65f);EftGndDust_SpawnImpact(objId,&arg.pos,scale);
+}
+#endif

@@ -1,6 +1,10 @@
 #include "common.h"
 #include "battle/btl_pool.h"
 #include "battle/eft_g.h"
+#ifdef PORT
+static EftTask*sStoryNimbusSmoke[2];
+static int story_nimbus_smoke(EftTask*t){return t&&(t==sStoryNimbusSmoke[0]||t==sStoryNimbusSmoke[1]);}
+#endif
 #include "sys/gfx_ot.h"
 
 /*
@@ -449,6 +453,23 @@ void EftUtil_DrawTri(EftScrXyz *xyz0, EftScrXyz *xyz1, EftScrXyz *xyz2, f32 *col
     EftOt_Add((OtPrim *)p, z, layer);
 }
 
+#ifdef PORT
+static EftStorm sChargeBolts;
+static u32 sChargeBoltRng;
+static int sChargeBoltsBound;
+static int sChargeBoltsLive;
+
+/* Cosmetic draws must not advance the battle's shared random stream. */
+static s32 storm_random(u32 *state) {
+    if (!state) return rand();
+    *state ^= *state << 13;
+    *state ^= *state >> 17;
+    *state ^= *state << 5;
+    return (s32)(*state & 0x7fffffffu);
+}
+static void storm_spawn_bolt(EftStorm *work, EftStormBolt *bolt, u32 *rng);
+#endif
+
 /* Storm init callback: allocates the work block, loads the textures (stage pack entry 14), spawns everything. */
 void EftStorm_Init(EftTask *task) {
     s32 pack = BtlScene_GetStageData();
@@ -494,7 +515,7 @@ void EftStorm_Update(void) {
    (8, -0) times 150) are turned by the camera's world matrix and added to the bolt position; a bolt is skipped
    when any of the four projects off screen. Kind 0 draws two sprites (textures texA and texB), kind 1 only the
    second, larger one. */
-#if 0 /* not matched: 636 instructions against 636, 116 differ when aligned. Found in the second retry: the body of
+#if defined(PORT) /* not matched: 636 instructions against 636, 116 differ when aligned. Found in the second retry: the body of
 the second sprite exists twice (`if (kind != 0) { B } else { A; B }`); the two tag words are scalars that end up in
 spill slots together with work and i (sp+256 work, 260 i, 264 / 268 the tag words: declaration order work, i, tag,
 vif); the texture word is read where it is stored, after the texture coordinates, so the sprite code is a macro
@@ -526,7 +547,7 @@ converted to float through a spilled variable, and pointer variables assigned tw
         p->rgba[0] = (u32)(col); \
         p->rgba[1] = (u32)(col); \
         p->rgba[2] = (u32)(col); \
-        p->rgba[3] = (bolt->life << 7) / bolt->lifeMax; \
+        p->rgba[3] = ((bolt->life << 7) / bolt->lifeMax) * opacity / 128; \
         p->q = 1.0f; \
         p->v[0].xyz.x =  (a)->x; \
         p->v[0].xyz.y =  (a)->y; \
@@ -556,12 +577,11 @@ converted to float through a spilled variable, and pointer variables assigned tw
         EftOt_Add((OtPrim *)p,  (a)->z >> 8, 1); \
     } while (0)
 
-void EftStorm_DrawBolts(EftStormBolt *bolt) {
+static void storm_draw_bolts(EftStorm *work, EftStormBolt *bolt, int opacity) {
     Mtx44 cam;
     Vec4 corner[4];
     Vec4 world[4];
     EftScrXyz xyz[4];
-    EftStorm *work = gEftStorm;
     s32 i;
     u32 tag;
     u32 vif;
@@ -616,6 +636,44 @@ void EftStorm_DrawBolts(EftStormBolt *bolt) {
     }
     Vu0Cur_Pop();
 }
+void EftStorm_DrawBolts(EftStormBolt *bolt) {
+    storm_draw_bolts(gEftStorm, bolt, 128);
+}
+
+void Port_ChargeBoltsBind(void *pack) {
+    memset(&sChargeBolts, 0, sizeof(sChargeBolts));
+    sChargeBoltRng = 0x94ac21feu;
+    sChargeBoltsLive = 0;
+    sChargeBoltsBound = pack != NULL;
+    if (pack) EftTexSet_Load32(&sChargeBolts, pack);
+}
+
+void Port_ChargeBoltsUpdate(int level, int stopped) {
+    int i;
+    if (!sChargeBoltsBound || !level) {
+        if (sChargeBoltsLive) {
+            memset(sChargeBolts.bolt, 0, sizeof(sChargeBolts.bolt));
+            sChargeBoltsLive = 0;
+        }
+        return;
+    }
+    EftTexSet_Keep32(&sChargeBolts, 1, 0);
+    if (stopped) return;
+    sChargeBoltsLive = 1;
+    for (i = 0; i < EFT_STORM_BOLTS; i++) {
+        EftStormBolt *bolt = &sChargeBolts.bolt[i];
+        if (bolt->wait) bolt->wait--;
+        else if (bolt->life) bolt->life--;
+        else storm_spawn_bolt(&sChargeBolts, bolt, &sChargeBoltRng);
+    }
+}
+
+void Port_ChargeBoltsDraw(int level) {
+    int opacity = level * 128 / 225;
+    if (!level || !sChargeBoltsLive || !gBtlCamView) return;
+    if (opacity > 128) opacity = 128;
+    storm_draw_bolts(&sChargeBolts, sChargeBolts.bolt, opacity);
+}
 #else
 INCLUDE_ASM("asm/nonmatchings/battle/eft_g", EftStorm_DrawBolts);
 #endif
@@ -642,7 +700,18 @@ void EftStorm_Reset(EftTask *task) {
 
 /* Places a bolt on the horizon (about 5000 away, 700 up) with a life of 16..31 frames; a bolt closer than 700
    to a live one is dropped. Seven or eight rand() calls. */
+#ifdef PORT
 void EftStorm_SpawnBolt(EftStormBolt *bolt) {
+    storm_spawn_bolt(gEftStorm, bolt, NULL);
+}
+static void storm_spawn_bolt(EftStorm *work, EftStormBolt *bolt, u32 *rng) {
+#define STORM_RAND() storm_random(rng)
+#define STORM_BOLTS work->bolt
+#else
+void EftStorm_SpawnBolt(EftStormBolt *bolt) {
+#define STORM_RAND() rand()
+#define STORM_BOLTS gEftStorm->bolt
+#endif
     Vec4 d;
     f32 dist;
     EftStormBolt *other;
@@ -650,32 +719,32 @@ void EftStorm_SpawnBolt(EftStormBolt *bolt) {
     s32 r;
     s32 r2;
 
-    dist = (f32)((rand() & 0x3FF) - 0x1FF) + 5000.0f;
-    bolt->pos.x = (rand() & 0x1FF) - 0xFF;
+    dist = (f32)((STORM_RAND() & 0x3FF) - 0x1FF) + 5000.0f;
+    bolt->pos.x = (STORM_RAND() & 0x1FF) - 0xFF;
     bolt->pos.y = 0.0f;
-    bolt->pos.z = (rand() & 0xFF) - 0x1F;
+    bolt->pos.z = (STORM_RAND() & 0xFF) - 0x1F;
     bolt->pos.w = 1.0f;
     if (bolt->pos.x == 0.0f && bolt->pos.z == 0.0f) {
         bolt->pos.x = 1.0f;
     }
     Vec3_Normalize(&bolt->pos, &bolt->pos);
     Vec4_Scale(&bolt->pos, &bolt->pos, dist);
-    bolt->lifeMax = bolt->life = (u32)((rand() & 0x1F) + 0x20) >> 1;
-    bolt->texA = (u32)rand() % 3;
-    r = rand();
-    r2 = rand() & 1;
+    bolt->lifeMax = bolt->life = (u32)((STORM_RAND() & 0x1F) + 0x20) >> 1;
+    bolt->texA = (u32)STORM_RAND() % 3;
+    r = STORM_RAND();
+    r2 = STORM_RAND() & 1;
     bolt->pos.y = -700.0f;
     bolt->texB = (r & 1) + r2 + 3;
-    rand();
+    STORM_RAND();
     bolt->wait = 1;
     if (dist < 5000.0f) {
         r2 = 1;
         bolt->kind = r2;
     } else {
-        r2 = rand() & 1;
+        r2 = STORM_RAND() & 1;
         bolt->kind = r2;
     }
-    for (other = gEftStorm->bolt, i = 0; i < EFT_STORM_BOLTS; other++) {
+    for (other = STORM_BOLTS, i = 0; i < EFT_STORM_BOLTS; other++) {
         i++;
         if (other == bolt) {
             continue;
@@ -689,6 +758,8 @@ void EftStorm_SpawnBolt(EftStormBolt *bolt) {
             break;
         }
     }
+#undef STORM_RAND
+#undef STORM_BOLTS
 }
 
 /* Scatters the 64 rain drops in a 1023-wide cube around the origin, all falling 19.6 per frame. */
@@ -907,6 +978,9 @@ void EftSmokeMgr_Init(EftTask *task) {
 
 /* Smoke manager term callback. */
 void EftSmokeMgr_Term(void) {
+#ifdef PORT
+ extern void Port_StoryNimbusSmokeReset(void);Port_StoryNimbusSmokeReset();
+#endif
     BtlPool_Free(BtlPool_GetCurrent(), gEftSmokeMgr);
     gEftSmokeMgr = NULL;
 }
@@ -953,7 +1027,11 @@ void EftSmoke_Update(EftTask *task) {
     f32 z;
     u32 flags;
 
-    if (BtlScene_IsTimeStopped()) {
+    if (BtlScene_IsTimeStopped()
+#ifdef PORT
+        && !story_nimbus_smoke(task)
+#endif
+    ) {
         return;
     }
     flags = work->flags;
@@ -969,6 +1047,9 @@ void EftSmoke_Update(EftTask *task) {
                     Vec3_Normalize(&part->vel, &part->vel);
                     Vec4_Scale(&part->vel, &part->vel, work->arg.speed);
                     part->life = work->arg.lifeBase + rand() % work->arg.lifeRange;
+#ifdef PORT
+                    if(story_nimbus_smoke(task))part->unk22[0]=(u8)part->life;
+#endif
                     break;
                 }
             }
@@ -1035,7 +1116,11 @@ void EftSmoke_Draw(EftTask *task) {
     if (gBtlStage->flags & 1) {
         return;
     }
-    if (!EftStage_IsDrawOn()) {
+    if (!EftStage_IsDrawOn()
+#ifdef PORT
+        && !story_nimbus_smoke(task)
+#endif
+    ) {
         return;
     }
     part = work->part;
@@ -1085,7 +1170,15 @@ void EftSmoke_Draw(EftTask *task) {
             one = alpha; /* stand-in, see above */
             zero = alpha;
             EftSpr_DrawFlat(col.x * bright, col.y * bright, col.z * bright, alpha, &part->pos, lo, lo, hi, hi,
-                          work->arg.size * 128.0f, work->arg.size * 128.0f, 0, 0, tex);
+                          work->arg.size * 128.0f
+#ifdef PORT
+                          * (story_nimbus_smoke(task)?(.65f+1.2f*(1.f-(float)life/(part->unk22[0]?part->unk22[0]:1))):1.f)
+#endif
+                          , work->arg.size * 128.0f
+#ifdef PORT
+                          * (story_nimbus_smoke(task)?(.65f+1.2f*(1.f-(float)life/(part->unk22[0]?part->unk22[0]:1))):1.f)
+#endif
+                          , 0, 0, tex);
         }
     }
     Vu0Cur_Pop();
@@ -1574,7 +1667,9 @@ s32 EftShot_GetAttrKind(s32 objId, u64 bits) {
 s32 EftShot_IsSlotFlag2000(s32 chr, s32 slot) {
     EftShotChar *c = &gEftShot->chr[chr];
     EftShotSlot *s = &c->slot[slot];
-
+#ifdef PORT
+    if (slot == 4 && c->curSlot == EFT_SHOT_STORY_ULTIMATE) s = &c->storyUltimate;
+#endif
     if (s->def->flags & 0x2000) {
         return 1;
     }
@@ -1662,6 +1757,9 @@ void EftShot_SetCurSlot(s32 chr, s32 slot) {
 s32 EftShot_GetCurSlot(s32 chr) {
     EftShotChar *c = &gEftShot->chr[chr];
 
+#ifdef PORT
+    if (c->curSlot == EFT_SHOT_STORY_ULTIMATE) return 4;
+#endif
     return c->curSlot;
 }
 
@@ -1764,7 +1862,37 @@ void EftShotChar_Init(EftTask *task, s32 *arg) {
             EftShot_CreateSlotTask(*arg, i);
         }
     }
+#ifdef PORT
+    {
+        extern int Port_StoryManualUltimateProfile(int);
+        extern const void *Port_StoryGameplaySuper(int), *Port_StoryUltimateEffectPack(int);
+        extern void Port_StoryBuildUltimateFx(s32, void *, const void *);
+        int profile = Port_StoryManualUltimateProfile(*arg);
+        EftShotSlot *slot = &chr->storyUltimate;
+        EftShotDef *def = &chr->storyUltimateDef;
+
+        memset(slot, 0, sizeof(*slot));
+        if (profile) {
+            slot->pack = (void *)Port_StoryUltimateEffectPack(profile);
+            slot->def = def;
+            Port_StoryBuildUltimateFx(*arg, def, Port_StoryGameplaySuper(profile));
+            EftShot_CreateSlotTask(*arg, EFT_SHOT_STORY_ULTIMATE);
+        }
+    }
+#endif
 }
+
+#ifdef PORT
+int Port_StoryUltimateFxReady(s32 actor)
+{
+    EftShotChar *chr;
+    EftShotSlot *slot;
+    if (!gEftShot || actor < 0 || actor >= gEftShot->count) return 0;
+    chr = &gEftShot->chr[actor];
+    slot = &chr->storyUltimate;
+    return chr->task && slot->task;
+}
+#endif
 
 /* Character task term callback: empties the character's pool. */
 void EftShotChar_Term(EftTask *task) {
@@ -1838,3 +1966,20 @@ s32 EftShot_InitSlot(s32 chr, s32 slot, void *pack) {
     EftShot_BuildParam(chr, slot, &c->def[slot], 0);
     return 1;
 }
+
+#ifdef PORT
+void Port_StoryNimbusSmoke(const Vec4*p,float h,int on){EftSmokeArg a;int i=on==2?1:0,j;
+ if(!on){for(j=0;j<2;j++){if(sStoryNimbusSmoke[j])EftSmoke_Stop(sStoryNimbusSmoke[j]);sStoryNimbusSmoke[j]=0;}return;}
+ if(!p)return;
+ if(!sStoryNimbusSmoke[i]){memset(&a,0,sizeof(a));a.pos=*p;a.ambient=(Vec4){205,145,12,0};a.diffuse=(Vec4){50,65,28,0};a.size=h*(i?.85f:.36f)/128.f;a.alpha=i?170:155;a.speed=h*(i?.002f:.006f);a.damp=.95f;a.lifeBase=i?42:30;a.lifeRange=8;a.rate=i?4:3;sStoryNimbusSmoke[i]=EftSmoke_Create(&a);}
+ else EftSmoke_SetPos(sStoryNimbusSmoke[i],(Vec4*)p);
+}
+#endif
+
+#ifdef PORT
+void Port_StoryNimbusSmokeReset(void){sStoryNimbusSmoke[0]=sStoryNimbusSmoke[1]=0;}
+#endif
+
+#ifdef PORT
+u64 Port_StoryNimbusTexture(void){return gEftSmokeMgr?gEftSmokeMgr->tex0:0;}
+#endif

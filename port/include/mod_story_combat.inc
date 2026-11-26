@@ -9,6 +9,8 @@ typedef struct StCombatData {
  StCombatAtk atk[ST_COMBAT_ATKS];
  BtlKiBlastData ki[BTL_KIBLAST_COUNT];
  BtlSuperData super;
+ BtlSuperData manualUltimate;
+ int hasManualUltimate;
  BtlSkillData skill;
 } StCombatData;
 /* Story has a small authored form graph; cache each visited form independently.
@@ -84,6 +86,13 @@ void Port_StoryCombatBind(void *fighter,int initial){
   const int recovery[3]={20000,16624,8432};const int offsets[3]={0x28,0x30,0x34};int j;
   for(j=0;j<3;j++)memcpy(s->param.unk0+offsets[j],recovery+j,4);
  }
+ /* CH3 already normalizes from the accepted stock table. Keep slots 2/3
+    and the prior balance there; the dedicated SBC branch still uses the object. */
+ if(Port_StoryChapter()==2&&s->chara==22&&role==1){
+  extern const void *Port_StoryGameplaySuper(int);
+  const void *regular=Port_StoryGameplaySuper(880);
+  if(regular)memcpy(&s->super,regular,sizeof(s->super));
+ }
  st_combat_era(s,a);
  {extern int Port_StoryFormSlot(int);int target=Port_StoryFormSlot(s->chara),j,have=0;unsigned char*p=(unsigned char*)&s->param;
   if(target>=0&&target<255){for(j=0;j<4;j++)if(p[0x98+j]==target)have=1;
@@ -94,16 +103,31 @@ void Port_StoryCombatBind(void *fighter,int initial){
  /* Saiyan-era Goku already knows flight; retain that across damaged costume reloads. */
  if(BtlMember_GetActive(c)&&BtlMember_GetActive(c)->chara==0){u32 flags;memcpy(&flags,s->param.unk0+0x10,4);flags&=~0x1000u;memcpy(s->param.unk0+0x10,&flags,4);}
  if(Port_StoryChapter()==1&&role==1){g=Port_StoryCastActor(0);if(g>=0&&g<16){StCombatData*base=st_combat_form(g,0,0);if(base)st_combat_krillin(s,base);}}
+ {
+  extern int Port_StoryManualUltimateProfile(int);
+  extern const void *Port_StoryGameplaySuper(int);
+  extern void Port_StoryCopyUltimate(void *, const void *);
+  const void *donor = Port_StoryGameplaySuper(Port_StoryManualUltimateProfile(a));
+  if (donor) {
+   s->manualUltimate = s->super;
+   Port_StoryCopyUltimate(&s->manualUltimate, donor);
+   s->manualUltimate.damage[2] = s->super.damage[2];
+   s->manualUltimate.guardDamage[2] = s->super.guardDamage[2];
+   s->hasManualUltimate = 1;
+  }
+ }
 }
 #include "mod_battle_scale.inc"
 void *Port_StoryCombatTable(void *fighter,int kind,void *original){
  int a;StCombatData*s;
  if(!fighter||!Port_StoryActive()||Port_NetActive()||BattleReplay_IsActive())return bt_combat_table(fighter,kind,original);
  a=*(int*)fighter;if(a<0||a>=16)return original;
+ if(kind==3){extern int Port_StorySbcProfileActor(int);if(Port_StorySbcProfileActor(a))return original;}
  if(kind==3){extern int Port_StoryTechniqueDonor(int);int donor=Port_StoryTechniqueDonor(a);
+  /* The CH9 self-donor uses only the native cached table, never manualUltimate. */
   if(donor>=0&&donor<16){BtlTechBChr*d=BtlChar_Get(donor);BtlTechBObj*o=d?BtlChar_GetObj(d):0;
    BtlTechBMember*m=d?BtlMember_GetActive(d):0;StCombatData*saved=m?st_combat_form(donor,m->chara,0):0;
    if(saved)return &saved->super;if(o&&o->super)return o->super;}}
  {BtlTechBMember*m=BtlMember_GetActive((BtlTechBChr*)fighter);s=st_combat_form(a,m?m->chara:-1,0);}if(!s)return original;
- switch(kind){case 0:return &s->param;case 1:return s->atk;case 2:return s->ki;case 3:return &s->super;case 4:return &s->skill;default:return original;}
+ switch(kind){case 0:return &s->param;case 1:return s->atk;case 2:return s->ki;case 3:{extern int Port_StoryManualUltimateActive(int);return s->hasManualUltimate&&Port_StoryManualUltimateActive(a)?&s->manualUltimate:&s->super;}case 4:return &s->skill;default:return original;}
 }

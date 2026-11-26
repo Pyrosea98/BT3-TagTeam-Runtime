@@ -3,7 +3,7 @@
 #include "mod_story_animation.inc"
 #include "mod_story_guide.h"
 #include "mod_story_commentary.h"
-extern "C" const char *Port_CharaPower(int,int);
+#include "mod_power_display.h"
 static SDL_GPUTexture *story_art(const char *name){
  struct Item{char name[48];SDL_GPUTexture*t;};static Item cache[128];static int count;
  for(int i=0;i<count;i++)if(!strcmp(cache[i].name,name))return cache[i].t;
@@ -19,7 +19,7 @@ static const char *storySagaNames[2][8]={
 static const char *storySagaGuides[8]={"Piccolo","Vegeta","Trunks","Mr. Satan","Videl","Pan","Goku","Kaioshin"};
 static const char *storySagaRecaps[2][8]={
  {"This is where it all started! I never expected a brother from space. Raditz sure gave us a tough fight!","Frieza really pushed us to our limits! Come on, let's see how everyone fought to protect Namek.","Trunks came all the way from the future to warn us. We had a lot of training to do before the androids arrived!","Buu was one tough opponent! Strength alone wasn't enough. Good thing I had friends I could count on!","We've met some amazing fighters on these adventures! Ready to take them on again?","What a journey that was! With Pan and the others around, things never stayed quiet for long!","Look how little I was! Meeting Bulma was the start of an adventure I could never have imagined.","Hey, what if things had gone differently? I'd love to try some of these battles myself!"},
- {"\302\241Aqu\303\255 empez\303\263 todo! Nunca imagin\303\251 que ten\303\255a un hermano en el espacio. \302\241Raditz s\303\255 que nos hizo sudar!","\302\241Freezer nos llev\303\263 al l\303\255mite! Vamos a recordar c\303\263mo luchamos todos por proteger Namek.","Trunks vino desde el futuro para avisarnos. \302\241Hab\303\255a que entrenar mucho antes de que llegaran los androides!","\302\241Buu era dur\303\255simo! No bastaba con ser fuerte. \302\241Menos mal que ten\303\255a amigos con los que pod\303\255a contar!","\302\241Menudos rivales encontramos en estas aventuras! \302\277Qu\303\251 dices, volvemos a enfrentarnos a ellos?","\302\241Vaya viaje! \302\241Con Pan y los dem\303\241s, era imposible que las cosas estuvieran tranquilas mucho tiempo!","\302\241Mira qu\303\251 peque\303\261o era! Cuando conoc\303\255 a Bulma, no imaginaba la aventura que me esperaba.","Oye, \302\277y si todo hubiera ocurrido de otra forma? \302\241Me encantar\303\255a probar algunos de estos combates!"}};
+ {"\302\241Aqu\303\255 empez\303\263 todo! Nunca imagin\303\251 que ten\303\255a un hermano en el espacio. \302\241Raditz s\303\255 que nos hizo sudar!","\302\241Freezer nos llev\303\263 al l\303\255mite! Vamos a recordar c\303\263mo luchamos todos por proteger Namek.","Trunks vino desde el futuro para avisarnos. \302\241Hab\303\255a que entrenar mucho antes de que llegaran los androides!","\302\241Buu era dur\303\255simo! No bastaba con ser fuerte. \302\241Menos mal que ten\303\255a amigos con los que pod\303\255a contar!","\302\241Menudos rivales encontramos en estas aventuras! \302\277Qu\303\251 dices? \302\277Volvemos a enfrentarnos a ellos?","\302\241Vaya viaje! \302\241Con Pan y los dem\303\241s, era imposible que las cosas estuvieran tranquilas mucho tiempo!","\302\241Mira qu\303\251 peque\303\261o era! Cuando conoc\303\255 a Bulma, no imaginaba la aventura que me esperaba.","Oye, \302\277y si todo hubiera ocurrido de otra forma? \302\241Me encantar\303\255a probar algunos de estos combates!"}};
 static ImFont *story_font(){return sStoryReadableFont?sStoryReadableFont:ImGui::GetIO().Fonts->Fonts[0];}
 static float story_text(ImDrawList*d,const char*t,float x,float y,float fs,ImU32 col,float width,float k,bool wrap=false){
  ImFont*f=story_font();float size=SDL_max(fs,16.f)*k;
@@ -76,9 +76,9 @@ static void story_scene(ImDrawList*d,ImVec2 screen,float k,double time,bool ruin
 }
 static const char*storyLockedSaga[2][8]={
  {"Our adventure has only just begun!", "First, let's finish the Saiyan saga. One adventure at a time!", "We still have a journey to finish before facing this chapter of our lives.", "Let's finish the android saga first. We cannot rush into every battle!", "There are other adventures waiting for us. Let's finish the last saga first!", "We still have plenty to do before this new journey begins!", "Let's finish the previous adventure before looking further back!", "A different destiny can wait. Let's finish our current adventure first!"},
- {"\302\241Nuestra aventura apenas comienza!", "Primero terminemos la saga de los Saiyajin. \302\241Una aventura a la vez!", "Todav\303\255a nos queda un viaje por terminar antes de llegar aqu\303\255.", "Terminemos primero la saga de los androides. \302\241No podemos adelantarnos a todas las peleas!", "Nos esperan otras aventuras. \302\241Terminemos primero la saga anterior!", "A\303\272n nos queda mucho por hacer antes de emprender este nuevo viaje!", "Terminemos la aventura anterior antes de mirar m\303\241s atr\303\241s!", "Otro destino puede esperar. \302\241Terminemos primero nuestra aventura!"}
+ {"\302\241Nuestra aventura apenas comienza!", "Primero terminemos la saga de los Saiyajin. \302\241Una aventura a la vez!", "Todav\303\255a nos queda un viaje por terminar antes de llegar aqu\303\255.", "Terminemos primero la saga de los androides. \302\241No podemos adelantarnos a todas las peleas!", "Nos esperan otras aventuras. \302\241Terminemos primero la saga anterior!", "\302\241A\303\272n nos queda mucho por hacer antes de emprender este nuevo viaje!", "\302\241Terminemos la aventura anterior antes de mirar m\303\241s atr\303\241s!", "Otro destino puede esperar. \302\241Terminemos primero nuestra aventura!"}
 };
-static const char*storyLockedIdle[2][3]={{"A little training never hurts while we wait!","Let's keep going. Our current adventure is not over yet!","We will get there together. No skipping our training!"},{"Un poco de entrenamiento nunca viene mal mientras esperamos!","Sigamos adelante. Nuestra aventura todav\303\255a no ha terminado!","Llegaremos juntos. \302\241Nada de saltarse el entrenamiento!"}};
+static const char*storyLockedIdle[2][3]={{"A little training never hurts while we wait!","Let's keep going. Our current adventure is not over yet!","We will get there together. No skipping our training!"},{"\302\241Un poco de entrenamiento nunca viene mal mientras esperamos!","Sigamos adelante. \302\241Nuestra aventura todav\303\255a no ha terminado!","Llegaremos juntos. \302\241Nada de saltarse el entrenamiento!"}};
 static void mod_story_page(unsigned view,int page,int cursor){
  const int chapterIndex=SDL_clamp(sStoryChapter.load(),0,ST_COUNT-1);const bool chapterOpen=(sStoryUnlocked.load()>>chapterIndex)&1u;
  const StChapter&c=stChapters[chapterIndex];int outcome=view&15,zeni=(int)(view>>8);unsigned progress=(view>>4)&15;
@@ -192,7 +192,7 @@ static void mod_story_page(unsigned view,int page,int cursor){
    d->AddRectFilled(ImVec2(x,173*k),ImVec2(x+w,505*k),IM_COL32(45,32,54,235),12*k);
    text("?",x+w*.43f,211*k,92,IM_COL32(145,130,151,255),w*.2f);
    text(es?"UNA NUEVA HISTORIA TE ESPERA":"A NEW STORY AWAITS",x+24*k,350*k,24,IM_COL32(173,156,181,255),w-48*k);
-   text(es?"Completa el encuentro anterior para descubrir este capitulo.":"Complete the previous encounter to reveal this chapter.",x+24*k,410*k,18,white,w-48*k,true);
+   text(es?"Completa el encuentro anterior para descubrir este capítulo.":"Complete the previous encounter to reveal this chapter.",x+24*k,410*k,18,white,w-48*k,true);
   }else{
   float shotW=w*.32f,shotH=73*k;
   story_image(d,ms_art(c.stage,true),ImVec2(x,174*k),ImVec2(x+shotW,174*k+shotH));
@@ -211,7 +211,11 @@ static void mod_story_page(unsigned view,int page,int cursor){
    if(chapterIndex==5&&n>=5){char clean[96];snprintf(clean,sizeof(clean),"%s",label);snprintf(label,sizeof(label),es?"Doble de %s":"%s's double",clean);}
    text(label,px+side+5*k,py,11,ink,cardW-side-8*k);
    int power=stChapterPower[chapterIndex][n];
-   if(power>0)snprintf(label,sizeof(label),es?"Poder: %d":"Power: %d",power);
+   if(power>0){
+    char number[32];
+    Port_FormatPowerInteger(power,number,sizeof(number));
+    snprintf(label,sizeof(label),es?"Poder inicial: %s":"Starting power: %s",number);
+   }
    else snprintf(label,sizeof(label),"%s",es?"Poder variable":"Variable power");
    text(label,px+side+5*k,py+18*k,11,ink,cardW-side-8*k);
    if(counts[j]>1){snprintf(label,sizeof(label),"×%d",counts[j]);text(label,px+side-4*k,py+side-7*k,12,ink,28*k);}
@@ -276,6 +280,6 @@ static void mod_story_page(unsigned view,int page,int cursor){
  text(caption,margin+18*k,dialogY+34*k,19,white,screen.x-margin*2-36*k,true);
  const ModPadHint browse[]={{MP_LR,es?"Saga":"Saga"},{MP_CROSS,es?"Cap\303\255tulos":"Chapters"},{MP_TRIANGLE,es?"Volver":"Back"}};
  const ModPadHint chapter[]={{MP_LR,es?"Dificultad":"Difficulty"},{MP_CROSS,es?"Comenzar":"Start chapter"},{MP_TRIANGLE,es?"Sagas":"Sagas"},{MP_SQUARE,es?"Completa/reducida (guardado)":"Full/reduced (saved)"}};
- const ModPadHint ending[]={{MP_CROSS,es?"Volver a Historia Drag\303\263n":"Return to Dragon History"},{MP_SQUARE,es?"Reintentar punto de control":"Retry checkpoint"},{MP_START,es?"Reiniciar cap\303\255tulo":"Restart chapter"}};
- story_hints(d,ImVec2(margin,screen.y-35*k),screen.x-margin*2,k,result?ending:sagas?browse:chapter,result?(sStoryCheckpoint.load()?3:1):sagas?3:4,14);
+ const ModPadHint ending[]={{MP_CROSS,es?"Volver a Historia Drag\303\263n":"Return to Dragon History"},{MP_START,es?"Reiniciar cap\303\255tulo":"Restart chapter"},{MP_SQUARE,es?"Reintentar punto de control":"Retry checkpoint"}};
+ story_hints(d,ImVec2(margin,screen.y-35*k),screen.x-margin*2,k,result?ending:sagas?browse:chapter,result?(sStoryCheckpoint.load()?3:2):sagas?3:4,14);
 }

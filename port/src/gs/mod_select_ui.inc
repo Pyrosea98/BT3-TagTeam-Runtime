@@ -4,18 +4,21 @@
 #include "../../include/tag_tournament_port.h"
 #include "../../include/b8_selection_rules.h"
 extern "C" int Port_Beta8CostumeIdentity(int,int);
-extern "C" const char *Port_CharaPower(int,int);
+#include "mod_power_display.h"
 extern "C" int Port_ModernStageActive(void);
 static std::atomic<unsigned> sMsSequence{0};
 static std::atomic<int> sMsWords[sizeof(MsView)/sizeof(int)];
 static std::atomic<int> sMsMouse{0};
+static std::atomic<int> sMsPotaraPointer{0};
 extern "C" void Port_ModSelectPublish(const MsView *view){
+ if(!view->active)sMsPotaraPointer.store(0,std::memory_order_release);
  sMsSequence.fetch_add(1,std::memory_order_acq_rel);
  int words[sizeof(MsView)/sizeof(int)];memcpy(words,view,sizeof(*view));for(unsigned i=0;i<sizeof(MsView)/sizeof(int);i++)sMsWords[i].store(words[i],std::memory_order_relaxed);
  sMsSequence.fetch_add(1,std::memory_order_release);
 }
 extern "C" int Port_ModSelectActive(void){return sMsWords[0].load(std::memory_order_acquire);}
 extern "C" int Port_ModSelectTakeMouse(void){return sMsMouse.exchange(0,std::memory_order_acq_rel);}
+extern "C" int Port_ModSelectTakePotaraPointer(void){return sMsPotaraPointer.exchange(0,std::memory_order_acq_rel);}
 static bool ms_snapshot(MsView &v){
  for(int attempt=0;attempt<3;attempt++){
   unsigned seq=sMsSequence.load(std::memory_order_acquire);if(seq&1)continue;
@@ -190,7 +193,7 @@ static void mod_select_draw(){
   const int first=(v.cursor/MS_PAGE)*MS_PAGE;
   float gap=6*k,cell=SDL_min((left-edge*2-gap*(MS_COLS-1))/MS_COLS,(sz.y-318*k)/5.f-gap);
   float top=118*k,rowH=cell+gap,gridX=edge+(left-edge*2-(cell*MS_COLS+gap*(MS_COLS-1)))*.5f;
-  snprintf(line,sizeof(line),es?"PAGINA %d / %d":"PAGE %d / %d",first/MS_PAGE+1,(v.roster_count+MS_PAGE-1)/MS_PAGE);
+  snprintf(line,sizeof(line),es?"PÁGINA %d / %d":"PAGE %d / %d",first/MS_PAGE+1,(v.roster_count+MS_PAGE-1)/MS_PAGE);
   text(line,edge,94*k,13,white,left-edge*2);
   for(int n=0;n<MS_PAGE&&first+n<v.roster_count;n++){
    int idx=first+n,cid=v.roster[idx];float x=gridX+(n%MS_COLS)*(cell+gap),y=top+(n/MS_COLS)*rowH;
@@ -204,7 +207,7 @@ static void mod_select_draw(){
    }else{snprintf(line,sizeof(line),cid<0?"?":"%d",cid);text(line,x+5*k,y+8*k,15,white,cell-10*k);}
    if(v.disabled[idx]){dl->AddRectFilled(a,b,IM_COL32(20,12,26,180),4*k);text(es?"EN EL EQUIPO":"IN TEAM",x+3*k,y+cell*.45f,12,pink,cell-6*k);}
    if(selected){dl->AddRect(a,b,gold,4*k,0,2*k);ms_kit_sprite(dl,13,ImVec2(x-4*k,y-9*k),ImVec2(cell*.49f,cell*.31f));}
-   if(v.phase==1&&ImGui::IsMouseClicked(0)&&ImGui::IsMouseHoveringRect(a,b))sMsMouse.store(idx+1,std::memory_order_release);
+   if(v.phase==1&&!v.potara_draft&&ImGui::IsMouseClicked(0)&&ImGui::IsMouseHoveringRect(a,b))sMsMouse.store(idx+1,std::memory_order_release);
   }
   int cid=v.phase==2?v.forms[v.form_cursor]:v.roster[v.cursor];const char *name=cid<0?(es?"Aleatorio":"Random"):Port_CharaName(cid);
   if(!name||!*name){snprintf(line,sizeof(line),es?"Personaje %d":"Fighter %d",cid);name=line;}
@@ -223,6 +226,23 @@ static void mod_select_draw(){
     text(line,sz.x*.48f,189*k,19,gold,sz.x*.48f-edge);
    }
   }
+  if(v.potara_available){
+   const float x=sz.x*.48f, width=sz.x*.48f-edge;
+   const float glyphWidth=mod_pad_width(MP_L3_PLUS_R3)*k;
+   const char *red=v.potara_red?(es?"Sí":"On"):(es?"No":"Off");
+   mod_pad_glyph(dl,MP_L3_PLUS_R3,ImVec2(x+glyphWidth*.5f,224*k),k);
+   snprintf(line,sizeof(line),es?"Pótara roja: %s":"Red Potara: %s",red);
+   text(line,x+glyphWidth+7*k,217*k,14,v.potara_red?pink:white,width-glyphWidth-7*k);
+   mod_pad_glyph(dl,MP_L2_PLUS_R2,ImVec2(x+glyphWidth*.5f,246*k),k);
+   if(v.potara_bars)
+    snprintf(line,sizeof(line),es?"Vida: %d barras":"Life: %d bars",v.potara_bars);
+   else
+    snprintf(line,sizeof(line),"%s",es?"Vida: normal":"Life: normal");
+   text(line,x+glyphWidth+7*k,239*k,14,white,width-glyphWidth-7*k);
+   if(!v.potara_draft&&ImGui::IsMouseClicked(0)&&
+      ImGui::IsMouseHoveringRect(ImVec2(x,235*k),ImVec2(x+width,258*k)))
+    sMsPotaraPointer.store(MS_POTARA_OPEN,std::memory_order_release);
+  }
   // Ownership lives next to the team roster, away from the model.
   int activeTeam=v.mode==4?v.stage:(v.slot>=0&&v.slot<v.total)?MS_Side(&v,v.slot):0;
   snprintf(line,sizeof(line),es?"Equipo %d / P%d elige":"Team %d / P%d choosing",activeTeam+1,v.pad+1);
@@ -230,7 +250,7 @@ static void mod_select_draw(){
   if(v.phase==2&&v.form_count>0){
    // A form reel occupies the grid column; the full model remains unobscured.
    dl->AddRectFilled(ImVec2(0,82*k),ImVec2(left,sz.y-180*k),IM_COL32(29,16,38,190));
-   text(es?"ELIGE LA TRANSFORMACION":"CHOOSE YOUR FORM",edge,100*k,18,gold,left-edge*2);
+   text(es?"ELIGE LA TRANSFORMACIÓN":"CHOOSE YOUR FORM",edge,100*k,18,gold,left-edge*2);
    float fw=SDL_min((left-edge*2-12*k)/3,110*k),fh=fw,formX=(left-(fw*3+12*k))*.5f;
    for(int f=0;f<v.form_count;f++){
     float x=formX+(f%3)*(fw+6*k),y=142*k+(f/3)*(fh+9*k);bool selected=f==v.form_cursor;
@@ -272,5 +292,41 @@ static void mod_select_draw(){
    else dl->AddCircle(ImVec2(x,yy),5*k,c,16,1.7f*k);
    text(labels[es][n],x+12*k,yy-9*k,14,white,step-20*k);
   }
+ }
+ static bool draggingLife = false;
+ if(!ImGui::IsMouseDown(ImGuiMouseButton_Left)||!v.potara_draft)draggingLife=false;
+ if(v.potara_draft){
+  const float width=SDL_min(380*k,sz.x-2*edge);
+  const float x=(sz.x-width)*.5f, y=(sz.y-176*k)*.5f;
+  dl->AddRectFilled(ImVec2(0,0),sz,IM_COL32(0,0,0,100));
+  dl->AddRectFilled(ImVec2(x,y),ImVec2(x+width,y+176*k),IM_COL32(32,20,43,255),8*k);
+  dl->AddRect(ImVec2(x,y),ImVec2(x+width,y+176*k),gold,8*k);
+  snprintf(line,sizeof(line),es?"Vida: %d barras":"Life: %d bars",v.potara_draft);
+  text(line,x+20*k,y+16*k,20,gold,width-40*k);
+  const float start=x+20*k, end=x+width-20*k, track=y+72*k;
+  if(ImGui::IsMouseClicked(0)&&ImGui::IsMouseHoveringRect(
+       ImVec2(start-8*k,track-16*k),ImVec2(end+8*k,track+16*k)))draggingLife=true;
+  if(draggingLife&&end>start){
+   const float t=SDL_clamp((ImGui::GetMousePos().x-start)/(end-start),0.f,1.f);
+   sMsPotaraPointer.store(1+(int)(t*99.f+.5f),std::memory_order_release);
+  }
+  const float thumb=start+(end-start)*(v.potara_draft-1)/99.f;
+  dl->AddLine(ImVec2(start,track),ImVec2(end,track),white,2*k);
+  dl->AddCircleFilled(ImVec2(thumb,track),6*k,gold);
+  const ModPadHint hints[]={{MP_LR,es?"Ajustar":"Adjust"}};
+  mod_pad_hints(dl,ImVec2(start,y+99*k),end-start,k,hints,1,13);
+  const float buttonWidth=(end-start-12*k)/3;
+  const auto button=[&](int index,int glyph,const char*label,int command){
+   const float bx=start+index*(buttonWidth+6*k), by=y+134*k;
+   const ImVec2 lo(bx,by), hi(bx+buttonWidth,by+29*k);
+   const bool hover=ImGui::IsMouseHoveringRect(lo,hi);
+   dl->AddRectFilled(lo,hi,hover?IM_COL32(78,53,98,255):IM_COL32(49,32,65,255),4*k);
+   mod_pad_glyph(dl,glyph,ImVec2(bx+13*k,by+14*k),.8f*k);
+   text(label,bx+25*k,by+7*k,13,white,buttonWidth-28*k);
+   if(hover&&ImGui::IsMouseClicked(0))sMsPotaraPointer.store(command,std::memory_order_release);
+  };
+  button(0,MP_SQUARE,es?"Vida normal":"Default",MS_POTARA_DEFAULT);
+  button(1,MP_CROSS,es?"Aplicar":"Apply",MS_POTARA_APPLY);
+  button(2,MP_TRIANGLE,es?"Cancelar":"Cancel",MS_POTARA_CANCEL);
  }
 }

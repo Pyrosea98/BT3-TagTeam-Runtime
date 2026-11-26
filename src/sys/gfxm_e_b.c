@@ -493,6 +493,9 @@ f32 ObjShadow_CalcScreenDist(Vec4 *a, Vec4 *b, f32 size, f32 half) {
 
 /* Non-zero when the object throws a ground shadow now: its flag is set and no stage job is running. */
 s32 ObjShadow_IsEnabled(ObjMdlObj *obj) {
+#ifdef PORT
+    {extern int Port_StoryCh4RevertedObject(void*);if(Port_StoryCh4RevertedObject(obj))return 0;}
+#endif
     if (Battle_GetWork()->flags & BATTLE_FLAG_LOADING) {
         return 0;
     }

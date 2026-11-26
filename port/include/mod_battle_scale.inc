@@ -13,7 +13,12 @@ static void bt_scale_table(StCombatData*s,float strength,int nativeYajirobe){
  int i,old=0,top;
  for(i=0;i<(nativeYajirobe?64:ST_COMBAT_ATKS);i++){int v=st_combat_raw(s->atk+i);if(v>old)old=v;}
  top=(int)((nativeYajirobe?21.f:2000.f)*strength);
- for(i=0;i<ST_COMBAT_ATKS;i++)st_combat_write(s->atk+i,bt_scale_positive(st_combat_raw(s->atk+i),top,old));
+ for(i=0;i<ST_COMBAT_ATKS;i++){
+  int normal=bt_scale_positive(st_combat_raw(s->atk+i),top,old),guard;
+  unsigned short originalGuard;memcpy(&originalGuard,s->atk[i].rest,2);
+  guard=bt_scale_positive(originalGuard,top,old);if(guard>normal)guard=normal;if(guard>65535)guard=65535;
+  memcpy(s->atk[i].rest,&(unsigned short){(unsigned short)guard},2);st_combat_write(s->atk+i,normal);
+ }
  old=0;for(i=0;i<BTL_KIBLAST_COUNT;i++)if(s->ki[i].damage>old)old=s->ki[i].damage;
  top=(int)((nativeYajirobe?730.f:1200.f)*strength);for(i=0;i<BTL_KIBLAST_COUNT;i++){s->ki[i].damage=bt_scale_positive(s->ki[i].damage,top,old);s->ki[i].guardDamage=bt_scale_positive(s->ki[i].guardDamage,top,old);}
  for(i=0;i<3;i++){int raw=s->super.damage[i];top=(int)((nativeYajirobe?(i==0?235.f:i==1?215.f:485.f):(i==0?6500.f:i==1?8500.f:12000.f))*strength);if(raw>0){s->super.damage[i]=top;s->super.guardDamage[i]=bt_scale_positive(s->super.guardDamage[i],top,raw);}}

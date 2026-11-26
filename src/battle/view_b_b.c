@@ -240,7 +240,11 @@ void ItemSet_GetStatsList(s32 *ids, s32 count, s32 *stats, s32 *ability) {
 }
 
 /* Whether the character may equip the item (index, not id). */
+#ifdef PORT
+s32 Port_ItemTbl_CanEquipFor(s32 item, s32 chara, s32 identity, ItemTblEntry *table) {
+#else
 s32 ItemTbl_CanEquip(s32 item, s32 chara, ItemTblEntry *table) {
+#endif
     u32 flags = table[item].flags;
     ChrTblFile *file;
     ChrTblEntry *charas;
@@ -248,6 +252,16 @@ s32 ItemTbl_CanEquip(s32 item, s32 chara, ItemTblEntry *table) {
     if (flags & (ITEMTBL_FLAG_NONE_A | ITEMTBL_FLAG_NONE_B)) {
         return 0;
     }
+#ifdef PORT
+    /* The per-character Potara mode grants the password-character class without
+       changing the native class rules for everyone else. */
+    if (table[item].type != ITEMTBL_TYPE_AI && (flags & ITEMTBL_FLAG_8) && !(flags & ITEMTBL_FLAG_10)) {
+        extern int Port_PotaraRedEnabled(int);
+        if (Port_PotaraRedEnabled(identity)) {
+            return 1;
+        }
+    }
+#endif
     file = CHRTBL_FILE;
     charas = (ChrTblEntry *)CHRTBL_SECTION(file, charaOffset);
     if (charas[chara].flags & CHRTBL_FLAG_0) {
@@ -261,6 +275,12 @@ s32 ItemTbl_CanEquip(s32 item, s32 chara, ItemTblEntry *table) {
     }
     return 0;
 }
+
+#ifdef PORT
+s32 ItemTbl_CanEquip(s32 item, s32 chara, ItemTblEntry *table) {
+    return Port_ItemTbl_CanEquipFor(item, chara, chara, table);
+}
+#endif
 
 /* 2 for an item without flag 8, else whether it has flag 0x10. */
 s32 ItemTbl_GetClass(s32 item, ItemTblEntry *table) {

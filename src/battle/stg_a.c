@@ -173,6 +173,9 @@ s32 BtlStage_IsReady(void) {
 
 /* Binds the stage file if needed and puts every destructible object back whole. */
 void BtlStage_Reset(void) {
+#ifdef PORT
+    {extern void Port_TerrainReset(void);Port_TerrainReset();}
+#endif
     gBtlStage->flags = 0;
     BtlStage_BindFile(gBtlStage);
     BtlStage_ResetObjs(0);
@@ -195,6 +198,9 @@ void BtlStage_Init(BtlStage *stage, void *arg) {
 
 /* Drops the stage object. */
 void BtlStage_Term(void) {
+#ifdef PORT
+    {extern void Port_TerrainReset(void);Port_TerrainReset();}
+#endif
     StgRigid_Term();
     gBtlStage = NULL;
     StgAmb_Stop();

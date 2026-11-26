@@ -352,6 +352,36 @@ s32 BtlStage_BreakObj(s32 idx, Vec4 *hitPos, StgBreakInfo *info) {
     return 1;
 }
 
+#ifdef PORT
+#include "mod_terrain_bridge.h"
+#include "battle/eft_det_b.h"
+#include "mod_terrain_structure.h"
+/* Scar admission callback, outside the terrain lock and collision tree walks.
+ * Use the native break path: whole models/shadows disappear, broken parts and
+ * child objects switch together, debris and native sound/camera state survive. */
+void Port_TerrainApplyStructures(void*state){
+ TdState*t=state;StgColZone*zones;u32 zi;u8 hasRecord[256];extern int Port_TerrainMeshIntersects(void*,void*);
+ if(!gBtlStage||!t->enabled||gBtlStage->flags&1)return;
+ zones=(StgColZone*)gBtlStage->zones;
+ memset(hasRecord,0,sizeof(hasRecord));
+ for(zi=0;zi<gBtlStage->zoneCount;zi++){StgColZone*z=zones+zi;int k;for(k=0;k<z->recCount;k++)if((u32)z->recs[k].obj<256)hasRecord[z->recs[k].obj]=1;}
+ for(zi=0;zi<gBtlStage->zoneCount;zi++){StgColZone*z=zones+zi;int k,near=0;
+ for(k=0;k<t->count;k++){float b[4];td_bounds(t->scars+k,b);if(z->center.x+z->half.x+80>=b[0]&&z->center.x-z->half.x-80<=b[2]&&z->center.z+z->half.z+80>=b[1]&&z->center.z-z->half.z-80<=b[3]){near=1;break;}}
+ if(!near)continue;
+ for(k=0;k<z->recCount;k++){StgColRec*rec=z->recs+k;Vec4 hit;int sc;
+ if(rec->broken||(u32)rec->obj>=gBtlStage->objCount||gBtlStage->objs[rec->obj].state&STG_OBJ_BROKEN)continue;
+ if(!Port_TerrainMeshIntersects(t,rec->mesh))continue;
+ sc=t->count-1;Vec4_Set(&hit,t->scars[sc].ax,t->scars[sc].ay,t->scars[sc].az,1);
+ BtlStage_DestroyObj(-1,rec->obj,&hit);
+ }}
+ /* Metadata only: never enumerate unresolved object renderer mesh lists. */
+ for(zi=0;zi<gBtlStage->objCount&&zi<256;zi++){StgObj*o=gBtlStage->objs+zi;StgPart*p=o->parts[0];Vec4 hit;int sc;
+ if(hasRecord[zi]||o->state&STG_OBJ_BROKEN||!p||!TS_Bounds(t,p->x,p->y,p->z,p->radius))continue;
+ sc=t->count-1;Vec4_Set(&hit,t->scars[sc].ax,t->scars[sc].ay,t->scars[sc].az,1);BtlStage_DestroyObj(-1,zi,&hit);
+ }
+}
+#endif
+
 /* Puts every object in one state: broken != 1 restores them whole (hit points, type and parent reloaded from the
  * stage data); broken == 1 marks them all broken without any animation. */
 void BtlStage_ResetObjs(s32 broken) {

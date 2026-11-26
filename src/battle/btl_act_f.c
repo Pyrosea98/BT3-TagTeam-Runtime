@@ -79,6 +79,12 @@ extern void BtlChar_SetUnk1310(BtlSuperChr *chr, Vec4 *v);
 
 extern s32 BtlAct_GetCurrentClass(BtlSuperChr *chr);
 extern s32 BtlAct_GetPrev(BtlSuperChr *chr);
+#ifdef PORT
+extern int Port_StoryClothesProtected(int);
+#define STORY_AUTO_CLOTHES(a) (!Port_StoryClothesProtected(a))
+#else
+#define STORY_AUTO_CLOTHES(a) 1
+#endif
 extern void BtlAct_SetFormCurrent(BtlSuperChr *chr);
 extern void BtlAct_SetPitchMotion(BtlSuperChr *chr, s32 motionUp, s32 motionDown, s32 recalc);
 extern void BtlAnim_Play(BtlSuperChr *chr, s32 anim, f32 blend);
@@ -600,7 +606,7 @@ void BtlAct_SuperBeamHandler(BtlSuperChr *chr, s32 phase) {
         BtlSuper_RequestCut(chr, cls);
         BtlMember_SpendKi(chr, BtlSuper_GetKiCost(chr, cls), 1);
         BtlChar_ResetLook(chr);
-        if ((flagsB & 0x2000) && BtlMember_GetActiveGauge(chr)->variant == 0) {
+        if ((flagsB & 0x2000) && BtlMember_GetActiveGauge(chr)->variant == 0 && STORY_AUTO_CLOTHES(chr->player)) {
             chr->work[0] |= 1;
         }
     }
@@ -2325,7 +2331,7 @@ void BtlAct_SuperRushSequenceHandler(ActGChr *chr, s32 phase) {
                 }
             }
             BtlAnim_Advance(chr, 0);
-            if (chr->thr.unk4C != 0 && chr->thr.unk1C == level) {
+            if (chr->thr.unk4C != 0 && chr->thr.unk1C == level && STORY_AUTO_CLOTHES(chr->thr.defSide)) {
                 switch (*stepB) {
                     case 0:
                         if (!(chr->work[0] & 1) && BtlAnim_IsNew(chr)) {
@@ -2363,7 +2369,7 @@ void BtlAct_SuperRushSequenceHandler(ActGChr *chr, s32 phase) {
             } else {
                 okB = 1;
             }
-            if (chr->thr.unk48 != 0 && chr->thr.unk10 - 1 == level) {
+            if (chr->thr.unk48 != 0 && chr->thr.unk10 - 1 == level && STORY_AUTO_CLOTHES(chr->thr.atkSide)) {
                 switch (*stepA) {
                     case 0:
                         if ((chr->work[0] & 1) && BtlAnim_IsNew(chr)) {
@@ -2449,6 +2455,12 @@ void BtlAct_SuperRushSequenceHandler(ActGChr *chr, s32 phase) {
                 BtlChar_SetFxBit(chr, 0x14);
             }
         }
+#ifdef PORT
+        /* Build this Story scar at the real final victim placement, before
+           rendering its first resting-body shot. Other rushes are unchanged. */
+        if(!(chr->work[0]&1)&&level==chr->thr.unk10-2){extern void Port_StoryYamchaWarning(int);Port_StoryYamchaWarning(chr->player);}
+        if(!(chr->work[0]&1)&&level==chr->thr.unk10-1){extern void Port_StoryYamchaFinalShot(int);Port_StoryYamchaFinalShot(chr->player);}
+#endif
         chr->stepFrame[level] = BtlAnim_GetFrame(chr);
         if (chr->work[1] != 0 && (chr->work[0] & 1) && (BtlSuper_GetFlags(chr, slot) & 0x2000)) {
             BtlMember_Damage(chr, BtlMember_GetActiveGauge(chr)->health - 1, 0x5B);
@@ -2457,6 +2469,11 @@ void BtlAct_SuperRushSequenceHandler(ActGChr *chr, s32 phase) {
     }
     if (phase == 2) {
         if (chr->work[1] != 0) {
+#ifdef PORT
+            /* Capture the victim's completed cinematic clip BEFORE the native
+               handler requests landing/recovery, not at later Story teardown. */
+            if(!(chr->work[0]&1)){extern void Port_StoryYamchaCinematicEnd(int);Port_StoryYamchaCinematicEnd(chr->player);}
+#endif
             if (chr->work[0] & 1) {
                 BtlChar_SetFlag(chr, 0x8C);
                 BtlChar_SetFlag(chr, 0x33);
@@ -3162,6 +3179,18 @@ void BtlAct_ClashStruggleHandler(ActGChr *chr, s32 phase) {
 void BtlAct_ClashLostHandler(ActGChr *chr, s32 phase) {
     s32 *step = &chr->work[2];
 
+#ifdef PORT
+    /* Script-owned wardrobe: skip the clothes presentation AND its loader wait.
+       Preserve the normal post-impact down/recovery action and clash cleanup. */
+    if(!STORY_AUTO_CLOTHES(chr->player)){
+        if(phase==0){extern s32 BtlAct_IsAirMotion(ActGChr*,s32);chr->work[0]&=~3;chr->work[1]=1;
+            BtlAnim_Play(chr,BtlAct_IsAirMotion(chr,1)?0xC7:0xC6,.1f);ChrCam_EndCut(chr);}
+        if(phase==1){BtlMove_Step(chr,6,5,2,0.f,BTL_KMH(100.f));BtlMove_ApplyGravity(chr);}
+        if(phase==2){BtlChar_SetHeldFlag(chr,0x1D);BtlChar_SetHeldFlag(chr,0x1E);BtlAct_Request(chr,0xD9);}
+        if(phase==3){ChrCam_EndCut(chr);BtlChar_ClearFlagRange(chr,0xBF,0xC3);BtlChar_AddStageTimer(4.0f);}
+        return;
+    }
+#endif
     if (phase == 0) {
         BtlAnim_Play(chr, 0x172, 0.0f);
         #ifdef PORT

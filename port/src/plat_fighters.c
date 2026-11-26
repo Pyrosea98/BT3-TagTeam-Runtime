@@ -1,5 +1,7 @@
 #include "tag_tournament_port.h"
 #include "b8_selection_rules.h"
+#include "mod_power_units.h"
+#include "mod_power_display.h"
 /*
  * Extra fighters (the experiment of more than two fighters): who they are, and whether a fight has them.
  *
@@ -49,7 +51,7 @@
 #include "plat_fighters.h"
 #include "port_fighters.h"
 
-#define CHARA_COUNT 329  /* stock roster plus explicitly aliased native identities */
+#define CHARA_COUNT 330  /* stock roster plus explicitly aliased native identities */
 #define NAME_COUNT CHARA_COUNT /* Beta8: the mod's named roster goes past the stock 161 */
 #define EXTRA_MAX PORT_EXTRA_MAX /* extra fighters a fight can have so far */
 #define FILE_CHARA 0x590 /* file ids of character c: c * 10 + this is its model, + 8 and + 9 its two animation files
@@ -569,6 +571,30 @@ static char sNames[NAME_COUNT][72];
 static char sPowerLabels[NAME_COUNT][96];
 static int sNamesState; /* 0 not tried, 1 read, -1 could not be */
 
+/* Power records list one or more outfits separated by hyphens. */
+static long long power_field_value(const char *value, int chara, int costume) {
+    const char *end;
+    char field[96];
+    size_t n;
+    int i;
+
+    if (!value || !*value)
+        return 0;
+    for (i = 0; i < costume; i++) {
+        const char *next = strchr(value, '-');
+        if (!next)
+            break;
+        value = next + 1;
+    }
+    end = strchr(value, '-');
+    n = end ? (size_t)(end - value) : strlen(value);
+    if (n >= sizeof(field))
+        return 0;
+    memcpy(field, value, n);
+    field[n] = 0;
+    return PU_Parse(field, PU_BUnit(chara, costume));
+}
+
 static int get32(const uint8_t *p, size_t n, size_t at, uint32_t *v) {
     if (at > n || n - at < 4) {
         return 0;
@@ -629,10 +655,11 @@ static void names_read(void) {
         MenuLabels_Unpack(file + member, (size_t)bytes - member, res, size) == (long)size && get32(res, size, 43 * 4, &name) &&
         get32(res, size, 44 * 4, &formAt) && (name &= ~3u) < size && (formAt &= ~3u) < size) {
         for (c = 0; c < NAME_COUNT; c++) {
+            text_line(res + formAt, size - formAt, c, sPowerLabels[c], sizeof(sPowerLabels[c]));
             if (text_line(res + name, size - name, c, sNames[c], 40) > 0) {
                 /* as the select shows it: the form after the name when it says something else */
-                if (text_line(res + formAt, size - formAt, c, form, 24) > 0 && strcmp(form, sNames[c]) != 0) {
-                    text_line(res + formAt,size-formAt,c,sPowerLabels[c],sizeof(sPowerLabels[c]));
+                if (!power_field_value(sPowerLabels[c], c, 0) &&
+                    text_line(res + formAt, size - formAt, c, form, 24) > 0 && strcmp(form, sNames[c]) != 0) {
                     size_t len = strlen(sNames[c]);
                     snprintf(sNames[c] + len, sizeof(sNames[c]) - len, ", %s", form);
                 }
@@ -651,6 +678,7 @@ static void names_read(void) {
 /* The name of a character as the versus select shows it, or "" when the data did not give one. For the settings
    window (its thread only). */
 const char *Port_CharaName(int chara) {
+    if(chara==329)return "Bardock Super Saiyajin Dios";
     static int tries;
     const char *dragon=Port_Beta8DragonName(chara);if(dragon)return dragon;
     if(chara==291)return "Super Buu (Multiverse)";
@@ -831,27 +859,45 @@ const char *Port_CharaName(int chara) {
     return chara >= 0 && chara < NAME_COUNT ? sNames[chara] : "";
 }
 
-/* Exact select-screen power label, resolved by physical costume for aliases.
-   Read only; this is presentation data, never a combat damage calculation. */
-static const char *Port_CharaPowerRaw(int chara,int costume){
- if(chara==301)return "970"; /* approved imported identity; no ISO text row */
- static char out[96];const char *value=B8PowerText(chara),*end;int i;
- if(!value){Port_Beta8PowerIdentity(&chara,&costume);if(!sNamesState)names_read();value=chara>=0&&chara<NAME_COUNT?sPowerLabels[chara]:NULL;}
- if(!value||!*value)return NULL;
- for(i=0;i<costume;i++){const char*next=strchr(value,'-');if(!next)break;value=next+1;}
- end=strchr(value,'-');if(!end)end=value+strlen(value);
- size_t n=(size_t)(end-value);if(n>=sizeof(out))n=sizeof(out)-1;memcpy(out,value,n);out[n]=0;return out;
+/* Explicit logical identities take precedence over the costume/model donor.
+   A legacy single value (or the final value in a list) also covers later costumes. */
+static long long chara_power_value(int chara, int costume) {
+    const char *value = B8PowerText(chara);
+    if (chara == 301)
+        return 970;
+    if (!value) {
+        Port_Beta8PowerIdentity(&chara, &costume);
+        if (!sNamesState)
+            names_read();
+        value = chara >= 0 && chara < NAME_COUNT ? sPowerLabels[chara] : NULL;
+    }
+    return power_field_value(value, chara, costume);
 }
 
-/* The select-screen power label as a number, for the CPU's strength comparisons. "8.000" -> 8000, "12.5MM" ->
-   12.5e9, "300Mil" -> 300000, "MAX" -> the top value. A '.' is a thousands separator when exactly three digits
-   follow it and no more, a decimal point otherwise. 0 when the label is missing or unreadable (the caller then
-   falls back to the health ceiling). Read only: presentation data, never a combat calculation. */
-#include "mod_power_units.h"
-long long Port_CharaPowerValue(int chara,int costume){return PU_Parse(Port_CharaPowerRaw(chara,costume),PU_BUnit(chara,costume));}
-const char *Port_CharaPower(int chara,int costume){
- static char out[96];const char*raw=Port_CharaPowerRaw(chara,costume);long long value=PU_Parse(raw,PU_BUnit(chara,costume));
- if(!value)return raw;PU_Format(value,out,sizeof(out));return out;
+long long Port_CharaPowerValue(int chara, int costume) {
+    return chara_power_value(chara, costume);
+}
+
+static int chara_power_format(int chara, int costume, char *out, size_t cap) {
+    const char *label = B8PowerText(chara);
+    long long power = Port_CharaPowerValue(chara, costume);
+    if (label && strcmp(label, "MAX") == 0) {
+        snprintf(out, cap, "%s", label);
+        return 1;
+    }
+    if (power <= 0)
+        return 0;
+    PU_Format(power, out, cap, Port_Setting("mod_language", 1) == 1);
+    return 1;
+}
+
+const char *Port_CharaPower(int chara, int costume) {
+    static char out[48];
+    return chara_power_format(chara, costume, out, sizeof(out)) ? out : NULL;
+}
+
+void Port_FormatPowerInteger(long long value, char *out, size_t cap) {
+    PU_FormatInteger(value, out, cap);
 }
 
 /* Fill the game's own team-member list of the active fighter with the port's extra allies of the same side, so
@@ -1089,6 +1135,18 @@ static int skill_name_units(uint16_t *out, int cap, const char *s) {
         }
     }
     return n;
+}
+
+/* TextBox keeps this string until drawing the clip. Each select box owns its buffer. */
+int Port_CharaPowerText(int chara, int costume, unsigned short *out, int cap) {
+    char label[48];
+    int n;
+    if (cap < 2 || !chara_power_format(chara, costume, label, sizeof(label)))
+        return 0;
+    out[0] = 0xFEFF;
+    n = skill_name_units(out + 1, cap - 2, label);
+    out[n + 1] = 0;
+    return 1;
 }
 
 /* Rewrites the transformation/fusion page of a character's skill-list text (the model's entry 0x2D + language,

@@ -421,8 +421,19 @@ s32 BtlLoad_StepObject(BtlJob *job) {
         }
 #ifdef PORT
         if(job->kind==BTL_JOB_KIND_OBJECT){
-            s32 bundle=Port_Beta8FileId(job->chara,job->animChara,job->unk1C!=0,0);
-            if(bundle>=0)id=bundle;
+            extern int Port_StorySbcObject(int,int);
+            /* Original SBC object279 is a cinematic Goku, not added roster
+               fighter279 (Drum). Keep the native object namespace for this beat. */
+            if(!Port_StorySbcObject(job->side,job->chara)){
+                s32 bundle=Port_Beta8FileId(job->chara,job->animChara,job->unk1C!=0,0);
+                if(bundle>=0)id=bundle;
+            }
+            if(Port_StorySbcObject(job->side,job->chara)){
+                extern char*getenv(const char*);
+                /* Private original-ISO auxiliary; never replace a shared disc id. */
+                if(getenv("BT3_STORY_SBC_REFERENCE"))id=0x43001500;
+            }
+            if(job->chara==279){extern void Port_Dbg3(const char*,int,int,int,int);Port_Dbg3("story auxiliary resource",job->side,job->chara,id,Port_StorySbcObject(job->side,job->chara));}
         }
 #endif
         gBtlLoadHandle = BtlRes_Request(0, id, -1, -1);
@@ -495,6 +506,10 @@ s32 BtlLoad_StepChara(BtlJob *job) {
         model=job->chara*10+job->costume+BTL_FILE_CHARA+(job->variant!=0?4:0);
 #ifdef PORT
         model=Port_Beta8ResolveFile(job->chara,job->costume,job->variant!=0,0,model);
+        /* CH8 shield: two-arm torn Piccolo body only. Keep early Piccolo identity,
+           parameters and animation/voice requests; CH3 keeps its severed arm. */
+        if(job->chara==22&&job->costume==0&&job->variant&&Port_StoryChapter()==6)
+            model=Port_Beta8ResolveFile(23,0,1,0,model);
 #endif
 #ifdef PORT
         if (job->side >= 2) {
@@ -694,7 +709,7 @@ Res_RelocateOffsets(&m->buf[1], m->buf[1], m->buf[1]);
 }
 
 /* Job: the first load of a battle. */
-s32 BtlLoad_StepInitial(BtlJob *job) {
+static s32 BtlLoad_StepInitialOnce(BtlJob *job) {
     BattleRes *res = BATTLE_RES;
     BattleMember *m;
     BattleEvents *ev;
@@ -854,6 +869,28 @@ s32 BtlLoad_StepInitial(BtlJob *job) {
         return 1;
     }
     return 0;
+}
+
+#ifdef PORT
+extern int Port_StoryActive(void);
+extern int Port_StoryChapter(void);
+extern unsigned Port_StoryPresentationClock(void);
+#endif
+s32 BtlLoad_StepInitial(BtlJob *job) {
+#ifdef PORT
+ int ch=Port_StoryChapter(),n;
+ if(Port_StoryActive()&&(ch==17||ch==18)){
+  for(n=0;n<12;n++){
+   int old=job->state;unsigned start=Port_StoryPresentationClock();
+   int done=BtlLoad_StepInitialOnce(job);
+   if(getenv("BT3_STORY_LOAD_TRACE"))fprintf(stderr,"story load ch%d state%d done%d cost%u ms\n",ch,old,done,Port_StoryPresentationClock()-start);
+   if(done)return done; /* the job was freed */
+   if(job->state==old)return 0; /* real I/O/upload wait */
+  }
+  return 0;
+ }
+#endif
+ return BtlLoad_StepInitialOnce(job);
 }
 
 /* Starts a plain stage reload unless a load is running or the stage is already loaded. */

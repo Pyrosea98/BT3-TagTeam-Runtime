@@ -508,7 +508,23 @@ void EntrySel_Draw(void) {
     Flash_FindLabel(flash, NULL, "mc_name_text_l", &ref);
     TextBox_AttachLine(flash, &ref, 0, 0, gEntrySel->sel->image, &gEntrySel->box[0]);
     Flash_FindLabel(flash, NULL, "mc_form_text_l", &ref);
-    TextBox_AttachLine(flash, &ref, 0, 0, gEntrySel->sel->image, &gEntrySel->box[1]);
+#ifdef PORT
+    {
+        extern int Port_CharaPowerText(int, int, unsigned short *, int);
+        extern void TextBox_AttachString(MFlash *, MFlashRef *, s32, s32, u16 *, MTextBox *);
+        static u16 power[48];
+        s32 entrant = gEntrySel->sel->cur;
+        if (entrant == TOUR_PROG->t.entryNum)
+            entrant--;
+        s32 costume = entrant >= 0 && entrant < ESEL_ENTRY_MAX ? gEntrySel->sel->entry[entrant].costume : 0;
+        if (Port_CharaPowerText(gEntrySel->sel->image, costume, power, 48))
+            TextBox_AttachString(flash, &ref, 0, 0, power, &gEntrySel->box[1]);
+        else
+#endif
+        TextBox_AttachLine(flash, &ref, 0, 0, gEntrySel->sel->image, &gEntrySel->box[1]);
+#ifdef PORT
+    }
+#endif
     for (i = 0; i < ESEL_ENTRY_MAX; i++) {
         /* the entry list: "entry n" for those still to choose, the "decided" text for the chosen ones */
         sprintf(name, "mc_entry_text_%d", i);

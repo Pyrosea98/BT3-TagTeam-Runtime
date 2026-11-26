@@ -699,9 +699,27 @@ void BtlPartner_Attach(FxChr *chr, s32 res, s32 objId) {
     }
 }
 
+#ifdef PORT
+/* Retain only CH3's wounded Goku, never another technique/fusion partner.
+   Round teardown explicitly releases this resource before roster memory resets. */
+static int sStorySbcRetained=-1,sStorySbcReleasing;
+int Port_StorySbcRetainedOwner(void){return sStorySbcRetained;}
+void Port_StorySbcReleaseRetained(void){
+ int owner=sStorySbcRetained;extern void BtlPartner_Release(FxChr*);
+ sStorySbcRetained=-1;sStorySbcReleasing=1;
+ if(owner>=0){FxChr*c=BtlChar_Get(owner);if(c)BtlPartner_Release(c);}
+ sStorySbcReleasing=0;
+}
+#endif
 /* Destroys the partner object and frees its resource slot. */
 void BtlPartner_Release(FxChr *chr) {
     FxPartner *p = &chr->partner;
+#ifdef PORT
+    {extern int Port_StorySbcMovieOwner(void);
+     if(p->active&&!sStorySbcReleasing&&(chr->player==sStorySbcRetained||chr->player==Port_StorySbcMovieOwner())){
+       sStorySbcRetained=chr->player;return;
+     }}
+#endif
 
     if (p->active) {
         BtlObj_Destroy(p->objId);
@@ -783,6 +801,7 @@ void BtlPartner_Update(FxChr *chr) {
 
 #ifdef PORT
     Port_ThirdBody(chr);
+    if(chr->player==sStorySbcRetained)return; /* visual pose follows the real fallen Goku at draw time */
 #endif
     if (p->active) {
         obj = BtlChar_GetObj(chr);
@@ -811,6 +830,9 @@ void BtlPartner_Update(FxChr *chr) {
 void BtlPartner_UpdateEvents(FxChr *chr) {
     FxPartner *p = &chr->partner;
 
+#ifdef PORT
+    if(chr->player==sStorySbcRetained)return;
+#endif
     if (p->active) {
         BtlPartner_HandleEvents(BtlObj_Get(p->objId), chr);
     }
@@ -974,3 +996,74 @@ void BtlPartner_SetFlag80(FxChr *chr, s32 on) {
         }
     }
 }
+
+#ifdef PORT
+/* Return the cinematic draw object, never transfer/free a fighter resource.
+   The native auxiliary supplies its authored pose; the real cast Gohan supplies
+   the visible model/costume. Its ordinary draw entry is omitted for this beat. */
+/* Render appearance for the real cast member must follow the native helper.
+   Other fighters may be intentionally darkened during the paired ultimate. */
+void *Port_StoryGenkiRenderSource(void *raw){
+ extern int Port_StoryChapter(void),Port_StoryCastActor(int),Port_StoryGenkiCast(int),Port_FighterObjId(int);
+ int owner,kid;FxChr*c;FxObj*partner,*real;
+ if(Port_StoryChapter()!=11)return 0;
+ owner=Port_StoryCastActor(2);kid=Port_StoryGenkiCast(owner);
+ if(kid<0||(c=BtlChar_Get(owner))==0||!c->partner.active)return 0;
+ partner=BtlObj_Get(c->partner.objId);real=BtlObj_Get(Port_FighterObjId(kid));
+ return partner&&real&&partner!=real&&raw==real?partner:0;
+}
+void *Port_StoryGenkiDrawObject(void *raw){
+ extern int Port_StoryChapter(void),Port_StoryCastActor(int),Port_StoryGenkiCast(int),Port_FighterObjId(int);
+ extern FxChr *BtlChar_Get(int);extern void Port_StoryCopyGenkiPose(void*,void*);
+ int owner,kid;FxChr*c;FxObj*partner,*real;
+ if(Port_StoryChapter()==2){
+  extern int Port_StorySbcMovieOwner(void);
+  owner=sStorySbcRetained>=0?sStorySbcRetained:Port_StorySbcMovieOwner();
+  if(owner>=0&&(c=BtlChar_Get(owner))!=0&&c->partner.active){
+   partner=BtlObj_Get(c->partner.objId);real=BtlObj_Get(Port_FighterObjId(Port_StoryCastActor(0)));
+   /* Native SBC helper supplies Goku's cinematic body. Suppress only his
+      ordinary held body, and only after that helper actually exists. */
+   if(partner&&real&&partner!=real){
+    if(sStorySbcRetained>=0){
+     if(raw==partner)return 0;
+     if(raw==real){Port_StoryCopyGenkiPose(real,partner);partner->flags|=2;return partner;}
+    }else{
+     /* The helper keeps advancing its native film. Only its drawn pose
+        inherits the wrist-aligned real grip until confirmed first contact;
+        native impact/recoil poses then resume without changing film time. */
+     if(raw==partner&&partner->anim.head){extern int Port_StorySbcHasContact(void);if(partner->anim.frame<1.f||!Port_StorySbcHasContact())Port_StoryCopyGenkiPose(real,partner);}
+     if(raw==real&&(partner->flags&2))return 0;
+    }
+   }
+  }
+  return raw;
+ }
+ if(Port_StoryChapter()!=11)return raw;
+ owner=Port_StoryCastActor(2);kid=Port_StoryGenkiCast(owner);
+ if(kid<0||(c=BtlChar_Get(owner))==0||!c->partner.active)return raw;
+ partner=BtlObj_Get(c->partner.objId);real=BtlObj_Get(Port_FighterObjId(kid));
+ if(!partner||!real||partner==real)return raw;
+ if(raw==real)return 0;
+ if(raw==partner){Port_StoryCopyGenkiPose(partner,real);return real;}
+ return raw;
+}
+#endif
+
+#ifdef PORT
+int Port_StoryVisualObjectId(int actor,int fallback){
+ extern int Port_StoryChapter(void),Port_StoryCastActor(int),Port_StorySbcMovieOwner(void);
+ int owner;FxChr*c;
+ if(Port_StoryChapter()!=2||actor!=Port_StoryCastActor(0))return fallback;
+ owner=sStorySbcRetained>=0?sStorySbcRetained:Port_StorySbcMovieOwner();
+ if(owner<0||(c=BtlChar_Get(owner))==0||!c->partner.active)return fallback;
+ return c->partner.objId;
+}
+#endif
+
+#ifdef PORT
+int Port_StorySbcHelperVisible(void){
+ extern int Port_StorySbcMovieOwner(void);int owner=Port_StorySbcMovieOwner();FxChr*c;FxObj*p;
+ if(owner<0||!(c=BtlChar_Get(owner))||!c->partner.active)return 0;
+ p=BtlObj_Get(c->partner.objId);return p&&(p->flags&2)&&p->anim.head&&p->anim.frame>=1.f;
+}
+#endif

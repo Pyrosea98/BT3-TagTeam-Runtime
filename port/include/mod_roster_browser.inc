@@ -18,7 +18,7 @@ static int rb_owner(int cid){int owner=Port_Beta8SelectFormOwner(cid);return own
 static void rb_read(int cid,int set,u16*out){int cell=rb_cell(cid);memset(out,0,16);if(cell>=0)memcpy(out,gSaveData->custom[cell].item[set],16);else Port_RosterPresetRead(rb_owner(cid),set,out);}
 static int rb_write(int cid,int set,const u16*in){int cell=rb_cell(cid);if(cell>=0){u16 before[8];int ok;memcpy(before,gSaveData->custom[cell].item[set],16);memcpy(gSaveData->custom[cell].item[set],in,16);sRbView->active=0;Port_ModSelectPublish(sRbView);ok=Port_EvoSaveRun();sRbView->active=1;Port_ModSelectPublish(sRbView);if(!ok)memcpy(gSaveData->custom[cell].item[set],before,16);return ok;}return Port_RosterPresetWrite(rb_owner(cid),set,in);}
 typedef struct RbItem{u8 type,group,picture,slots;u8 unused[16];s32 flags;u8 pad[16];} RbItem;
-extern s32 ChrTbl_GetLevel(s32,s32,s32),ItemTbl_CanEquip(s32,s32,RbItem*);
+extern s32 ChrTbl_GetLevel(s32,s32,s32),Port_ItemTbl_CanEquipFor(s32,s32,s32,RbItem*);
 static int rb_cost(const u16*ids,RbItem*t){int i,n=0;for(i=0;i<7;i++)if(ids[i]>0&&ids[i]<=350)n+=t[ids[i]-1].slots;return n;}
 static void rb_publish_items(void){int i;char name[240];RbItem*t=(RbItem*)MPACK_AT(gCommonRes->data[2],2);void*texts=NULL;
  if(gMenuArc7){u32*pack=(u32*)MPACK_AT(gMenuArc7,3);void*res=Sprite_Unpack(pack,NULL,NULL);if(res){texts=MPACK_AT(res,37);for(i=0;i<350;i++){u16*line=(u16*)MPACK_AT(texts,i+1);name[0]=0;PortA11y_Utf8(name,sizeof(name),line);Port_RosterItemPublish(i,gSaveData->item[i]&1,t[i].slots,t[i].flags,name);{char detail[512];void *help=MPACK_AT(res,2),*descs=MPACK_AT(help,5);PortA11y_Utf8(detail,sizeof(detail),(u16*)MPACK_AT(descs,i+1));Port_RosterItemDetailPublish(i,detail);}}Heap_Free(res);return;}}
@@ -59,14 +59,14 @@ int Port_RosterBrowse(int kind,MsPick*out,int count,int dp){
   if(cmd>=6000&&cmd<6007)slot=cmd-6000;
   if(pressed&(PAD_L2|PAD_R2)){slot=(slot+(pressed&PAD_R2?1:6))%7;status=0;}
   if(cmd>=1000&&cmd<1350){int item=cmd-1000,j,donor=Port_Beta8StockAlias(cid),cell=rb_cell(cid),capacity;RbItem*t=(RbItem*)MPACK_AT(gCommonRes->data[2],2);u16 proposed[8];inventoryCursor=item;if(donor<0||donor>160)donor=0;capacity=rb_capacity(cid);memcpy(proposed,equipped,16);proposed[slot]=item+1;
-   status=2;if((gSaveData->item[item]&1)&&ItemTbl_CanEquip(item,donor,t)&&rb_cost(proposed,t)<=capacity){int valid=1;for(j=0;j<7;j++)if(j!=slot&&proposed[j]>0&&proposed[j]<=350&&t[proposed[j]-1].type==t[item].type&&t[proposed[j]-1].group==t[item].group)valid=0;if(valid){memcpy(equipped,proposed,16);status=0;}}Snd_PlaySe(1,status?7:1);}
+   status=2;if((gSaveData->item[item]&1)&&Port_ItemTbl_CanEquipFor(item,donor,cid,t)&&rb_cost(proposed,t)<=capacity){int valid=1;for(j=0;j<7;j++)if(j!=slot&&proposed[j]>0&&proposed[j]<=350&&t[proposed[j]-1].type==t[item].type&&t[proposed[j]-1].group==t[item].group)valid=0;if(valid){memcpy(equipped,proposed,16);status=0;}}Snd_PlaySe(1,status?7:1);}
   if(cmd==4){v.phase=6;status=0;release=1;Snd_PlaySe(1,1);}
   if(cmd==2){equipped[slot]=0;status=0;}
   if((pressed&PAD_SQUARE)||cmd==1){status=rb_write(cid,set,equipped)?1:3;release=1;Snd_PlaySe(1,status==1?1:7);}
  }else{
   int delta=(repeat&(PAD_LEFT|PAD_LSTICK_LEFT))?-1:(repeat&(PAD_RIGHT|PAD_LSTICK_RIGHT))?1:(repeat&(PAD_UP|PAD_LSTICK_UP))?-(v.phase==2?3:MS_COLS):(repeat&(PAD_DOWN|PAD_LSTICK_DOWN))?(v.phase==2?3:MS_COLS):0;
   if(delta){if(v.phase==2)v.form_cursor=MS_Move(v.form_cursor,delta,v.form_count);else v.cursor=MS_Move(v.cursor,delta,v.roster_count);v.costume=0;Snd_PlaySe(1,0);}
-  if(v.phase==1&&(pressed&(PAD_L1|PAD_R1))){v.cursor=MS_Move(v.cursor,pressed&PAD_R1?MS_PAGE:-MS_PAGE,v.roster_count);Snd_PlaySe(1,0);}
+  if(v.phase==1&&(pressed&(PAD_L1|PAD_R1))){v.cursor=MS_PageMove(v.cursor,pressed&PAD_R1?1:-1,v.roster_count);Snd_PlaySe(1,0);}
   if(v.phase==1&&cmd>=2000&&cmd<2000+v.roster_count){v.cursor=cmd-2000;v.costume=0;}
   if(v.phase==2&&cmd>=3000&&cmd<3000+v.form_count)v.form_cursor=cmd-3000;
   cid=ms_view_chara(&v);

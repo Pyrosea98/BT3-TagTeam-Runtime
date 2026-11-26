@@ -1,6 +1,7 @@
 extern void Port_TextPatch(void*,int,const char*);
 #ifdef PORT
 #include <stdio.h>
+#include <stdlib.h>
 #include "plat_beta8.h"
 extern int Port_ModesFight(void);
 #include "coop_selection.h"
@@ -1169,7 +1170,19 @@ void TeamSel_Draw(void) {
         Flash_FindLabel(flash, NULL, i ? "mc_name_text_r" : "mc_name_text_l", &ref);
         TextBox_AttachLine(flash, &ref, 0, 0, gTeamSel->side[i]->chara, &gTeamSel->nameBox[i]);
         Flash_FindLabel(flash, NULL, i ? "mc_form_text_r" : "mc_form_text_l", &ref);
-        TextBox_AttachLine(flash, &ref, 0, 0, gTeamSel->side[i]->chara, &gTeamSel->formBox[i]);
+#ifdef PORT
+        {
+            extern int Port_CharaPowerText(int, int, unsigned short *, int);
+            extern void TextBox_AttachString(MFlash *, MFlashRef *, s32, s32, u16 *, MTextBox *);
+            static u16 power[2][48];
+            if (Port_CharaPowerText(gTeamSel->side[i]->chara, gTeamSel->side[i]->member[(gTeamSel->side[i]->cur >= 0 && gTeamSel->side[i]->cur < 5) ? gTeamSel->side[i]->cur : 0].color, power[i], 48))
+                TextBox_AttachString(flash, &ref, 0, 0, power[i], &gTeamSel->formBox[i]);
+            else
+#endif
+            TextBox_AttachLine(flash, &ref, 0, 0, gTeamSel->side[i]->chara, &gTeamSel->formBox[i]);
+#ifdef PORT
+        }
+#endif
     }
     uv.x0 = 0;
     uv.x1 = 0x200;

@@ -399,8 +399,8 @@ static const StCast stCasts[ST_COUNT]={
   {"Raditz takes Gohan away.","Raditz se lleva a Gohan."}},
  /* Chapter 3: Goku (costume 3, label 416), unweighted Piccolo (408) vs Raditz; kid Gohan (yellow) is a scene actor for the R3
     intervention and the alternative ending. Canonical = a PLAYER win after the Special Beam Cannon (ST_CanonIsWin). */
- {4,{{"Goku",0,3,0,0},{"Piccolo",22,0,0,0},{"Raditz",77,0,1,0},{"Gohan",13,3,1,ST_ACTOR_SCENE}},
-  3,-1,0,{{0,{0,0}}},-1,{0,0},1,1,1},
+ {5,{{"Goku",0,3,0,0},{"Piccolo",22,0,0,0},{"Raditz",77,0,1,0},{"Gohan",13,3,1,ST_ACTOR_SCENE},{"Krillin",25,1,0,ST_ACTOR_SCENE}},
+  3,-1,0,{{0,{0,0}}},-1,{0,0},1,1,1,0,0x10u},
  /* chapter 4: Gohan fights as himself and turns into the Great Ape (180) through an authored native form change; the
     endings show him asleep as a child (scene-only copy, Piccolo's side so its draft key differs) */
  {3,{{"Piccolo",22,1,0,0},{"Gohan",13,0,1,0},{"Sleeping Gohan",13,0,0,ST_ACTOR_SCENE}},
@@ -408,46 +408,46 @@ static const StCast stCasts[ST_COUNT]={
  {2,{{"Gohan",13,0,0,0},{"Piccolo",22,1,1,0}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x0u,0x0u,0x0u,0x0u,0x0u,0,0x0u} /* saiyan_05_one_year */,
  /* chapter 6: the final trial of the year (handoff 12): five heroes, Yajirobe (301) included, against five doubles */
- {13,{{"Krillin",25,0,0,0},{"Yamcha",26,1,0,0},{"Tenshinhan",27,1,0,0},{"Chaozu",28,1,0,0},{"Yajirobe",301,0,0,0},{"Krillin's double",25,0,1,0},{"Yamcha's double",26,1,1,0},{"Tien's double",27,1,1,0},{"Chiaotzu's double",28,1,1,0},{"Yajirobe's double",301,0,1,0},{"Roshi",66,0,0,ST_ACTOR_SCENE},{"Kami",280,0,0,ST_ACTOR_SCENE},{"Mr. Popo",187,0,0,ST_ACTOR_SCENE}},
+ {13,{{"Krillin",25,1,0,0},{"Yamcha",26,1,0,0},{"Tenshinhan",27,1,0,0},{"Chaozu",28,1,0,0},{"Yajirobe",301,0,0,0},{"Krillin's double",25,1,1,0},{"Yamcha's double",26,1,1,0},{"Tien's double",27,1,1,0},{"Chiaotzu's double",28,1,1,0},{"Yajirobe's double",301,0,1,0},{"Roshi",66,0,0,ST_ACTOR_SCENE},{"Kami",280,0,0,ST_ACTOR_SCENE},{"Mr. Popo",187,0,0,ST_ACTOR_SCENE}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x1800u,0x1800u,0x1800u,0x0u,0x0u,0,0x0u} /* saiyan_06_lookout */,
  /* chapter 7: one continuous battle (old 7-11). Tien opens; Yamcha, Krillin, Piccolo, Gohan, Chiaotzu, Goku and Nappa
     wait on the sidelines until their phase; Vegeta only watches. One Saibaman slot serves every wave until the
     16-fighter capacity step. */
- {15,{{"Tenshinhan",27,1,0,0},{"Yamcha",26,1,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Krillin",25,0,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Piccolo",22,0,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Gohan",13,0,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Chaozu",28,1,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Goku",0,0,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Saibaman",79,0,1,0},{"Nappa",80,0,1,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Vegeta",29,0,1,ST_ACTOR_SCENE},
+ {15,{{"Tenshinhan",27,1,0,0},{"Yamcha",26,1,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Krillin",25,1,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Piccolo",22,0,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Gohan",13,0,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Chaozu",28,1,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Goku",0,0,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Saibaman",79,0,1,0},{"Nappa",80,0,1,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Vegeta",29,0,1,ST_ACTOR_SCENE},
   {"Saibaman 2",79,0,1,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Saibaman 3",79,0,1,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Saibaman 4",79,0,1,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Yamcha Saibaman",79,0,1,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Saibaman 5",79,0,1,ST_ACTOR_SCENE|ST_ACTOR_RESERVE}},
   -1,-1,0,{{0,{0,0}}},-1,{"Goku and Vegeta leave for a place where no one else will get caught in their fight.","Goku y Vegeta se alejan hacia un lugar donde nadie m\303\241s quede atrapado en su pelea."},1,0,0,0x33eu,0x214u,0x0u,0x0u,0x0u,0,0x0u,0x240u} /* Goku and Vegeta leave together (DRAFT caption) */ /* saiyan_07_earths_last_defense */,
- {7,{{"Yamcha",26,1,0,0},{"Krillin",25,0,0,ST_ACTOR_SCENE},{"Piccolo",22,1,0,ST_ACTOR_SCENE},{"Gohan",13,0,0,ST_ACTOR_SCENE},{"Saibaman",79,0,1,0},{"Vegeta",29,0,1,ST_ACTOR_SCENE},{"Nappa",80,0,1,ST_ACTOR_SCENE}},
+ {7,{{"Yamcha",26,1,0,0},{"Krillin",25,1,0,ST_ACTOR_SCENE},{"Piccolo",22,1,0,ST_ACTOR_SCENE},{"Gohan",13,0,0,ST_ACTOR_SCENE},{"Saibaman",79,0,1,0},{"Vegeta",29,0,1,ST_ACTOR_SCENE},{"Nappa",80,0,1,ST_ACTOR_SCENE}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x6eu,0xeu,0x2u,0x0u,0x0u,0,0x0u} /* saiyan_08_six_seeds */,
- {7,{{"Tenshinhan",27,0,0,0},{"Chaozu",28,0,0,0},{"Krillin",25,0,0,0},{"Piccolo",22,1,0,0},{"Gohan",13,0,0,0},{"Nappa",80,0,1,0},{"Vegeta",29,0,1,ST_ACTOR_SCENE}},
+ {7,{{"Tenshinhan",27,0,0,0},{"Chaozu",28,0,0,0},{"Krillin",25,1,0,0},{"Piccolo",22,1,0,0},{"Gohan",13,0,0,0},{"Nappa",80,0,1,0},{"Vegeta",29,0,1,ST_ACTOR_SCENE}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x40u,0x0u,0x0u,0x0u,0x0u,1,0x0u} /* saiyan_09_nappa */,
- {5,{{"Piccolo",22,1,0,0},{"Krillin",25,0,0,0},{"Gohan",13,0,0,0},{"Nappa",80,0,1,0},{"Vegeta",29,0,1,ST_ACTOR_SCENE}},
+ {5,{{"Piccolo",22,1,0,0},{"Krillin",25,1,0,0},{"Gohan",13,0,0,0},{"Nappa",80,0,1,0},{"Vegeta",29,0,1,ST_ACTOR_SCENE}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x10u,0x0u,0x0u,0x0u,0x0u,1,0x0u} /* saiyan_10_three_hours */,
- {5,{{"Goku",0,0,0,0},{"Gohan",13,0,0,ST_ACTOR_SCENE},{"Krillin",25,0,0,ST_ACTOR_SCENE},{"Nappa",80,0,1,0},{"Vegeta",29,0,1,ST_ACTOR_SCENE}},
+ {5,{{"Goku",0,0,0,0},{"Gohan",13,0,0,ST_ACTOR_SCENE},{"Krillin",25,1,0,ST_ACTOR_SCENE},{"Nappa",80,0,1,0},{"Vegeta",29,0,1,ST_ACTOR_SCENE}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x16u,0x10u,0x0u,0x0u,0x0u,0,0x0u} /* saiyan_11_goku_returns */,
  /* chapter 8: one battle on the same rocky field (old 12-17). Goku vs Vegeta first; Gohan and Krillin join when Goku is
     crushed; Yajirobe stays out of the giant's attention (cutscenes). The Great Apes are native transformations of the
     same fighters (Vegeta 29->30, Gohan 13->180), Kaioken is Goku's native form 231. */
- {5,{{"Goku",0,0,0,0},{"Gohan",13,0,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Krillin",25,0,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Yajirobe",301,0,0,ST_ACTOR_SCENE},{"Vegeta",29,0,1,0}}, /* Krilin borrows the existing Goku's technique; no sixth fighter. */
+ {5,{{"Goku",0,0,0,0},{"Gohan",13,0,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Krillin",25,1,0,ST_ACTOR_SCENE|ST_ACTOR_RESERVE},{"Yajirobe",301,0,0,ST_ACTOR_SCENE},{"Vegeta",29,0,1,0}}, /* Krilin borrows the existing Goku's technique; no sixth fighter. */
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x0u,0xeu,0x0u,0x0u,0x0u,0,0x0u} /* saiyan_12_battle_for_earth */,
  {2,{{"Goku",0,0,0,0},{"Vegeta",30,0,1,0}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,1,0x0u,0x0u,0x0u,0x0u,0x0u,1,0x0u} /* saiyan_13_artificial_moon */,
- {5,{{"Gohan",13,0,0,0},{"Krillin",25,0,0,0},{"Goku",0,0,0,ST_ACTOR_SCENE},{"Yajirobe",301,0,0,ST_ACTOR_SCENE},{"Vegeta",30,0,1,0}},
+ {5,{{"Gohan",13,0,0,0},{"Krillin",25,1,0,0},{"Goku",0,0,0,ST_ACTOR_SCENE},{"Yajirobe",301,0,0,ST_ACTOR_SCENE},{"Vegeta",30,0,1,0}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0xcu,0xcu,0x4u,0x4u,0x0u,1,0x0u} /* saiyan_14_yajirobe */,
- {4,{{"Gohan",13,0,0,0},{"Krillin",25,0,0,ST_ACTOR_SCENE},{"Goku",0,0,0,ST_ACTOR_SCENE},{"Vegeta",29,0,1,0}},
+ {4,{{"Gohan",13,0,0,0},{"Krillin",25,1,0,ST_ACTOR_SCENE},{"Goku",0,0,0,ST_ACTOR_SCENE},{"Vegeta",29,0,1,0}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x6u,0x2u,0x2u,0x4u,0x0u,1,0x0u} /* saiyan_15_last_energy */,
- {5,{{"Krillin",25,0,0,0},{"Vegeta",29,0,1,0},{"Great Ape Gohan",180,0,1,0},{"Goku",0,0,0,ST_ACTOR_SCENE},{"Gohan",13,0,0,ST_ACTOR_SCENE}},
+ {5,{{"Krillin",25,1,0,0},{"Vegeta",29,0,1,0},{"Great Ape Gohan",180,0,1,0},{"Goku",0,0,0,ST_ACTOR_SCENE},{"Gohan",13,0,0,ST_ACTOR_SCENE}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x8u,0x10u,0x10u,0x18u,0x0u,0,0x4u} /* saiyan_16_last_giant */,
- {4,{{"Krillin",25,0,0,0},{"Vegeta",29,0,1,0},{"Goku",0,0,0,ST_ACTOR_SCENE},{"Gohan",13,0,0,ST_ACTOR_SCENE}},
+ {4,{{"Krillin",25,1,0,0},{"Vegeta",29,0,1,0},{"Goku",0,0,0,ST_ACTOR_SCENE},{"Gohan",13,0,0,ST_ACTOR_SCENE}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x4u,0xcu,0x0u,0x4u,0x0u,1,0x0u} /* saiyan_17_let_him_live */,
- {5,{{"Krillin",25,0,0,0},{"Yamcha",26,1,0,0},{"Tenshinhan",27,1,1,0},{"Chaozu",28,1,1,0},{"Yajirobe",301,0,1,0}},
-  -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x0u,0x0u,0x0u,0x0u,0x0u,0,0x0u,0x0u} /* saiyan_05b_lookout_training: sparring pairs */,
+ {7,{{"Krillin",25,1,0,0},{"Yamcha",26,1,0,0},{"Tenshinhan",27,1,1,0},{"Chaozu",28,1,1,0},{"Yajirobe",301,0,1,0},{"Kami",280,0,0,ST_ACTOR_SCENE},{"Mr. Popo",187,0,0,ST_ACTOR_SCENE}},
+  -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x60u,0x60u,0x60u,0x0u,0x0u,0,0x0u,0x0u} /* saiyan_05b_lookout_training: sparring pairs */,
  {2,{{"Goku",0,0,0,0},{"King Kai",208,0,1,0}},
   -1,-1,0,{{0,{0,0}}},-1,{0,0},1,1,0,0x0u,0x0u,0x0u,0x0u,0x0u,0,0x0u,0x0u} /* saiyan_05c_king_kai */,
  {2,{{"Roshi",66,0,0,0},{"Offscreen",0,0,1,ST_ACTOR_SCENE}},-1,-1,0,{{0}},-1,{0,0},1,1},
  {2,{{"Goku",0,0,0,0},{"King Kai",208,0,1,0}},-1,-1,0,{{0}},-1,{0,0},1,1}
 
 ,
- {7,{{"Krillin",25,0,0,0},{"Yamcha",26,1,0,0},{"Tenshinhan",27,1,0,0},{"Chaozu",28,1,0,0},{"Yajirobe",301,0,0,0},{"Shorty",323,0,1,0},{"Scarface",324,0,1,0}},
+ {7,{{"Krillin",25,1,0,0},{"Yamcha",26,1,0,0},{"Tenshinhan",27,1,0,0},{"Chaozu",28,1,0,0},{"Yajirobe",301,0,0,0},{"Shorty",323,0,1,0},{"Scarface",324,0,1,0}},
  -1,-1,0,{{0}},-1,{0,0},1,1}
 };
 /* Chapter presentation uses the story-era reading, not a borrowed costume's label.
@@ -518,6 +518,8 @@ static const char *const stLeaves[2]={"Raditz leaves.","Raditz se marcha."};
 enum { ST_SET_INTRO, ST_SET_CANON, ST_SET_ALT, ST_SET_COMBAT, ST_SET_LEAVES, ST_SET_BRIDGE, ST_SET_LEAVES_ALT,
        ST_SET_EVENT0 }; /* then one set per authored event: ST_SET_EVENT0 + k, k < ST_EVENTS */
 #define ST_SET_YAMCHA_ALIVE 100
+#define ST_SET_KIENZAN_WARNING 101
+#define ST_SET_CH8_POWER 102
 #define ST_SET_EVENT1 (ST_SET_EVENT0 + 1)
 /* An event's alternative lines (StEvent.alt): ST_SET_ALTEV0 + k. */
 #define ST_SET_ALTEV0 (ST_SET_EVENT0 + ST_EVENTS_MAX_SETS)
@@ -528,21 +530,18 @@ enum { ST_CUE_TIME, ST_CUE_RIVAL_HP, ST_CUE_PLAYER_HP };
 typedef struct StCue {int kind,value;StLine line;} StCue;
 typedef struct StScene {const char *rivalSpeaker;int canonFirst,cueCount;StCue cue[ST_CUES];} StScene;
 static const StScene stScenes[ST_COUNT]={
- {"Raditz",1,4,{
+ {"Raditz",1,2,{
   /* DRAFT, pending Juan's approval: not in SAIYAN-SAGA-SCRIPT-ES-EN.md */
   {ST_CUE_TIME,6,{"Raditz",{"You're wasting my time. I'm looking for Kakarot.","No me hagas perder el tiempo. Estoy buscando a Kakarotto."}}},
-  /* SS01_004 (script of record) */
-  {ST_CUE_RIVAL_HP,60,{"Piccolo",{"I hit him clean... and he barely moved.","\302\241Le di de lleno... y apenas retrocedi\303\263!"}}},
   /* DRAFT */
   {ST_CUE_PLAYER_HP,50,{"Raditz",{"You can't stop me with attacks like that.","No vas a detenerme con ataques as\303\255."}}},
-  /* DRAFT */
-  {ST_CUE_RIVAL_HP,30,{"Piccolo",{"I only need one opening. I'll find it.","Solo necesito una abertura. La encontrar\303\251."}}}}},
+  /* (SS01_004 and the "one opening" draft now play in the chapter-1 R3 event) */}},
  {"Raditz",0,4,{
   /* DRAFTS, pending Juan's approval: the script has no combat lines for node 02 */
   {ST_CUE_TIME,5,{"Raditz",{"You brought a friend, Kakarot? It won't help.","\302\277Trajiste a un amigo, Kakarotto? No les servir\303\241."}}},
   {ST_CUE_RIVAL_HP,60,{"Krillin",{"Goku, we need to catch his tail!","\302\241Goku, tenemos que agarrarle la cola!"}}},
   {ST_CUE_PLAYER_HP,50,{"Raditz",{"You would rather die than stand with your own people?","\302\277Prefieres morir antes que unirte a los tuyos?"}}},
-  {ST_CUE_RIVAL_HP,30,{"Goku",{"Krillin, now! Don't let him get away!","\302\241Krilin, ahora! No dejes que escape!"}}}}},
+  {ST_CUE_RIVAL_HP,30,{"Goku",{"Krillin, now! Don't let him get away!","\302\241Krilin, ahora! \302\241No dejes que escape!"}}}}},
  {"Raditz",0,3,{
   /* script of record SS03_004-006 */
   {ST_CUE_TIME,8,{"Piccolo",{"His armor is tough. Keep him busy while I line up the shot.","Su armadura es resistente. Distr\303\241elo mientras apunto."}}},
@@ -630,8 +629,14 @@ typedef struct StEvent {int threshold,kind,lineCount,switchCast;StLine line[ST_E
 #define ST_CHOREO_SPIRITBOMB 4 /* the helper's native ball thrown from the attacker; the target dodges, Gohan returns it */
 typedef struct StEvents {int count;StEvent event[ST_EVENTS];} StEvents;
 static const StEvents stEvents[ST_COUNT]={
- {0},{0},
- {2,{{20000,ST_EVENT_GOHAN,4,-1,
+ /* chapter 1 (Juan 2026-11-16): R3 at 60%: Piccolo charges (aura, charge FX, camera on the charge), fires his real
+    Blast 2 at Raditz; Raditz is still standing after it ("he barely moved"). Lines are the chapter's existing combat cues. */
+ {1,{{60,ST_EVENT_SCENE,2,-1,
+   {{"Piccolo",{"I only need one opening. I'll find it.","Solo necesito una abertura. La encontrar\303\251."}},
+   {"Piccolo",{"I hit him clean... and he barely moved.","\302\241Le di de lleno... y apenas retrocedi\303\263!"}}},
+   ST_TRIG_RIVAL_PCT,0,0,0x0u,0x0u,0x0u,0,0,0,0,0x0u,0x0u,0,0,0,0,{{0,{0,0}}},1,2,2,0,0,1}}},
+ {0},
+ {3,{{20000,ST_EVENT_GOHAN,4,-1,
    {{"Gohan",{"Get away from my dad!","\302\241Al\303\251jate de mi pap\303\241!"}}, /* SS03_011 */
    {"Raditz",{"What...? That power came from the boy?","\302\277Qu\303\251...? \302\277Ese poder sali\303\263 del ni\303\261o?"}}, /* SS03_012 */
    {"Goku",{"Gohan, get back to safety!","\302\241Gohan, ponte a salvo!"}}, /* SS03_013 */
@@ -641,7 +646,15 @@ static const StEvents stEvents[ST_COUNT]={
    {"Piccolo",{"The shot will go through you too!","\302\241El ataque te atravesar\303\241 tambi\303\251n!"}}, /* SS04_002 */
    {"Goku",{"Do it! I'm not letting him go.","\302\241Hazlo! No voy a soltarlo."}}, /* SS04_003 */
    {"Raditz",{"Kakarot! You'll die with me!","\302\241Kakarotto! \302\241Vas a morir conmigo!"}}, /* SS04_004 */},
-   ST_TRIG_RIVAL_HP,0,0,0,0,0,1}}} /* the beam is chapter 3's canonical event */
+   ST_TRIG_RIVAL_HP,0,0,0,0,0,1},
+ {80,ST_EVENT_SCENE,6,-1,
+  {{"Goku",{"I've got your tail! Piccolo, get ready!","Tengo tu cola. Piccoro, preparate."}},
+   {"Raditz",{"Please, Kakarot! I'll leave this planet. I swear!","Por favor, Kakarotto. Dejare este planeta. Lo juro."}},
+   {"Goku",{"You promise you won't hurt anyone else?","\302\277Prometes no hacerle da\303\261o a nadie m\303\241s?"}},
+   {"Piccolo",{"Don't let go! He's lying to you!","No lo sueltes. Te esta mintiendo."}},
+   {"Raditz",{"You fool! You should never have trusted me!","Necio. Nunca debiste confiar en mi."}},
+   {"Goku",{"Gohan... stay back!","Gohan... alejate."}}},
+  ST_TRIG_RIVAL_PCT}}} /* the beam is chapter 3's canonical event */
 ,
  /* chapter 4: the transformation (AUTO, SS05_005), then R3 destroy the moon / cut the tail (SS05_007-008) */
  {2,{{1,ST_EVENT_SCENE,1,-1,
@@ -680,7 +693,7 @@ static const StEvents stEvents[ST_COUNT]={
    {{"Gohan",{"I didn't see it coming...","No lo vi venir..."}} /* SS08_011 */,
    {"Piccolo",{"That's why you keep your eyes on it.","Por eso no debes apartar la mirada."}} /* SS08_012 */,
    {"Nappa",{"Is that all you can do?","\302\277Eso es todo lo que pueden hacer?"}} /* SS09_001 */,
-   {"Tenshinhan",{"Stay together. Don't let him split us up.","Mant\303\251nganse juntos. No dejen que nos separe."}} /* SS09_002 */,
+   {"Tenshinhan",{"My arm...! Chiaotzu, stay back!","\302\241Mi brazo...! \302\241Chaozu, no te acerques!"}} /* SS09_002 */,
    {"Chaozu",{"Tenshinhan!","\302\241Tenshinhan!"}} /* SS09_003 */},
    ST_TRIG_RIVAL_PCT,0,0,0x0u,0x7c80u,0x130u,0,0,0,0,0x131u,0x0u,1,0},
   {80,ST_EVENT_SCENE,4,-1,
@@ -723,13 +736,14 @@ static const StEvents stEvents[ST_COUNT]={
    {"Goku",{"I'm sorry. I'm here now.","Perd\303\263nenme. Ya estoy aqu\303\255."}} /* SS11_003 */,
    {"Nappa",{"So you're Kakarot. Let's see what you can do.","As\303\255 que t\303\272 eres Kakarotto. Veamos qu\303\251 sabes hacer."}} /* SS11_004 */},
    ST_TRIG_AFTER,1,0,0x0u,0x0u,0x0u,0,0,0,0,0x40u,0x14u,7,0,0,0,{{0,{0,0}}},5,4,9,0,0,5,1},
-  {25,ST_EVENT_SCENE,2,-1,
+  {75,ST_EVENT_SCENE,1,-1,
+   {{"Vegeta",{"Over eight thousand...!","\302\241M\303\241s de ocho mil...!"}}}, /* Juan 2026-11-18: only the ki charge here; the warning moves to the Kaioken scene */
+   ST_TRIG_RIVAL_PCT,0,0,0x0u,0x0u,0x214u,0,0,0,0,0x0u,0x0u,0,0}, /* Keep CH8 Goku: his own slot 3, exactly as manual input. CH9 retains form231. */
+  {10000,ST_EVENT_SCENE,3,-1,
    {{"Vegeta",{"Nappa, stop! You're no match for him!","\302\241Nappa, detente! \302\241No puedes con \303\251l!"}} /* SS11_005 */,
-   {"Nappa",{"Then I'll finish those two first!","\302\241Entonces acabar\303\251 primero con esos dos!"}} /* SS11_006 */},
-   ST_TRIG_RIVAL_PCT,0,0,0x0u,0x0u,0x214u,0,0,6,231,0x0u,0x0u,0,0},
-  {2,ST_EVENT_SCENE,1,-1,
-   {{"Goku",{"You won't touch them! Kaioken!","\302\241No les pondr\303\241s una mano encima! \302\241Kaioken!"}} /* SS11_007 */},
-   ST_TRIG_AFTER,1,1000000,0x0u,0x0u,0x0u,1,0,0,0,0x0u,0x0u,0,0,0,0,{{0,{0,0}}},7,3,9,0,0,0}}},
+   {"Nappa",{"Then I'll finish those two first!","\302\241Entonces acabar\303\251 primero con esos dos!"}} /* SS11_006 */,
+   {"Goku",{"You won't touch them! Kaioken!","\302\241No les pondr\303\241s una mano encima! \302\241Kaioken!"}} /* SS11_007 */},
+   ST_TRIG_RIVAL_HP,1,1000000,0x0u,0x0u,0x0u,1,0,0,0,0x0u,0x0u,0,0,0,0,{{0,{0,0}}},7,3,9,0,0,0}}},
  {1,{{25,ST_EVENT_SCENE,4,-1,
    {{"Yamcha",{"Was that all?","\302\277Eso era todo?"}} /* SS08_007 */,
    {"Krillin",{"Yamcha, let go! It's going to blow!","\302\241Yamcha, su\303\251ltalo! \302\241Va a explotar!"}} /* SS08_008 */,
@@ -937,6 +951,10 @@ static const char*ST_LeavesText(int chapter,int set,int lang){if(chapter<0||chap
 static int ST_LineSide(int chapter,const StLine*l){return chapter>=0&&chapter<ST_COUNT&&l&&ST_StrEq(l->speaker,stScenes[chapter].rivalSpeaker);}
 /* A line of a scene set, or 0 (the leaves caption has no line). */
 static const StLine*ST_SceneLine(int chapter,int set,int line){
+ static const StLine warning={"Vegeta",{"Nappa, dodge that disc!","\302\241Nappa, esquiva ese disco!"}};
+ static const StLine power={"Vegeta",{"Over eight thousand...!","\302\241M\303\241s de ocho mil...!"}};
+ if(chapter==6&&set==ST_SET_KIENZAN_WARNING)return line==0?&warning:0;
+ if(chapter==6&&set==ST_SET_CH8_POWER)return line==0?&power:0;
  static const StLine survived={"Krillin",{"We held out until you got here. Nappa never let up.","Resistimos hasta que llegaste. Nappa no nos dio tregua."}};
  if(set==ST_SET_YAMCHA_ALIVE)return line==0?&survived:0;
 

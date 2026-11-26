@@ -36,7 +36,8 @@ typedef struct FpActor {
  int assistKind,assistState,assistHelpers;
  int fusionReadyMask,fusionAccept,fusionProgress;
  int reviveTarget,reviveProgress,reviveRecovering,reviveInsufficient;
- int present,chara,costume,hp,hpMax,ki,kiMax,blast,blastMax,poweredUp,player,team,fusionSeconds,fusionMove,fusionAttack,fusionSwap;
+ int present,chara,costume,hp,hpMax,ki,kiMax,blast,blastMax,maxPower,poweredUp,player,team,fusionSeconds,fusionMove,fusionAttack,fusionSwap;
+ unsigned potaraIcons; /* active icons in bits 0..4, bonuses in bits 8..12 */
  int visible[4],x[4],y[4];char name[96];
 } FpActor;
 typedef struct FpView {int x,y,w,h,me,target,takeover;} FpView;

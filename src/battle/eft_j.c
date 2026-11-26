@@ -1284,6 +1284,9 @@ void EftBlast_UpdateParts(s32 objId, EftJTask *task, EftJSet *set, s32 mode) {
  * there (bnel with `li a0,717` in the slot, target behind both loads). The same form fixes EftVolley_Init
  * (eft_h.c), where decomp-permuter found it. It replaces the volatile read this function used as a stand-in.
  */
+#ifdef PORT
+#include "mod_big_beam.inc"
+#endif
 void EftBlast_Init(EftJTask *task, EftJSrc *arg) {
     EftJTask *parent = BtlTask_GetParent(task);
     EftBlast *w = task->work;
@@ -1328,17 +1331,26 @@ void EftBlast_Init(EftJTask *task, EftJSrc *arg) {
     }
     w->life = EftEmit_GetEndFrames(w->set);
     BtlTask_SetOwnerTag(task, EFT_OWNER_TAG(src->objId));
+#ifdef PORT
+    big_beam_register(task);
+#endif
 }
 
 /* Term callback of an item. */
 void EftBlast_Term(EftJTask *task) {
     EftBlast *w = task->work;
     EftJSrc *src = w->src;
+#ifdef PORT
+    src=big_beam_original(task,src);
+#endif
 
     EftEmit_TermState(w->set, w->emit);
     if (src->def->unk4 != 0) {
         EftShot_SetHeldFlagA8(src->objId);
     }
+#ifdef PORT
+    big_beam_forget(task);
+#endif
 }
 
 /* Update callback of an item: charge (grows with the fighter's charge), fire, fly (with homing), end. */
@@ -1347,6 +1359,9 @@ void EftBlast_Update(EftJTask *task) {
     EftBlast *w = task->work;
     EftJSrc *src = w->src;
     s32 advance = 0;
+#ifdef PORT
+    if(big_beam_step(task))return;
+#endif
 
     if (BtlScene_IsCharStopped(src->objId)) {
         return;
@@ -1444,6 +1459,7 @@ void EftBlast_Update(EftJTask *task) {
     }
 #ifdef PORT
     {extern s32 Port_StorySkyAim(s32,float*);if(Port_StorySkyAim(src->objId,(float*)&w->dir))Vec3_Scale(&w->vel,&w->dir,w->speed);}
+    {extern void Port_StoryBeamHead(s32,const float*);Port_StoryBeamHead(src->objId,(const float*)&w->head);}
 #endif
     EftBlast_UpdateParts(src->objId, task, w->set, 0);
     if (w->flags & 0x10) {
@@ -1483,6 +1499,9 @@ void EftBlast_PostUpdate(EftJTask *task) {
     EftJVec d;
     EftBlast *w = task->work;
     EftJSrc *src = w->src;
+#ifdef PORT
+    if(big_beam_post(task))return;
+#endif
 
     if (BtlScene_IsCharStopped(src->objId)) {
         return;

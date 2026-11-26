@@ -1,11 +1,13 @@
+extern "C" int Port_StoryChargeDim(void);
 extern "C" int Port_StoryInterludeLoading(void);
 #include "mod_story_prefight.inc"
 // Subtitles of the Dragon History scenes (port/include/mod_story_scene.inc): the speaker and the line in the
 // menu language, at the bottom of the picture. Reads only the immutable chapter tables and the packed view the
 // game thread publishes (Port_StorySubtitleView).
 #include "../../include/mod_story.h"
-static bool mod_story_subtitle_visible(){return Port_StoryInterludeLoading()||Port_StoryPromptView()||Port_StoryPresentationView(nullptr,nullptr,nullptr)||Port_StorySubtitleView(nullptr,nullptr,nullptr)!=0;}
+static bool mod_story_subtitle_visible(){return Port_StoryChargeDim()>0||Port_StoryInterludeLoading()||Port_StoryPromptView()||Port_StoryPresentationView(nullptr,nullptr,nullptr)||Port_StorySubtitleView(nullptr,nullptr,nullptr)!=0;}
 static void mod_story_subtitle_draw(){
+ {int a=Port_StoryChargeDim();if(a>0)ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(gUiPresentX,gUiPresentY),ImVec2(gUiPresentX+gUiPresentW,gUiPresentY+gUiPresentH),IM_COL32(0,0,0,a));}
  if(Port_StoryInterludeLoading()){ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0,0),ImGui::GetIO().DisplaySize,IM_COL32(0,0,0,255));return;}
  if(Port_StoryPromptView()&&gUiPresentW>0&&gUiPresentH>0){
   ImDrawList*d=ImGui::GetForegroundDrawList();float k=gUiPresentH/720.f;

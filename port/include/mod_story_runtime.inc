@@ -116,7 +116,7 @@ int Port_StoryStage(void){char key[40];int stage;if(!Port_StoryActive())return -
  {static int lastChapter=-1,lastStage=-1;extern char*getenv(const char*);
   if(getenv("BT3_STORY_SCENE_LOG")&&(lastChapter!=sStChapter||lastStage!=stage)){fprintf(stderr,"bt3: story selected stage chapter%d stage%d\n",sStChapter,stage);lastChapter=sStChapter;lastStage=stage;}}
  return stage;}
-int Port_StoryBgm(void){char key[40];int i,bgm=-1;if(!Port_StoryActive())return -1;PortSongs_Init();for(i=0;i<gPortSongCount;i++)if(!strcmp(gPortSongNames[i],stChapters[sStChapter].music)){bgm=gPortSongOffsets[i];break;}snprintf(key,sizeof(key),"story_bgm_%d",sStChapter);return Port_Setting(key,bgm);}
+int Port_StoryBgm(void){char key[40];int i,bgm=-1;if(!Port_StoryActive())return -1;PortSongs_Init();bgm=PortSongs_StoryBattleBgm(stChapters[sStChapter].id);for(i=0;bgm<0&&i<gPortSongCount;i++)if(!strcmp(gPortSongNames[i],stChapters[sStChapter].music)){bgm=gPortSongOffsets[i];break;}snprintf(key,sizeof(key),"story_bgm_%d",sStChapter);return Port_Setting(key,bgm);}
 int Port_StoryDense(void);
 int Port_StoryDraft(MsView*v){return Port_StoryActive()?ST_BuildDraftEx(v,sStChapter,Port_StoryDense()):0;}
 /* Victory transition of a story fight. Rewards only for an eligible local fight. */

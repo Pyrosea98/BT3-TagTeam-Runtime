@@ -1,4 +1,5 @@
 #include "tag_tournament_port.h"
+#include <stdlib.h>
 #include "tag_tournament_theme.h"
 static MsPick *sMsTourOutput;static int sMsTourSize;
 extern void Port_ChrViewTournament(int);
@@ -6,7 +7,7 @@ extern void Port_ChrViewTournament(int);
 extern int Port_StoryActive(void);
 static TsCell sMsCatalog[MS_ROSTER];
 #include "roster_era_order.h"
-static int ms_roster_key(int cid){return RosterEraKey(cid);}
+static int ms_roster_key(int cid){return RosterEraKey(cid==285?255:cid);}
 static void ms_sort_catalog(MsView *v){
  int i,j;for(i=1;i<v->roster_count;i++){
   int cid=v->roster[i],key=ms_roster_key(cid);TsCell cell=sMsCatalog[i];
@@ -27,6 +28,7 @@ extern void Port_ModSelectTrace(int,int,int);
 extern int Port_ModSelectTakeMouse(void);
 extern int Port_Beta8FormList(int,int*,int);
 extern int Port_Beta8IsAnyTransform(int);
+extern int Port_RosterPotaraRead(int),Port_RosterPotaraWrite(int,int);
 static int ms_next_costume(int c,int current,int delta){int n=ChrTbl_WrapCostume(c,NULL),next=current,k;if(n<1||n>8)return current;for(k=0;k<n;k++){next=(next+(delta<0?-1:1)+n)%n;if(Port_Beta8CostumeSelectable(c,next)&&Port_ModSelectCostumeOk(c,next))return next;}return current;}
 static int ms_first_empty(MsView *v){int i;for(i=0;i<v->total;i++)if(v->pick[i].chara<0)return i;return -1;}
 static void ms_refresh_forms(MsView*v,int source,int outfit,int keep){
@@ -36,6 +38,57 @@ static void ms_refresh_forms(MsView*v,int source,int outfit,int keep){
  v->form_count=count;v->form_cursor=0;for(i=0;i<count;i++)if(v->forms[i]==keep)v->form_cursor=i;
 }
 static int ms_view_chara(const MsView *v){return v->phase==0?-1:v->phase==3?v->pick[0].chara:v->phase==2?v->forms[v->form_cursor]:v->roster[v->cursor];}
+static void ms_potara_status(MsView *view) {
+ int chara = ms_view_chara(view);
+ view->potara_available = (view->phase == 1 || view->phase == 2) &&
+     view->mode >= 1 && view->mode <= 3 && !Port_ScenarioActive() &&
+     chara >= 0 && chara < MS_CHARACTERS;
+ if (view->potara_available) {
+  view->potara_red = Port_PotaraRedEnabled(chara);
+  view->potara_bars = Port_PotaraHealthBars(chara);
+ }
+}
+
+/* Own the input while editing so confirming a value does not lock in a fighter. */
+static int ms_potara_input(MsView *view, const Pad *pad) {
+ const unsigned red = PAD_L3 | PAD_R3, life = PAD_L2 | PAD_R2;
+ int chara = ms_view_chara(view);
+ int pointer = Port_ModSelectTakePotaraPointer();
+ ms_potara_status(view);
+ if (!view->potara_available) return 0;
+ if (view->potara_draft) {
+  if (pointer == MS_POTARA_CANCEL || (pad->pressed & (PAD_TRIANGLE | PAD_CIRCLE))) {
+   view->potara_draft = 0;
+   Snd_PlaySe(1, 2);
+  } else if (pointer == MS_POTARA_DEFAULT || (pad->pressed & PAD_SQUARE)) {
+   Port_PotaraSetOptions(chara, view->potara_red, 0);
+   view->potara_draft = 0;
+   Snd_PlaySe(1, 1);
+  } else if (pointer == MS_POTARA_APPLY || (pad->pressed & PAD_CROSS)) {
+   Port_PotaraSetOptions(chara, view->potara_red, view->potara_draft);
+   view->potara_draft = 0;
+   Snd_PlaySe(1, 1);
+  } else if (pointer >= 1 && pointer <= 100) {
+   view->potara_draft = pointer;
+  } else if ((pad->repeat & (PAD_LEFT | PAD_LSTICK_LEFT)) && view->potara_draft > 1) {
+   view->potara_draft--;
+  } else if ((pad->repeat & (PAD_RIGHT | PAD_LSTICK_RIGHT)) && view->potara_draft < 100) {
+   view->potara_draft++;
+  }
+  return 1;
+ }
+ if ((pad->held & red) == red && (pad->pressed & red)) {
+  Port_PotaraSetOptions(chara, !view->potara_red, view->potara_bars);
+  Snd_PlaySe(1, 1);
+  return 1;
+ }
+ if (pointer == MS_POTARA_OPEN || ((pad->held & life) == life && (pad->pressed & life))) {
+  view->potara_draft = view->potara_bars ? view->potara_bars : 100;
+  Snd_PlaySe(1, 1);
+  return 1;
+ }
+ return 0;
+}
 static void ms_review(MsView*v){v->phase=3;v->slot=-1;v->cursor=0;v->form_count=0;v->error=0;}
 /* Save slots are keyed by the original authored cell, never the sorted roster index. */
 static int ms_save_cell(int chara){
@@ -44,6 +97,55 @@ static int ms_save_cell(int chara){
   if(sMsAuthored[i].id==chara||sMsAuthored[i].id==host)return i;
   for(j=0;j<sMsAuthored[i].formCount;j++)if(sMsAuthored[i].form[j]==chara||sMsAuthored[i].form[j]==host)return i;
  }return -1;
+}
+int Port_ModSelectSaveCell(int chara){return ms_save_cell(chara);}
+static int ms_potara_identity(int chara){
+ int owner=Port_Beta8SelectFormOwner(chara),i,j;
+ if(owner>=0)return owner;
+ for(i=0;i<(int)(sizeof(sMsAuthored)/sizeof(sMsAuthored[0]));++i)
+  if(sMsAuthored[i].id==chara)return chara;
+ for(i=0;i<(int)(sizeof(sMsAuthored)/sizeof(sMsAuthored[0]));++i)
+  for(j=0;j<sMsAuthored[i].formCount;++j)
+   if(sMsAuthored[i].form[j]==chara)return sMsAuthored[i].id;
+ return chara;
+}
+static int ms_potara_cell(int chara){
+ int owner=ms_potara_identity(chara),i;
+ if(owner<161){
+  int cell=ms_save_cell(owner);
+  return cell>=0?cell:ms_save_cell(chara);
+ }
+ /* A separately selectable alias must not edit its model donor's options. */
+ for(i=0;i<97&&i<(int)(sizeof(sMsAuthored)/sizeof(sMsAuthored[0]));++i)
+  if(sMsAuthored[i].id==owner)return i;
+ return -1;
+}
+static unsigned ms_potara_value(int chara){
+ if(chara<0||chara>=MS_CHARACTERS)return 0;
+ int cell=ms_potara_cell(chara);
+ if(cell>=0)return gSaveData->custom[cell].unk36;
+ unsigned saved=(unsigned)Port_RosterPotaraRead(ms_potara_identity(chara));
+ if(saved&MS_POTARA_ROSTER_SET)return saved&SAVE_CUSTOM_POTARA_RESERVED_MASK;
+ /* Preserve old alias settings as a read-only fallback until this character is edited. */
+ cell=ms_save_cell(ms_potara_identity(chara));
+ return cell>=0?gSaveData->custom[cell].unk36&SAVE_CUSTOM_POTARA_RESERVED_MASK:0;
+}
+int Port_PotaraRedEnabled(int chara){
+ return (ms_potara_value(chara)&SAVE_CUSTOM_POTARA_RED)!=0;
+}
+int Port_PotaraHealthBars(int chara){
+ int bars=ms_potara_value(chara)&SAVE_CUSTOM_POTARA_HP_MASK;
+ return bars>=1&&bars<=100?bars:0;
+}
+void Port_PotaraSetOptions(int chara,int red,int healthBars){
+ if(chara<0||chara>=MS_CHARACTERS)return;
+ int cell=ms_potara_cell(chara);u16 value=ms_potara_value(chara)&~SAVE_CUSTOM_POTARA_RESERVED_MASK;
+ if(red)value|=SAVE_CUSTOM_POTARA_RED;
+ if(healthBars>=1&&healthBars<=100)value|=(u16)healthBars;
+ if(cell>=0){
+  gSaveData->custom[cell].unk36=value;
+  gProgress->flags|=1;
+ }else Port_RosterPotaraWrite(ms_potara_identity(chara),MS_POTARA_ROSTER_SET|value);
 }
 static void rb_read(int,int,u16*);
 static void ms_items(MsView*v,int chara,int*out){int j;u16 custom[8];const u16*items=NULL;if(v->preset>=1&&v->preset<=3){rb_read(chara,v->preset-1,custom);items=custom;}if(v->preset>=4&&v->preset<18&&gSaveData->rec[v->preset-4].chara==chara)items=TS_SAVE->rec[v->preset-4].items.id;for(j=0;j<8;j++)out[j]=items?items[j]:0;}
@@ -54,6 +156,27 @@ static int ms_family(int cid){
   if(sMsAuthored[i].id==cid)return cid;
   for(j=0;j<sMsAuthored[i].formCount;j++)if(sMsAuthored[i].form[j]==cid)return sMsAuthored[i].id;
  }return cid;
+}
+/* Session-only hover history, indexed by mode, team and ordinal in that team. */
+typedef struct {int valid,chara,costume;} MsLastPick;
+static MsLastPick sMsLastPick[3][MS_MAX][MS_UI_MAX];
+static MsLastPick *ms_last_pick(const MsView *v,int slot){
+ if(v->mode<1||v->mode>3||slot<0||slot>=v->total||Port_ScenarioActive())return NULL;
+ int team=MS_Side(v,slot),ordinal=0,i;
+ if(team<0||team>=MS_MAX)return NULL;
+ for(i=0;i<slot;++i)if(MS_Side(v,i)==team)++ordinal;
+ return ordinal<MS_UI_MAX?&sMsLastPick[v->mode-1][team][ordinal]:NULL;
+}
+static void ms_focus_last(MsView *v){
+ MsLastPick *last=ms_last_pick(v,v->slot);
+ if(!last||!last->valid)return;
+ int i,root=ms_family(last->chara),pass;
+ for(pass=0;pass<2;++pass)for(i=0;i<v->roster_count;++i)
+  if(v->roster[i]==(pass?root:last->chara)){
+  v->cursor=i;
+  v->costume=Port_ModSelectCostumeOk(v->roster[i],last->costume)?last->costume:0;
+  return;
+ }
 }
 /* Juan: duplicates are allowed again, including multiple forms of one family. */
 static int ms_taken(const MsView*v,int cid){(void)v;(void)cid;return 0;}
@@ -128,7 +251,15 @@ static int ms_yamcha_draw(MsView*v){
  ms_review(v);return 1;
 }
 static int ms_commit_draft(MsView *v){
- int i;if(!sMsTourOutput)return Port_ModSelectCommit(v);
+ int i;
+ if(!sMsTourOutput){
+  if(!Port_ModSelectCommit(v))return 0;
+  for(i=0;i<v->total;++i){
+   MsLastPick *last=ms_last_pick(v,i);
+   if(last){last->valid=1;last->chara=v->pick[i].chara;last->costume=v->pick[i].costume;}
+  }
+  return 1;
+ }
  if(!MS_TournamentValid(v))return 0;
  for(i=0;i<v->total;i++)if(!Port_ModSelectCostumeOk(v->pick[i].chara,v->pick[i].costume))return 0;
  memcpy(sMsTourOutput,v->pick,v->total*sizeof(MsPick));return 1;
@@ -158,15 +289,16 @@ static int ms_catalog(MsView *v,int random){int i;
   }
  }
  /* Verified fighters share IDs with stock menu markers: insert only after marker filtering. */
- {static const int ids[]={161,163,164,291,300,301,317,319,320,321,322,185,271,278,323,324,325,263};int k,j,have;for(k=0;k<(int)(sizeof(ids)/sizeof(ids[0]));k++){ /* 301: Yajirobe (Juan approved, power 970) */have=0;for(j=0;j<v->roster_count;j++)if(v->roster[j]==ids[k])have=1;if(!have&&Port_Beta8SelectFormOwner(ids[k])<0&&v->roster_count<MS_ROSTER&&Port_ModSelectCostumeOk(ids[k],0)){int at=v->roster_count++;v->roster[at]=ids[k];memset(&sMsCatalog[at],0,sizeof(sMsCatalog[at]));sMsCatalog[at].id=ids[k];sMsCatalog[at].formCount=Port_Beta8FormList(ids[k],sMsCatalog[at].form,MS_FORMS);}}}
+ {static const int ids[]={265,285,161,163,164,291,300,301,317,319,320,321,322,185,271,278,323,324,325,263};int k,j,have;for(k=0;k<(int)(sizeof(ids)/sizeof(ids[0]));k++){ /* 301: Yajirobe (Juan approved, power 970) */have=0;for(j=0;j<v->roster_count;j++)if(v->roster[j]==ids[k])have=1;if(!have&&Port_Beta8SelectFormOwner(ids[k])<0&&v->roster_count<MS_ROSTER&&Port_ModSelectCostumeOk(ids[k],0)){int at=v->roster_count++;v->roster[at]=ids[k];memset(&sMsCatalog[at],0,sizeof(sMsCatalog[at]));sMsCatalog[at].id=ids[k];sMsCatalog[at].formCount=Port_Beta8FormList(ids[k],sMsCatalog[at].form,MS_FORMS);}}}
  ms_sort_catalog(v);
  if(!v->roster_count)return 0;
  if(random&&v->roster_count<MS_ROSTER){memmove(v->roster+1,v->roster,v->roster_count*sizeof(int));memmove(sMsCatalog+1,sMsCatalog,v->roster_count*sizeof(TsCell));v->roster[0]=-1;memset(sMsCatalog,0,sizeof(TsCell));v->roster_count++;}
 return v->roster_count;
 }
-int Port_ModSelectRun(void){
+static int ms_run(MsPick *tourOutput,int tourSize){
+ sMsTourOutput=tourOutput;sMsTourSize=tourSize;
  MsView v;int i,ret=0,viewer=0,last=-1,lastCost=-1,settle=0,old=-1,oldCost=-1,quitting=0;
- int frameCursor,framePhase,frameCost;
+ int frameCursor,framePhase,frameCost,frameSlot;
  unsigned pressed,repeat;Pad *pad;int cursors[4]={0},costumes[4]={0};
  Port_ModSelectClear();memset(&v,0,sizeof(v));v.active=1;v.mode=Port_ModesFight();v.player_count=Port_ModSelectPlayerCount();
  /* TeamSel can arrive here with the menu's loader freeze bit still set. That bit is a gate for the
@@ -185,26 +317,46 @@ int Port_ModSelectRun(void){
 
  if(Port_ScenarioActive()){int fixed=Port_ScenarioDraft(&v);if(fixed==2)ms_review(&v);Port_ModSelectPublish(&v);}
  }
+ /* Private acceptance probe: locate an existing catalog slot and use the real
+    form filter. Never add a missing fighter or override portraits/power here. */
+ {const char *probe=getenv("BT3_SELECT_PROBE");if(probe){
+  int wanted=atoi(probe),root=Port_Beta8SelectFormOwner(wanted),found=-1,j;
+  if(root<0)root=wanted;
+  for(j=0;j<v.roster_count;j++)if(v.roster[j]==root){found=j;break;}
+  if(found<0){fprintf(stderr,"bt3: select probe missing catalog id%d owner%d\n",wanted,root);return 0;}
+  v.cursor=cursors[0]=found;v.slot=0;v.phase=1;
+  if(wanted!=root){
+   ms_refresh_forms(&v,root,0,wanted);
+   if(!v.form_count||v.forms[v.form_cursor]!=wanted){fprintf(stderr,"bt3: select probe missing form%d owner%d\n",wanted,root);return 0;}
+   v.phase=2;
+  }
+  fprintf(stderr,"bt3: select probe existing catalog id%d owner%d index%d forms%d\n",wanted,root,found,v.form_count);
+ }}
  /* Init owns the viewer's jobs/resources only until the draft ends. No battle is running. */
  Port_ChrViewTournament(v.mode==4?Port_TagTourConfig(2)+1:0);ChrView_Init();if(!File_IsPartitionLoaded(2)){File_LoadPartitionNw(2);File_WaitPartition(2);}Bgm_Play(v.mode==4?TT_ThemeMusic(Port_TagTourConfig(2)):PORT_BGM_FILE(Port_ModSelectMusic()));viewer=1;Port_ModSelectTrace(1,0,0);OrbitCam_SetPadLocked(1);Port_MenuScene3D(1);
  ColorFade_StartIn(0,0,0,0x14);
  for(;;){
-  i=(v.phase==1||v.phase==2)?ms_owner(&v):0;
+  i=v.potara_draft?v.pad:(v.phase==1||v.phase==2)?ms_owner(&v):0;
   if(i!=v.pad){cursors[v.pad]=v.cursor;costumes[v.pad]=v.costume;v.cursor=cursors[i];v.costume=costumes[i];}
   v.pad=i;PortInput_KeyboardContext(1u<<v.pad);
   Gfx_BeginFrame();Pad_Update();Snd_Update();ColorFade_Update();
-  if(v.phase==1){
+  if(v.phase==1&&!v.potara_draft){
    int p;for(p=0;p<v.player_count;p++)if(p!=v.pad&&PortInput_PlayerAvailable(p)){
     Pad *other=Port_Pad(p);int slot=ms_slot_for_pad(&v,p);
     if(slot>=0&&(other->pressed||other->repeat)){
      cursors[v.pad]=v.cursor;costumes[v.pad]=v.costume;
-     v.pad=p;v.slot=slot;v.cursor=cursors[p];v.costume=costumes[p];break;
+     v.pad=p;v.slot=slot;v.cursor=cursors[p];v.costume=costumes[p];ms_focus_last(&v);break;
     }
    }
   }
-  frameCursor=v.cursor;framePhase=v.phase;frameCost=v.costume;
+  frameCursor=v.cursor;framePhase=v.phase;frameCost=v.costume;frameSlot=v.slot;
   pad=Port_Pad(v.pad);
   pressed=pad->pressed;repeat=pad->repeat;
+  if(ms_potara_input(&v,pad)){
+   pressed=repeat=0;
+   Port_ModSelectTakeMouse();
+   goto ms_publish;
+  }
   if((pressed&PAD_SELECT)&&!Port_ScenarioActive()){extern void Port_ModSelectBattleConfig(void);Port_ModSelectBattleConfig();pressed=repeat=0;}
   if(v.phase!=1&&v.phase!=3)Port_ModSelectTakeMouse(); /* keep review-button clicks */
   /* Do not inherit the stock menu's freeze gate: input and the draft state machine must continue
@@ -256,7 +408,7 @@ int Port_ModSelectRun(void){
     else if(repeat&(PAD_UP|PAD_LSTICK_UP))delta=-MS_COLS;
     else if(repeat&(PAD_DOWN|PAD_LSTICK_DOWN))delta=MS_COLS;
     if(delta){v.cursor=MS_Move(v.cursor,delta,v.roster_count);v.costume=0;v.error=0;}
-    if(pressed&(PAD_L1|PAD_R1)){v.cursor=MS_Move(v.cursor,pressed&PAD_R1?MS_PAGE:-MS_PAGE,v.roster_count);v.costume=0;}
+    if(pressed&(PAD_L1|PAD_R1)){v.cursor=MS_PageMove(v.cursor,pressed&PAD_R1?1:-1,v.roster_count);v.costume=0;}
     if(v.roster[v.cursor]>=0&&(pressed&(PAD_L2|PAD_R2))){
      int count=1,c=ms_next_costume(v.roster[v.cursor],v.costume,pressed&PAD_R2?1:-1);
      if(count>0&&Port_ModSelectCostumeOk(v.roster[v.cursor],c))v.costume=c;
@@ -273,7 +425,11 @@ int Port_ModSelectRun(void){
      }
      /* Never offer a form whose model is missing. */
      {int n=0,f;for(f=0;f<v.form_count;f++)if(Port_Beta8FormAllowed(v.roster[v.cursor],v.costume,v.forms[f])&&Port_ModSelectCostumeOk(v.forms[f],0))v.forms[n++]=v.forms[f];v.form_count=n;}
-     if(v.form_count>0){v.form_cursor=0;v.phase=2;}
+     if(v.form_count>0){
+      MsLastPick *last=ms_last_pick(&v,v.slot);
+      v.form_cursor=0;v.phase=2;
+      if(last&&last->valid)for(i=0;i<v.form_count;++i)if(v.forms[i]==last->chara){v.form_cursor=i;break;}
+     }
      else{
       ms_accept(&v,v.roster[v.cursor],v.costume);
       if(v.slot<0)ms_review(&v);
@@ -282,6 +438,11 @@ int Port_ModSelectRun(void){
    }
   }
  ms_publish:
+  if(v.phase==1&&(frameSlot!=v.slot||framePhase==0||framePhase==3)){
+   ms_focus_last(&v);
+   i=ms_owner(&v);
+   cursors[i]=v.cursor;costumes[i]=v.costume;
+  }
   ms_disabled(&v);
   if(pressed&PAD_TRIANGLE)Snd_PlaySe(1,2);
   else if(pressed&(PAD_CROSS|PAD_SQUARE))Snd_PlaySe(1,v.error?7:1);
@@ -295,6 +456,7 @@ int Port_ModSelectRun(void){
   if(i>=0&&settle>=8&&!v.loading&&(last!=i||lastCost!=v.costume)){
    Port_ModSelectTrace(2,i,v.costume);ChrView_Show(i,v.costume,0);last=i;lastCost=v.costume;v.loading=1;
   }
+  ms_potara_status(&v);
   OrbitCam_SetPadLocked(1);ChrView_Update();Port_ModSelectPublish(&v);
  ms_end_frame:
   if(quitting&&ret)Snd_PlaySe(1,1);
@@ -308,10 +470,12 @@ int Port_ModSelectRun(void){
  return ret;
 }
 
+int Port_ModSelectRun(void){return ms_run(NULL,0);}
+
 int Port_ModSelectTournamentRun(MsPick *out,int count){
  int ret;if(!out||count<1||count>5||!Port_TagTourActive())return 0;
- Port_TagTourDraftStop();sMsTourOutput=out;sMsTourSize=count;
- ret=Port_ModSelectRun();sMsTourOutput=NULL;sMsTourSize=0;return ret;
+ Port_TagTourDraftStop();
+ ret=ms_run(out,count);sMsTourOutput=NULL;sMsTourSize=0;return ret;
 }
 
 #include "mod_roster_browser.inc"

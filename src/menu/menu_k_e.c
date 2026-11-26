@@ -1,5 +1,9 @@
 #include "common.h"
 #include "menu/menu_k.h"
+#ifdef PORT
+#include "mod_power_display.h"
+extern void TextBox_AttachString(MFlash *, MFlashRef *, s32, s32, u16 *, MTextBox *);
+#endif
 
 /*
  * Bracket, 0x3673F8..0x368068: the per-frame clip set-up of the bracket screen. Its read-only data (0x3B6BC0..
@@ -209,7 +213,14 @@ void Bracket_SetupDraw(Bracket *b) {
             Flash_FindLabel(flash, NULL, i ? "mc_name_text_r" : "mc_name_text_l", &ref);
             TextBox_AttachLine(flash, &ref, 0, 0, chara, &b->nameBox[i]);
             Flash_FindLabel(flash, NULL, i ? "mc_form_text_r" : "mc_form_text_l", &ref);
-            TextBox_AttachLine(flash, &ref, 0, 0, chara, &b->formBox[i]);
+#ifdef PORT
+            static u16 power[2][48];
+            const BrkEntrant *entrant = &BK_ENT(BK_MATCH.ent[i]);
+            if (Port_CharaPowerText(entrant->chara, entrant->costume, power[i], 48))
+                TextBox_AttachString(flash, &ref, 0, 0, power[i], &b->formBox[i]);
+            else
+#endif
+                TextBox_AttachLine(flash, &ref, 0, 0, chara, &b->formBox[i]);
             if (BK_ENT(BK_MATCH.ent[i]).flags & TOUR_ENT_PLAYER) {
                 uv.x0 = (BK_ENT(BK_MATCH.ent[i]).player % cols) * 0x60;
                 uv.y0 = (BK_ENT(BK_MATCH.ent[i]).player / cols) * 0x40;

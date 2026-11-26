@@ -104,7 +104,8 @@ typedef struct StgMCell {
 /* Destructible object, the fields the debris fade reads (StgObj in battle/stg_a.h). */
 typedef struct StgMObj {
     /* 0x00 */ s32 state;      /* bit 1: its pieces are falling */
-    /* 0x04 */ u8 unk4[0x20];
+    /* 0x04 */ u8 unk4[8];
+    /* 0x0C */ StgMPart *parts[6]; /* intact and broken variants: never deform/force visible */
     /* 0x24 */ u32 pieceCount;
     /* 0x28 */ StgMPart **pieces;
     /* 0x2C */ s32 animEnd;

@@ -12,6 +12,7 @@
 #include "plat_beta8.h"
 #include "b8_selection_rules.h"
 #include "mod_costume_ownership.h"
+#include "mod_bardock_forms.h"
 
 #define B8_MAX_ROWS 4096
 
@@ -29,6 +30,7 @@ typedef struct B8Alias {
 } B8Alias;
 
 static const B8Alias sAliases[] = {
+    {329,243,3}, /* Bardock God: original ISO438 physical GotenGT SSJ costume4. */
     {326,188,2},{327,180,3},{328,228,2}, /* Past Saiyan Great Apes: exact existing costumes, no model edits. */
     {323,77,2},{324,173,3},{325,173,2}, /* Shorty / Scarface: independent illusion Saiyans */
     {317,196,1},{318,196,2},{319,196,3},{320,111,2},{321,62,2},{322,101,2},
@@ -323,6 +325,7 @@ static void load_voices(void){
  fclose(fp);sVoiceCount=h[2];fprintf(stderr,"bt3: beta8: %d verified ISO voice routes\n",sVoiceCount);
 }
 int Port_Beta8VoiceFileId(int chara,int language){
+ if(chara==329)chara=73;
  if(chara==301&&language>=0&&language<=1)return (int)(0x43000000u+6805u+(unsigned)language);
  int i,alternate=-1;const B8Alias *a=b8_alias(chara);if(a!=NULL)chara=a->chara;if(chara<0||language<0||language>1)return -1;
  load_voices();
@@ -487,6 +490,8 @@ int Port_Beta8HasParam(int chara) {
 }
 
 int Port_Beta8IsTransform(int source, int target) {
+    if(source==285)return target==255;
+    if(source==255&&target==285)return 0;
     if(source==190)return target==328;if(source==328)return target==190;
     if(source==323)return target==326;if(source==326)return target==323;
     if(source==324)return target==327;if(source==327)return target==324;
@@ -524,6 +529,8 @@ int Port_Beta8IsTransform(int source, int target) {
 /* Whether any character in the roster transforms into `target`: the target is a form, not a DLC character of
    its own, wherever the select table groups it. */
 int Port_Beta8IsAnyTransform(int target) {
+    if(target==285)return 0;
+    if(target==255)return 1;
     if(target>=295&&target<=299)return 1;
     if(Port_Beta8SelectFormOwner(target)>=0)return 1;
     static const int sExplicitForms[] = {
@@ -586,7 +593,7 @@ static void b8_game_bundle_free(void *p){if(p)Port_LowFree(p);}
 void *Port_Beta8LoadSmallPortrait(int chara,int costume){
  char path[700];FILE *fp;unsigned char *b;uint32_t h[3];int i;const B8Alias *a=b8_alias(chara);
 
- if(chara==263||chara==163||chara==281||(chara>=291&&chara<=328)||b8_custom_index(chara)>=0||(chara==59&&costume==0)){
+ if(chara==255||chara==285||chara==263||chara==163||chara==281||(chara>=291&&chara<=329)||b8_custom_index(chara)>=0||(chara==59&&costume==0)){
   snprintf(path,sizeof(path),"%s/beta8/custom-small-portraits/%03d.bin",root_dir(),chara);
   fp=fopen(path,"rb");if(fp){b=(unsigned char*)b8_game_bundle_alloc(0x2ac0);if(!b){fclose(fp);return NULL;}
    if(fread(b,1,0x2ac0,fp)==0x2ac0&&fgetc(fp)==EOF){memcpy(h,b,12);if(h[0]==2&&h[1]==8&&h[2]==32){fclose(fp);return b;}}
@@ -594,7 +601,7 @@ void *Port_Beta8LoadSmallPortrait(int chara,int costume){
   }
  }
  if(a!=NULL){costume=a->id==186?costume:a->costume;chara=a->chara;}costume=b8_costume_alias(chara,costume);
- if(chara<165||chara>290||costume<0||costume>7)return NULL;
+ if((chara<165&&chara!=79&&chara!=109)||chara>290||costume<0||costume>7)return NULL;
  for(i=0;i<2;i++){
   snprintf(path,sizeof(path),"%s/beta8/small-portraits/%03d-%d.bin",root_dir(),chara,i?0:costume);
   fp=fopen(path,"rb");if(!fp){if(!costume)return NULL;continue;}
@@ -613,7 +620,7 @@ void Port_Beta8FreeSmallPortrait(void *data){b8_game_bundle_free(data);}
    chip until their own art is authored (the form's large portrait already comes from the stock costume). */
 void *Port_Beta8LoadChipBundle(int chara){
  char path[700];FILE *fp;unsigned char *b;
- if(chara<0||chara>328)return NULL;
+ if(chara<0||chara>329)return NULL;
  snprintf(path,sizeof(path),"%s/beta8/chips/%03d.bin",root_dir(),chara);
  fp=fopen(path,"rb");
  if(fp==NULL){
@@ -643,6 +650,7 @@ void Port_Beta8FreeChipBundle(void *data){b8_game_bundle_free(data);}
 /* The stock character an alias resolves to, or -1. The battle loader uses it for the stock voice bank
    and the stock member-face file, which only exist for ids 0..160. */
 int Port_Beta8StockAlias(int chara) {
+    if(chara==329)return 73;
     if(chara==324||chara==325)return 118; /*173 is a transformed Garlic bank, not a stock voice-table row. */
     if(chara==316)return 12;
     if(chara==312||chara==313)return 39; /* Sword Trunks voice/member owner, not GT donor. */
@@ -671,8 +679,9 @@ int Port_Beta8FormList(int id, int *out, int max) {
     static const int sShallotForms[] = { 178, 282, 283 };
     static const int sGohanForms[] = { 182, 284 };
     static const int sFutureGohanForms[] = {159,160,163,281};
-    static const int sBabyForms[] = { 285 };
-    static const int sBardockForms[] = {73,176,314,315,199};
+    /* Juan: parasite first, then normal Baby; evolution has no reverse. */
+    static const int sBabyForms[] = { 285, 255 };
+    static const int sBardockForms[] = {73,176,314,315,199,329};
     static const int sKidGohanForms[] = { 13, 284 };
     static const int sRilldForms[] = { 269, 286, 290 };
     static const int sGomahForms[] = { 260, 287, 289 };
@@ -711,7 +720,7 @@ int Port_Beta8FormList(int id, int *out, int max) {
     } else if (id == 159 || id == 163) {
         src = sFutureGohanForms; n = (int)(sizeof(sFutureGohanForms) / sizeof(sFutureGohanForms[0]));
     } else if (id == 73) {
-        src=sBardockForms; n=5;
+        src=sBardockForms; n=6;
     } else if (id==323||id==324||id==190){static int ape[2];ape[0]=id;ape[1]=id==323?326:id==324?327:328;src=ape;n=2;
     } else if (id == 13) {
         src=sKidGohanForms; n=2;
@@ -908,6 +917,7 @@ int Port_Beta8PatchFormParam(int chara, void *param) {
 }
 
 int Port_Beta8FormTarget(int source, int target) {
+    if((source==73||source==314||source==315)&&target==243)return 329;
     if(source==39||source==40||source==312||source==313){if(target==74)return 312;if(target==193)return 313;}
     if(source==73||source==176||source==199||source==314||source==315){if(target==165)return 314;if(target==232)return 315;}
     int i;
@@ -1029,10 +1039,10 @@ void Port_Beta8ApplyMemberStats(void *rows,int count){
  memcpy((unsigned char*)rows+sRound2Stats[i].id*16,sRound2Stats[i].row,16);
 }
 int Port_Beta8EffectTier(int chara){
- if(chara==60||chara==229||chara==239||chara==230||chara==241||chara==244)return 2;
+ if(chara==164||chara==60||chara==229||chara==239||chara==230||chara==241||chara==244)return 2;
  switch(chara){case 225:case 226:case 235:case 238:return 1;default:return 0;}
 }
-float Port_Beta8AuraMultiplier(int chara){int tier=Port_Beta8EffectTier(chara);return chara==230||chara==241||chara==244?1.50f:tier==2?1.35f:tier==1?1.20f:1.0f;}
+float Port_Beta8AuraMultiplier(int chara){int tier=Port_Beta8EffectTier(chara);return chara==60||chara==164||chara==230||chara==241||chara==244?1.50f:tier==2?1.35f:tier==1?1.20f:1.0f;}
 /* Logical identity is needed for244: its model otherwise identifies as its stock alias. */
 static int sSsj4Logical[12];
 static unsigned sSsj4TraceCount;
@@ -1086,6 +1096,7 @@ void Port_Beta8TraceTexture(unsigned epoch,unsigned long long tex0,unsigned gen,
 }
 
 int Port_Beta8CostumeFormTarget(int source,int costume,int target){
+ if(source==285&&target==109)return 255; /* encode donor109, resolve virtual255 after sentinel checks */
  if(source==323&&target==188)return 326;if(source==324&&target==180)return 327;
  if(source==326&&target==77)return 323;if(source==327&&target==173)return 324;
  if(source==190&&target==228)return 328;
@@ -1128,6 +1139,8 @@ int Port_Beta8TransformCostume(int source,int costume,int target){
  return costume;
 }
 int Port_Beta8HasFormPolicy(int source,int costume){
+ if(source==329||source==176)return 1;
+ if(source==285)return 1;
  int i;if((source==159||source==160||source==13)&&costume==4)return 1;
  if(source==12||(source==20&&costume==2)||source==30||source==98||source==99||source==165||source==232||source==22||source==39||source==40||source==74||source==81||source==112||source==259||source==323||source==324||source==325||source==320||source==321||source==322||source==179||source==181||source==193||source==194||source==264||source==271||source==110||source==29||source==73||source==10||source==233||source==146||source==114||source==255)return 1;
  for(i=0;i<B8_FORM_PARAM_COUNT;i++)if(sFormParams[i].id==source)return 1;return 0;
@@ -1157,6 +1170,11 @@ static void b8_reduce_reviewed_form_costs(int source,int costume,unsigned char*p
 
 void Port_Beta8PatchCostumeFormParam(int source,int costume,void *param){
  unsigned char*p=(unsigned char*)param;int j;if(!p)return;Port_Beta8PatchFormParam(source,param);
+ if(source==285||source==255){
+  for(j=0;j<4;j++){p[0x98+j]=255;p[0x9c+j]=0;p[0xa0+j]=0;p[0xa4+j]=0;p[0xa8+j]=255;}
+  p[0xac]=255;
+  if(source==285){p[0x98]=109;p[0xa4]=8;p[0xac]=0;}
+ }
  if(source==323||source==324||source==190||source==326||source==327||source==328){
   int back=source==326||source==327||source==328;
   for(j=0;j<4;j++){p[0x9c+j]=p[0x98+j]!=255&&!back;p[0xa0+j]=back?1:0;p[0xa4+j]=p[0x98+j]==255?0:back?1:3;p[0xa8+j]=255;}
@@ -1221,7 +1239,7 @@ void Port_Beta8PatchCostumeFormParam(int source,int costume,void *param){
   if(slot<0)for(j=0;j<4;j++)if(p[0x98+j]==255){slot=j;p[0x98+j]=233;p[0x9c+j]=1;p[0xa0+j]=0;p[0xa4+j]=2;p[0xa8+j]=255;break;}
   if(slot>=0)p[0xac]=(unsigned char)slot;
  }
- if(source==73){for(j=0;j<4;j++)if(p[0x98+j]==199){b8_reduce_reviewed_form_costs(source,costume,p);return;}for(j=0;j<4;j++)if(p[0x98+j]==255){p[0x98+j]=199;p[0x9c+j]=1;p[0xa0+j]=0;p[0xa4+j]=2;p[0xa8+j]=255;break;}}
+ B8BardockPatch(source,p);
  b8_reduce_reviewed_form_costs(source,costume,p);
 }
 
@@ -1260,22 +1278,22 @@ int Port_Beta8FormAllowed(int base,int costume,int target){
    int cost=j<4?p[0x9c+j]:Port_Beta8ExtraFormField(c,outfit,j,1),t,co;
    if(raw<0||raw==255||cost==255)continue;
    t=Port_Beta8CostumeFormTarget(c,outfit,raw);if(t==target)return 1;
-   if(t<0||t>=329)continue;co=Port_Beta8TransformCostume(c,outfit,t);
+   if(t<0||t>=330)continue;co=Port_Beta8TransformCostume(c,outfit,t);
    for(k=0;k<n;k++)if(ids[k]==t&&outfits[k]==co)break;
    if(k==n&&n<80){ids[n]=t;outfits[n++]=co;}
   }
  }
  return 0;
 }
-int Port_Beta8SelectFormOwner(int id){if(id==326)return 323;if(id==327)return 324;if(id==328)return 190;if(id==318)return 29;if(id==139)return 317;if(id==266)return 319;if(id==311)return 29;if(id==316)return 12;if(id==312||id==313)return 39;if(id==314||id==315)return 73;if(id>=309&&id<=310)return 29;if(id>=302&&id<=305)return 161;if(id>=306&&id<=308)return 170;if(id==295)return 91;if(id>=296&&id<=299)return 97;static const int rows[][2]={{245,213},{292,291},{293,291},{294,291},{180,11},{191,66},{168,152},{173,118},{231,0},{188,77},{174,75},{176,73},{175,80},{228,71},{211,82},{196,121},{165,20},{232,1},{248,131},{217,131},{171,58},{200,3},{237,34},{202,34},{250,17},{166,51},{249,110},{172,110},{169,7},{233,7},{240,122},{236,122},{246,72},{243,81},{193,74},{227,64},{201,144},{54,110},{59,51},{160,159},{163,159},{182,13},{199,73},{244,29},{281,159},{282,178},{283,178},{284,13},{286,269},{287,260},{289,260},{290,269},{216,214},{218,214},{219,214},{220,215},{221,215},{222,215},{223,215},{225,224},{226,224},{229,224},{230,224},{235,234},{238,234},{239,234},{241,234}};int i;for(i=0;i<(int)(sizeof(rows)/sizeof(rows[0]));i++)if(rows[i][0]==id)return rows[i][1];return -1;}
+int Port_Beta8SelectFormOwner(int id){if(id==329)return 73;if(id==255)return 285;if(id==285)return -1;if(id==326)return 323;if(id==327)return 324;if(id==328)return 190;if(id==318)return 29;if(id==139)return 317;if(id==266)return 319;if(id==311)return 29;if(id==316)return 12;if(id==312||id==313)return 39;if(id==314||id==315)return 73;if(id>=309&&id<=310)return 29;if(id>=302&&id<=305)return 161;if(id>=306&&id<=308)return 170;if(id==295)return 91;if(id>=296&&id<=299)return 97;static const int rows[][2]={{245,213},{292,291},{293,291},{294,291},{180,11},{191,66},{168,152},{173,118},{231,0},{188,77},{174,75},{176,73},{175,80},{228,71},{211,82},{196,121},{165,20},{232,1},{248,131},{217,131},{171,58},{200,3},{237,34},{202,34},{250,17},{166,51},{249,110},{172,110},{169,7},{233,7},{240,122},{236,122},{246,72},{243,81},{193,74},{227,64},{201,144},{54,110},{59,51},{160,159},{163,159},{182,13},{199,73},{244,29},{281,159},{282,178},{283,178},{284,13},{286,269},{287,260},{289,260},{290,269},{216,214},{218,214},{219,214},{220,215},{221,215},{222,215},{223,215},{225,224},{226,224},{229,224},{230,224},{235,234},{238,234},{239,234},{241,234}};int i;for(i=0;i<(int)(sizeof(rows)/sizeof(rows[0]));i++)if(rows[i][0]==id)return rows[i][1];return -1;}
 
 /* Expand only gauge rows in native memory; no original common-file bytes change. */
 int *Port_Beta8MultiverseGaugeRows(int *rows,int count){
- static int extended[329*4];static const int donors[]={113,114,115,116,96,126,127,128,96,109,60,4,5,6,200,35,36,237,31,32,12,74,193,165,232,31,196,196,196,111,62,101,77,173,173,180,188,228};int i;
+ static int extended[330*4];static const int donors[]={113,114,115,116,96,126,127,128,96,109,60,4,5,6,200,35,36,237,31,32,12,74,193,165,232,31,196,196,196,111,62,101,77,173,173,180,188,228,243};int i;
  if(!rows||count<291)return rows;
  memcpy(extended,rows,291*16);
- for(i=0;i<38;i++)memcpy(extended+(291+i)*4,rows+donors[i]*4,16);
- Port_Beta8ApplyMemberStats(extended,329);
+ for(i=0;i<39;i++)memcpy(extended+(291+i)*4,rows+donors[i]*4,16);
+ Port_Beta8ApplyMemberStats(extended,330);
  {const int yaj[]={30000,100000,100000,3};memcpy(extended+301*4,yaj,16);}
  return extended;
 }
@@ -1285,6 +1303,7 @@ int Port_Beta8NextCostume(int c,int current,int delta,int count){return B8NextOw
 
 /* Separate R3-only fifth choice: native directional0..3 remain Left/Up/Right/Down. */
 int Port_Beta8ExtraFormField(int source,int costume,int slot,int field){
+ int bardock=B8BardockExtraField(source,slot,field);if(bardock>=0)return bardock;
  static const int values[]={31,0,0,2,255};
  return source==29&&costume==4&&slot==4&&field>=0&&field<5?values[field]:-1;
 }

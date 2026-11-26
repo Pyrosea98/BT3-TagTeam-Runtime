@@ -122,6 +122,25 @@ def compile_ee(cmd, src, o):
         return subprocess.run(c2 + ["-x", "cpp-output", str(i), "-o", str(o)], cwd=ROOT, capture_output=True, text=True)
     return subprocess.run(cmd + ["-fpreprocessed", str(i), "-o", str(o)], cwd=ROOT, capture_output=True, text=True)
 
+def compile_terrain(src, o):
+    """Procedural terrain uses hardware floats behind an integer/pointer-only ABI.
+    Keep the same ptr32/IR lowering as the simulation: callbacks and allocated
+    triangle buffers must still use its pointer layout. Never apply this to game
+    combat/motion code or export float arguments/results across this boundary.
+    macOS retains its existing window/soft-float path until separately validated.
+    """
+    if MAC:
+        return compile_ee(CC + ["-std=gnu99", "-Iport/src", "-include", "math.h", "-include", "stdlib.h"], src, o)
+    cmd = (["clang"] + CLANG_TARGET + (["-m64"] if BITS64 else ["-m32"]) +
+           ["-std=gnu99", "-c", "-O2", "-g", "-fno-pic", "-fno-strict-aliasing",
+            "-ffp-contract=off", "-fno-vectorize", "-fno-slp-vectorize", "-fno-builtin",
+            "-msse2", "-mfpmath=sse", "-w", "-Iinclude", "-Iport/include", "-Iport/src"] +
+           (["-fms-extensions"] if BITS64 else []) +
+           (["-mno-ms-bitfields", "-D__CRT__NO_INLINE"] if WIN else []))
+    if os.environ.get("BT3_PORT_CFLAGS"):
+        cmd += os.environ["BT3_PORT_CFLAGS"].split()
+    return compile_ee(cmd, src, o)
+
 def cc(f):
     o = OBJ / (str(f.relative_to(ROOT / "src")).replace("/", "_")[:-2] + ".o")
     src, done, missing = portsrc.prepare(f)
@@ -232,7 +251,7 @@ def main():
     for f in sorted((ROOT / "port/src/gs").glob("*.c")):
         o = OBJ / ("gs_" + f.stem + ".o")
         r = run(["gcc", "-m32", "-std=gnu99", "-c", "-O2", "-g", "-fno-pic", "-msse2", "-mfpmath=sse", "-fno-strict-aliasing",
-                            "-Wall", "-Wno-unused", "-Wno-misleading-indentation", f"-I{gen}"] + (key if f.name == "net_sign.c" else []) + [str(f), "-o", str(o)], cwd=ROOT,
+                            "-Wall", "-Wno-unused", "-Wno-misleading-indentation", f"-I{gen}", f"-I{ROOT / 'port/include'}"] + (key if f.name == "net_sign.c" else []) + [str(f), "-o", str(o)], cwd=ROOT,
                            capture_output=True, text=True)
         if r.returncode:
             print("FAILED", f.name, "\n".join(l for l in r.stderr.splitlines() if "error" in l)[:400])
@@ -246,7 +265,7 @@ def main():
             objs.append(str(o))
             continue
         r = run(["g++", "-m32", "-std=c++17", "-c", "-O2", "-g", "-fno-pic", "-msse2", "-mfpmath=sse", "-fno-exceptions",
-                            "-fno-rtti", "-w", f"-I{imgui}", f"-I{ROOT / 'port/src/gs'}", f"-I{gen}", str(f), "-o", str(o)], cwd=ROOT,
+                            "-fno-rtti", "-w", f"-I{imgui}", f"-I{ROOT / 'port/include'}", f"-I{ROOT / 'port/src/gs'}", f"-I{gen}", str(f), "-o", str(o)], cwd=ROOT,
                            capture_output=True, text=True)
         if r.returncode:
             print("FAILED", f.name, "\n".join(l for l in r.stderr.splitlines() if "error" in l)[:600])
@@ -257,10 +276,22 @@ def main():
         names = ["-include", "vu0_names.h", "-DREF_VU0_EXTERN_ARITH"] if f.parent.name == "port" and f.parent.parent.name == "src" else []
         soft = [] if f.name in ("plat_libm.c", "plat_fastvec.c") else ["-msoft-float", "-mno-sse", "-mno-mmx", "-DSF_FAST_CALLS", "-include", "math.h", "-include", "stdlib.h", "-include", "port_libm.h"]
         cmd = ["gcc", "-m32", "-std=gnu99", "-c", "-O2", "-g", "-fno-pic", "-malign-double", "-fno-strict-aliasing",
-               "-ffp-contract=off", "-fno-builtin", "-w", "-Iinclude", "-Iport/include", "-Iport/src"] + soft + names
+               "-ffp-contract=off", "-fno-builtin", "-w", "-Iinclude", "-Iport/include", "-Iport/src"]
+        if WIN and sdl3():
+            cmd += [f"-I{sdl3() / 'include'}"]
+        cmd += soft + names
         if os.environ.get("BT3_PORT_CFLAGS"):  # profiling: e.g. -fno-omit-frame-pointer
             cmd += os.environ["BT3_PORT_CFLAGS"].split()
-        if soft and not names:  # the port's own soft-float code: PS2 constants; the vector references are written for the host
+        if f.name == "plat_fx.c" and WIN:
+            # SDL owns these renderer-side pointers; they are not PS2 pointers and must not go through ptr32.py.
+            fx = ["gcc", "-std=gnu99", "-c", "-O2", "-g", "-fno-pic", "-fno-strict-aliasing", "-w",
+                  "-Iinclude", "-Iport/include", "-Iport/src"]
+            if sdl3():
+                fx += [f"-I{sdl3() / 'include'}"]
+            r = run(fx + [str(f), "-o", str(o)], cwd=ROOT, capture_output=True, text=True)
+        elif f.name == "plat_terrain.c" and not MAC:
+            r = compile_terrain(f, o)
+        elif soft and not names:  # the port's own soft-float code: PS2 constants; the vector references are written for the host
             r = compile_ee(cmd, f, o)
         else:
             r = run(cmd + [str(f), "-o", str(o)], cwd=ROOT, capture_output=True, text=True)

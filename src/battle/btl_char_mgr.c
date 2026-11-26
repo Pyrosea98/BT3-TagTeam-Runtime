@@ -1,6 +1,7 @@
 #include "common.h"
 #ifdef PORT
 extern int Port_StoryHeld(int);
+extern void Port_StoryCh2KrillinFallTrace(void *, const char *);
 #endif
 #include "battle/battle.h"
 #include "battle/battle_setup.h"
@@ -519,7 +520,7 @@ void BtlChar_OnModelLoaded(BtlMgrChr *chr) {
     f32 ratio;
     s32 i;
 #ifdef PORT
-    s32 gtBaseClosing = Port_GtBaseClosingReload(chr);
+    s32 gtBaseClosing = Port_GtBaseClosingReload(chr),storyOutfitLoaded=0;
     /* One line per change the port asked for: the frames the loops held the presentation (a -1 wait: a load
        with no earlier BtlChange_RequestChara, e.g. the fight's first model). */
     { extern int Port_ChangeWaited(s32); extern void Port_FusionStageLog(const char*,int,int,int,int,int,int,int,int);
@@ -533,9 +534,14 @@ void BtlChar_OnModelLoaded(BtlMgrChr *chr) {
     {extern void Port_BodyChangeBeforeLoaded(void*);Port_BodyChangeBeforeLoaded(chr);}
 #endif
     BtlChar_BindObject(chr);
+#ifdef PORT
+    {extern int Port_StoryNappaOutfitLoaded(void*,int);
+     storyOutfitLoaded=Port_StoryNappaOutfitLoaded(chr,chr->side);}
+#endif
     obj = BtlChar_GetObj(chr);
     BtlChar_SetFlag(chr, 0x12B);
     #ifdef PORT
+    if (storyOutfitLoaded) BtlAnim_Play(chr, 0, 0.0f); else
     if (gtBaseClosing) BtlAnim_Play(chr, 0x1A4, 0.0f); else
     #endif
     BtlAnim_FlushRequest(chr);
@@ -1047,6 +1053,28 @@ void BtlChars_ClearObjFlag2(void) {
     }
 }
 
+#ifdef PORT
+/* Passive, bounded trace of the real authored rush admission. In particular a
+   frozen bystander can stop the native whole-roster melee pass while beams
+   continue in the effect scene. Do not change that gate without evidence. */
+static void st_rush_collision_audit(int nobodyFrozen){
+ static int ticks,reports;int a,b,i,mask=0;extern int Port_StoryAuthoredVictim(int,int,int);
+ extern int Port_StoryActive(void);extern int BtlMove_IsBlockedByOpponent(void*);
+ if(!Port_StoryActive()){ticks=reports=0;return;}
+ if(reports>=48)return;
+ for(a=0;a<BtlChar_GetCount();a++)for(b=0;b<BtlChar_GetCount();b++){
+  BtlMgrChr*x,*y;BtlMgrMember*m;
+  if(!Port_StoryAuthoredVictim(a,b,3))continue;
+  if(++ticks%15)return;reports++;x=BtlChar_Get(a);y=BtlChar_Get(b);m=BtlMember_GetActive(y);
+  for(i=0;i<BtlChar_GetCount()&&i<16;i++)if(BtlChar_IsFrozen(BtlChar_Get(i)))mask|=1<<i;
+  fprintf(stderr,"bt3: story rush admission by%d at%d actions%d/%d victimCostume%d damage%d meleePass%d frozenMask%X rush%d blocked%d warp%d victim42%d victim46%d\n",
+   a,b,BtlAct_GetCurrent(x),BtlAct_GetCurrent(y),m?m->costume:-1,m?m->gauge.unk20:-1,nobodyFrozen,mask,
+   BtlChar_TestFlag(x,0x49),BtlMove_IsBlockedByOpponent(x),BtlChar_TestFlag(x,0x3F),BtlChar_TestFlag(y,0x42),BtlChar_TestFlag(y,0x46));
+  return;
+ }
+}
+#endif
+
 /* Runs the fighter-against-fighter pass, or the per-fighter fallback while somebody is frozen. */
 void BtlChars_UpdateCollision(void) {
     s32 i;
@@ -1063,6 +1091,9 @@ void BtlChars_UpdateCollision(void) {
             break;
         }
     }
+#ifdef PORT
+    st_rush_collision_audit(nobodyFrozen);
+#endif
     if (nobodyFrozen) {
         BtlBodyHit_Update();
         BtlColl_Update();
@@ -1472,8 +1503,11 @@ void BtlChar_UpdateMotion(BtlMgrChr *chr) {
        the native warp pass below still applies this frame's authored placement. */
     { u64 at[2];int held=Port_StoryHeld(chr->side);
       if(held)memcpy(at,BtlChar_GetPos(chr),sizeof(at));
+      {extern float Port_StoryAnimRate(int);float r=Port_StoryAnimRate(chr->side);if(r>0){BtlAnim_SetObjRate(chr,r); /* +0x988 is also body scale: slow only the object animation. */}}
       BtlMove_UpdateAction(chr);
+      Port_StoryCh2KrillinFallTrace(chr, "after-update-action");
       if(held)memcpy(BtlChar_GetPos(chr),at,sizeof(at));
+      Port_StoryCh2KrillinFallTrace(chr, held ? "after-held-restore" : "no-held-restore");
       {static int trace=-1,tick[16];extern char*getenv(const char*);extern void Port_Dbg3(const char*,int,int,int,int);extern float BtlAnim_GetProgress(BtlMgrChr*);
        if(trace<0)trace=getenv("BT3_STORY_SCENE_LOG")!=0;
        if(trace&&held&&chr->side>=0&&chr->side<16&&++tick[chr->side]%15==0)
@@ -1495,9 +1529,15 @@ void BtlChar_UpdateMotion(BtlMgrChr *chr) {
     BtlChar_PlaceSaved(chr);
     BtlChar_PlaceWarp(chr);
 #ifdef PORT
+    Port_StoryCh2KrillinFallTrace(chr, "after-native-place");
+#endif
+#ifdef PORT
     {extern void Port_StoryRestoreEndingPlacement(int);Port_StoryRestoreEndingPlacement(chr->side);}
 #endif
     BtlChar_PoseToObj(chr, 1);
+#ifdef PORT
+    Port_StoryCh2KrillinFallTrace(chr, "after-pose-to-obj");
+#endif
     BtlObjAnim_SamplePose(obj);
     BtlObjAnim_UpdateEvents(obj);
     BtlChar_UpdateLean(chr);
@@ -1505,14 +1545,23 @@ void BtlChar_UpdateMotion(BtlMgrChr *chr) {
     BtlObjPose_CalcMatrices(obj);
     BtlChar_ObjToPose(chr);
     BtlChar_UpdateLookOffset(chr);
+#ifdef PORT
+    Port_StoryCh2KrillinFallTrace(chr, "after-motion");
+#endif
 }
 
 /* Phase 4 body 2 (stage 6). */
 void BtlChar_UpdateStage6(BtlMgrChr *chr) {
     if (!BtlChar_IsFrozen(chr)) {
         BtlChar_SetStage(chr, BTL_CHR_STAGE_6);
+#ifdef PORT
+        Port_StoryCh2KrillinFallTrace(chr, "before-stage6");
+#endif
         BtlOpp_MirrorFlags(chr);
         BtlPartner_Update(chr);
+#ifdef PORT
+        Port_StoryCh2KrillinFallTrace(chr, "after-stage6");
+#endif
     }
 }
 
@@ -1526,11 +1575,20 @@ void BtlChar_UpdateStage7(BtlMgrChr *chr) {
 #endif
     ) {
         BtlChar_SetStage(chr, BTL_CHR_STAGE_7);
+#ifdef PORT
+        Port_StoryCh2KrillinFallTrace(chr, "before-stage7");
+#endif
         BtlMove_PushOut(chr);
         BtlMove_ApplyOrbit(chr);
+#ifdef PORT
+        Port_StoryCh2KrillinFallTrace(chr, "after-push-orbit");
+#endif
         BtlChar_PoseToObj(chr, 0);
         BtlObjPose_CalcMatrices(obj);
         BtlChar_ObjToPose(chr);
+#ifdef PORT
+        Port_StoryCh2KrillinFallTrace(chr, "after-stage7");
+#endif
     }
 }
 
@@ -1545,10 +1603,23 @@ void BtlChar_UpdateStage8(BtlMgrChr *chr) {
         return;
     }
 #ifdef PORT
-    if(Port_StoryHeld(chr->side))return; /* retain authored position; projectiles still collide */
+    if(Port_StoryHeld(chr->side)){
+      extern void Port_StorySyncHeldBody(void*);
+      BtlChar_SetStage(chr,BTL_CHR_STAGE_8);
+      BtlChar_PoseToObj(chr,0);BtlObjPose_CalcMatrices(obj);
+      Port_StorySyncHeldBody(obj);
+      Port_StoryCh2KrillinFallTrace(chr, "stage8-held");
+      return; /* keep staged root; synchronize physics without stage push-out */
+    }
 #endif
     BtlChar_SetStage(chr, BTL_CHR_STAGE_8);
+#ifdef PORT
+    Port_StoryCh2KrillinFallTrace(chr, "before-stage8");
+#endif
     BtlMove_ClampToStage(chr);
+#ifdef PORT
+    Port_StoryCh2KrillinFallTrace(chr, "after-stage-clamp");
+#endif
     BtlChar_PoseToObj(chr, 0);
     BtlObjPose_CalcMatrices(obj);
     if (BtlChar_TestFlag(chr, 0x55)) {
@@ -1564,7 +1635,13 @@ void BtlChar_UpdateStage8(BtlMgrChr *chr) {
     }
     StgCol_UpdateFighter(obj, flag, BtlCharApi_IsChanging(chr->objId) ? 0 : started);
     StgGround_UpdateFighter(obj);
+#ifdef PORT
+    Port_StoryCh2KrillinFallTrace(chr, "before-stage8-obj-to-pose");
+#endif
     BtlChar_ObjToPose(chr);
+#ifdef PORT
+    Port_StoryCh2KrillinFallTrace(chr, "after-stage8");
+#endif
 }
 
 /* Phase 4 body 5 (stage 9). */
@@ -1577,7 +1654,12 @@ void BtlChar_UpdateStage9(BtlMgrChr *chr) {
         /* A staged/held actor has not run Stage8's ground query at its new
            location. Do not snap it onto the cached floor of its old location. */
         {extern int Port_StoryScenePlacementOwned(int);
-         if(!Port_StoryScenePlacementOwned(chr->side))BtlColl_UpdateGround(chr);}
+         if (!Port_StoryScenePlacementOwned(chr->side)) {
+             BtlColl_UpdateGround(chr);
+             Port_StoryCh2KrillinFallTrace(chr, "after-ground");
+         } else {
+             Port_StoryCh2KrillinFallTrace(chr, "ground-skipped");
+         }}
 #else
         BtlColl_UpdateGround(chr);
 #endif
@@ -1588,6 +1670,9 @@ void BtlChar_UpdateStage9(BtlMgrChr *chr) {
         }
         BtlChar_PoseToObj(chr, 0);
         BtlObjPose_CalcMatrices(obj);
+#ifdef PORT
+        Port_StoryCh2KrillinFallTrace(chr, "after-stage9");
+#endif
     }
 }
 
@@ -1746,6 +1831,9 @@ void BtlChar_AllocAll(s32 count) {
 
 /* Frees the roster. */
 void BtlChar_FreeAll(void) {
+#ifdef PORT
+    {extern void Port_StorySbcReleaseRetained(void);Port_StorySbcReleaseRetained();}
+#endif
     Heap_Free(gBtlChars->unkC);
     Heap_Free(gBtlChars->unk8);
     Heap_Free(gBtlChars->chars);
@@ -1755,6 +1843,9 @@ void BtlChar_FreeAll(void) {
 
 /* Zeroes the manager's state and every fighter, then sets each fighter up from the battle setup. */
 void BtlChar_ResetAll(void) {
+#ifdef PORT
+    {extern void Port_StorySbcReleaseRetained(void);Port_StorySbcReleaseRetained();}
+#endif
 #ifdef PORT
     { extern void Port_FusionClockReset(void),Port_ExtraRoundReset(void);Port_FusionClockReset();Port_ExtraRoundReset();{extern void Port_TakeoverReset(void);Port_TakeoverReset();{extern void Port_TrainingHealthReset(void);Port_TrainingHealthReset();}}{extern void Port_AssistReset(void);Port_AssistReset();}{extern void Port_ReviveReset(void);Port_ReviveReset();{extern void Port_CpuTacticsReset(void);Port_CpuTacticsReset();}} }
 #endif
@@ -2000,6 +2091,9 @@ void BtlChars_UpdateMain(void) {
     for (i = 0; i < BtlChar_GetCount(); i++) {
         BtlChar_UpdateCamera(BtlChar_Get(i));
     }
+#ifdef PORT
+    {extern void Port_StoryFinalizePairs(void);Port_StoryFinalizePairs();}
+#endif
     BtlReplay_UpdateViewer();
     BtlFx_UpdateRoster();
     BtlMembers_UpdateQueuedDamage();

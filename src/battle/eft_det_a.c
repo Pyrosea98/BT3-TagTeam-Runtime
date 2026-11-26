@@ -1035,7 +1035,7 @@ static s32 Port_ShotMemo(void *task) {
     return m;
 }
 
-static void Port_ShotExtraVictims(EftDetRec *rec, s32 primary, s32 (*test)(EftDetObj *, EftDetShape *)) {
+static int Port_ShotExtraVictims(EftDetRec *rec, s32 primary, s32 (*test)(EftDetObj *, EftDetShape *),int index) {
     extern s32 Port_FighterObjId(s32 i);
     extern s32 Port_IsEnemy(s32 a, s32 b);
     extern s32 BtlChar_GetCount(void);
@@ -1066,10 +1066,14 @@ static void Port_ShotExtraVictims(EftDetRec *rec, s32 primary, s32 (*test)(EftDe
         if (BtlColl_TryDodge(obj, rec)) {
             continue;
         }
+        {extern int Port_BigBeamTry(void*,int,void*,const void*);
+         int redirected=Port_BigBeamTry(rec->task,obj,rec,&rec->shape.contact);
+         if(redirected){EftHit_SetTaskFlag(index,redirected==1?0x40:0x80,rec->shape.contact);return 1;}}
         if (!BtlColl_TryGuard(obj, rec)) {
             BtlColl_Hit(obj, rec);
         }
     }
+    return 0;
 }
 #endif
 
@@ -1141,7 +1145,7 @@ void EftDet_FighterPass(void) {
                     /* (the other enemies a technique's beam passes through; the test of its own victim below
                        is made again after these, so the record's contact is that victim's) */
                     if (list->rec[i].type == 1) {
-                        Port_ShotExtraVictims(rec, target, test[list->rec[i].shape.type]);
+                        if(Port_ShotExtraVictims(rec, target, test[list->rec[i].shape.type],i))continue;
                     }
                 }
             }
@@ -1167,6 +1171,11 @@ void EftDet_FighterPass(void) {
                     if (BtlColl_TryDodge(target, rec)) {
                         continue;
                     }
+#ifdef PORT
+                    {extern int Port_BigBeamTry(void*,int,void*,const void*);
+                     int redirected=Port_BigBeamTry(rec->task,target,rec,&rec->shape.contact);
+                     if(redirected){EftHit_SetTaskFlag(i,redirected==1?0x40:0x80,rec->shape.contact);continue;}}
+#endif
                     if (BtlColl_TryDeflect(target, rec)) {
                         EftHit_SetTaskFlag(i, 0x40, rec->shape.contact);
                     } else if (BtlColl_TryReflect(target, rec)) {
@@ -1578,6 +1587,10 @@ void EftDet_StagePass(void) {
                 }
             }
             if (EftDet_TestStage(&rec->shape, rec->type == 0, objectsOnly)) {
+#ifdef PORT
+                {extern void Port_TerrainTechniqueContact(void*,void*,int);
+                 Port_TerrainTechniqueContact(rec,&rec->shape.contact,1);}
+#endif
                 if (EftHit_IsStoppedByHit(rec)) {
                     EftHit_SetTaskFlag(i, 4, list->rec[i].shape.contact);
                     EftHit_NotifyBlastTask(i, &rec->shape.tri);
@@ -1707,3 +1720,50 @@ void StgGround_UpdateFighter(EftDetObj *obj) {
         }
     }
 }
+
+#ifdef PORT
+#include "mod_terrain_bridge.h"
+#include "mod_terrain_power.h"
+static int td_actor_power_milli(int actor){extern int BtlCharApi_GetChara(int),BtlCharApi_GetCostume(int);extern long long Port_CharaPowerValue(int,int);if(actor<0||actor>=16)return 1000;return TP_Milli(Port_CharaPowerValue(BtlCharApi_GetChara(actor),BtlCharApi_GetCostume(actor)));}
+extern int BtlStage_GetWaterLevel(void*);
+/* Probe the real floor at the event, then use a shared geometry/collision scar. */
+static int td_probe_event(int zone,float x,float y,float z,StgGroundOut*g){EftDetBox box;float water;memset(g,0,sizeof(*g));g->x=x;g->z=z;g->w=1;box.min[0]=x-.05f;box.max[0]=x+.05f;box.min[2]=z-.05f;box.max[2]=z+.05f;box.min[1]=y-2;box.max[1]=y+2;StgGround_Probe(zone,&box,g,y-2);return isfinite(g->y)&&g->y<1000000&&g->nrm.y<-.82f&&!(BtlStage_GetWaterLevel(&water)&&g->y>=water);}
+/* Use the detector's floor plane when it exists. Probing below a collision
+ * point that is fractionally under the surface otherwise misses that floor. */
+static int td_contact_ground(EftDetRec*r,EftDetVec*p,int stageHit,StgGroundOut*g){
+ float water;if(stageHit&&r->shape.tri.nrm.y<-.82f){EftDetVec*n=&r->shape.tri.nrm;
+  memset(g,0,sizeof(*g));g->x=p->x;g->z=p->z;g->w=1;g->nrm=*n;g->y=(n->w-n->x*p->x-n->z*p->z)/n->y;
+  return isfinite(g->y)&&fabsf(g->y-p->y)<240&&!(BtlStage_GetWaterLevel(&water)&&g->y>=water);
+ }
+ return td_probe_event(r->shape.zone,p->x,p->y,p->z,g);
+}
+void Port_TerrainTechniqueContact(void*raw,void*point,int stageHit){EftDetRec*r=raw;EftDetVec*p=point;unsigned char*d;int fx,kind,cls;float scale,powerScale,base,beamEndY=0;StgGroundOut g;TdEvent e;
+ if(!Port_TerrainEnabled()||!r||!p||r->type!=1||!r->src||!r->src->def||!r->shape.a)return;
+ d=(unsigned char*)r->src->def;fx=*(s16*)(d+0x42);kind=*(s8*)(d+5);cls=*(s8*)(d+4);scale=*(float*)(d+0x54);powerScale=(float)td_actor_power_milli(r->objId)*.001f;
+ if((cls==0&&kind==4)||(cls!=0&&kind==9))return; /* physical rushes */
+ /* Some projectiles intentionally have no stage splash, but still hit the floor. */
+ if(fx<0||!isfinite(scale)||scale<=0){fx=*(s16*)(d+0x40);scale=*(float*)(d+0x50);}
+ if(fx<0||!isfinite(scale)||scale<=0)return;
+ base=fx==12?180:fx==6?110:fx==8?80:fx==4?50:30;scale=td_clamp(scale,.25f,3.f);memset(&e,0,sizeof(e));e.owner=r->objId;e.fx=fx;
+ if(r->shape.type==1){EftDetCapsule*c=r->shape.a;float dx=c->end.x-c->start.x,dz=c->end.z-c->start.z,dy=c->end.y-c->start.y,length=sqrtf(dx*dx+dz*dz),radius=td_clamp(c->radius*powerScale,10,240);int i,first=-1,last=-1,run=0,best=0,begin=0,steps=(int)(length/td_max(radius*.5f,10.f));StgGroundOut ga={0},gb={0},runStart={0},tmp;
+  if(steps<24)steps=24;if(steps>64)steps=64;
+  if(length>=10)for(i=0;i<=steps;i++){float t=(float)i/(float)steps,x=c->start.x+dx*t,y=c->start.y+dy*t,z=c->start.z+dz*t;int ok=length*t>td_min(30,length*.2f)&&td_probe_event(r->shape.zone,x,y,z,&tmp)&&tmp.y-y>=-2&&tmp.y-y<1.5f*radius;
+   if(ok){if(!run){begin=i;runStart=tmp;}run++;if(run>best){best=run;first=begin;last=i;ga=runStart;gb=tmp;}}else run=0;
+  }
+  if(best>=2&&last>first){beamEndY=gb.y;float t=(float)first/(float)steps,u=(float)last/(float)steps;e.kind=1;e.ax=c->start.x+dx*t;e.az=c->start.z+dz*t;e.bx=c->start.x+dx*u;e.bz=c->start.z+dz*u;{float lx=e.bx-e.ax,lz=e.bz-e.az,ll=sqrtf(lx*lx+lz*lz);if(ll>1500){e.bx=e.ax+lx*1500/ll;e.bz=e.az+lz*1500/ll;beamEndY=ga.y+(beamEndY-ga.y)*1500/ll;}}g=ga;e.ay=g.y;e.r=radius;e.depth=td_min(60,radius*.5f);}
+  else {if(!stageHit||!td_contact_ground(r,p,1,&g)||g.y-p->y>base*scale*powerScale)return;e.ax=e.bx=p->x;e.az=e.bz=p->z;e.ay=g.y;e.r=td_clamp(base*scale*powerScale,10,600);e.depth=e.r*.3f;}
+ }else if(r->shape.type==0){EftDetSphere*sphere=r->shape.a;float physical=sphere->radius,shapeScale=r->shape.scale,radius,clearance;
+  if(!isfinite(physical)||physical<0)physical=0;if(!isfinite(shapeScale)||shapeScale<=0)shapeScale=1;
+  radius=td_clamp(td_max(base*scale,physical*shapeScale)*powerScale,10,600);
+  if(!td_contact_ground(r,p,stageHit,&g))return;clearance=td_max(0,g.y-p->y);if(clearance>=radius)return;
+  e.ax=e.bx=p->x;e.az=e.bz=p->z;e.ay=g.y;e.r=sqrtf(radius*radius-clearance*clearance);e.depth=td_min(240,(radius-clearance)*(fx==6||fx==12?.4f:.3f));if(e.r<3||e.depth<.1f)return;
+ }else return;
+ e.sx=-g.nrm.x/g.nrm.y;e.sz=-g.nrm.z/g.nrm.y;if(e.kind==1){float lx=e.bx-e.ax,lz=e.bz-e.az,ll=sqrtf(lx*lx+lz*lz),m=ll>1?(beamEndY-g.y)/ll:0;if(ll<=1||fabsf(m)>.5f)return;e.sx=lx/ll*m;e.sz=lz/ll*m;}
+ Port_TerrainImpactVisual(&e);
+}
+
+#endif
+
+#ifdef PORT
+void Port_TerrainStruggleContact(void*event,void*position){TdEvent*e=event;EftDetVec*p=position;StgGroundOut g;if(!Port_TerrainEnabled()||!td_probe_event(-1,p->x,p->y,p->z,&g)||g.y-p->y>e->r)return;e->ax=e->bx=p->x;e->az=e->bz=p->z;e->ay=g.y;e->sx=-g.nrm.x/g.nrm.y;e->sz=-g.nrm.z/g.nrm.y;Port_TerrainAdd(e);}
+#endif

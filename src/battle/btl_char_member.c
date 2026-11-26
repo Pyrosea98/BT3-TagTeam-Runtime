@@ -1,6 +1,7 @@
 #include "common.h"
 #include "battle/btl_char_member.h"
 #include "mod_damage_safe.h"
+#include "mod_combat_damage.h"
 
 /*
  * Team members, parameters and gauges of a fighter: 0x1CDCA8..0x1CF578.
@@ -162,6 +163,15 @@ void BtlMember_LoadParams(BtlMemberChr *chr, s32 member, s32 init, f32 healthPct
         g->healthMax = BtlUtil_Max(g->healthMax, 10000);
 #ifdef PORT
         {extern int Port_ScenarioHealthMax(int,int);g->healthMax=Port_ScenarioHealthMax(chr->side,g->healthMax);}
+        {
+            extern int Port_PotaraHealthBars(int), Port_ModesFight(void), Port_ScenarioActive(void);
+            if (Port_ModesFight() && !Port_ScenarioActive()) {
+                int bars = Port_PotaraHealthBars(m->chara);
+                if (bars > 0) {
+                    g->healthMax = bars * BTL_HEALTH_BAR;
+                }
+            }
+        }
 #endif
     }
     g->kiMax = 100000;
@@ -491,9 +501,9 @@ s32 BtlMember_Damage(BtlMemberChr *chr, s32 amount, s32 flags) {
         }
     }
     if (flags & BTL_DMG_NO_KILL) {
-        if (amount > health - 1) {
-            amount = health - 1;
-        }
+        s32 lethalLimit = health > 0 ? health - 1 : 0;
+        if (amount > lethalLimit)
+            amount = lethalLimit;
     }
     g->health = health - amount;
     if (amount > 0 || (flags & BTL_DMG_FORCE)) {
@@ -818,15 +828,61 @@ static s32 Port_AssistQueuedDamage(BtlMemberChr*source,s32 damage,s32 flags){
 #define Port_AssistQueuedDamage(source,damage,flags) (damage)
 #endif
 #ifdef PORT
+/* Only damage with an identified combat source inherits that fighter's power gap. */
+int Port_CombatDamageFrom(void *victim, int amount, int flags, int attacker) {
+    extern long long Port_CombatPowerGap(int, int);
+    extern int Port_StoryPowerMultiplier(int);
+    BtlMemberChr *chr = victim;
+    long long gap = amount > 0 ? Port_CombatPowerGap(attacker, chr->side) : 0;
+
+    /* Private Historia test only: the shortcut changes real outgoing damage at the
+       common damage sink, after the round's combat tables have been cached. */
+    if (amount > 0) {
+        int mult = Port_StoryPowerMultiplier(attacker);
+        if (mult > 1) {
+            long long boosted = (long long)amount * mult;
+            amount = boosted > 0x7fffffffLL ? 0x7fffffff : (int)boosted;
+        }
+    }
+
+    if (gap) {
+        if (BtlMember_GetActiveGauge(chr)->health <= 1)
+            return 0;
+        /* Reduce chip by the whole power ratio before native defense and rounding. */
+        amount = gap > amount ? 1 : amount / (int)gap;
+        flags |= BTL_DMG_NO_KILL;
+    }
+    return BtlMember_Damage(chr, amount, flags);
+}
+
 /* Rush-cinematic hits bypass projectile collision. Notify Story only AFTER actual native damage. */
 static s32 Port_StoryQueuedHit(BtlMemberChr*source,BtlMemberChr*victim,s32 damage,s32 flags){
-    s32 lost=BtlMember_Damage(victim,Port_AssistQueuedDamage(source,damage,flags),flags);
+    s32 lost=Port_CombatDamageFrom(victim,Port_AssistQueuedDamage(source,damage,flags),flags,source->side);
     s32 slot=(flags&0x2000000)?4:(flags&0x1000000)?3:(flags&0x800000)?2:-1;
-    if(lost>0&&slot>=2){extern void Port_StoryAttackContact(int,int,int);Port_StoryAttackContact(source->side,victim->side,0x100+slot);}
+    if(slot>=2){extern int Port_StoryGenkiCinematicHit(int,int,int);if(lost>0||Port_StoryGenkiCinematicHit(source->side,victim->side,slot)){extern void Port_StoryAttackContact(int,int,int);Port_StoryAttackContact(source->side,victim->side,0x100+slot);}}
     return lost;
 }
 #else
 #define Port_StoryQueuedHit(source,victim,damage,flags) BtlMember_Damage(victim,damage,flags)
+#endif
+#ifdef PORT
+#include "mod_environment_rules.h"
+static void member_environment(BtlMemberChr *chr){
+ extern int Battle_GetStage(void),BtlStage_IsReady(void),BtlScene_IsTimeStopped(void);
+ extern int Port_NetActive(void),BattleReplay_IsActive(void),Port_StoryHeld(int);
+ extern int BtlCharApi_IsHidden(int),BtlCharApi_GetChara(int),BtlStage_GetWaterLevel(float*);
+ BtlMemberGauge*g;BtlMemberPose*p;float level;int stage,lava=0,amount;
+ if(BtlChar_FrameMod(30)||BtlScene_IsTimeStopped()||!BtlStage_IsReady()||Port_NetActive()||BattleReplay_IsActive())return;
+ if(!BtlChar_TestFlag(chr,3)||Port_StoryHeld(chr->side)||BtlCharApi_IsHidden(chr->objId))return;
+ g=BtlMember_GetActiveGauge(chr);if(g->health<=0)return;
+ stage=Battle_GetStage();p=BtlChar_GetPos(chr);
+ /* Dying Namek is the reviewed native lava stage. Y increases downward. */
+ if(stage==3&&ENV_Liquid(stage,0,0,&level)&&p)lava=p->pos.y>=level-.5f;
+ amount=ENV_Amount(g->healthMax,lava,stage==44,ENV_Buu(BtlCharApi_GetChara(chr->objId)));
+ {extern void Port_GroundTrace(const char*,int,int,int,int);static int last[16],seen[16];if(stage==3&&chr->side>=0&&chr->side<16&&(!seen[chr->side]||last[chr->side]!=lava)){seen[chr->side]=1;last[chr->side]=lava;Port_GroundTrace("lava(actor,feetYx100,levelYx100,contact)",chr->side,p?(int)(p->pos.y*100):0,(int)(level*100),lava);}}
+ if(amount<0){int heal=-amount,room=g->healthMax-g->health;if(heal>room)heal=room;if(heal>0)BtlMember_AddHealth(chr,heal);}
+ else if(amount>0)BtlMember_Damage(chr,amount,BTL_DMG_NO_DEFENSE|BTL_DMG_EXACT|BTL_DMG_NO_HIT|BTL_DMG_NO_TOTAL|BTL_DMG_NO_TIMER|BTL_DMG_NO_HALVE|BTL_DMG_NO_SCALING|BTL_DMG_FORCE);
+}
 #endif
 /* Per frame: deals the damage each fighter has queued against its opponent, and runs its health / ki drain. */
 void BtlMembers_UpdateQueuedDamage(void) {
@@ -841,6 +897,9 @@ void BtlMembers_UpdateQueuedDamage(void) {
         if (BtlChar_IsFrozen(chr)) {
             continue;
         }
+#ifdef PORT
+        member_environment(chr);
+#endif
         other = BtlChar_Get(BtlOpp_GetPlayer(chr));
         if (BtlAnim_TestAttr(chr, 0x200000000)) {
             if (chr->queue.hits >= 2) {
@@ -951,8 +1010,90 @@ int Port_StoryResourceIO(int actor,int write,int*v){
 #endif
 
 #ifdef PORT
-void Port_StoryTailOutfit(int actor){
- BtlMemberChr*c;extern int Port_StoryActive(void);extern void BtlChar_SetHeldFlag(BtlMemberChr*,int);
- if(Port_StoryActive()&&actor>=0&&actor<16&&(c=BtlChar_Get(actor))&&BtlMember_GetActiveGauge(c)->variant==0)BtlChar_SetHeldFlag(c,0xAB);
+int Port_StoryScriptDamage(int actor);
+void Port_StoryTailOutfit(int actor){Port_StoryScriptDamage(actor);}
+#endif
+
+#ifdef PORT
+/* Quiet Story wardrobe swap: uses the native model queue, without a finisher
+   action, damage, gauge refill or transformation. Costume indices are zero-based. */
+static int sStoryNappaOutfit=-1,sStoryOutfitChara=-1,sStoryOutfitCostume=-1;
+int Port_StoryWardrobeBusy(int actor){return actor>=0&&sStoryNappaOutfit==actor;}
+int Port_StoryScriptDamage(int actor){BtlMemberChr*c;BtlMember*m;extern int Port_StoryActive(void);extern void BtlChange_RequestChara(int,int,int,int,int,int,int);
+ if(!Port_StoryActive()||actor<0||actor>=16||!(c=BtlChar_Get(actor))||!(m=BtlMember_GetActive(c)))return 0;
+ if(m->gauge.variant)return 1;
+ if(sStoryNappaOutfit>=0)return sStoryNappaOutfit==actor;
+ sStoryNappaOutfit=actor;sStoryOutfitChara=m->chara;sStoryOutfitCostume=m->costume;
+ BtlChange_RequestChara(actor,m->chara,m->costume,1,m->chara,m->chara,m->chara);return 1;
+}
+void Port_StoryNappaOutfitReset(void){sStoryNappaOutfit=sStoryOutfitChara=sStoryOutfitCostume=-1;}
+void Port_StoryNappaOutfit(int actor){
+ BtlMemberChr*c;BtlMember*m;extern int Port_StoryActive(void);
+ extern void BtlChange_RequestChara(int,int,int,int,int,int,int);
+ if(!Port_StoryActive()||actor<0||actor>=16||sStoryNappaOutfit>=0||
+    !(c=BtlChar_Get(actor))||!(m=BtlMember_GetActive(c))||m->chara!=80||m->gauge.health<=0)return;
+ if(m->costume==1&&m->gauge.variant==1)return;
+ sStoryNappaOutfit=actor;sStoryOutfitChara=80;sStoryOutfitCostume=1;
+ BtlChange_RequestChara(actor,80,1,1,80,80,80);
+}
+void Port_StoryTienArmOutfit(int actor){
+ BtlMemberChr*c;BtlMember*m;extern int Port_StoryChapter(void);extern void BtlChange_RequestChara(int,int,int,int,int,int,int);
+ if(Port_StoryChapter()!=6||actor<0||actor>=16||sStoryNappaOutfit>=0||!(c=BtlChar_Get(actor))||!(m=BtlMember_GetActive(c))||m->chara!=27||m->gauge.variant)return;
+ sStoryNappaOutfit=actor;sStoryOutfitChara=27;sStoryOutfitCostume=m->costume;BtlChange_RequestChara(actor,27,m->costume,1,27,27,27);
+}
+/* Same quiet loader handshake; no finisher, transform or combat profile change. */
+void Port_StoryRaditzOutfit(int actor){
+ BtlMemberChr*c;BtlMember*m;extern int Port_StoryActive(void),Port_StoryChapter(void);
+ extern void BtlChange_RequestChara(int,int,int,int,int,int,int);
+ if(!Port_StoryActive()||Port_StoryChapter()!=2||actor<0||actor>=16||sStoryNappaOutfit>=0||
+    !(c=BtlChar_Get(actor))||!(m=BtlMember_GetActive(c))||m->chara!=77||m->gauge.health<=0||m->gauge.variant)return;
+ sStoryNappaOutfit=actor;sStoryOutfitChara=77;sStoryOutfitCostume=m->costume;
+ BtlChange_RequestChara(actor,77,m->costume,1,77,77,77);
+}
+void Port_StoryStompOutfit(int actor){
+ BtlMemberChr*c;BtlMember*m;extern int Port_StoryActive(void),Port_StoryChapter(void);
+ extern void BtlChange_RequestChara(int,int,int,int,int,int,int);
+ if(!Port_StoryActive()||Port_StoryChapter()!=2||actor<0||actor>=16||sStoryNappaOutfit>=0||
+    !(c=BtlChar_Get(actor))||!(m=BtlMember_GetActive(c))||m->gauge.health<=0||m->gauge.variant)return;
+ sStoryNappaOutfit=actor;sStoryOutfitChara=m->chara;sStoryOutfitCostume=m->costume;
+ BtlChange_RequestChara(actor,m->chara,m->costume,1,m->chara,m->chara,m->chara);
+}
+/* CH4 only: apply damage AFTER the child is rebound, including its ending double. */
+void Port_StoryCh4Outfit(int actor){
+ BtlMemberChr*c;BtlMember*m;extern int Port_StoryChapter(void);extern void BtlChange_RequestChara(int,int,int,int,int,int,int);
+ if(Port_StoryChapter()!=3||actor<0||actor>=16||sStoryNappaOutfit>=0||!(c=BtlChar_Get(actor))||!(m=BtlMember_GetActive(c))||m->chara!=13||m->gauge.variant)return;
+ sStoryNappaOutfit=actor;sStoryOutfitChara=13;sStoryOutfitCostume=m->costume;
+ BtlChange_RequestChara(actor,13,m->costume,1,13,13,13);
+}
+int Port_StoryCh4OutfitReady(int actor){
+ BtlMemberChr*c;BtlMember*m;extern int Port_StoryChapter(void);
+ return Port_StoryChapter()==3&&actor>=0&&actor<16&&(c=BtlChar_Get(actor))&&(m=BtlMember_GetActive(c))&&m->chara==13&&m->gauge.variant==1&&sStoryNappaOutfit!=actor;
+}
+/* A scene may take ownership after a normal hit has already queued damaged clothes.
+   Complete that SAME model/variant request quietly; never adopt a transform or a new costume. */
+int Port_StoryAdoptWardrobeLoad(int actor,int chara,int costume,int variant){
+ BtlMemberChr*c;BtlMember*m;extern int Port_StoryActive(void),Port_StorySceneActorShown(int);
+ extern int Port_StoryChapter(void),Port_SequencePartner(int);
+ if(!Port_StoryActive()||actor<0||actor>=16||variant!=1||sStoryNappaOutfit>=0||
+    !Port_StorySceneActorShown(actor)||!(c=BtlChar_Get(actor))||!(m=BtlMember_GetActive(c))||
+    m->chara!=chara||m->costume!=costume||m->gauge.variant!=0)return 0;
+ /* CH8's live paired rush must acknowledge its own load before advancing the shot. */
+ if(Port_StoryChapter()==6&&Port_SequencePartner(actor)>=0)return 0;
+ sStoryNappaOutfit=actor;sStoryOutfitChara=chara;sStoryOutfitCostume=costume;return 1;
+}
+int Port_StoryNappaOutfitOwns(int actor,int chara,int costume,int variant){
+ return actor>=0&&actor==sStoryNappaOutfit&&chara==sStoryOutfitChara&&costume==sStoryOutfitCostume&&variant==1;
+}
+/* Read the actual load request: a quiet wardrobe swap never prepares the
+   fighter's transformation form fields, so those fields are not its identity. */
+int Port_StoryNappaOutfitLoaded(void*ptr,int actor){
+ BtlMemberChr*c;BtlMember*m;int chara=-1,costume=-1,variant=-1;
+ extern void BtlChange_SetDone(int),BtlChange_GetArgs(int*,int*,int*,int*,int*,int*,int*);
+ extern int BtlChange_GetPlayer(void);
+ if(actor!=sStoryNappaOutfit||actor<0||BtlChange_GetPlayer()!=actor||ptr!=(c=BtlChar_Get(actor)))return 0;
+ BtlChange_GetArgs(&chara,&costume,&variant,0,0,0,0);
+ if(!Port_StoryNappaOutfitOwns(actor,chara,costume,variant))return 0;
+ m=BtlMember_GetActive(c);m->costume=costume;m->gauge.variant=variant;
+ BtlChange_SetDone(actor);sStoryNappaOutfit=-1;return 1;
 }
 #endif

@@ -26,6 +26,19 @@
 #include "common.h"
 #include "battle/col_a.h"
 
+#ifdef PORT
+#include "mod_terrain_bridge.h"
+static ColMesh sTdCollisionMesh;
+static ColPoly sTdCollisionPoly;
+static ColVec sTdCollisionVertices[3];
+static TdState sTdCollisionState;
+static ColMeshCb sTdCollisionCb;
+static void*sTdCollisionCtx;
+static int sTdCollisionHit;
+static ColBox*sTdQueryBox;
+extern void*gStgColMesh;
+int gPortTerrainStaticWalk;
+#endif
 extern void Vec4_Copy(ColVec *dst, ColVec *src);
 extern void Vec4_Sub(ColVec *dst, ColVec *a, ColVec *b);
 extern void Mtx_MulVec4(ColVec *dst, void *mtx, ColVec *v);
@@ -151,6 +164,9 @@ s32 ColNode_IsEmptyLeaf(ColNode *node) {
 
 /* Copies the three corners of a polygon out of the mesh's vertex array. */
 void ColMesh_GetPolyVerts(ColMesh *mesh, ColPoly *poly, ColVec *v0, ColVec *v1, ColVec *v2) {
+#ifdef PORT
+    if(mesh==&sTdCollisionMesh){Vec4_Copy(v0,sTdCollisionVertices);Vec4_Copy(v1,sTdCollisionVertices+1);Vec4_Copy(v2,sTdCollisionVertices+2);return;}
+#endif
     ColVec *vtx = (ColVec *)(gColMeshBase + mesh->vtxOfs);
 
     Vec4_Copy(v0, &vtx[poly->vtx[0]]);
@@ -162,6 +178,9 @@ void ColMesh_GetPolyVerts(ColMesh *mesh, ColPoly *poly, ColVec *v0, ColVec *v1, 
 ColPoly *ColMesh_GetPoly(ColMesh *mesh, s32 idx) {
     ColPoly *polys;
 
+#ifdef PORT
+    if(mesh==&sTdCollisionMesh)return &sTdCollisionPoly;
+#endif
     polys = (ColPoly *)(gColMeshBase + mesh->polyOfs);
     return polys + idx;
 }
@@ -421,6 +440,49 @@ void ColMesh_WalkNode(ColNode *nodes, ColBox *box, s32 idx) {
 }
 
 /* Calls `cb(leaf, ctx)` for every leaf of a mesh whose box overlaps `box`; returns the OR of the results. */
+#ifdef PORT
+extern unsigned Port_TerrainProfNow(void);extern void Port_TerrainProfAdd(int,unsigned);
+/* The original walk is non-reentrant. Remeshing calls its leaf callback, never another tree walk. */
+static void td_collision_emit(const float*v,void*user){
+ ColNode node;ColVec*a=sTdCollisionVertices,*b=a+1,*c=a+2;void*old=gStgColMesh;float x,y,z,l;int j;
+ for(j=0;j<3;j++){a[j].x=v[j*12];a[j].y=v[j*12+1];a[j].z=v[j*12+2];a[j].w=1;}
+ for(j=0;j<3;j++){node.box.min[j]=td_min(((float*)a)[j],td_min(((float*)b)[j],((float*)c)[j]));node.box.max[j]=td_max(((float*)a)[j],td_max(((float*)b)[j],((float*)c)[j]));}
+ /* Match the native tree broad phase in all three axes before normalizing
+    or dispatching a replacement triangle. XZ-only cache filtering is not enough. */
+ if(sTdQueryBox&&!ColNode_TestBox(&node,sTdQueryBox))return;
+ x=(b->y-a->y)*(c->z-a->z)-(b->z-a->z)*(c->y-a->y);y=(b->z-a->z)*(c->x-a->x)-(b->x-a->x)*(c->z-a->z);z=(b->x-a->x)*(c->y-a->y)-(b->y-a->y)*(c->x-a->x);l=sqrtf(x*x+y*y+z*z);if(l<.000001f)return;
+ sTdCollisionPoly.nrm=(ColVec){x/l,y/l,z/l,(x*a->x+y*a->y+z*a->z)/l};node.left=0;node.right=-1;
+ gStgColMesh=&sTdCollisionMesh;{unsigned t0=Port_TerrainProfNow();sTdCollisionHit|=sTdCollisionCb(&node,sTdCollisionCtx);Port_TerrainProfAdd(8,t0);}gStgColMesh=old;
+}
+/* Source topology comes exclusively from solid static collision polygons. Objects
+ * keep their original colliders and damage state. No raw render-part enumeration. */
+void Port_TerrainCollectMesh(void*state,void*input,void*ptr){
+ ColMesh*mesh=ptr;int i,j;if(!mesh||mesh->nodeCount<=0||mesh->unk4<0||mesh->unk4>200000)return;
+ for(i=0;i<mesh->unk4;i++){ColPoly*p=ColMesh_GetPoly(mesh,i);ColVec v[3];float tri[9];
+ if(p->flags&0x08000000)continue;ColMesh_GetPolyVerts(mesh,p,v,v+1,v+2);
+ for(j=0;j<3;j++){tri[j*3]=v[j].x;tri[j*3+1]=v[j].y;tri[j*3+2]=v[j].z;}Port_TerrainCollectTriangle(input,state,tri);}
+}
+#include "mod_terrain_structure.h"
+int Port_TerrainMeshIntersects(void*state,void*ptr){
+ ColMesh*mesh=ptr;int i,j;if(!mesh||mesh->nodeCount<=0||mesh->unk4<0||mesh->unk4>200000)return 0;
+ for(i=0;i<mesh->unk4;i++){ColPoly*p=ColMesh_GetPoly(mesh,i);ColVec v[3];float tri[9];if(p->flags&0x08000000)continue;ColMesh_GetPolyVerts(mesh,p,v,v+1,v+2);for(j=0;j<3;j++){tri[3*j]=v[j].x;tri[3*j+1]=v[j].y;tri[3*j+2]=v[j].z;}if(TS_Triangle(state,tri))return 1;}return 0;
+}
+extern void Port_TerrainProfValue(int,unsigned);extern int Port_TerrainProfOn(void);extern unsigned Port_TerrainProfNow(void);extern void Port_TerrainProfAdd(int,unsigned);extern void Port_TerrainProfCount(int);
+s32 ColMesh_TerrainWalls(ColBox*box,void*ctx,ColMeshCb cb){
+ float b[4]={box->min[0],box->min[2],box->max[0],box->max[2]};unsigned t0;
+ if(!Port_TerrainSnapshot(&sTdCollisionState))return 0;
+ sTdQueryBox=box;sTdCollisionCb=cb;sTdCollisionCtx=ctx;sTdCollisionHit=0;sTdCollisionPoly.flags=0x10;
+ t0=Port_TerrainProfNow();Port_TerrainWalls(&sTdCollisionState,b,td_collision_emit,0);Port_TerrainProfAdd(3,t0);return sTdCollisionHit;
+}
+static s32 td_collision_leaf(ColNode*node,void*ctx){
+ ColMesh*mesh=gStgColMesh;ColPoly*p=ColMesh_GetPoly(mesh,node->left);ColVec v[3];float tri[36]={0};int j;Port_TerrainProfCount(7);
+ if(p->flags&0x08000000)return sTdCollisionCb(node,sTdCollisionCtx);
+ ColMesh_GetPolyVerts(mesh,p,v,v+1,v+2);for(j=0;j<3;j++){tri[j*12]=v[j].x;tri[j*12+1]=v[j].y;tri[j*12+2]=v[j].z;tri[j*12+3]=1;}
+ sTdCollisionPoly.flags=p->flags;sTdCollisionHit=0;
+ {float qb[4]={sTdQueryBox->min[0],sTdQueryBox->min[2],sTdQueryBox->max[0],sTdQueryBox->max[2]};unsigned t0=Port_TerrainProfNow();int r=Port_TerrainRemeshBox(&sTdCollisionState,tri,qb,td_collision_emit,0);Port_TerrainProfAdd(1,t0);if(r)return sTdCollisionHit;}
+ return sTdCollisionCb(node,sTdCollisionCtx);
+}
+#endif
 s32 ColMesh_WalkBox(ColMesh *mesh, ColBox *box, void *ctx, ColMeshCb cb) {
     ColNode *nodes;
 
@@ -431,11 +493,23 @@ s32 ColMesh_WalkBox(ColMesh *mesh, ColBox *box, void *ctx, ColMeshCb cb) {
         return 0;
     }
     nodes = (ColNode *)(gColMeshBase + mesh->nodeOfs);
+#ifdef PORT
+    ColBox extended;unsigned profT0=0;int prof=0;
+    float depth = 0;
+    if (gPortTerrainStaticWalk && gStgColMesh == mesh &&
+        Port_TerrainSnapshotNearBox(&sTdCollisionState,box->min,box->max,&depth)) {
+        sTdQueryBox=box;extended=*box;extended.min[1]-=depth+2;extended.max[1]+=depth+2;box=&extended;
+        sTdCollisionCb=cb;sTdCollisionCtx=ctx;cb=td_collision_leaf;prof=1;profT0=Port_TerrainProfNow();Port_TerrainProfValue(9,(unsigned)td_max(sTdQueryBox->max[0]-sTdQueryBox->min[0],sTdQueryBox->max[2]-sTdQueryBox->min[2]));
+    }
+#endif
     gColWalkBox = box;
     gColWalkCb = cb;
     gColWalkCtx = ctx;
     gColWalkCount = 0;
     ColMesh_WalkNode(nodes, box, 0);
+#ifdef PORT
+    if(prof)Port_TerrainProfAdd(2,profT0);
+#endif
     return gColWalkCount;
 }
 

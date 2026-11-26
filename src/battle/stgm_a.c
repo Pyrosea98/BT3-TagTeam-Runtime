@@ -271,8 +271,107 @@ void StgModel_FadeDebris(void) {
     }
 }
 
+#ifdef PORT
+#include "mod_terrain_bridge.h"
+#include "mod_environment_rules.h"
+static int sLiquidActive;
+static float sTdScarBounds[TD_MAX][4];
+static unsigned char sTdVisible[8192],sTdEligible[8192];static TdState sTdVisibility;
+/* Object part records are not all resolved renderer mesh lists. Compare ownership only;
+   enumerate meshes exclusively through the lists consumed by the original culler. */
+static int td_object_part(StgMPart*p){int i,j;for(i=0;i<gBtlStage->objCount;i++){StgMObj*o=gBtlStage->objs+i;for(j=0;j<6;j++)if(o->parts[j]==p)return !(o->state&1)||!(j&1)||p->node!=0;if(o->state&2)for(j=0;j<o->pieceCount;j++)if(o->pieces[j]==p)return 1;}return 0;}
+/* Static opaque ground and its blended dirt/grass/shadow layers use the same
+ * displaced sheet. Sky/backdrop, water-scroll and animated object lists stay native. */
+/* Rebuild the membership index for the current view: destruction may have
+   replaced material lists since the last one. Collisions fall back to the
+   original range check without dereferencing an unverified pointer. */
+static StgMMesh *sTdMember[16384];
+static unsigned td_member_slot(StgMMesh *mesh) {
+    unsigned long long key = (unsigned long long)mesh / sizeof(StgMMesh);
+    return (unsigned)(key ^ (key >> 14)) & 16383;
+}
+static void td_index_meshes(void) {
+    memset(sTdMember,0,sizeof(sTdMember));
+    for (int k=STGM_GRP_MAIN;k<=STGM_GRP_BLEND_C;++k) {
+        StgMGroup *group=&gBtlStage->mdl->grp[k];
+        for (int i=0;i<group->count;++i) {
+            StgMMat *mat=&group->mats[i];
+            for (int j=0;j<mat->count;++j) {
+                StgMMesh *mesh=mat->meshes+j;
+                sTdMember[td_member_slot(mesh)]=mesh;
+            }
+        }
+    }
+}
+static int td_main_mesh(StgMMesh*m){int i,k;if(sTdMember[td_member_slot(m)]==m)return 1;for(k=STGM_GRP_MAIN;k<=STGM_GRP_BLEND_C;k++){StgMGroup*g=&gBtlStage->mdl->grp[k];for(i=0;i<g->count;i++){unsigned long long a=(unsigned long long)m,b=(unsigned long long)g->mats[i].meshes,n=(unsigned long long)g->mats[i].count*sizeof(StgMMesh);if(a>=b&&a-b<n&&(a-b)%sizeof(StgMMesh)==0)return 1;}}return 0;}
+/* A part may belong to several native culling cells. Membership is stable
+   during one view, even when stage destruction changes it between views. */
+static StgMPart *sTdVisited[4096];
+static int sTdClosurePending;
+static void td_static_part(StgMPart *p) {
+    if (!p || !(p->flags & 1)) return;
+    unsigned slot = ((unsigned long long)p >> 4) & 4095;
+    if (sTdVisited[slot] == p) return;
+    sTdVisited[slot] = p;
+    int overlap = Port_TerrainPartOverlap(&sTdVisibility,sTdScarBounds,&p->x,&p->radius);
+    if (td_object_part(p)) return;
+    for (int j = 0; j < p->count; ++j) {
+        StgMMesh *m = p->meshes[j];
+        if (m && td_main_mesh(m) && m->prog == 0 && m->visIdx < 8192) {
+            unsigned char *eligible = &sTdEligible[m->visIdx];
+            if (overlap) *eligible = 2;
+            else if (!*eligible) *eligible = 1;
+            if (overlap == 2) sTdVisible[m->visIdx] = 1;
+        }
+    }
+}
+static void td_static_cell(StgMCell*c,int depth){int i,a,b,d;if(!c||depth>20)return;for(i=0;i<c->partCount;i++)td_static_part(c->parts[i]);for(a=0;a<2;a++)for(b=0;b<2;b++)for(d=0;d<2;d++)td_static_cell(c->child[a][b][d],depth+1);}
+static void td_visibility_prepare(void){int i;memset(sTdVisible,0,sizeof(sTdVisible));memset(sTdEligible,0,sizeof(sTdEligible));if(!Port_TerrainSnapshot(&sTdVisibility))return;
+ for (i = 0; i < sTdVisibility.count; ++i) td_bounds(&sTdVisibility.scars[i], sTdScarBounds[i]);
+ td_index_meshes();
+ memset(sTdVisited,0,sizeof(sTdVisited));
+ sTdClosurePending=1;
+ td_static_cell(gBtlStage->root,0);if(gBtlStage->always)for(i=0;i<gBtlStage->always->count;i++)td_static_part(gBtlStage->always->parts+i);
+}
+static void td_stage_call4(u32 chain){extern void Port_GsMarker(int);Port_GsMarker(0x7D00);Vu1Pkt_CallProg4(chain);Port_GsMarker(0x7D01);}
+#else
+#define td_stage_call4 Vu1Pkt_CallProg4
+#endif
+
+#ifdef PORT
+/* The beach and sea at Kame House are separate, nearly coplanar materials. */
+static int td_liquid_material(int stage, int texture) {
+    switch (stage) {
+    case 12: return texture == 27;
+    case 3: return texture == 10;
+    case 2: return texture == 32 || texture == 33;
+    default: return 1;
+    }
+}
+static void td_group_call4(u32 chain, unsigned index, int texture) {
+    extern void Port_GsMarker(int);
+    int liquid = sLiquidActive && td_liquid_material(BtlStage_GetId(), texture);
+    if (liquid) Port_GsMarker(0x7D02);
+    if (index < 8192 && sTdEligible[index] &&
+        (sTdEligible[index] == 2 || sTdClosurePending)) {
+        if (!liquid) sTdClosurePending = 0;
+        td_stage_call4(chain);
+    }
+    else Vu1Pkt_CallProg4(chain);
+    if (liquid) Port_GsMarker(0x7D03);
+}
+#else
+#define td_group_call4(chain,index,texture) Vu1Pkt_CallProg4(chain)
+#endif
+
 /* Uploads one texture of the stage texture file to the stage's work block and selects it. */
 void StgModel_SetTexture(s32 index) {
+#ifdef PORT
+    /* In the original Dying Namek atlas the level-60 sheet uses a dark
+       distant surface; slot 19 is the horizontal glowing lava material. */
+    if (index == 10 && BtlStage_GetId() == 3 && gBtlStage->tex->count == 25)
+        index = 19;
+#endif
     Dma_AddTexFlush();
     TexFile_UploadOne(gBtlStage->tex, index, 0x2A00, 0x32C0);
     Dma_AddTex0(gBtlStage->tex->ent[index].tex0 | 0x0006580400002A00);
@@ -324,7 +423,7 @@ s32 StgModel_DrawDebris(s32 drawn, u8 *vis) {
                     StgModel_SetTexture(mats[i].tex);                           \
                 }                                                               \
                 chain = mesh[j].chain;                                          \
-                Vu1Pkt_CallProg4(chain);                                        \
+                td_group_call4(chain,mesh[j].visIdx,mats[i].tex);                           \
             }                                                                   \
         }                                                                       \
     }
@@ -349,6 +448,11 @@ void StgModel_Draw(void *view) {
     s32 j;
     s32 k;
     u32 chain;
+#ifdef PORT
+    Mtx44 pod,door;
+    int podStart=-1;
+    extern int Port_StoryCh9PodMatrix(Mtx44 *,Mtx44 *);
+#endif
 
     if (Battle_GetWork()->flags & 0x2000) {
         return;
@@ -358,6 +462,31 @@ void StgModel_Draw(void *view) {
     }
     mdl = gBtlStage->mdl;
     vis = gBtlStage->vis;
+#ifdef PORT
+    td_visibility_prepare();
+    {extern int BtlStage_GetWaterLevel(float*);extern void Port_GsMarker(int);float level;
+     {float native=0;int has=BtlStage_GetWaterLevel(&native);sLiquidActive=ENV_Liquid(BtlStage_GetId(),has,native,&level)&&isfinite(level)&&fabsf(level)<1000000.f;}
+     if(sLiquidActive){int g,m,j; if(BtlStage_GetId()==12)level=3.0f;Port_GsMarker(0x60000000|((int)(level*100.f)&0x0fffffff));
+      /* Keep the original small liquid sheet available when a distant crater opens. */
+      /* A charge on dry land must not uncull the whole ocean. */
+      int needsSheet = 0;
+      for (j = 0; sTdVisibility.enabled && j < sTdVisibility.count; ++j) {
+          TdScar *scar = &sTdVisibility.scars[j];
+          if (scar->ay < level && scar->ay + scar->depth >= level) { needsSheet = 1; break; }
+      }
+      int stage = BtlStage_GetId();
+      if (needsSheet) {
+          for (g = STGM_GRP_MAIN; g <= STGM_GRP_BLEND_C; ++g) {
+              for (m = 0; m < mdl->grp[g].count; ++m) {
+                  StgMMat *mat = &mdl->grp[g].mats[m];
+                  if (!(mat->anim || stage == 2 || stage == 3 || stage == 12)) continue;
+                  if (!td_liquid_material(stage, mat->tex)) continue;
+                  for (j = 0; j < mat->count; ++j) vis[mat->meshes[j].visIdx] = 1;
+              }
+          }
+      }
+     }else Port_GsMarker(0x7D04);}
+#endif
     StgModel_SetDrawEnv();
 
     if (mdl->grp[STGM_GRP_BACK].count != 0) {
@@ -386,6 +515,9 @@ void StgModel_Draw(void *view) {
     }
 
     StgModel_SetTestOpaque();
+#ifdef PORT
+    if(Port_StoryCh9PodMatrix(&pod,&door))podStart=BtlStage_GetId()==26?449:448;
+#endif
 
     if (mdl->grp[STGM_GRP_MAIN].count != 0) {
         mtx = ((StgMView *)view)->mtx100;
@@ -395,7 +527,16 @@ void StgModel_Draw(void *view) {
             chain = 0;
             mesh = mats[i].meshes;
             for (j = 0; j < mats[i].count; j++) {
+#ifdef PORT
+                /* During the escape the capsule is drawn at its scene position. */
+                if(podStart>=0&&mesh[j].visIdx>=podStart&&mesh[j].visIdx<podStart+8)continue;
+#endif
                 if (vis[mesh[j].visIdx] == 0) {
+#ifdef PORT
+                    /* A lowered runtime floor can be visible from inside its old culling sphere. */
+                    extern int Port_TerrainActive(void);
+                    if(!(mesh[j].visIdx<8192&&sTdVisible[mesh[j].visIdx]))
+#endif
                     continue;
                 }
                 if (chain == 0) {
@@ -446,12 +587,42 @@ void StgModel_Draw(void *view) {
                     prog = mesh[j].prog;
                 }
                 if (mesh[j].prog == 0) {
+#ifdef PORT
+                    td_group_call4(chain,mesh[j].visIdx,mats[i].tex);
+#else
                     Vu1Pkt_CallProg4(chain);
+#endif
                 }
             }
         }
     }
 
+#ifdef PORT
+    /* Draw the capsule with its stock meshes and materials at the scene transform. */
+    if(podStart>=0){
+        Mtx44 *current=NULL;
+        mats=mdl->grp[STGM_GRP_MAIN].mats;
+        for(i=0;i<mdl->grp[STGM_GRP_MAIN].count;i++){
+            int set=0;
+            mesh=mats[i].meshes;
+            for(j=0;j<mats[i].count;j++){
+                int offset=mesh[j].visIdx-podStart;
+                Mtx44 *part;
+                if(mesh[j].prog!=0||offset<0||offset>=8)continue;
+                /* The lens, lining and shell of the hatch share the hinge. */
+                part=(offset<=1||offset>=6)?&door:&pod;
+                if(part!=current){
+                    Vu1Pkt_LoadProg4Prop(((StgMView*)view)->mtx100,part);
+                    current=part;
+                }
+                if(!set){StgModel_SetTexture(mats[i].tex);set=1;}
+                Vu1Pkt_CallProg4(mesh[j].chain);
+            }
+        }
+        Vu1Pkt_LoadProg4(((StgMView*)view)->mtx100);
+        prog=0;
+    }
+#endif
     StgModel_DrawAnims();
 
     if (BtlStage_GetId() == 8) {
@@ -583,3 +754,30 @@ void StgModel_SetAnimDrawEnv(void) {
 
     Dma_AddData(pkt, 0xA0);
 }
+
+#ifdef PORT
+#include "mod_ground_materials.h"
+static TexFile*sGcProfileTex;static int sGcProfileStage=-1,sGcProfileCount;static const GcGroundProfile*sGcProfile;
+void Port_GroundMaterialReset(void){sGcProfileTex=NULL;sGcProfileStage=-1;sGcProfileCount=0;sGcProfile=NULL;}
+static u32 gc_material_mix(u32 h,u32 v){return (h^v)*16777619u;}
+static u32 gc_material_signature(TexFile*t){u32 h=gc_material_mix(2166136261u,t->count);int i,j;
+ for(i=0;i<t->count;i++){TexEntry*e=&t->ent[i];u8*p;
+ h=gc_material_mix(h,e->pixSize);h=gc_material_mix(h,e->clutSize);h=gc_material_mix(h,e->tbpStep);h=gc_material_mix(h,e->cbpStep);h=gc_material_mix(h,e->pixBlt);h=gc_material_mix(h,e->clutBlt);h=gc_material_mix(h,(u32)e->tex0);h=gc_material_mix(h,(u32)(e->tex0>>32));
+ if(e->clutOfs&&e->clut&&e->clutSize>=0x70){p=(u8*)e->clut+0x60;for(j=0;j<4;j++)h=gc_material_mix(h,(u32)p[j*4]|((u32)p[j*4+1]<<8)|((u32)p[j*4+2]<<16)|((u32)p[j*4+3]<<24));}
+ if(e->pixOfs&&e->pix&&e->pixSize>=0x70){p=(u8*)e->pix+0x60;for(j=0;j<4;j++)h=gc_material_mix(h,(u32)p[j*4]|((u32)p[j*4+1]<<8)|((u32)p[j*4+2]<<16)|((u32)p[j*4+3]<<24));}
+ }return h;
+}
+static const GcGroundProfile*gc_material_profile(int stage){TexFile*t;u32 sig;int i;extern void Port_GroundTrace(const char*,int,int,int,int);
+ if(!gBtlStage||(gBtlStage->flags&1)||!gBtlStage->tex||!gBtlStage->tex->ent)return NULL;
+ t=gBtlStage->tex;if(t->count<1||t->count>255)return NULL;
+ if(sGcProfileTex==t&&sGcProfileStage==stage&&sGcProfileCount==t->count)return sGcProfile;
+ sGcProfileTex=t;sGcProfileStage=stage;sGcProfileCount=t->count;sGcProfile=NULL;sig=gc_material_signature(t);
+ for(i=0;i<sizeof(sGcGroundProfiles)/sizeof(sGcGroundProfiles[0]);i++){const GcGroundProfile*p=&sGcGroundProfiles[i];if(p->stage==stage&&p->count==t->count&&p->signature==sig){sGcProfile=p;break;}}
+ Port_GroundTrace("profile(stage,count,signature,materialMinus1Unsupported)",stage,t->count,(int)sig,sGcProfile?sGcProfile->material:-1);return sGcProfile;
+}
+int Port_GroundStageMaterial(int stage){const GcGroundProfile*p=gc_material_profile(stage);return p?p->material:-1;}
+void *Port_GroundStageTexture(s32 stage,s32 kind){const GcGroundProfile*p=gc_material_profile(stage);TexEntry*e;int index;
+ if(!p||kind<0||kind>2)return NULL;index=p->tex[kind];if(index<0||index>=p->count)return NULL;
+ e=&gBtlStage->tex->ent[index];if(!e->pix||!e->pixOfs||e->pixSize<=0||e->tbpStep<=0||e->tbpStep>1024||e->cbpStep<0||e->cbpStep>16)return NULL;return e;
+}
+#endif

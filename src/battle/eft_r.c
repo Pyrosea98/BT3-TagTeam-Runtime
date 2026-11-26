@@ -1,7 +1,14 @@
 #include "common.h"
+#ifdef PORT
+extern int Port_StoryChargeHandActive(int);
+#endif
 
 #include "battle/eft_owner.h"
 #include "battle/eft_r.h"
+#ifdef PORT
+/* Capture while the hit arena is valid; never dereference copied shape pointers at clash end. */
+static float sTdStruggleRadius;
+#endif
 
 /*
  * Effect modules 0x174A70..0x178AB0 (see include/battle/eft_r.h for the list and the layouts).
@@ -462,6 +469,9 @@ void EftStruggle_Init(EftRTask *task, EftStruggleArg *arg) {
     r1 = &w->arg.rec[1];
     p0 = EftStruggle_GetRecRadius(r0);
     p1 = EftStruggle_GetRecRadius(r1);
+#ifdef PORT
+    sTdStruggleRadius=p0+p1;
+#endif
     if (p1 < p0) {
         EftRSrc *s0 = r0->src;
         EftRSrc *s1 = r1->src;
@@ -1185,7 +1195,7 @@ void EftKiBlast_Init(EftRTask *task, EftRArg *arg) {
     EftEmit_SetNode(&w->nodes, 1, arg->node, NULL);
     EftEmit_RefreshFixedNodes(arg->objId, &w->nodes);
     w->endFrames = EftEmit_GetEndFrames(w->set);
-    if (BtlCharApi_IsLockedOn(arg->objId)) {
+    if (arg->canHit && BtlCharApi_IsLockedOn(arg->objId)) {
         w->flags |= EFT_KIBLAST_HOMING;
     }
     BtlTask_SetOwnerTag(task, EFT_OWNER_TAG(arg->objId));
@@ -1209,7 +1219,7 @@ void EftKiBlast_Update(EftRTask *task) {
     EftKiBlast *w = task->work;
     EftRArg *arg = &w->arg;
 
-    if (!BtlScene_IsEffectStopped(arg->objId, 0)) {
+    if (!arg->canHit || !BtlScene_IsEffectStopped(arg->objId, 0)) {
         if (!(w->flags & EFT_KIBLAST_STOPPED)) {
             if (w->flags & EFT_KIBLAST_HOMING) {
                 EftAim_Home(&dir, &w->pose.pos, &w->pose.dir, arg->speed, arg->turn, arg->objId);
@@ -1449,11 +1459,19 @@ void EftBlastCharge_Update(EftRTask *task) {
         BtlTask_SetDead(task);
         return;
     }
-    if (!BtlScene_IsEffectStopped(arg->objId, 0)) {
+    if (!BtlScene_IsEffectStopped(arg->objId, 0)
+#ifdef PORT
+        || Port_StoryChargeHandActive(arg->objId)
+#endif
+    ) {
         BtlCharApi_GetNodePos(arg->objId, arg->node, &w->pos);
         EftEmit_RefreshFixedNodes(w->arg.objId, &w->nodes);
         EftBlastCharge_SpawnParts(w->arg.objId, task, w->set);
-        if (!BtlCharApi_IsChargingKiBlast(arg->objId)) {
+        if (!BtlCharApi_IsChargingKiBlast(arg->objId)
+#ifdef PORT
+            && !Port_StoryChargeHandActive(arg->objId)
+#endif
+        ) {
             w->flags |= EFT_BCHARGE_END;
         }
     }
@@ -2053,3 +2071,18 @@ void EftKiObj_Update(EftRTask *task) {
         }
     }
 }
+
+#ifdef PORT
+#include "mod_terrain_bridge.h"
+/* Called only by a decided beam struggle, before the native task is ended. */
+void Port_TerrainBeamStruggle(void){EftRTask*t;EftStruggle*w;float r,p;TdEvent e;extern void Port_TerrainStruggleContact(void*,void*);if(!gEftStruggle||!gEftStruggle->list||(t=gEftStruggle->list->first)==0||EFT_TASK_IS_DEAD(t)||t->cls->update!=EftStruggle_Update)return;w=t->work;r=sTdStruggleRadius;p=(gEftStruggle->side[0].power+gEftStruggle->side[1].power)*.5f;if(!isfinite(r)||r<=0)return;memset(&e,0,sizeof(e));e.owner=-1;e.fx=8;e.r=td_clamp(1.5f*r*td_clamp(sqrtf(td_max(p,1)),1,2),10,250);e.depth=td_min(120,e.r*.4f);Port_TerrainStruggleContact(&e,&w->pos);}
+#endif
+
+#ifdef PORT
+/* Cinematic-only native projectile: no hit record, homing, damage or ki cost. */
+int Port_StoryVisualKiBlast(int obj,const EftRVec*target,int speedQ8){
+ EftRArg arg;EftRVec from;float x,y,z,len;if(!target||!EftChar_GetList(obj,1))return 0;
+ memset(&arg,0,sizeof(arg));BtlCharApi_GetNodePos(obj,21,&from);x=target->x-from.x;y=target->y-from.y;z=target->z-from.z;len=sqrtf(x*x+y*y+z*z);if(len<.001f)return 0;
+ arg.dir=(EftRVec){x/len,y/len,z/len,0};arg.srcId=arg.objId=obj;arg.node=21;arg.kind=0;arg.type=0;arg.life=36;arg.speed=speedQ8/256.f;arg.radius=1.f;arg.unk2C=1.f;arg.canHit=0;EftKiBlast_Fire(arg);return 1;
+}
+#endif

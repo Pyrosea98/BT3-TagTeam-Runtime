@@ -53,7 +53,8 @@ static int as_cost(int i,int k){void*m=BtlMember_GetActive(BtlChar_Get(i));int m
 }
 static int as_canpay(int i,int k){void*m=BtlMember_GetActive(BtlChar_Get(i));return as_read(m,k==3?0x54:0x4c)>=as_cost(i,k);}
 static int as_count(int target,int kind,int pending){int j,n=0;for(j=0;j<16;j++)if(sAssist[j].target==target+1&&sAssist[j].kind==kind&&sAssist[j].state>=(pending?1:2))n++;return n;}
-static int as_find(int who){int j,n=BtlChar_GetCount();if(!as_local()||as_paused()||who<0||who>=n||who>=16||!as_free(who))return -1;
+extern int Port_StoryAssistBlocked(void);
+static int as_find(int who){int j,n=BtlChar_GetCount();if(!as_local()||as_paused()||Port_StoryAssistBlocked()||who<0||who>=n||who>=16||!as_free(who))return -1;
  for(j=0;j<n&&j<16;j++)if(j!=who&&Port_Team(j)==Port_Team(who)&&as_alive(j)){
   int k=as_kind(j);if(k&&Port_Setting(as_enabled(k),1)&&as_count(j,k,1)<as_max(k)&&!(sAssistPaidMask[j][k]&(1u<<who))&&as_near(who,j,as_range(k))&&as_canpay(who,k))return j;
  }return -1;
@@ -116,7 +117,7 @@ unsigned Port_AssistInput(int who,unsigned raw,unsigned r3){int press;if(who<0||
  if(press&&!(raw&0xFF00u)&&Port_TargetHuman(who)){int t=as_find(who);if(t>=0){as_begin(who,t);sAssist[who].blocked=1;return raw&~r3;}else {extern int Port_StoryActive(void);if(Port_StoryActive())fprintf(stderr,"bt3: story assist unavailable: actor%d action%d free%d (check nearby active clash, Ki, helper limit)\n",who,BtlAct_GetCurrent(BtlChar_Get(who)),as_free(who));}}
  return raw;
 }
-void Port_AssistTick(void){int i,n=BtlChar_GetCount();if(!as_local()){for(i=0;i<n&&i<16;i++)as_release(i);Port_AssistReset();return;}if(as_paused())return;if(n>16)n=16;
+void Port_AssistTick(void){int i,n=BtlChar_GetCount();if(!as_local()||Port_StoryAssistBlocked()){for(i=0;i<n&&i<16;i++)as_release(i);Port_AssistReset();return;}if(as_paused())return;if(n>16)n=16;
  for(i=0;i<n;i++)if(!as_kind(i)){memset(sAssistPaidCount[i],0,sizeof(sAssistPaidCount[i]));memset(sAssistPaidMask[i],0,sizeof(sAssistPaidMask[i]));}
  for(i=0;i<n;i++){
   NativeAssist*s=&sAssist[i];void*c=BtlChar_Get(i),*m;int t,k,a,want;

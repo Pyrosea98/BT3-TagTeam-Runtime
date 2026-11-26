@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <atomic>
+#include <cmath>
 #include <mutex>
 #include <string>
 #include "imgui.h"
@@ -69,6 +70,8 @@ int PortStages_Count(void);
 const char *PortSongs_Dir(void);                           // plat_songs.c
 const char *PortSongs_Name(int index);
 int PortSongs_Count(void);
+extern "C" void Port_Fx_Draw(void);                        // plat_fx.c: efectos propios (sangre), solo dibujo
+extern "C" int Port_Fx_Live(void);                         // 1 si hay algo que dibujar (admision del cuadro)
 int Port_Setting(const char *name, int def);   // plat_settings.c
 void Port_SettingSave(const char *name, int value);
 void Port_SettingText(const char *name, const char *def, char *out, int size);
@@ -1092,6 +1095,8 @@ static int chat_event(const SDL_Event *ev) {
            ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev->type == SDL_EVENT_MOUSE_BUTTON_UP || ev->type == SDL_EVENT_MOUSE_WHEEL;
 }
 
+extern "C" int Port_ModSelectActive(void);
+
 int Ui_Event(const SDL_Event *ev) {
     if (!sReady) {
         return 0;
@@ -1142,6 +1147,13 @@ int Ui_Event(const SDL_Event *ev) {
         ImGui_ImplSDL3_ProcessEvent(ev);
         return ev->type == SDL_EVENT_KEY_DOWN || ev->type == SDL_EVENT_KEY_UP || ev->type == SDL_EVENT_TEXT_INPUT ||
                ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev->type == SDL_EVENT_MOUSE_BUTTON_UP || ev->type == SDL_EVENT_MOUSE_WHEEL;
+    }
+    if (!sOpen && Port_ModSelectActive() &&
+        (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN || ev->type == SDL_EVENT_MOUSE_BUTTON_UP ||
+         ev->type == SDL_EVENT_MOUSE_MOTION)) {
+        // SDL routes mouse, touchpad and synthesized touch clicks through the same ImGui input.
+        ImGui_ImplSDL3_ProcessEvent(ev);
+        return 1;
     }
     if (!sOpen) {
         return 0;
@@ -1857,7 +1869,7 @@ static void sticks_panel(int player) {
         PortInput_Save();
     }
     ImGui::SetItemTooltip(mod_l10n("The game's own vibration (hits, clashes, charging), on this player's controller.\n"
-                          "The game's Options > Controller > Vibration has to be on as well: it is, unless you turned it off.\n"
+                          "This setting controls vibration; the retired game's option is not required.\n"
                           "The game gives none in a replay or for a side the computer plays."));
     ImGui::BeginDisabled(!on);
     ImGui::SameLine();
@@ -2081,8 +2093,8 @@ static void mod_training_settings(){
  {bool egg=Port_Setting("easter_eggs",0)!=0,eggCpu=Port_Setting("easter_eggs_cpu",0)!=0;bool es=Port_Setting("mod_language",1)==1;
  if(ImGui::Checkbox(es?"Easter eggs de combate":"Battle Easter eggs",&egg)){Port_SettingSave("easter_eggs",egg);Port_SettingsWrite();}
  if(ImGui::Checkbox(es?"La CPU también puede absorber":"CPU can also absorb",&eggCpu)){Port_SettingSave("easter_eggs_cpu",eggCpu);Port_SettingsWrite();}
- ImGui::TextWrapped("%s",es?"Algunos personajes pueden absorber a rivales o aliados para alcanzar nuevas formas. Si lo permites para la CPU, también podra hacerlo por su cuenta.":"Some fighters can absorb enemies or allies to reach new forms. Allow it for the CPU if you want it to do the same on its own.");
- ImGui::TextWrapped("%s",es?"El personaje absorbido desaparece de ese combate: no puede revivir ni volver a usarse. Tambien se puede absorber a alguien que ya haya caido.":"An absorbed fighter is removed from that battle: they cannot be revived or used again. Fallen fighters can also be absorbed.");
+ ImGui::TextWrapped("%s",es?"Algunos personajes pueden absorber a rivales o aliados para alcanzar nuevas formas. Si lo permites para la CPU, también podrá hacerlo por su cuenta.":"Some fighters can absorb enemies or allies to reach new forms. Allow it for the CPU if you want it to do the same on its own.");
+ ImGui::TextWrapped("%s",es?"El personaje absorbido desaparece de ese combate: no puede revivir ni volver a usarse. También se puede absorber a alguien que ya haya caído.":"An absorbed fighter is removed from that battle: they cannot be revived or used again. Fallen fighters can also be absorbed.");
  ImGui::TextWrapped("%s",es?"Cada transformación tiene sus propios requisitos de personajes y reservas.":"Each transformation has its own fighter and stock requirements.");}
  const char *policies[]={mod_l10n("Native"),mod_l10n("More often"),mod_l10n("When outmatched")};
  const char *presets[]={mod_l10n("Standard margin"),mod_l10n("Aggressive"),mod_l10n("Always")};
@@ -2192,12 +2204,17 @@ static void native_combo(const char*key,int field,const char*label,const char*co
 static void native_slider(const char*key,int field,const char*label,int lo,int hi){int v=Port_Setting(key,sNativeOptions[field].load(std::memory_order_acquire));if(ImGui::SliderInt(label,&v,lo,hi)){Port_SettingSave(key,v);Port_SettingsWrite();}}
 static void mod_battle_rules_settings(){
  bool es=Port_Setting("mod_language",1)==1;
+ bool blood=Port_Setting("blood_effects",0)!=0;if(ImGui::Checkbox(es?"Sangre":"Blood",&blood)){Port_SettingSave("blood_effects",blood?1:0);Port_SettingsWrite();}
+ const char*groundEn[]={"Off","Low","High"};const char*groundEs[]={"Desactivado","Bajo","Alto"};int groundFx=SDL_clamp(Port_Setting("ground_charge_fx",0),0,2);
+ if(ImGui::Combo(es?"Suelo al cargar Ki (experimental)":"Ki-charge ground effects (experimental)",&groundFx,es?groundEs:groundEn,3)){Port_SettingSave("ground_charge_fx",groundFx);Port_SettingsWrite();}
+ ImGui::TextWrapped("%s",es?"Pequeñas rocas y marcas sobre suelo firme. Bajo reduce las rocas. No deforma el terreno ni altera las colisiones.":"Small rocks and marks on solid ground. Low reduces rock count. Does not deform terrain or change collision.");
  const char*scalesEn[]={"Everyone with the same power","Slight power scale","Moderate power scale","Real Power Scale"};
- const char*scalesEs[]={"Todos con el mismo poder","Diferencias leves","Escala de poder moderada","Power Scale real"};
+ const char*scalesEs[]={"Todos con el mismo poder","Diferencias leves","Escala de poder moderada","Escala de poder real"};
  int preset=SDL_clamp(Port_Setting("power_scale_preset",3),0,3);
  if(ImGui::Combo(es?"Escala de poder":"Power scale",&preset,es?scalesEs:scalesEn,4)){Port_SettingSave("power_scale_preset",preset);Port_SettingsWrite();}
+ ImGui::TextWrapped("%s",es?"M = millón, MM = mil millones, B = billón, T = trillón.":"M = million, MM = billion, B = trillion, T = quintillion.");
  ImGui::TextWrapped("%s",es?"Igualado: mismos valores base. Leve: diferencias pequeñas. Moderado: ventaja notable sin golpes letales. Real: conserva todo el poder. Se aplica al próximo combate local; Historia y escenarios mantienen sus reglas.":"Equal: shared base stats. Slight: small differences. Moderate: meaningful advantages without one-hit knockouts. Real: full current power. Applies to the next local fight; Story and scenarios keep their own rules.");
- ImGui::TextWrapped("%s",es?"Moderado y Real: con 5 veces más poder, los golpes físicos no hacen tambalear al rival; con 50 veces más, tampoco lo hacen los agarres, rayos ni técnicas. El daño sigue aplicándose. Se compara el poder real de los personajes, antes de normalizarlo. Igualado y Leve no usan esta resistencia.":"Moderate and Real: a fighter with 5 times more power does not flinch from physical hits; at 50 times more power, grabs, beams and techniques cannot make them flinch either. Damage still applies. These thresholds compare original character power, before normalization. Equal and Slight do not use this resistance.");
+ ImGui::TextWrapped("%s",es?"Moderado y Real: con una diferencia de 5 veces, el rival más fuerte resiste el retroceso de los golpes físicos. Con 50 veces, también resiste el de agarres, rayos y técnicas. El daño del rival más débil se reduce según esa diferencia y puede dejar al más fuerte con 1 de vida. La regla compara el poder antes de normalizarlo y se aplica al combate local.":"Moderate and Real: at a 5-fold power gap, physical hits do not stagger the stronger fighter. At 50-fold, grabs, beams and techniques do not stagger them either. Damage from the weaker fighter is reduced by the power gap and can leave the stronger fighter at 1 health. These rules compare power before normalization and apply to local battles.");
  ImGui::Separator();
  const char*time[]={"60 s","90 s","180 s","240 s",es?"Sin límite":"Unlimited"};
  const char*levelEn[]={"Very easy","Easy","Normal","Hard","Very hard"};const char*levelEs[]={"Muy fácil","Fácil","Normal","Difícil","Muy difícil"};
@@ -2225,6 +2242,88 @@ static void mod_native_game_settings(){
  ImGui::TextWrapped("%s",es?"La asignación de botones y mandos está en Controles.":"Controller assignments and button bindings are in Controls.");
 }
 // F1 and Select > Settings share one full-screen mod shell and the same live consumers.
+/* Sangre y demas efectos propios (port/src/plat_fx.c). La imagen llega como RGBA, se sube UNA vez a una textura y
+   se dibuja en la lista de fondo, que es donde el port ya pinta su propio arte sobre el cuadro. (x, y) y `size`
+   vienen en la pagina 512 x 448 del juego, igual que las demas superposiciones; aca se pasan a pixeles de la
+   ventana con el rectangulo de presentacion. */
+static SDL_GPUTexture *fx_texture(const unsigned char *rgba,int w,int h){
+    struct FxTex { const unsigned char *key; SDL_GPUTexture *tex; };
+    static FxTex sFxTex[4];
+    static int sFxTexCount;
+    SDL_GPUTexture *tex = NULL;
+    int i;
+
+    if(!rgba||w<=0||h<=0)return NULL;
+    for (i = 0; i < sFxTexCount; i++) {
+        if (sFxTex[i].key == rgba) {
+            tex = sFxTex[i].tex;
+            break;
+        }
+    }
+    if (tex == NULL) {
+        size_t bytes = (size_t)w * (size_t)h * 4;
+        unsigned char *copy;
+        if (sFxTexCount >= 4) {
+            return NULL;
+        }
+        copy = (unsigned char *)malloc(bytes);
+        if (copy == NULL) {
+            return NULL;
+        }
+        memcpy(copy, rgba, bytes);
+        tex = make_strip(copy, bytes, (uint32_t)w, (uint32_t)h, 1); /* (hace free de copy) */
+        if (tex == NULL) {
+            return NULL;
+        }
+        sFxTex[sFxTexCount].key = rgba;
+        sFxTex[sFxTexCount].tex = tex;
+        sFxTexCount++;
+    }
+    return tex;
+}
+/* Tinte de la sangre: el sprite se guarda en gris (luminancia) y aca se le da el color del personaje
+   (mod_blood.h). Blanco = sin tinte. Lo fija Port_Fx_SetTint antes de dibujar. */
+static int sFxTintR = 255, sFxTintG = 255, sFxTintB = 255;
+extern "C" void Port_Fx_SetDrawTint(int r, int g, int b) { sFxTintR = r; sFxTintG = g; sFxTintB = b; }
+
+extern "C" void Port_Fx_DrawSprite(const unsigned char *rgba, int w, int h, float x, float y, float size, int alpha) {
+    if (rgba == NULL || w <= 0 || h <= 0 || alpha <= 0 ||
+        !(size > 0.f && size <= 96.f) || !std::isfinite(x) || !std::isfinite(y)) {
+        return;
+    }
+    SDL_GPUTexture *tex=fx_texture(rgba,w,h);if(!tex)return;
+    if (gUiPresentW <= 0 || gUiPresentH <= 0) {
+        return;
+    }
+    {
+        float sx = (float)gUiPresentW / 512.0f;
+        float sy = (float)gUiPresentH / 448.0f;
+        float px = (float)gUiPresentX + x * sx;
+        float py = (float)gUiPresentY + y * sy;
+        float half = size * sx * 0.5f;
+        float halfY = half * (float)h / (float)w;
+        ImDrawList *dl = ImGui::GetBackgroundDrawList();
+        dl->AddImage(ImTextureRef((ImTextureID)(intptr_t)tex), ImVec2(px - half, py - halfY), ImVec2(px + half, py + halfY),
+                     ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), IM_COL32(sFxTintR, sFxTintG, sFxTintB, alpha));
+    }
+}
+
+extern "C" void Port_Fx_DrawFluid(const unsigned char*rgba,int w,int h,float u0,float v0,float u1,float v1,float anchorV,float x0,float y0,float x1,float y1,int alpha){
+ if(!rgba||w<=0||h<=0||alpha<=0||gUiPresentW<=0||gUiPresentH<=0||!(u1>u0&&v1>v0)||
+    !std::isfinite(x0)||!std::isfinite(y0)||!std::isfinite(x1)||!std::isfinite(y1))return;
+ float sx=gUiPresentW/512.f,sy=gUiPresentH/448.f;
+ float ax=gUiPresentX+x0*sx,ay=gUiPresentY+y0*sy,dx=(x1-x0)*sx,dy=(y1-y0)*sy;
+ float len=std::sqrt(dx*dx+dy*dy);if(!(len>1.f))return;
+ float cap=gUiPresentW*.35f;if(len>cap){dx*=cap/len;dy*=cap/len;len=cap;}
+ float nx=-dy/len,ny=dx/len,thickness=len*(h*(v1-v0))/(w*(u1-u0));
+ float top=-thickness*(anchorV-v0)/(v1-v0),bottom=top+thickness;
+ SDL_GPUTexture*tex=fx_texture(rgba,w,h);if(!tex)return;
+ ImGui::GetBackgroundDrawList()->AddImageQuad(ImTextureRef((ImTextureID)(intptr_t)tex),
+  ImVec2(ax+nx*top,ay+ny*top),ImVec2(ax+dx+nx*top,ay+dy+ny*top),
+  ImVec2(ax+dx+nx*bottom,ay+dy+ny*bottom),ImVec2(ax+nx*bottom,ay+ny*bottom),
+  ImVec2(u0,v0),ImVec2(u1,v0),ImVec2(u1,v1),ImVec2(u0,v1),IM_COL32(sFxTintR,sFxTintG,sFxTintB,alpha));
+}
+
 static void build(void) {
     PortVideo v,was;GsGpu_GetSettings(&v);was=v;ImGuiIO &io=ImGui::GetIO();bool open=true;
     static double savedUntil;static bool savedOk;bool focusOptions=false,focusCategories=false;
@@ -2282,7 +2381,7 @@ static void build(void) {
         ImGui::SameLine();if(ImGui::Button(es?"Volver":"Back"))open=false;
         ImGui::SameLine();if(ImGui::Button(es?"Salir del juego":mod_l10n("Exit game")))Ui_QuitAsk();
         if(savedUntil>ImGui::GetTime()){ImGui::SameLine();ImGui::TextColored(savedOk?ImVec4(.45f,1,.66f,1):ImVec4(1,.46f,.38f,1),"%s",savedOk?(es?"Ajustes guardados":"Settings saved"):(es?"No se pudo guardar. Reintenta.":"Save failed. Please retry."));}
-        const ModPadHint hints[]={{MP_DPAD,es?"Elegir":"Choose"},{MP_RIGHT,es?"Opciones":"Options"},{MP_CROSS,es?"Editar":"Edit"},{MP_SQUARE,es?"Guardar":"Save"},{MP_LEFT,es?"Categorias":"Categories"},{MP_TRIANGLE,es?"Volver":"Back"},{MP_L1R1,es?"Cambiar categoría":"Change category"}};
+        const ModPadHint hints[]={{MP_DPAD,es?"Elegir":"Choose"},{MP_RIGHT,es?"Opciones":"Options"},{MP_CROSS,es?"Editar":"Edit"},{MP_SQUARE,es?"Guardar":"Save"},{MP_LEFT,es?"Categorías":"Categories"},{MP_TRIANGLE,es?"Volver":"Back"},{MP_L1R1,es?"Cambiar categoría":"Change category"}};
         mod_pad_hint_items(hints,7,scale,15);
         if(sModBodyFont)ImGui::PopFont();
     }ImGui::End();ImGui::PopStyleVar(2);ImGui::PopStyleColor(11);
@@ -2433,14 +2532,14 @@ static void meter_draw(void) {
         ImGui::Text(mod_l10n("%.0f fps   speed %.0f%%"), sFps, sSpeed);
         if (Port_NetStats(n)) {
             if (n[0] >= 0) {
-                ImGui::Text(mod_l10n("ping %d ms%s"), n[0], Port_LobbyRelayed() ? " (relay)" : "");
+                ImGui::Text(mod_l10n("ping %d ms%s"), n[0], Port_LobbyRelayed() ? mod_l10n(" (relay)") : "");
             } else {
                 ImGui::TextUnformatted("ping ...");
             }
             if (n[5] > 0) {
                 ImGui::Text(mod_l10n("rollbacks %d/s, %.1f frames"), n[1], (float)n[2] / 10.0f);
             } else {
-                ImGui::TextUnformatted("rollback off");
+                ImGui::TextUnformatted(mod_l10n("rollback off"));
             }
             ImGui::Text(mod_l10n("waited %d ms/s (%d times)"), n[4], n[3]);
             ImGui::Text(mod_l10n("delay %d%s, rollback up to %d"), n[6], n[7] ? " (auto)" : "", n[5]);
@@ -2737,7 +2836,7 @@ static bool frame_build(void) {
     if (sReady && !sUpdTold && update_latest() > PORT_RELEASE && SDL_GetTicks() >= sNoticeUntil) {
         int latest = update_latest(); // (told once, and not over another notice)
         sUpdTold = true;
-        SDL_snprintf(sNotice, sizeof(sNotice), "Update available: 0.%d.%d. F1 for the download page.", latest / 100, latest % 100);
+        SDL_snprintf(sNotice, sizeof(sNotice), mod_l10n("Update available: 0.%d.%d. F1 for the download page."), latest / 100, latest % 100);
         sNoticeUntil = SDL_GetTicks() + 10000;
     }
     bool notice = sNotice[0] != '\0' && SDL_GetTicks() < sNoticeUntil;
@@ -2757,6 +2856,8 @@ static bool frame_build(void) {
     bool bars = sReady && bars_on();
     bool battleHud=sReady&&mod_battle_hud_visible();
     bool storySubtitle=sReady&&mod_story_subtitle_visible();
+    /* Sangre: si hay un estallido vivo, el cuadro se construye aunque no haya ninguna otra superposicion. */
+    bool fxLive = Port_Fx_Live();
     PortModesView modes; // the main menu's hint of the extra modes
     Port_ModesView(&modes);
     bool tournament = sReady && tournament_visible();
@@ -2774,7 +2875,7 @@ static bool frame_build(void) {
     bool chat = online && (sChat || chat_recent());
     meter_count();
     sBuilt = false;
-    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !modesOn && !chat && !startup && !modMenu && !tournament && !battleHud && !storySubtitle && !modSelect && !modernStage)) {
+    if (!sReady || (!sOpen && !sQuit && !notice && !overlay && !meter && !names && !bars && !modesOn && !chat && !startup && !modMenu && !tournament && !battleHud && !storySubtitle && !modSelect && !modernStage && !fxLive)) {
         return false;
     }
     if (sPadHold && sCapKind != 2) { // a binding was taken: the controller works the window again once nothing is held
@@ -2806,6 +2907,9 @@ static bool frame_build(void) {
     ImGui_ImplSDL3_NewFrame();
     fonts_apply(); // (a face chosen for the fight panels, between two frames)
     ImGui::NewFrame();
+    /* La sangre del port se dibuja antes de cualquier salida temprana (creditos, sub-menus, ...): solo dibuja, el
+       tiempo lo lleva la simulacion (Battle_Update -> Port_Fx_Tick, detenido en pausa). */
+    Port_Fx_Draw();
     achievement_notifications();
     if (startup) { mod_startup_draw(); ImGui::Render(); return true; }
     if (bars) {
@@ -2872,7 +2976,7 @@ static bool frame_build(void) {
         ImGui::SetNextWindowBgAlpha(0.85f);
         if (ImGui::Begin("##notice", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
                                                ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings)) {
-            ImGui::TextUnformatted(sNotice);
+            ImGui::TextUnformatted(mod_l10n(sNotice));
         }
         ImGui::End();
     }

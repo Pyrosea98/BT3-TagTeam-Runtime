@@ -4,14 +4,18 @@
 #define MS_MAX 16 /* story drafts; the selector UI limits itself to MS_UI_MAX */
 #define MS_UI_MAX 10
 #define MS_ROSTER 302
-#define MS_CHARACTERS 329
+#define MS_CHARACTERS 330
 #define MS_PAGE 35
 #define MS_COLS 7
 #define MS_FORMS 7
+#define MS_POTARA_ROSTER_SET 0x4000 /* sidecar only: even Default can override inherited legacy values */
 #ifdef __cplusplus
 extern "C" {
 #endif
 typedef struct MsPick {int chara,costume,team,pad;int items[8];} MsPick;
+/* Pointer commands above 100 leave 1–100 available for slider values. */
+enum MsPotaraPointer { MS_POTARA_OPEN = 101, MS_POTARA_DEFAULT, MS_POTARA_APPLY, MS_POTARA_CANCEL };
+int Port_ModSelectTakePotaraPointer(void);
 int Port_RosterBrowse(int kind,MsPick *out,int count,int dp);
 typedef struct MsView {
  int active,phase,mode,a,total,slot,cursor,costume,roster_count,stage,stage_count,error,pad,loading,form_cursor,form_count,preset;
@@ -21,6 +25,7 @@ typedef struct MsView {
  MsPick pick[MS_MAX];
  int human_team[4],result_team,player_count; /* result_team is winning team + 1; zero hides it. */
  int team_count; /* 0 retains the original two-team/FFA layout. */
+ int potara_available, potara_red, potara_bars, potara_draft;
 } MsView;
 typedef struct MsStageView {int active,music,cursor,count,bgmCursor,bgmCount,preview;int stages[192],songs[160];} MsStageView;
 void Port_ModernStagePublish(const MsStageView *view);
@@ -41,6 +46,10 @@ int Port_ModSelectWinnerPad(void);
 int Port_ModSelectWinningTeam(void);
 int Port_ModSelectPlayerWin(void);
 int Port_ModSelectItems(int actor,unsigned short *out);
+int Port_ModSelectSaveCell(int chara);
+int Port_PotaraRedEnabled(int chara);
+int Port_PotaraHealthBars(int chara);
+void Port_PotaraSetOptions(int chara,int red,int healthBars);
 int Port_ModSelectEnabled(void);
 int Port_ModSelectCostumeOk(int chara,int costume);
 #ifdef __cplusplus
@@ -91,4 +100,10 @@ static int MS_TournamentValid(const MsView *s){
  }return 1;
 }
 static int MS_Move(int cursor,int delta,int count){if(count<1)return 0;return (cursor+delta%count+count)%count;}
+static int MS_PageMove(int cursor,int direction,int count){
+ if(count<1)return 0;
+ int page=MS_Move(cursor/MS_PAGE,direction,1+(count-1)/MS_PAGE);
+ int target=page*MS_PAGE+cursor%MS_PAGE;
+ return target<count?target:count-1;
+}
 #endif

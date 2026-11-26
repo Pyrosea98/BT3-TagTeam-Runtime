@@ -509,7 +509,19 @@ void UbTeamSel_Draw(void) {
     Flash_FindLabel(flash, NULL, "mc_name_text_l", &ref);
     TextBox_AttachLine(flash, &ref, 0, 0, gUbTeamSel->sel->chara, &gUbTeamSel->box[0]);
     Flash_FindLabel(flash, NULL, "mc_form_text_l", &ref);
-    TextBox_AttachLine(flash, &ref, 0, 0, gUbTeamSel->sel->chara, &gUbTeamSel->box[1]);
+#ifdef PORT
+    {
+        extern int Port_CharaPowerText(int, int, unsigned short *, int);
+        extern void TextBox_AttachString(MFlash *, MFlashRef *, s32, s32, u16 *, MTextBox *);
+        static u16 power[48];
+        if (Port_CharaPowerText(gUbTeamSel->sel->chara, (gUbTeamSel->sel->cur >= 0 && gUbTeamSel->sel->cur < UB_MEMBER_MAX) ? UT_CUR.color : 0, power, 48))
+            TextBox_AttachString(flash, &ref, 0, 0, power, &gUbTeamSel->box[1]);
+        else
+#endif
+        TextBox_AttachLine(flash, &ref, 0, 0, gUbTeamSel->sel->chara, &gUbTeamSel->box[1]);
+#ifdef PORT
+    }
+#endif
     if (gUbTeamSel->flags & UBSEL_DP) {
         uv.x0 = (gUbTeamSel->dpLevel % 2) * 0x40;
         uv.y0 = (gUbTeamSel->dpLevel / 2) * 0x20;

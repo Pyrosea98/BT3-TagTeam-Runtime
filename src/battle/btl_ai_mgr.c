@@ -1,4 +1,5 @@
 #include "common.h"
+#include <stdio.h>
 
 #ifndef AI_OTHER
 #ifdef PORT
@@ -789,3 +790,12 @@ void BtlAiMove_End(BtlAiWork *s) {
         act->depth--;
     }
 }
+
+#ifdef PORT
+void Port_StoryAiAudit(int actor,int chapter,int event){
+ BtlAiWork*w;
+ if(!gBtlAi||actor<0||actor>=BTLAI_SIDES)return;w=&gBtlAi->work[actor];
+ fprintf(stderr,"bt3: story sacrifice AI chapter%d event%d actor%d param%d level%d type%d depth%d phase%d step%d timer%d cooldown%d buttons%x\n",
+  chapter,event,actor,w->param!=0,w->level,w->type,w->seq.depth,w->seq.phase,w->seq.step,w->seq.timer,w->plan.cooldown,w->out.buttons);
+}
+#endif

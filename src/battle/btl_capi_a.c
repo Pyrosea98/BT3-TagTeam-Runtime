@@ -303,7 +303,29 @@ s32 BtlCharApi_GetPlayerObjUnk9C(s32 player, u32 n) {
 }
 
 /* Technique table (object +0x92C, slots 2..4) of fighter `player`. */
+#ifdef PORT
+/* The native FX builder reads this override only during the synchronous
+   initialization of the extra group. The object's native table stays bound. */
+static s32 sStoryUltimateFxActor = -1;
+static const void *sStoryUltimateFxTable;
+
+void Port_StoryBuildUltimateFx(s32 actor, void *def, const void *table)
+{
+    extern void EftShot_BuildParam(s32, s32, void *, s32);
+    sStoryUltimateFxActor = actor;
+    sStoryUltimateFxTable = table;
+    EftShot_BuildParam(actor, 4, def, 0);
+    sStoryUltimateFxTable = NULL;
+    sStoryUltimateFxActor = -1;
+}
+#endif
+
 void *BtlCharApi_GetPlayerSuperData(s32 player) {
+#ifdef PORT
+    if (player == sStoryUltimateFxActor && sStoryUltimateFxTable) {
+        return (void *)sStoryUltimateFxTable;
+    }
+#endif
     BtlCapiChr *chr = BtlChar_Get(player);
     BtlCapiObj *obj;
 

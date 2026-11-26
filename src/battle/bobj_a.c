@@ -389,22 +389,25 @@ static int Port_AnimValidateChannels(BobjAnim *a, u32 size) {
    motions, which follow in the same table) are returned in place. */
 BobjAnim *BtlObjAnim_Load(BobjObj *obj, void *buf, s32 anim, s32 *size) {
     void **tbl = (void **)&obj->mdl;
-    void *ret;
+    void *ret;void *motionData=anim>=0&&anim<BOBJ_ANIM_MAX?obj->mdl.anims[anim]:0;
+#ifdef PORT
+    {extern int Port_StoryGameplayBankForObject(void*,int);extern const void*Port_StoryGameplayClipBytes(int,int);int bank=Port_StoryGameplayBankForObject(obj,anim);const void*p=bank?Port_StoryGameplayClipBytes(bank,anim):0;if(bank)motionData=(void*)p;} /* A blank donor slot must stay blank, never fall back to cinematic data. */
+#endif
 
     if (anim >= BOBJ_ANIM_MAX) {
         ret = (tbl + anim)[0x2A]; /* mdl->anims[anim]: runs on into modelAnims[] and the tables behind it */
         *size = 1;
-    } else if (obj->mdl.anims[anim] != NULL) {
+    } else if (motionData != NULL) {
 #ifdef PORT
         /* BPE's first word is the decoded size; reject before writing past
            either 48 KiB native animation layer. */
-        if (*(u32 *)obj->mdl.anims[anim] < 0x94 ||
-            *(u32 *)obj->mdl.anims[anim] > BOBJ_WORK_LAYER_SIZE) {
+        if (*(u32 *)motionData < 0x94 ||
+            *(u32 *)motionData > BOBJ_WORK_LAYER_SIZE) {
             *size = 0;
             return NULL;
         }
 #endif
-        Bpe_Decode(obj->mdl.anims[anim], buf, size);
+        Bpe_Decode(motionData, buf, size);
 #ifdef PORT
         if (!Port_AnimValidateChannels((BobjAnim *)buf, (u32)*size)) return NULL;
 #endif
@@ -1319,6 +1322,18 @@ void BtlObjBody_Warp(BobjObj *obj, Vec4 *pos) {
     }
 }
 
+#ifdef PORT
+/* A Story hold skips stage push-out, not collider synchronization. Rush snap /
+   homing reads body.cur (+FA0), unlike beam tests against current part boxes. */
+void Port_StorySyncHeldBody(BobjObj*obj){
+ Vec4 center;
+ if(!obj||!BtlObjBody_Exists(obj))return;
+ BtlObjBody_BeginFrame(obj);BtlObjBody_Update(obj,0);
+ Vec4_Copy(&center,&obj->body.cur->center);
+ BtlObjBody_Warp(obj,&center); /* no sweep from the actor's old distant position */
+}
+#endif
+
 /* Rebuilds the body part boxes and this frame's attack volumes: one sphere or oriented box per attack node of
    the open hit window, plus their bounding box. Clears the top byte of the stage contact word. */
 void BtlObjHit_BuildVolumes(BobjObj *obj) {
@@ -1414,6 +1429,10 @@ void BtlObjPose_GetNodeMtx(BobjObj *obj, Mtx44 *out, BobjPart *part) {
             Quat_Slerp(&q, &part->rot, &obj->look.node2F, look->weight2F);
             break;
         case 0x31:
+#ifdef PORT
+            {extern int Port_StoryObjectJawQ12(void*),BtlObjMdl_HasJaw(BobjObj*);int q12=Port_StoryObjectJawQ12(obj);
+             if(q12>0&&BtlObjMdl_HasJaw(obj)){Quat_FromAxisAngle(&q,1,0,0,q12/4096.f);break;}}
+#endif
             if (BtlObj_IsJawActive(obj)) {
                 BtlObj_GetJawRot(obj, &q);
             } else {
@@ -1486,12 +1505,57 @@ void BtlObjXf_SetMtx(BobjObj *obj, Mtx44 *m) {
 
 /* World matrix of every node, parents first, on the VU0 matrix stack: node = local * parent. Stores the root
    node's world position in xf.rootPos. */
+#ifdef PORT
+static BobjObj*sStoryBodyObj;static BobjLook sStoryBodyLook;
+static Vec4 sStoryBodyPos[BOBJ_NODE_MAX];static Quat sStoryBodyRot[BOBJ_NODE_MAX];
+static unsigned char sStoryBodyValid[BOBJ_NODE_MAX];
+/* Capture the visible final pose before scripted KO replaces it with blow-away. */
+void Port_StoryCaptureBodyPose(void*raw,void*bottomOut){
+ BobjObj*obj=raw;int i;float bottom=-1e30f;memset(sStoryBodyValid,0,sizeof(sStoryBodyValid));sStoryBodyObj=obj;sStoryBodyLook=obj->look;
+ for(i=0;i<BOBJ_NODE_MAX;i++){BobjPart*p=BtlObj_GetNode(obj,i);if(!p)continue;
+  sStoryBodyPos[i]=p->pos;sStoryBodyRot[i]=p->rot;sStoryBodyValid[i]=1;
+  if(p->mtx.m[3][1]>bottom)bottom=p->mtx.m[3][1];}
+ *(float*)bottomOut=bottom;
+}
+void Port_StoryMoveCapturedBody(int id,const Vec4*d){extern void*BtlObj_Get(int);BobjObj*o=BtlObj_Get(id);int j;float v[3]={d->x,d->y,d->z};if(o!=sStoryBodyObj||!sStoryBodyValid[0])return;for(j=0;j<3;j++){float a=v[0]*o->xf.inv.m[0][j]+v[1]*o->xf.inv.m[1][j]+v[2]*o->xf.inv.m[2][j];((&sStoryBodyPos[0].x)[j])+=a;}BtlObjPose_CalcMatrices(o);}
+static void st_restore_body_pose(BobjObj*obj){
+ int i;extern int Port_StoryYamchaCorpseActive(void);
+ if(obj!=sStoryBodyObj)return;
+ if(!Port_StoryYamchaCorpseActive()){extern int Port_StoryYamchaPosePending(void);if(!Port_StoryYamchaPosePending())sStoryBodyObj=0;return;}
+ obj->look=sStoryBodyLook;
+ for(i=0;i<BOBJ_NODE_MAX;i++)if(sStoryBodyValid[i]){BobjPart*p=BtlObj_GetNode(obj,i);if(p){p->pos=sStoryBodyPos[i];p->rot=sStoryBodyRot[i];}}
+}
+#define BOBJ_STORY_STILL_POSES 2
+typedef struct BobjStoryStillPose {BobjObj*obj;int actor;BobjLook look;Vec4 pos[BOBJ_NODE_MAX];Quat rot[BOBJ_NODE_MAX];unsigned char valid[BOBJ_NODE_MAX];} BobjStoryStillPose;
+static BobjStoryStillPose sStoryStillPose[BOBJ_STORY_STILL_POSES];
+void Port_StoryClearStillBodyPoses(void){memset(sStoryStillPose,0,sizeof(sStoryStillPose));}
+void Port_StoryCaptureStillBodyPose(void*raw,int actor){
+ BobjObj*obj=raw;BobjStoryStillPose*slot=0;int i;
+ if(!obj||actor<0||actor>=32)return;
+ for(i=0;i<BOBJ_STORY_STILL_POSES;i++)if(sStoryStillPose[i].obj==obj||sStoryStillPose[i].obj==0){slot=&sStoryStillPose[i];if(slot->obj==obj)break;}
+ if(!slot)return;
+ memset(slot->valid,0,sizeof(slot->valid));slot->obj=obj;slot->actor=actor;slot->look=obj->look;
+ for(i=0;i<BOBJ_NODE_MAX;i++){BobjPart*p=BtlObj_GetNode(obj,i);if(!p)continue;slot->pos[i]=p->pos;slot->rot[i]=p->rot;slot->valid[i]=1;}
+}
+static void st_restore_still_body_pose(BobjObj*obj){
+ int i,j;extern int Port_StoryStillPoseActive(int);
+ for(i=0;i<BOBJ_STORY_STILL_POSES;i++)if(sStoryStillPose[i].obj==obj){BobjStoryStillPose*slot=&sStoryStillPose[i];
+  if(!Port_StoryStillPoseActive(slot->actor)){memset(slot,0,sizeof(*slot));continue;}
+  obj->look=slot->look;for(j=0;j<BOBJ_NODE_MAX;j++)if(slot->valid[j]){BobjPart*p=BtlObj_GetNode(obj,j);if(p){p->pos=slot->pos[j];p->rot=slot->rot[j];}}return;
+ }
+}
+#endif
+
 void BtlObjPose_CalcMatrices(BobjObj *obj) {
     Mtx44 local;
     BobjXf *xf = &obj->xf;
     BobjBone *bone = obj->mdl.nodes;
     BobjPart *part;
     s32 done;
+#ifdef PORT
+    st_restore_body_pose(obj);
+    st_restore_still_body_pose(obj);
+#endif
 
     Vu0Cur_ResetStack();
     Vu0Cur_LoadMtx(&obj->xf.mtx);
@@ -1779,6 +1843,9 @@ void BtlObjFace_Init(BobjObj *obj, BobjFace *face) {
    blink: every 90..179 updates the eyes close for 3..5 updates (two libc rand() draws per blink). */
 void BtlObjFace_StepBlink(BobjObj *obj, BobjFace *face) {
     BobjMdl *mdl = &obj->mdl;
+#ifdef PORT
+    {int i;extern int Port_StoryStillPoseActive(int);for(i=0;i<BOBJ_STORY_STILL_POSES;i++)if(sStoryStillPose[i].obj==obj&&Port_StoryStillPoseActive(sStoryStillPose[i].actor)){face->eye=1;return;}}
+#endif
 
     if (obj->flags & 0x4000000) {
         u32 n = face->eyeForced - 1;
@@ -2841,6 +2908,9 @@ s32 BtlObj_HasNode(BObj *obj, s32 node) {
 
 /* 1 when the geometry hanging on node `node` is drawn, given the part bits and the model's layout class. */
 s32 BtlObj_IsNodeShown(BObj *obj, s32 node) {
+#ifdef PORT
+    {extern int Port_StoryDetachedNodeVisible(void*,int);if(!Port_StoryDetachedNodeVisible(obj,node))return 0;}
+#endif
     s32 shown;
 
     shown = 1;
@@ -2930,6 +3000,9 @@ s32 BtlObj_IsNodeShown(BObj *obj, s32 node) {
         if (!(FLAG_BITS(obj)->visible && FLAG_BITS(obj)->part4)) {
             shown = 0;
         }
+#ifdef PORT
+        {extern int Port_StoryNativeHalo(void*);if(Port_StoryNativeHalo(obj))shown=1;}
+#endif
     } else if (node == 0x76) {
         if (FLAG_BITS(obj)->visible && FLAG_BITS(obj)->node76) {
             shown = 0;
@@ -3064,3 +3137,355 @@ BObjNode *BtlObj_GetNodeByCode(BObj *obj, u32 code) {
     }
     return NULL;
 }
+
+#ifdef PORT
+/* Retarget the native auxiliary's local joints onto the existing Story actor.
+   Copy matching bones only. No mesh, resource, animation-pointer or gameplay
+   identity is borrowed, so native partner release cannot destroy Gohan. */
+void Port_StoryCopyGenkiPose(void*source,void*destination){
+ BobjObj*src=source,*dst=destination;int i;
+ if(!src||!dst||src==dst)return;
+ dst->xf=src->xf;dst->look=src->look;
+ for(i=0;i<BOBJ_NODE_MAX;i++){BobjPart*a=(BobjPart*)BtlObj_GetNode((void*)src,i),*b=(BobjPart*)BtlObj_GetNode((void*)dst,i);
+  if(a&&b){b->pos=a->pos;b->rot=a->rot;}}
+ BtlObjPose_CalcMatrices((void*)dst);
+}
+#endif
+
+#ifdef PORT
+/* Authored scene sampling: reuse a real motion pose without looping a throw.
+   No event dispatch, hit, damage or animation-resource ownership change. */
+int Port_StorySampleObjectFrameQ8(void*raw,int frameQ8){
+ float frame=frameQ8/256.f;BobjObj*o=raw;int i;if(!o||!o->anim.layer[0].data)return 0;
+ if(frame<0)frame=0;if(frame>o->anim.layer[0].length)frame=(int)o->anim.layer[0].length;
+ o->anim.frame=o->anim.prevFrame=(float)frame;o->anim.blend=0;
+ for(i=0;i<2;i++)memset(o->anim.layer[i].cursor,0,sizeof(o->anim.layer[i].cursor));
+ BtlObjAnim_SamplePose(o);BtlObjPose_CalcMatrices(o);return 1;
+}
+int Port_StorySampleObjectFrame(void*raw,int frame){return Port_StorySampleObjectFrameQ8(raw,frame*256);}
+
+#endif
+
+#ifdef PORT
+/* Blend the native grabbing arm onto a calm standing body. The wrist remains
+   part of the real skeleton, so the carried actor follows the evaluated hand. */
+static BobjObj*sStoryCarryObj;static Vec4 sStoryCarryArmPos[13];static Quat sStoryCarryArmRot[13];static unsigned sStoryCarryArmMask;
+void Port_StoryCaptureCarryArm(void*raw){BobjObj*o=raw;int n;sStoryCarryObj=o;sStoryCarryArmMask=0;if(!o)return;
+ for(n=0;n<13;n++){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,0x21+n);if(p){sStoryCarryArmPos[n]=p->pos;sStoryCarryArmRot[n]=p->rot;sStoryCarryArmMask|=1u<<n;}}}
+void Port_StoryApplyCarryArm(void*raw){BobjObj*o=raw;int n;if(o!=sStoryCarryObj)return;
+ for(n=0;n<13;n++)if(sStoryCarryArmMask>>n&1u){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,0x21+n);if(p){p->pos=sStoryCarryArmPos[n];p->rot=sStoryCarryArmRot[n];}}
+ {BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,0x21);if(p){Quat lower,turned;Quat_FromAxisAngle(&lower,0,0,1,.45f);Quat_Mul(&turned,&lower,&p->rot);p->rot=turned;}}
+ BtlObjPose_CalcMatrices(o);
+}
+#endif
+
+#ifdef PORT
+/* The cut is at the start of the tail chain, not at its distal joint. */
+int Port_StoryTailBase(int objId,int node,Vec4*out){
+ extern void*BtlObj_Get(int);BobjObj*o=(BobjObj*)BtlObj_Get(objId);BobjPart*p;
+ if(!o||!out||node<0||node>=BOBJ_NODE_MAX||!(p=(BobjPart*)BtlObj_GetNode((void*)o,node)))return 0;
+ *out=*(Vec4*)p->mtx.m[3];out->w=1.f;return 1;
+}
+#endif
+
+#ifdef PORT
+void*Port_StoryCapTexture(int objId){extern void*BtlObj_Get(int);BobjObj*o=(BobjObj*)BtlObj_Get(objId);BobjTexTable*t;u8*r;
+ if(!o||!(t=o->mdl.faceTex)||!t->count||t->count>128)return 0;r=t->rec+(t->count-1)*64;{static int seen[32];extern void Port_Dbg3(const char*,int,int,int,int);int k=objId&31;if(seen[k]!=(int)t->count){seen[k]=t->count;Port_Dbg3("story cap table obj/count/marker/rec",objId,t->count,*(u32*)(r+40),(int)r);}}return *(u32*)(r+40)==0x5354554d?r:0;
+}
+int Port_StoryModelScale(int objId){extern void*BtlObj_Get(int);BobjObj*o=(BobjObj*)BtlObj_Get(objId);return o?(int)(o->xf.scale*10000.f):0;}
+#endif
+
+#ifdef PORT
+/* Exact open boundary of wounded Piccolo00888 part33. VIF skin weights are1.0 for all ten points. */
+int Port_StoryArmCapVertex(int objId,int index,Vec4*out){
+ static const float ring[10][3]={{3.944800f,-16.762200f,-0.356100f},{4.031800f,-16.564000f,-0.561600f},{4.358600f,-15.983900f,-0.713500f},{4.348200f,-15.510400f,-0.423400f},{4.346200f,-15.343700f,0.270400f},{4.339200f,-15.587800f,0.912200f},{4.448900f,-16.307300f,1.132700f},{4.631400f,-16.889900f,0.863900f},{4.266300f,-17.106500f,0.409900f},{4.157200f,-17.046000f,-0.027300f}};extern void*BtlObj_Get(int);BobjObj*o=(BobjObj*)BtlObj_Get(objId);BobjPart*p;Vec4 local={0,0,0,1};int i,j;
+ if(!o||!out||index<0||index>10||!(p=(BobjPart*)BtlObj_GetNode((void*)o,33)))return 0;
+ if(index==10){for(i=0;i<10;i++)for(j=0;j<3;j++)((float*)&local)[j]+=ring[i][j]*.1f;}
+ else for(j=0;j<3;j++)((float*)&local)[j]=ring[index][j];
+ local.x-=2.951515436f;local.y-=-16.425506592f;local.z-=.371844828f;
+ Mtx_MulVec4(out,&p->mtx,&local);out->w=1;return 1;
+}
+#endif
+
+#ifdef PORT
+/* Ape00690 proximal tail seam: all six vertices have parent (pelvis3) weight1. */
+int Port_StoryTailCapVertex(int objId,int index,Vec4*out){
+ static const float ring[6][3]={{-1.6803f,-26.1945f,4.8722f},{0,-26.5945f,4.8722f},{1.6803f,-26.1945f,4.8722f},{1.6803f,-23.7893f,6.2701f},{0,-23.1893f,5.6701f},{-1.6803f,-23.7893f,6.2701f}};
+ extern void*BtlObj_Get(int);BobjObj*o=(BobjObj*)BtlObj_Get(objId);BobjPart*p;Vec4 local={0,0,0,1};int i,j,k;float dx,dy,len;
+ if(!o||!out||index<0||index>24||!(p=(BobjPart*)BtlObj_GetNode((void*)o,3)))return 0;
+ if(index==12){local.x=0;local.y=-24.95857f;local.z=8.938f;}
+ else {k=index>=13?index-13:index;i=k/2;for(j=0;j<3;j++)((float*)&local)[j]=k&1?(ring[i][j]+ring[(i+1)%6][j])*.5f:ring[i][j];
+  if(index<12){dx=local.x;dy=local.y+24.95857f;len=sqrtf(dx*dx+dy*dy);if(len<.001f)len=1;local.x=dx*1.55f/len;local.y=-24.95857f+dy*1.55f/len;local.z=8.938f;}}
+ local.x-=.033792034f;local.y-=-23.513792038f;local.z-=-1.081344008f;Mtx_MulVec4(out,&p->mtx,&local);out->w=1;return 1;
+}
+#endif
+
+#ifdef PORT
+/* CH5 rise-to-strain handoff: capture native locals once, then use the
+   engine's quaternion/position blend on sampled poses, without events. */
+void Port_StoryBlendSampledPose(void*raw,int capture,int weightQ12){
+ BobjObj*o=raw;float t,w;BobjPart*root;if(!o)return;
+ if(capture){BtlObjAnim_StartBlend(o,1.f);return;}
+ t=weightQ12/4096.f;if(t<0)t=0;if(t>1)t=1;o->anim.blend=t;
+ BtlObjAnim_SamplePose(o);
+ /* The ordinary native blend skips root0. Include it for this authored
+    handoff so a clip's local root offset cannot pop through the floor. */
+ w=t*t*(3.f-2.f*t);root=(BobjPart*)BtlObj_GetNode((void*)o,0);
+ if(root){Vec4_Lerp(&root->pos,&root->fromPos,&root->pos,w);Quat_Slerp(&root->rot,&root->rot,&root->fromRot,w);}
+ BtlObjPose_CalcMatrices((void*)o);o->anim.blend=0;
+}
+#endif
+
+#ifdef PORT
+/* A scene-only rigid attachment in evaluated torso space. Normalise the
+   skeleton bases so the child keeps his own scale. Row-vector matrices. */
+void Port_StoryAttachBack(int childId,int holderId,float backDistance){
+ extern void*BtlObj_Get(int);BobjObj*c=BtlObj_Get(childId),*h=BtlObj_Get(holderId);BobjPart*cp,*hp;
+ Mtx44 from,to,inv,delta,result;int i,j,k;
+ if(!c||!h||!(cp=(BobjPart*)BtlObj_GetNode((void*)c,17))||!(hp=(BobjPart*)BtlObj_GetNode((void*)h,17)))return;
+ from=cp->mtx;to=hp->mtx;
+ for(i=0;i<3;i++){float a=0,b=0;for(j=0;j<3;j++){a+=from.m[i][j]*from.m[i][j];b+=to.m[i][j]*to.m[i][j];}
+  a=sqrtf(a);b=sqrtf(b);if(a<.001f||b<.001f)return;
+  for(j=0;j<3;j++){from.m[i][j]/=a;to.m[i][j]/=b;}}
+ for(j=0;j<3;j++)to.m[3][j]+=to.m[2][j]*backDistance;
+ Mtx_InverseRT(&inv,&from);
+ for(i=0;i<4;i++)for(j=0;j<4;j++){delta.m[i][j]=0;for(k=0;k<4;k++)delta.m[i][j]+=inv.m[i][k]*to.m[k][j];}
+ for(i=0;i<4;i++)for(j=0;j<4;j++){result.m[i][j]=0;for(k=0;k<4;k++)result.m[i][j]+=c->xf.mtx.m[i][k]*delta.m[k][j];}
+ BtlObjXf_SetMtx(c,&result);BtlObjPose_CalcMatrices(c);
+}
+#endif
+
+#ifdef PORT
+/* Explicit cinematic sampling. A separate resource never mutates mdl.anims or
+   another chapter's bank. Bounded decoded layer, native validation and sampler. */
+int Port_StorySampleChapterClip(int objId,int bank,int motion,int frameQ8){
+ extern const void*Port_StoryClipBytes(int,int);extern void*BtlObj_Get(int);
+ BobjObj*o=BtlObj_Get(objId);const void*src;int size;static const void*last[32];static BobjObj*owner[32];
+ if(!o||objId<0||objId>=32||!(src=Port_StoryClipBytes(bank,motion)))return 0;
+ if(owner[objId]!=o||last[objId]!=src||o->anim.layer[0].id!=motion||o->anim.layer[0].data!=o->work->layer[0]){
+  Bpe_Decode((void*)src,o->work->layer[0],&size);
+  if(size<0x94||size>BOBJ_WORK_LAYER_SIZE||!Port_AnimValidateChannels((BobjAnim*)o->work->layer[0],size))return 0;
+  o->anim.layer[0].data=(BobjAnim*)o->work->layer[0];o->anim.layer[0].data->eventCount=0; /* sampled choreography: no combat or projectile events */
+  o->anim.layer[0].length=o->anim.layer[0].data->length;o->anim.layer[0].id=motion;
+  o->anim.manual=1;o->anim.blend=0;owner[objId]=o;last[objId]=src;
+ }
+ return Port_StorySampleObjectFrameQ8(o,frameQ8);
+}
+#endif
+
+
+#ifdef PORT
+/* Scene-only pointing hand: retain native finger geometry, aim the evaluated
+   arm as a rigid chain over an idle torso. No shared bone/resource mutation. */
+static Mtx44 sStoryPointArm[14];static Quat sStoryPointRot[14];static unsigned sStoryPointValid;
+void Port_StoryCapturePointArm(int id){extern void*BtlObj_Get(int);BobjObj*o=BtlObj_Get(id);int i;sStoryPointValid=0;if(!o)return;for(i=0;i<13;i++){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,19+i);if(!p)continue;sStoryPointArm[i]=p->mtx;sStoryPointRot[i]=p->rot;sStoryPointValid|=1u<<i;}}
+void Port_StoryApplyPointArm(int id,float yaw){
+ extern void*BtlObj_Get(int);extern void Port_Dbg3(const char*,int,int,int,int);
+ static BobjObj*owner;static float lastYaw;static Quat aim;static int valid;
+ BobjObj*o=BtlObj_Get(id);BobjPart*shoulder,*hand,*elbow;int n,i,j,trial,pass;float best=-2.f,len,dot;Quat original,delta,conj,candidate,winner;Mtx44 parent,inv;Vec4 from,to,world={sinf(yaw),0,cosf(yaw),0};
+ if(!o||!(sStoryPointValid&1u)||!(sStoryPointValid&4u)||!(shoulder=(BobjPart*)BtlObj_GetNode((void*)o,19))||!(hand=(BobjPart*)BtlObj_GetNode((void*)o,21)))return;
+ {BobjPart*torso=(BobjPart*)BtlObj_GetNode((void*)o,17);BobjPart*head=(BobjPart*)BtlObj_GetNode((void*)o,46);if(torso){Quat base=torso->rot,turn,q,chosen;float score=-1e20f,angle=0;int k;for(k=0;k<2;k++){float a=k?.9f:-.9f,v;Quat_FromAxisAngle(&turn,0,1,0,a);Quat_Mul(&q,&base,&turn);torso->rot=q;BtlObjPose_CalcMatrices(o);v=(shoulder->mtx.m[3][0]-torso->mtx.m[3][0])*world.x+(shoulder->mtx.m[3][2]-torso->mtx.m[3][2])*world.z;if(v>score){score=v;chosen=q;angle=a;}}torso->rot=chosen;if(head){Quat_FromAxisAngle(&turn,0,1,0,-angle);Quat_Mul(&q,&head->rot,&turn);head->rot=q;}}}BtlObjPose_CalcMatrices(o);
+ for(n=0;n<13;n++){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,19+n);if(p&&(sStoryPointValid>>n&1u))p->rot=sStoryPointRot[n];}
+ elbow=(BobjPart*)BtlObj_GetNode((void*)o,20);if(elbow)Quat_SetIdentity(&elbow->rot);
+ if(valid&&owner==o&&fabsf(lastYaw-yaw)<.001f){shoulder->rot=aim;BtlObjPose_CalcMatrices(o);return;}
+ BtlObjPose_CalcMatrices(o);
+ /* Resolve native quaternion composition by measured endpoint alignment.
+    This runs once per fixed scene orientation, then reuses the local pose. */
+ for(pass=0;pass<2;pass++){
+  parent=shoulder->parent;for(i=0;i<3;i++){len=0;for(j=0;j<3;j++)len+=parent.m[i][j]*parent.m[i][j];len=sqrtf(len);if(len<.001f)return;for(j=0;j<3;j++)parent.m[i][j]/=len;}Mtx_InverseRT(&inv,&parent);
+  {float a[3];for(i=0;i<3;i++)a[i]=hand->mtx.m[3][i]-shoulder->mtx.m[3][i];len=sqrtf(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]);if(len<.001f)return;
+   for(j=0;j<3;j++){((float*)&from)[j]=((float*)&to)[j]=0;for(i=0;i<3;i++){((float*)&from)[j]+=a[i]/len*inv.m[i][j];((float*)&to)[j]+=((float*)&world)[i]*inv.m[i][j];}}from.w=to.w=0;}
+  Quat_FromVectors(&delta,&from,&to,1.f);Quat_Conjugate(&conj,&delta);original=shoulder->rot;winner=original;best=-2;
+  for(trial=0;trial<4;trial++){if(trial==0)Quat_Mul(&candidate,&delta,&original);else if(trial==1)Quat_Mul(&candidate,&original,&delta);else if(trial==2)Quat_Mul(&candidate,&conj,&original);else Quat_Mul(&candidate,&original,&conj);
+   shoulder->rot=candidate;BtlObjPose_CalcMatrices(o);{float x=hand->mtx.m[3][0]-shoulder->mtx.m[3][0],y=hand->mtx.m[3][1]-shoulder->mtx.m[3][1],z=hand->mtx.m[3][2]-shoulder->mtx.m[3][2];len=sqrtf(x*x+y*y+z*z);dot=len>.001f?(x*world.x+z*world.z)/len:-2;}if(dot>best){best=dot;winner=candidate;}}
+  shoulder->rot=winner;BtlObjPose_CalcMatrices(o);if(best>.999f)break;
+ }
+ aim=shoulder->rot;owner=o;lastYaw=yaw;valid=1;Port_Dbg3("story pointing arm alignment",id,(int)(best*1000),(int)(len*100),0);
+}
+
+int Port_StoryFinalClipCenter(int id,Vec4*out){extern void*BtlObj_Get(int);BobjObj*o=BtlObj_Get(id);BobjPart*p;float frame,prev,blend;if(!o||!out)return 0;frame=o->anim.frame;prev=o->anim.prevFrame;blend=o->anim.blend;if(!Port_StorySampleObjectFrame(o,10000))return 0;p=(BobjPart*)BtlObj_GetNode((void*)o,3);if(!p)return 0;out->x=p->mtx.m[3][0];out->y=p->mtx.m[3][1];out->z=p->mtx.m[3][2];out->w=1;Port_StorySampleObjectFrameQ8(o,(int)(frame*256));o->anim.prevFrame=prev;o->anim.blend=blend;return 1;}
+#endif
+
+#ifdef PORT
+void Port_StoryIdlePointBase(int id){extern void*BtlObj_Get(int);BobjObj*o=BtlObj_Get(id);if(o){BtlObjAnim_Play((void*)o,0,0,1);Port_StorySampleObjectFrame(o,0);}}
+#endif
+
+#ifdef PORT
+void Port_StoryMourningHead(int id){extern void*BtlObj_Get(int);BobjObj*o=BtlObj_Get(id);int n;if(!o)return;for(n=46;n<=47;n++){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,n);if(p)Quat_SetIdentity(&p->rot);}BtlObjPose_CalcMatrices(o);}
+#endif
+
+#ifdef PORT
+void Port_StoryAlignCorpse(int id,const Vec4*center,float floor){
+ extern void*BtlObj_Get(int);BobjObj*o=BtlObj_Get(id);BobjPart*p;Mtx44 m;float bottom=-1e20f,dx,dz,dy;int i;if(!o||!center)return;
+ p=(BobjPart*)BtlObj_GetNode((void*)o,3);if(!p)return;dx=center->x-p->mtx.m[3][0];dz=center->z-p->mtx.m[3][2];
+ /* Root/control nodes can remain at the actor origin above a curled body. Only the evaluated body chain determines contact. */{BobjBone*b=o->mdl.nodes;int guard=0;while(b&&guard++<71){if(b->id>=3&&b->id<=47){p=(BobjPart*)BtlObj_GetNode((void*)o,b->id);if(p&&p->mtx.m[3][1]>bottom)bottom=p->mtx.m[3][1];}if(b->last||b->next<=0)break;b=(BobjBone*)((u8*)b+b->next);}}
+ dy=floor-bottom;{extern void Port_Dbg3(const char*,int,int,int,int);static int once;if(!once++){Port_Dbg3("story corpse alignment diagnostic",(int)(floor*100),(int)(bottom*100),(int)(dy*100),(int)(o->xf.mtx.m[3][1]*100));}}if(bottom<-1e19f||fabsf(dy)>200.f)return;m=o->xf.mtx;m.m[3][0]+=dx;m.m[3][1]+=dy;m.m[3][2]+=dz;BtlObjXf_SetMtx(o,&m);BtlObjPose_CalcMatrices(o);
+}
+#endif
+
+#ifdef PORT
+void Port_StoryOffsetVisual(int id,const Vec4*d){extern void*BtlObj_Get(int);BobjObj*o=BtlObj_Get(id);Mtx44 m;if(!o||!d)return;m=o->xf.mtx;m.m[3][0]+=d->x;m.m[3][1]+=d->y;m.m[3][2]+=d->z;BtlObjXf_SetMtx(o,&m);BtlObjPose_CalcMatrices(o);}
+#endif
+
+#ifdef PORT
+/* Isolate render parts; never collapse skin matrices (weights may reference neighbours). */
+static BobjObj*sStoryForearm;static Vec4 sStoryForearmVelocity;static float sStoryForearmFloor,sStoryForearmGravity,sStoryForearmThickness;static int sStoryForearmGrounded;
+void Port_StoryDetachedClear(void){sStoryForearm=0;}
+int Port_StoryDetachedNodeVisible(void*obj,int node){return obj!=(void*)sStoryForearm||(node>=34&&node<=44);}
+int Port_StoryDetachedCapture(int source,int dest,float floor,float h){
+ extern void*BtlObj_Get(int);BobjObj*a=BtlObj_Get(source),*b=BtlObj_Get(dest);BobjBone*bone;int guard=0;if(!a||!b)return 0;
+ b->xf=a->xf;b->look=a->look;bone=a->mdl.nodes;
+ while(bone&&guard++<71){BobjPart*x=(BobjPart*)BtlObj_GetNode((void*)a,bone->id),*y=(BobjPart*)BtlObj_GetNode((void*)b,bone->id);if(x&&y){y->pos=x->pos;y->rot=x->rot;y->mtx=x->mtx;y->parent=x->parent;}if(bone->last||bone->next<=0)break;bone=(BobjBone*)((u8*)bone+bone->next);}
+ sStoryForearm=b;sStoryForearmGrounded=0;sStoryForearmThickness=h*.035f;sStoryForearmFloor=floor;sStoryForearmGravity=h*.008f;sStoryForearmVelocity=(Vec4){h*.018f,h*.02f,h*.01f,0};return 1;
+}
+/* Native arm bounds include a broad body envelope. Ground the isolated chain
+   with its own wrist/finger joints and a small skin clearance instead. */
+static float story_arm_bottom(BobjObj*o){float low=-1e20f;int n;for(n=34;n<=44;n++){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,n);if(p&&p->mtx.m[3][1]>low)low=p->mtx.m[3][1];}return low+sStoryForearmThickness;}
+static void story_arm_rotate_vec(float*v,const Vec4*a,float c,float sn){float x=v[0],y=v[1],z=v[2],d=(x*a->x+y*a->y+z*a->z)*(1-c);v[0]=x*c+(a->y*z-a->z*y)*sn+a->x*d;v[1]=y*c+(a->z*x-a->x*z)*sn+a->y*d;v[2]=z*c+(a->x*y-a->y*x)*sn+a->z*d;}
+static void story_arm_lie_flat(BobjObj*o){BobjPart*elbow=(BobjPart*)BtlObj_GetNode((void*)o,34),*hand=(BobjPart*)BtlObj_GetNode((void*)o,35);BobjBone*b=o->mdl.nodes;Vec4 pivot,v,target,axis;float len,flat,c,sn;int guard=0,i,j;if(!elbow||!hand)return;pivot=*(Vec4*)elbow->mtx.m[3];v.x=hand->mtx.m[3][0]-pivot.x;v.y=hand->mtx.m[3][1]-pivot.y;v.z=hand->mtx.m[3][2]-pivot.z;len=sqrtf(v.x*v.x+v.y*v.y+v.z*v.z);flat=sqrtf(v.x*v.x+v.z*v.z);if(len<.001f)return;v.x/=len;v.y/=len;v.z/=len;target=(Vec4){flat>.001f?v.x*len/flat:1,0,flat>.001f?v.z*len/flat:0,0};axis=(Vec4){v.y*target.z,v.z*target.x-v.x*target.z,-v.y*target.x,0};sn=sqrtf(axis.x*axis.x+axis.y*axis.y+axis.z*axis.z);if(sn<.001f)return;axis.x/=sn;axis.y/=sn;axis.z/=sn;c=v.x*target.x+v.z*target.z;
+ while(b&&guard++<71){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,b->id);if(p){Mtx44*m[2]={&p->mtx,&p->parent};for(j=0;j<2;j++){for(i=0;i<3;i++)story_arm_rotate_vec(m[j]->m[i],&axis,c,sn);for(i=0;i<3;i++)m[j]->m[3][i]-=((float*)&pivot)[i];story_arm_rotate_vec(m[j]->m[3],&axis,c,sn);for(i=0;i<3;i++)m[j]->m[3][i]+=((float*)&pivot)[i];}}if(b->last||b->next<=0)break;b=(void*)((u8*)b+b->next);}}
+void Port_StoryDetachedMove(void){BobjObj*o=sStoryForearm;BobjBone*bone;BobjPart*p;float low;int k,guard=0;if(!o||sStoryForearmGrounded)return;low=story_arm_bottom(o);if(low<-1e19f)return;sStoryForearmVelocity.y+=sStoryForearmGravity;
+ if(low+sStoryForearmVelocity.y>=sStoryForearmFloor-.08f){story_arm_lie_flat(o);low=story_arm_bottom(o);sStoryForearmVelocity.y=sStoryForearmFloor-.08f-low;sStoryForearmGravity=0;sStoryForearmVelocity.x=0;sStoryForearmVelocity.z=0;sStoryForearmGrounded=1;
+  {extern void Port_Dbg3(const char*,int,int,int,int);
+   Port_Dbg3("story Tien forearm landed",(int)(sStoryForearmFloor*100),(int)(low*100),0,0);}
+ }
+ bone=o->mdl.nodes;while(bone&&guard++<71){p=(BobjPart*)(BobjPart*)BtlObj_GetNode((void*)o,bone->id);if(p)for(k=0;k<3;k++){p->mtx.m[3][k]+=((float*)&sStoryForearmVelocity)[k];p->parent.m[3][k]+=((float*)&sStoryForearmVelocity)[k];}if(bone->last||bone->next<=0)break;bone=(void*)((u8*)bone+bone->next);}for(k=0;k<3;k++){o->xf.mtx.m[3][k]+=((float*)&sStoryForearmVelocity)[k];((float*)&o->xf.rootPos)[k]+=((float*)&sStoryForearmVelocity)[k];}
+}
+
+#endif
+
+#ifdef PORT
+/* Paired CH8 authoring: native retargeting, rotations only, never bone stretching. */
+int Port_StoryRetargetClip(int id,int source,int bank,int motion,int frameQ8){
+ extern const void*Port_StoryClipBytes(int,int);extern void*BtlObj_Get(int);BobjObj*o=BtlObj_Get(id),*src=BtlObj_Get(source);const void*bytes;int size;BobjAnim*a;
+ if(!o||!src||!(bytes=Port_StoryClipBytes(bank,motion)))return 0;
+ Bpe_Decode((void*)bytes,o->work->layer[0],&size);a=(BobjAnim*)o->work->layer[0];if(size<0x94||size>BOBJ_WORK_LAYER_SIZE||!Port_AnimValidateChannels(a,size))return 0;
+ BtlObjAnim_Retarget(a,o,src,0,0);a->eventCount=0;o->anim.layer[0].data=a;o->anim.layer[0].length=a->length;o->anim.layer[0].id=motion;o->anim.manual=1;o->anim.blend=0;
+ return Port_StorySampleObjectFrameQ8(o,frameQ8);
+}
+/* Keep Piccolo's own standing body; borrow only the donor's grip/finger rotations. */
+void Port_StoryTailBasePose(int id,int source){extern void*BtlObj_Get(int);BobjObj*o=BtlObj_Get(id);BobjBone*b;Vec4 pos[71];Quat rot[71],arm[26];unsigned char valid[71]={0};int guard=0,n;if(!o)return;Port_StoryIdlePointBase(id);b=o->mdl.nodes;
+ while(b&&guard++<71){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,b->id);if(p&&b->id<71){pos[b->id]=p->pos;rot[b->id]=p->rot;valid[b->id]=1;}if(b->last||b->next<=0)break;b=(void*)((u8*)b+b->next);}
+ if(!Port_StoryRetargetClip(id,source,16,284,120*256))return;for(n=19;n<=44;n++){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,n);arm[n-19]=p?p->rot:(Quat){0,0,0,1};}
+ for(n=0;n<71;n++)if(valid[n]){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,n);if(p){p->pos=pos[n];p->rot=n>=19&&n<=44?arm[n-19]:rot[n];}}BtlObjPose_CalcMatrices(o);
+}
+static void story_aim_joint(BobjObj*o,int joint,int end,const Vec4*target){
+ BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,joint),*e=(BobjPart*)BtlObj_GetNode((void*)o,end);int pass,i,j,k;float len,best;Mtx44 parent,inv;Vec4 from,to,want;Quat delta,conj,base,q,win;
+ if(!p||!e)return;
+ for(pass=0;pass<2;pass++){
+  parent=p->parent;for(i=0;i<3;i++){len=0;for(j=0;j<3;j++)len+=parent.m[i][j]*parent.m[i][j];len=sqrtf(len);if(len<.001f)return;for(j=0;j<3;j++)parent.m[i][j]/=len;}Mtx_InverseRT(&inv,&parent);
+  want.x=target->x-p->mtx.m[3][0];want.y=target->y-p->mtx.m[3][1];want.z=target->z-p->mtx.m[3][2];len=sqrtf(want.x*want.x+want.y*want.y+want.z*want.z);if(len<.001f)return;want.x/=len;want.y/=len;want.z/=len;
+  for(j=0;j<3;j++){((float*)&from)[j]=((float*)&to)[j]=0;for(i=0;i<3;i++){((float*)&from)[j]+=(e->mtx.m[3][i]-p->mtx.m[3][i])*inv.m[i][j];((float*)&to)[j]+=((float*)&want)[i]*inv.m[i][j];}}from.w=to.w=0;
+  Vec3_Normalize(&from,&from);if(from.x*to.x+from.y*to.y+from.z*to.z<-.9999f){Vec4 axis={-from.y,from.x,0,0};if(fabsf(from.z)>.9f)axis=(Vec4){0,-from.z,from.y,0};Vec3_Normalize(&axis,&axis);Quat_FromAxisAngle(&delta,axis.x,axis.y,axis.z,3.14159265f);}else Quat_FromVectors(&delta,&from,&to,1.f);
+  Quat_Conjugate(&conj,&delta);base=p->rot;win=base;best=-2;
+  for(k=0;k<4;k++){if(k==0)Quat_Mul(&q,&delta,&base);else if(k==1)Quat_Mul(&q,&base,&delta);else if(k==2)Quat_Mul(&q,&conj,&base);else Quat_Mul(&q,&base,&conj);p->rot=q;BtlObjPose_CalcMatrices(o);
+   {float x=e->mtx.m[3][0]-p->mtx.m[3][0],y=e->mtx.m[3][1]-p->mtx.m[3][1],z=e->mtx.m[3][2]-p->mtx.m[3][2],v;len=sqrtf(x*x+y*y+z*z);v=len>.001f?(x*want.x+y*want.y+z*want.z)/len:-2;if(v>best){best=v;win=q;}}}
+  p->rot=win;BtlObjPose_CalcMatrices(o);if(best>.999f)break;
+ }
+}
+static void story_reach_hand(BobjObj*o,int shoulder,int elbow,int hand,const Vec4*target){
+ BobjPart*s=(BobjPart*)BtlObj_GetNode((void*)o,shoulder),*e=(BobjPart*)BtlObj_GetNode((void*)o,elbow),*h=(BobjPart*)BtlObj_GetNode((void*)o,hand);Vec4 d,b,w;float l1,l2,len,along,bend,projection;int i;
+ if(!s||!e||!h)return;l1=l2=len=0;for(i=0;i<3;i++){float x=e->mtx.m[3][i]-s->mtx.m[3][i],y=h->mtx.m[3][i]-e->mtx.m[3][i];l1+=x*x;l2+=y*y;((float*)&d)[i]=((const float*)target)[i]-s->mtx.m[3][i];len+=((float*)&d)[i]*((float*)&d)[i];}l1=sqrtf(l1);l2=sqrtf(l2);len=sqrtf(len);if(l1<.001f||l2<.001f||len<.001f)return;
+ for(i=0;i<3;i++)((float*)&d)[i]/=len;if(len>(l1+l2)*.995f)len=(l1+l2)*.995f;if(len<fabsf(l1-l2)+.001f)len=fabsf(l1-l2)+.001f;
+ projection=0;for(i=0;i<3;i++){((float*)&b)[i]=e->mtx.m[3][i]-s->mtx.m[3][i];projection+=((float*)&b)[i]*((float*)&d)[i];}bend=0;for(i=0;i<3;i++){((float*)&b)[i]-=((float*)&d)[i]*projection;bend+=((float*)&b)[i]*((float*)&b)[i];}bend=sqrtf(bend);if(bend<.001f){b=(Vec4){d.z,0,-d.x,0};Vec3_Normalize(&b,&b);}else for(i=0;i<3;i++)((float*)&b)[i]/=bend;
+ along=(l1*l1-l2*l2+len*len)/(2*len);bend=l1*l1-along*along;bend=sqrtf(bend>0?bend:0);for(i=0;i<3;i++)((float*)&w)[i]=s->mtx.m[3][i]+((float*)&d)[i]*along+((float*)&b)[i]*bend;w.w=1;
+ story_aim_joint(o,shoulder,elbow,&w);story_aim_joint(o,elbow,hand,target);
+}
+/* One hand reaches from the freshly sampled grounded pose for each pull. */
+void Port_StoryCrawlReach(int id,int right,float yaw,float floor,float reach){
+ extern void *BtlObj_Get(int);
+ BobjObj *obj=BtlObj_Get(id);
+ int shoulder=right?33:19,elbow=shoulder+1,hand=shoulder+2;
+ BobjPart *wrist;
+ Vec4 target;
+ float distance;
+ if(!obj||!obj->mdl.param||reach<=0.f)return;
+ wrist=(BobjPart*)BtlObj_GetNode((void*)obj,hand);
+ if(!wrist)return;
+ target=*(Vec4*)wrist->mtx.m[3];
+ distance=obj->mdl.param->height*20.f*.24f*reach;
+ target.x+=sinf(yaw)*distance;target.z+=cosf(yaw)*distance;
+ target.y+=(floor-1.f-target.y)*reach;
+ story_reach_hand(obj,shoulder,elbow,hand,&target);
+}
+
+/* Take only the raising arm and open hand from Krillin's charged Kienzan. */
+int Port_StoryKienzanArm(int id,int donor,float weight){
+ extern void *BtlObj_Get(int);
+ BobjObj *obj=BtlObj_Get(id);
+ Quat pose[13];
+ unsigned valid=0;
+ int i;
+ if(!obj||!Port_StoryRetargetClip(id,donor,1016,330,6*256))return 0;
+ for(i=0;i<13;i++){
+  BobjPart *part=(BobjPart*)BtlObj_GetNode((void*)obj,19+i);
+  if(part){pose[i]=part->rot;valid|=1u<<i;}
+ }
+ Port_StoryIdlePointBase(id);
+ for(i=0;i<13;i++)if(valid>>i&1u){
+  BobjPart *part=(BobjPart*)BtlObj_GetNode((void*)obj,19+i);
+  Quat rot;
+  if(part){Quat_Slerp(&rot,&part->rot,&pose[i],weight);part->rot=rot;}
+ }
+ BtlObjPose_CalcMatrices(obj);
+ return valid!=0;
+}
+
+void Port_StoryTailGrip(int id,int target,int refresh){extern void*BtlObj_Get(int);extern void Port_Dbg3(const char*,int,int,int,int);static BobjObj*owner;static Quat rot[4];static const int node[4]={19,20,33,34};BobjObj*o=BtlObj_Get(id),*n=BtlObj_Get(target);Vec4 at;int i;if(!o||!n)return;
+ if(refresh||owner!=o){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)n,6);if(!p)return;at=*(Vec4*)p->mtx.m[3];story_reach_hand(o,19,20,21,&at);p=(BobjPart*)BtlObj_GetNode((void*)n,5);if(!p)return;at=*(Vec4*)p->mtx.m[3];story_reach_hand(o,33,34,35,&at);for(i=0;i<4;i++)rot[i]=((BobjPart*)BtlObj_GetNode((void*)o,node[i]))->rot;owner=o;
+  {BobjPart*h=(BobjPart*)BtlObj_GetNode((void*)o,35);float x=h->mtx.m[3][0]-at.x,y=h->mtx.m[3][1]-at.y,z=h->mtx.m[3][2]-at.z;Port_Dbg3("story Piccolo tail grip gap",id,(int)(sqrtf(x*x+y*y+z*z)*100),0,0);}}
+ for(i=0;i<4;i++)((BobjPart*)BtlObj_GetNode((void*)o,node[i]))->rot=rot[i];BtlObjPose_CalcMatrices(o);
+}
+static Vec4 sStoryElbowTarget;static int sStoryElbowTargetValid;
+void Port_StoryElbowTarget(const Vec4*p){if(p){sStoryElbowTarget=*p;sStoryElbowTargetValid=1;}else sStoryElbowTargetValid=0;}
+void Port_StoryLeanTo(int id,int target){extern void*BtlObj_Get(int);BobjObj*o=BtlObj_Get(id),*n=BtlObj_Get(target);BobjPart*spine,*head;Quat base,q,d,best;float score=-1e20f,dx,dz,len;int i;if(!o||!n||!(spine=(BobjPart*)BtlObj_GetNode((void*)o,16))||!(head=(BobjPart*)BtlObj_GetNode((void*)o,46)))return;base=spine->rot;best=base;dx=n->xf.mtx.m[3][0]-o->xf.mtx.m[3][0];dz=n->xf.mtx.m[3][2]-o->xf.mtx.m[3][2];len=sqrtf(dx*dx+dz*dz);if(len<.01f)return;dx/=len;dz/=len;
+ for(i=0;i<4;i++){float angle=(i&1)?-.45f:.45f,v;Quat_FromAxisAngle(&d,i<2?1:0,0,i<2?0:1,angle);Quat_Mul(&q,&base,&d);spine->rot=q;BtlObjPose_CalcMatrices(o);v=(head->mtx.m[3][0]-o->xf.mtx.m[3][0])*dx+(head->mtx.m[3][2]-o->xf.mtx.m[3][2])*dz;if(v>score){score=v;best=q;}}spine->rot=best;BtlObjPose_CalcMatrices(o);
+}
+void Port_StoryElbowPose(int id,float yaw,float t,int refresh){extern void*BtlObj_Get(int);static BobjObj*owner;static float angle;static Quat base[4],end[4];static const int node[4]={17,19,20,46};BobjObj*o=BtlObj_Get(id);BobjPart*p;Quat q;Vec4 to;float h;int i;if(!o)return;
+ if(refresh||owner!=o||fabsf(angle-yaw)>.001f){for(i=0;i<4;i++){p=(BobjPart*)BtlObj_GetNode((void*)o,node[i]);if(!p)return;base[i]=p->rot;}
+  {Quat chosen=base[0],candidate;float best=-1e20f,turn=0,wx=-sinf(yaw),wz=-cosf(yaw);int k;for(k=0;k<2;k++){float angle=k?-.85f:.85f,v;BobjPart*torso=(BobjPart*)BtlObj_GetNode((void*)o,17),*shoulder=(BobjPart*)BtlObj_GetNode((void*)o,19);Quat_FromAxisAngle(&q,0,1,0,angle);Quat_Mul(&candidate,&base[0],&q);torso->rot=candidate;BtlObjPose_CalcMatrices(o);v=(shoulder->mtx.m[3][0]-torso->mtx.m[3][0])*wx+(shoulder->mtx.m[3][2]-torso->mtx.m[3][2])*wz;if(v>best){best=v;chosen=candidate;turn=angle;}}((BobjPart*)BtlObj_GetNode((void*)o,17))->rot=chosen;Quat_FromAxisAngle(&q,0,1,0,turn*.35f);Quat_Mul(&((BobjPart*)BtlObj_GetNode((void*)o,46))->rot,&base[3],&q);}BtlObjPose_CalcMatrices(o);
+  h=o->mdl.param->height*20.f;p=(BobjPart*)BtlObj_GetNode((void*)o,19);to=*(Vec4*)p->mtx.m[3];if(sStoryElbowTargetValid)to=sStoryElbowTarget;else{to.x+=(-sinf(yaw)+cosf(yaw)*.15f)*h;to.z+=(-cosf(yaw)-sinf(yaw)*.15f)*h;to.y+=h*.08f;}story_aim_joint(o,19,20,&to);
+  p=(BobjPart*)BtlObj_GetNode((void*)o,19);to=*(Vec4*)p->mtx.m[3];to.x+=sinf(yaw)*h*.22f;to.z+=cosf(yaw)*h*.22f;to.y-=h*.08f;story_aim_joint(o,20,21,&to);
+  for(i=0;i<4;i++)end[i]=((BobjPart*)BtlObj_GetNode((void*)o,node[i]))->rot;owner=o;angle=yaw;
+ }
+ if(t<0)t=0;if(t>1)t=1;t=t*t*(3-2*t);for(i=0;i<4;i++)Quat_Slerp(&((BobjPart*)BtlObj_GetNode((void*)o,node[i]))->rot,&base[i],&end[i],t);BtlObjPose_CalcMatrices(o);
+}
+#endif
+
+#ifdef PORT
+/* CH8 only: preserve the evaluated grip through the impact, then blend into
+   the native recoil. Fixed native translations/rotations, no matrix stretching. */
+void Port_StoryElbowRecoilBlend(int id,float t,int capture){
+ extern void*BtlObj_Get(int);static BobjObj*owner;static Vec4 pos[47];static Quat rot[47];static unsigned char valid[47];BobjObj*o=BtlObj_Get(id);BobjBone*b;int guard=0,n;if(!o)return;
+ if(capture){memset(valid,0,sizeof(valid));b=o->mdl.nodes;while(b&&guard++<71){n=b->id;if(n<47){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,n);if(p){pos[n]=p->pos;rot[n]=p->rot;valid[n]=1;}}if(b->last||b->next<=0)break;b=(void*)((u8*)b+b->next);}owner=o;return;}
+ if(owner!=o)return;if(t<0)t=0;if(t>1)t=1;t=t*t*(3-2*t);
+ for(n=0;n<47;n++)if(valid[n]){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,n);Quat q;if(!p)continue;Quat_Slerp(&q,&rot[n],&p->rot,t);p->rot=q;p->pos.x=pos[n].x+(p->pos.x-pos[n].x)*t;p->pos.y=pos[n].y+(p->pos.y-pos[n].y)*t;p->pos.z=pos[n].z+(p->pos.z-pos[n].z)*t;}BtlObjPose_CalcMatrices(o);
+}
+#endif
+
+#ifdef PORT
+void Port_StoryChargeArm(void*raw,int capture){static Quat pose[13];static void*owner;BobjObj*o=raw;int n;if(!o)return;if(capture)owner=o;else if(owner!=o)return;
+ for(n=0;n<13;n++){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,19+n);if(p){if(capture)pose[n]=p->rot;else p->rot=pose[n];}}if(!capture)BtlObjPose_CalcMatrices(o);
+}
+#endif
+
+#ifdef PORT
+/* Add impact recoil to the sampled protection pose, preserving every limb length. */
+void Port_StoryShieldRecoil(void*raw,int age){BobjObj*o=raw;BobjPart*p;Quat turn,q;float t;int i;if(!o||age<=0||age>=70)return;
+ t=age<10?age/10.f:(70-age)/60.f;
+ for(i=0;i<2;i++){p=(BobjPart*)BtlObj_GetNode((void*)o,i?46:17);if(!p)continue;Quat_FromAxisAngle(&turn,1,0,0,t*(i?.12f:-.18f));Quat_Mul(&q,&p->rot,&turn);p->rot=q;}
+ BtlObjPose_CalcMatrices(o);
+}
+#endif
+
+#ifdef PORT
+/* Scene-only upper-body hold from an earlier sample of the same actor/clip.
+   Keep the later kneeling pelvis/legs, native translations and speaking jaw. */
+void Port_StoryKneelUpper(void*raw,int capture){
+ static Quat pose[32];static unsigned valid;static void*owner;BobjObj*o=raw;int n;
+ if(!o)return;if(capture){owner=o;valid=0;}else if(owner!=o)return;
+ for(n=0;n<32;n++){BobjPart*p=(BobjPart*)BtlObj_GetNode((void*)o,16+n);if(!p)continue;
+  if(capture){pose[n]=p->rot;valid|=1u<<n;}else if(valid&(1u<<n))p->rot=pose[n];}
+ if(!capture)BtlObjPose_CalcMatrices(o);
+}
+#endif

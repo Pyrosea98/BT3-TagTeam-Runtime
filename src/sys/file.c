@@ -400,7 +400,7 @@ void *File_Request(s32 id, void *buf) {
 }
 
 /* Advances the request queue by one step; returns 1 when every request has been read. */
-s32 File_UpdateRequests(void) {
+static s32 File_UpdateRequestsOnce(void) {
     FileReqQueue *queue = &gFileReq;
     s32 done = 0;
     List *pending;
@@ -478,6 +478,26 @@ void *File_LoadSync(s32 id, void *buf, s32 unused) {
 }
 
 /* Returns the request queue. */
+/* Interlude assets are local PC reads: advance completed queue states in
+   bounded batches instead of waiting a rendered frame for OPEN/READ/WAIT/NEXT.
+   Stop immediately on an actual pending read; ordinary matches are unchanged. */
+s32 File_UpdateRequests(void) {
+#ifdef PORT
+ extern int Port_StoryActive(void),Port_StoryChapter(void);
+ int ch=Port_StoryChapter(),i;
+ if(Port_StoryActive()&&(ch==17||ch==18)){
+  for(i=0;i<32;i++){
+   int state=gFileReq.state,count=File_GetPendingCount();
+   int done=File_UpdateRequestsOnce();
+   if(done)return 1;
+   if(state==gFileReq.state&&count==File_GetPendingCount())return 0;
+  }
+  return 0;
+ }
+#endif
+ return File_UpdateRequestsOnce();
+}
+
 FileReqQueue *File_GetRequestQueue(void) {
     return &gFileReq;
 }

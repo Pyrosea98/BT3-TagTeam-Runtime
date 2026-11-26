@@ -2246,6 +2246,9 @@ void EftRushShot_UpdateAttached(EftTask *task) {
 }
 
 /* Init callback: clears the work, takes speed and size from the definition and creates the model instance. */
+#ifdef PORT
+#include "mod_big_rush.inc"
+#endif
 void EftRushShot_Init(EftTask *task, EftTechArg *arg) {
     EftRushShotMgrWork *mgr = BtlTask_GetParent(task)->work;
     EftRushShotWork *w = task->work;
@@ -2282,10 +2285,16 @@ void EftRushShot_Init(EftTask *task, EftTechArg *arg) {
         }
     }
     BtlTask_SetOwnerTag(task, EFT_OWNER_TAG(arg->objId));
+#ifdef PORT
+    big_rush_register(task);
+#endif
 }
 
 /* Term callback: ends the stage tint, the sub-effects and the model instance. */
 void EftRushShot_Term(EftTask *task) {
+#ifdef PORT
+    big_rush_restore(task);
+#endif
     EftRushShotMgrWork *mgr = BtlTask_GetParent(task)->work;
     EftRushShotWork *w = task->work;
     EftTechArg *arg = w->arg;
@@ -2304,6 +2313,9 @@ void EftRushShot_Term(EftTask *task) {
 
 /* Update callback. */
 void EftRushShot_Update(EftTask *task) {
+#ifdef PORT
+    if(big_rush_step(task))return;
+#endif
     s32 advance = 0;
     EftRushShotMgrWork *mgr = BtlTask_GetParent(task)->work;
     EftRushShotWork *w = task->work;
@@ -2426,6 +2438,9 @@ void EftRushShot_Update(EftTask *task) {
 
 /* Post-update callback: reads what the hit record did this frame (moved, hit, ended). */
 void EftRushShot_PostUpdate(EftTask *task) {
+#ifdef PORT
+    if(big_rush_post(task))return;
+#endif
     EftRushShotWork *w = task->work;
     Vec4 move;
 

@@ -76,6 +76,9 @@ u32 *Vu1Pkt_CallProg2(u32 obj);
 u32 *Vu1Pkt_LoadProg2(s32 alt);
 void Vu1Pkt_CallProg4(u32 chain);
 void Vu1Pkt_LoadProg4(void *mtx);
+#ifdef PORT
+void Vu1Pkt_LoadProg4Prop(void *mtx, void *prop);
+#endif
 void Vu1Pkt_CallProg5(u32 chain, void *mtx);
 void Vu1Pkt_LoadProg5(void *mtx);
 void Vu1Node_OrFlags(Vu1Node *node, u32 bits0, u32 bits1);

@@ -128,6 +128,41 @@ static void target_drop(int i) {
     SDL_ReleaseGPUTexture(sDev, sTgDep[i]);
 }
 
+/* The part of the alpha bytes that copy `k` (a native 4) has to hold: what the passes reading the copy (the table
+   passes, the outline and the see-through tint) read before the next copy is taken. Each of them draws inside its
+   scissor and reads its own place, the outline also up to 8 texels across and one PS2 pixel up and down: the
+   scissors together, with that much more on every side. The whole buffer was copied, 2048 x 2048 at 2x, for a
+   picture of 1024 x 896. 0 = no pass reads it: then the whole buffer, as before (BT3_AUX_COPY_WHOLE=1: always). */
+static int aux_region(uint32_t k, int *rx, int *ry, int *rw, int *rh) {
+    static int whole = -1;
+    int W = GS_W * SCALE, H = GS_H * SCALE, m = 8 + 2 * SCALE, x0 = W, y0 = H, x1 = 0, y1 = 0, any = 0;
+    uint32_t i;
+
+    if (whole < 0) { whole = getenv("BT3_AUX_COPY_WHOLE") != NULL; }
+    for (i = k + 1; !whole && i < gsDrawCount && gsDraws[i].native != 4; i++) {
+        const GsDraw *d = &gsDraws[i];
+        if (d->native == 3 || d->native == 1 || d->native == 2) {
+            if (d->scissor[0] < x0) { x0 = d->scissor[0]; }
+            if (d->scissor[1] < y0) { y0 = d->scissor[1]; }
+            if (d->scissor[0] + d->scissor[2] > x1) { x1 = d->scissor[0] + d->scissor[2]; }
+            if (d->scissor[1] + d->scissor[3] > y1) { y1 = d->scissor[1] + d->scissor[3]; }
+            any = 1;
+        }
+    }
+    if (whole || !any) {
+        return 0;
+    }
+    x0 = x0 - m < 0 ? 0 : x0 - m;
+    y0 = y0 - m < 0 ? 0 : y0 - m;
+    x1 = x1 + m > W ? W : x1 + m;
+    y1 = y1 + m > H ? H : y1 + m;
+    if (x1 <= x0 || y1 <= y0) {
+        return 0;
+    }
+    *rx = x0, *ry = y0, *rw = x1 - x0, *rh = y1 - y0;
+    return 1;
+}
+
 static GsTex target_color(int i) { return (GsTex)(uintptr_t)sTgCol[i]; }
 static GsTex target_aux(int i) { return (GsTex)(uintptr_t)sTgAux[i]; }
 static GsTex target_depth(int i) { return (GsTex)(uintptr_t)sTgDep[i]; }
@@ -542,6 +577,50 @@ static int vk_init(void) {
 
 /* --- the frame ---------------------------------------------------------------------------------- */
 
+
+/* Share one transfer allocation across the pending texture levels of a presentation.
+   Destination textures, mip levels, bytes and upload order remain those of the recorded list. */
+static int upload_pending_group(SDL_GPUCopyPass *copy) {
+    SDL_GPUTransferBufferCreateInfo info;
+    SDL_GPUTransferBuffer *buffer;
+    uint8_t *mapped;
+    uint32_t offsets[MAX_PENDING], sizes[MAX_PENDING];
+    uint64_t total = 0;
+    int i;
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("BT3_TEST_PULSE_OPT") != NULL;
+    if (!enabled || sPendingCount < 2) return 0;
+    for (i = 0; i < sPendingCount; i++) {
+        uint64_t size = sPending[i].bytes ? sPending[i].bytes : (uint64_t)sPending[i].w * sPending[i].h * 4;
+        total = (total + 511) & ~UINT64_C(511);
+        if (!size || size > UINT32_MAX || total + size > 32u * 1024 * 1024) return 0;
+        offsets[i] = (uint32_t)total;
+        sizes[i] = (uint32_t)size;
+        total += size;
+    }
+    SDL_zero(info);
+    info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    info.size = (uint32_t)total;
+    buffer = SDL_CreateGPUTransferBuffer(sDev, &info);
+    if (!buffer) return 0;
+    mapped = SDL_MapGPUTransferBuffer(sDev, buffer, false);
+    if (!mapped) { SDL_ReleaseGPUTransferBuffer(sDev, buffer); return 0; }
+    for (i = 0; i < sPendingCount; i++) memcpy(mapped + offsets[i], sPending[i].px, sizes[i]);
+    SDL_UnmapGPUTransferBuffer(sDev, buffer);
+    for (i = 0; i < sPendingCount; i++) {
+        SDL_GPUTextureTransferInfo src;
+        SDL_GPUTextureRegion dst;
+        SDL_zero(src); SDL_zero(dst);
+        src.transfer_buffer = buffer; src.offset = offsets[i];
+        dst.texture = sPending[i].tex; dst.mip_level = sPending[i].level;
+        dst.w = sPending[i].w; dst.h = sPending[i].h; dst.d = 1;
+        SDL_UploadToGPUTexture(copy, &src, &dst, false);
+        free(sPending[i].px);
+    }
+    SDL_ReleaseGPUTransferBuffer(sDev, buffer);
+    return 1;
+}
+
 static void vk_frame_end(void) {
     SDL_GPUCommandBuffer *cmd;
     SDL_GPUCopyPass *copy;
@@ -692,6 +771,7 @@ static void vk_frame_end(void) {
         dst.size = gsVuIdxCount * sizeof(uint32_t);
         SDL_UploadToGPUBuffer(copy, &src, &dst, true);
     }
+    if (upload_pending_group(copy)) sPendingCount = 0;
     for (i = 0; i < sPendingCount; i++) {
         SDL_GPUTransferBufferCreateInfo ti;
         SDL_GPUTransferBuffer *tb;
@@ -839,7 +919,16 @@ static void vk_frame_end(void) {
             SDL_zero(to);
             from.texture = sTgAux[d->target];
             to.texture = sAuxCopy;
-            SDL_CopyGPUTextureToTexture(cp, &from, &to, GS_W * SCALE, GS_H * SCALE, 1, false);
+            {
+                int rx, ry, rw, rh;
+                if (aux_region(n, &rx, &ry, &rw, &rh)) { /* only what the passes reading it read */
+                    from.x = to.x = (Uint32)rx;
+                    from.y = to.y = (Uint32)ry;
+                    SDL_CopyGPUTextureToTexture(cp, &from, &to, (Uint32)rw, (Uint32)rh, 1, false);
+                } else {
+                    SDL_CopyGPUTextureToTexture(cp, &from, &to, GS_W * SCALE, GS_H * SCALE, 1, false);
+                }
+            }
             SDL_EndGPUCopyPass(cp);
             continue;
         }

@@ -8,6 +8,9 @@
 #include "sys/dma.h"
 #include "sys/gfx.h"
 #include "sys/gfx_ot.h"
+#ifdef PORT
+#include "sys/heap.h"
+#endif
 
 /*
  * Stage-attached effects, 0x136760..0x13A9D0. See include/battle/eft_c.h.
@@ -980,7 +983,7 @@ void EftStage_DrawSprite(Vec4 *pos) {
 
 /* Surface task init: locates the surface file in the stage pack and, when a mesh uses the reflection, sets up
    the palette renderer. */
-void EftSurf_Init(void) {
+static void EftSurf_InitWork(EftSurf *work) {
     s32 *pack = STAGE_PACK();
     EftSurfParam *param = (EftSurfParam *)((u8 *)pack + ((u32)pack[0xD] >> 2 << 2));
     s32 size = pack[0xE] - pack[0xD];
@@ -991,7 +994,7 @@ void EftSurf_Init(void) {
     s32 count;
     s32 i;
 
-    gEftSurf = BtlPool_Alloc(BtlPool_GetCurrent(), sizeof(EftSurf));
+    gEftSurf = work;
     memset(gEftSurf, 0, sizeof(EftSurf));
     gEftSurf->param = param;
     gEftSurf->file = (EftSurfFile *)(param + 1);
@@ -1039,6 +1042,75 @@ void EftSurf_Init(void) {
         }
     }
 }
+
+void EftSurf_Init(void) {
+    EftSurf_InitWork(BtlPool_Alloc(BtlPool_GetCurrent(), sizeof(EftSurf)));
+}
+
+#ifdef PORT
+extern void EftVram_Init(void);
+extern void EftVram_Term(void);
+extern void EftVram_UploadAll(void);
+extern void EftVram_Reset(void);
+
+/* The orbital viewer needs the native surface pass without a combat task list. */
+void Port_StageSurfacePreviewInit(s32 packSize) {
+    s32 *pack = STAGE_PACK();
+    s32 start, end;
+    s32 fileSize, meshOffset, texOffset;
+    EftSurfFile *file;
+
+    if (pack == NULL || packSize < 15 * sizeof(*pack) || pack[0] < 14) {
+        return;
+    }
+    start = (u32)pack[0xD] & ~3u;
+    end = (u32)pack[0xE] & ~3u;
+    if (start < 0 || end > packSize || end < start ||
+        end - start < sizeof(EftSurfParam) + sizeof(EftSurfFile)) {
+        return;
+    }
+    file = (EftSurfFile *)((u8 *)pack + start + sizeof(EftSurfParam));
+    if (file->unk0 != 0x336c646d || file->version != 4 || file->meshCount <= 0 ||
+        file->texCount < 0 || file->texCount >= 35) {
+        return;
+    }
+    fileSize = end - start - sizeof(EftSurfParam);
+    meshOffset = (s32)file->meshes;
+    texOffset = (s32)file->texs;
+    if (meshOffset < sizeof(*file) || meshOffset > fileSize ||
+        file->meshCount > (fileSize - meshOffset) / sizeof(EftSurfMesh)) {
+        return;
+    }
+    if (file->texCount != 0 &&
+        (texOffset < sizeof(*file) || texOffset > fileSize ||
+         file->texCount > (fileSize - texOffset) / sizeof(EftSurfTex))) {
+        return;
+    }
+    EftVram_Init();
+    EftSurf_InitWork(Heap_Alloc(sizeof(EftSurf), 0x20, 0, HEAP_ANY));
+}
+
+void Port_StageSurfacePreviewDraw(void) {
+    if (gEftSurf == NULL || !BtlStage_IsReady()) {
+        return;
+    }
+    /* Stage materials and surface uploads share GS addresses. Upload after the model. */
+    EftSurf_Update();
+    EftSurf_BuildPalettes();
+    EftVram_UploadAll();
+    EftVram_Reset();
+    EftSurf_DrawMeshes();
+}
+
+void Port_StageSurfacePreviewTerm(void) {
+    if (gEftSurf != NULL) {
+        EftSurf_Unrelocate(gEftSurf->file);
+        Heap_Free(gEftSurf);
+        gEftSurf = NULL;
+        EftVram_Term();
+    }
+}
+#endif
 
 /* Surface task term: turns the file's pointers back into offsets and frees the state. */
 void EftSurf_Term(void) {
@@ -1125,14 +1197,44 @@ void EftSurf_Unrelocate(EftSurfFile *file) {
     }
 }
 
+#ifdef PORT
+#define EFT_SURF_RT_QUEUED 0x10
+static void EftSurf_QueueReflection(EftSurfRt *rt, s32 flip);
+#endif
+
 /* Gets this frame's TEX0 of every texture of the file; allows the palettes to be built again. */
 void EftSurf_UpdateTextures(EftSurfFile *file) {
     EftSurfRt *rt = &gEftSurf->rt;
     EftSurfTex *tex;
     s32 i;
 
+#ifdef PORT
+    u64 usedTextures = ~(u64)0;
+    extern s32 BtlStage_GetId(void);
+
+    if (BtlStage_GetId() == 12 && (rt->flags & EFT_SURF_RT_ON) &&
+        file->texCount <= 64) {
+        const EftSurfMesh *mesh = file->meshes;
+
+        /* Reflecting meshes draw from the animated image and lit palettes.
+           Their base texture IDs still exist, but are never sampled. */
+        usedTextures = 0;
+        for (i = 0; i < file->meshCount; i++, mesh++) {
+            if (!(mesh->flags & EFT_SURF_REFLECT) && mesh->tex >= 0 &&
+                mesh->tex < file->texCount) {
+                usedTextures |= 1ULL << mesh->tex;
+            }
+        }
+    }
+#endif
     tex = file->texs;
     for (i = 0; i < file->texCount; i++) {
+#ifdef PORT
+        if (i < 64 && !(usedTextures & (1ULL << i))) {
+            tex++;
+            continue;
+        }
+#endif
         gEftSurf->u.slot[i + 1].def = tex;
         gEftSurf->u.slot[i + 1].unk0 = tex->unk30;
         tex->tex0 = EftVram_AddTex(&gEftSurf->u.slot[i + 1], 1, 0);
@@ -1140,6 +1242,14 @@ void EftSurf_UpdateTextures(EftSurfFile *file) {
     }
     if (rt->flags & EFT_SURF_RT_ON) {
         rt->flags &= ~EFT_SURF_RT_BUILT;
+#ifdef PORT
+        /* Allocate the reflection before later battle effects fill the queue.
+           The two palettes are still lit at draw time with the current view. */
+        if (BtlStage_GetId() == 12) {
+            EftSurf_QueueReflection(rt, (rt->flip + 1) & 1);
+            rt->flags |= EFT_SURF_RT_QUEUED;
+        }
+#endif
     }
 }
 
@@ -1311,8 +1421,19 @@ void EftSurf_DrawMeshes(void) {
         EftSurfTri *tri;
         s32 triCount;
 
-        tex0 = texs[mesh->tex].tex0;
         flags = mesh->flags;
+#ifdef PORT
+        /* Reflective-only packs take both textures from the reflection bank. */
+        tex0 = 0;
+        if (!(flags & EFT_SURF_REFLECT)) {
+            if (mesh->tex < 0 || mesh->tex >= w->file->texCount) {
+                continue;
+            }
+            tex0 = texs[mesh->tex].tex0;
+        }
+#else
+        tex0 = texs[mesh->tex].tex0;
+#endif
         u = mesh->u;
         fade = 1.0f;
         v = mesh->v;
@@ -1895,6 +2016,20 @@ void EftSurf_StepAnim(void) {
     }
 }
 
+#ifdef PORT
+static void EftSurf_QueueReflection(EftSurfRt *rt, s32 flip) {
+    EftTexEntry *src = EftSurfRt_GetTex(rt, rt->animFrame);
+    EftTexEntry *diffuse = EftSurfRt_GetTex(rt, rt->texA + flip);
+    EftTexEntry *specular = EftSurfRt_GetTex(rt, rt->texB + flip);
+    u64 image;
+
+    src->tex0 = EftVram_AddImage(src, 1, 0);
+    image = src->tex0 & ~(0x3FFFULL << 37);
+    diffuse->tex0 = image | ((u64)EftVram_AddClut(diffuse) << 37);
+    specular->tex0 = image | ((u64)EftVram_AddClut(specular) << 37);
+}
+#endif
+
 /* Lights the 256 palette entries of the current normal map frame: one palette from the light direction, one
    from the view (identity with a fixed tilt in split-screen), and gives them to the two result textures. */
 void EftSurf_RenderPalettes(void) {
@@ -1924,6 +2059,16 @@ void EftSurf_RenderPalettes(void) {
         view.m[1][2] = 0.5f;
     }
     EftGfx_LightClutSpecular(rt->buf[2].clut, rt->buf[0].clut, &view, &rt->frame, &rt->light, rt->param.unk30);
+#ifdef PORT
+    dst = EftSurfRt_GetTex(rt, rt->texA + rt->flip);
+    dst2 = EftSurfRt_GetTex(rt, rt->texB + rt->flip);
+    dst->def->data->clut = *rt->buf[1].clut;
+    dst2->def->data->clut = *rt->buf[2].clut;
+    if (!(rt->flags & EFT_SURF_RT_QUEUED)) {
+        EftSurf_QueueReflection(rt, rt->flip);
+    }
+    rt->flags &= ~EFT_SURF_RT_QUEUED;
+#else
     src->tex0 = EftVram_AddImage(src, 1, 0);
     dst = EftSurfRt_GetTex(rt, rt->texA + rt->flip);
     dst->def->data->clut = *rt->buf[1].clut;
@@ -1931,4 +2076,5 @@ void EftSurf_RenderPalettes(void) {
     dst2 = EftSurfRt_GetTex(rt, rt->texB + rt->flip);
     dst2->def->data->clut = *rt->buf[2].clut;
     dst2->tex0 = (src->tex0 & ~(0x3FFFULL << 37)) | ((u64)EftVram_AddClut(dst2) << 37);
+#endif
 }
