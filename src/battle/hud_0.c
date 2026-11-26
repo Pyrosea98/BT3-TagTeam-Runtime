@@ -397,7 +397,20 @@ s32 PauseMenu_Update(s32 pad, s32 which) {
 #ifdef PORT
     {
         extern void *Port_StoryUltimateText(void *, void *, int);
-        PauseMenuObj *obj = BtlObj_Get(BattleSide_GetObjId(pad));
+        extern int Port_StoryActive(void);
+        extern int Port_StoryHumanActor(void);
+        extern s32 Port_FighterObjId(s32 actor);
+        s32 objId = BattleSide_GetObjId(pad);
+        PauseMenuObj *obj;
+
+        if (which == 0 && pad == 0 && Port_StoryActive()) {
+            s32 actor = Port_StoryHumanActor();
+            if (actor >= 0) {
+                s32 controlled = Port_FighterObjId(actor);
+                if (controlled >= 0) objId = controlled;
+            }
+        }
+        obj = BtlObj_Get(objId);
         BtlMenu_SetScript(Port_StoryUltimateText(obj, obj ? obj->skillText : NULL, 0));
     }
 #else

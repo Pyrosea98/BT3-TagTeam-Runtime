@@ -109,7 +109,7 @@
     "src/battle/eft_z.c": "13a52a0af393cd76b19db61cc60a00a35aaf52a663f25a8dafa2bff9efbcb645",
     "src/battle/eft_z_b.c": "0c95b00a6e9c9ef742beeeabd7a5e2828567f374fdf6c32530f8d334d22691fa",
     "src/battle/eft_z_c.c": "b7f17135136337a6a47bd463e44d1f026849ea71f62f2bed20f8222d9a605730",
-    "src/battle/hud_0.c": "cb03df5181ccfeee53174c8f972591c622cd250f7a40a8e8e85f61e1eaa8d96e",
+    "src/battle/hud_0.c": "1ee3b4d77d2c8eb5bd4a7abe321ad44538685cfc40aaee307240c03d6cfc29f6",
     "src/battle/hud_0_b.c": "dacbe81111dbb6940132a4f82abf0626684d6c5ee4405f7fb28c88a050350252",
     "src/battle/hud_0_c.c": "454891a4f82e24c54fc7929ba77831939fec85d3413e1dfbf3f2df36c5df7b53",
     "src/battle/hud_a.c": "a4ed12a9180a4a28d492a12d0e62d6c8dc7b132bf4098e626af4817bd083dd4d",
@@ -729,7 +729,7 @@
     "port/tools/where.sh": "9c55faefb99b91f7d1ab1e60165ac9ed37088cb0d07be04bac00961ba2275d06"
   },
   "runtime": {
-    "Tenkaichi3Decomp.exe": "371ca54d9aa1d04a45771bcff9cc3c5ebbc07bfaf59a156f69b84b831cab66df",
+    "Tenkaichi3Decomp.exe": "c7949a219f6a8dd6fbeffadf0979b516a18fec6ac477998aef71f96b0c7020f3",
     "Tenkaichi3Decomp.dat": "9e9f960984fa9107f9cf1e8306bd8f1da891d3690aa7798a645aff81435481be",
     "Tenkaichi3Decomp.exe.mem": "6651e6af90a8e7625f9a1801b427f412400ab3ccdcb097fb37e2a06f3ade3bf9",
     "SDL3.dll": "49db50085edc74c2b5962f010e2416557188dcc67d6fb8a61381de2a2cd3a287"
